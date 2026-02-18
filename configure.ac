@@ -301,6 +301,14 @@ AC_CHECK_TYPES(wchar_t,,,[#include "stddef.h"])
 AC_CHECK_TYPES(wint_t,,,[#include "wchar.h"])
 AC_CHECK_TYPES(mbstate_t,,,[#include "wchar.h"])
 
+AC_CHECK_SIZEOF([void *])
+AC_CHECK_SIZEOF([long])
+AC_CHECK_SIZEOF([int])
+if test "$ac_cv_sizeof_void_p" -ge 8; then
+  AC_DEFINE([INTG_IS_LONG], [1],
+            [Define to 1 to make intg typedef long instead of int on 64-bit platforms])
+fi
+
 
 
 # ----------------------------------------

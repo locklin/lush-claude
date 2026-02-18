@@ -10,7 +10,7 @@ depends on them.
 
 ---
 
-## Phase 0: Add 64-bit Diagnostic Warnings (Low Risk, High Diagnostic Value)
+## Phase 0: Add 64-bit Diagnostic Warnings (Low Risk, High Diagnostic Value) -- COMPLETED
 
 **Goal:** Without changing any core logic, add runtime warnings so that a user
 who hits a 32-bit limit gets a clear message instead of silent corruption.
@@ -69,7 +69,7 @@ near the 32-bit boundary and verifies warnings are emitted.
 
 ---
 
-## Phase 1: Enable `INTG_IS_LONG` and Fix the Foundation (High Risk, High Impact)
+## Phase 1: Enable `INTG_IS_LONG` and Fix the Foundation (High Risk, High Impact) -- COMPLETED
 
 **Goal:** Make `intg` be `long` on 64-bit platforms and fix everything that
 breaks.

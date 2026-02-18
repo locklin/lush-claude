@@ -967,11 +967,11 @@ alloc_idx(int ndim)
    * in a single memory block.
      */
   avlnode *n;
-  struct idx *cptr = malloc(sizeof(struct idx) + 2*ndim*sizeof(int) );
-  if (!cptr) 
+  struct idx *cptr = malloc(sizeof(struct idx) + 2*ndim*sizeof(intg) );
+  if (!cptr)
     error(NIL,"Out of memory",NIL);
   cptr->ndim = ndim;
-  cptr->dim = (int*)(cptr+1);
+  cptr->dim = (intg*)(cptr+1);
   cptr->mod = cptr->dim + ndim;
   n = avl_add(cptr);
   if (n==0)

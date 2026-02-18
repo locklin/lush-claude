@@ -933,7 +933,7 @@ static int *
 colors_from_int_matrix(at *p)
 {
   struct index *ind;
-  int i=64;
+  intg i=64;
   ind= easy_index_check(p,1,&i);
   if ( !(ind->st->srg.type == ST_I32) ) error(NIL,"not an int-matrix",p);
   for( i=0; i<64; i++ ) {
@@ -1159,15 +1159,15 @@ color_draw_idx(int x, int y, struct idx *idx,
 	  int i,j,v;
 	  int off1, off2;
 	  flt dm, dv, w;
-	  flt (*getf)(gptr,int);
+	  flt (*getf)(gptr,intg);
 	  gptr data;
-	  
+
 	  data = IDX_DATA_PTR(idx);
 	  getf = storage_type_getf[idx->srg->type];
 	  dm = minv;
 	  dv = maxv - minv;
 	  off2 = 0;
-	  
+
 	  for (j = 0; j < d2; j++, off2 += m2) {
 	    off1 = off2;
 	    for (i = 0; i < d1; i++, off1 += m1) {
@@ -1194,7 +1194,7 @@ color_draw_idx(int x, int y, struct idx *idx,
       flt dm, dv, w;
       int v, xx, i, j;
       int off1, off2;
-      flt (*getf)(gptr,int);
+      flt (*getf)(gptr,intg);
       gptr data;
       void (*fill_rect)(struct window *, int, int, unsigned int, unsigned int);
       void (*setcolor)(struct window *, int);
@@ -1381,7 +1381,7 @@ rgb_draw_idx(int x, int y, struct idx *idx, int sx, int sy)
       int i, j, zi, zj, c;
       int off1, off2, r, g, b;
       unsigned char *im;
-      flt (*getf)(gptr,int);
+      flt (*getf)(gptr,intg);
       gptr data;
       int cube[64];
       /* Allocate color cube */
@@ -1486,8 +1486,8 @@ rgb_draw_idx(int x, int y, struct idx *idx, int sx, int sy)
         = win->gdriver->setcolor;
       int (*alloccolor)(struct window *, double, double, double) 
         = win->gdriver->alloccolor;
-      flt (*getf)(gptr,int);
-      
+      flt (*getf)(gptr,intg);
+
       ifn (alloccolor && setcolor && fill_rect ) {
           return 8;
       }
@@ -1567,7 +1567,7 @@ rgb_draw_idx(int x, int y, struct idx *idx, int sx, int sy)
       else 
         {
           /* Generic transcription routine */
-          flt (*getf)(gptr,int);
+          flt (*getf)(gptr,intg);
           flt r, g, b;
           gptr data = IDX_DATA_PTR(idx);
           getf = storage_type_getf[idx->srg->type];
@@ -1671,7 +1671,7 @@ rgb_grab_idx(int x, int y, struct idx *idx)
   int i, j, off1, off2;
   unsigned int red_mask, green_mask, blue_mask;
   unsigned int *im;
-  void (*setf)(gptr,int,flt);
+  void (*setf)(gptr,intg,flt);
   gptr data;
   
   win = current_window_no_error();

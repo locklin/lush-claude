@@ -670,7 +670,7 @@ static int
 find_n_arg(at *ins, inst **pc_p)
 {
   at *q;
-  int i, n;
+  intg i, n;
   struct index *ind;
   ifn (CONSP(ins) && CONSP(ins->Cdr) && !ins->Cdr->Cdr &&
        (q = ins->Cdr->Car) && EXTERNP(q, &index_class) )
@@ -1124,10 +1124,11 @@ DX(xdzp)
 static at *
 gen_inst(union dz_inst **pc_p)
 {
-  int op,arg;
+  int op;
+  intg arg;
   char *s;
   at *ans;
-  
+
   op = (**pc_p).code.op;
   arg = (**pc_p).code.arg;
   s = dz_opnames[op]+dz_offname;
@@ -1135,10 +1136,10 @@ gen_inst(union dz_inst **pc_p)
   ans = new_string(s);
 
   switch (dz_opnames[op][0]) {
-    
+
   case 'n':
     {
-      int i;
+      intg i;
       at *p;
       struct index *ind;
       p = D_matrix(1,&arg);
@@ -1218,8 +1219,8 @@ static at *
 lisp_spline(int arg_number, at *arg_array[], char *op)
 {
   struct index *ind;
-  int dim[2];
-  int i,n;
+  intg dim[2];
+  intg i,n;
   real *wspace;
   real *x,*y;
 

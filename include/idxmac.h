@@ -36,7 +36,7 @@
 #define IDX_PTR(id, Type) ((Type *)((id)->srg->data) + (id)->offset)
 
 #define L_ACCESS(lname, n) \
-    ((int *) ((char *) (((struct srg *) (lname))->data) + sizeof(dharg) * (n)))
+    ((intg *) ((char *) (((struct srg *) (lname))->data) + sizeof(dharg) * (n)))
 
 /* ============== IDX STRUCTURE DIRECT MANIPULATION =========== */
 
@@ -170,7 +170,7 @@ max = (idx)->offset; \
  */
 #define Midx_diagonal(i, d, Type) \
 { \
-  register int n,m; \
+  register int n; register intg m; \
   for (m=0, n=(i)->ndim-d; n<(i)->ndim; n++) \
     m += (i)->mod[n]; \
   n = (i)->ndim - d; \
@@ -236,8 +236,8 @@ struct idx name2(_idx_,newi); \
 struct idx *newi = &name2(_idx_,newi)
 
 #define Midx_declare(newi, ndim) \
-int name2(_dim_,newi)[ndim]; \
-int name2(_mod_,newi)[ndim]; \
+intg name2(_dim_,newi)[ndim]; \
+intg name2(_mod_,newi)[ndim]; \
 struct idx name2(_idx_,newi); \
 struct idx *newi = &name2(_idx_,newi)
 

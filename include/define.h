@@ -160,7 +160,7 @@ typedef void* gptr;
 # endif
 # ifndef HAVE_MEMCPY
 #  define memcpy(d,s,n) bcopy((s),(d),(n))
-#  define memset(d,c,n) do{char *dd=d;int nn=n;while(nn-->0)*dd++=c;}while(0)
+#  define memset(d,c,n) do{char *dd=d;size_t nn=n;while(nn-->0)*dd++=c;}while(0)
 # endif
 #endif
 

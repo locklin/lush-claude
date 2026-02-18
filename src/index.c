@@ -198,12 +198,25 @@ index_serialize(at **pp, int code)
       id = (*pp)->Object;
       UNLOCK(st);
     }
-  serialize_int(&id->offset, code);
+  {
+    int tmp;
+    tmp = id->offset;
+    serialize_int(&tmp, code);
+    if (code == SRZ_READ) id->offset = tmp;
+  }
   serialize_short(&id->ndim, code);
-  for (i=0; i<id->ndim; i++)
-    serialize_int(&id->dim[i], code);
-  for (i=0; i<id->ndim; i++)
-    serialize_int(&id->mod[i], code);
+  for (i=0; i<id->ndim; i++) {
+    int tmp;
+    tmp = id->dim[i];
+    serialize_int(&tmp, code);
+    if (code == SRZ_READ) id->dim[i] = tmp;
+  }
+  for (i=0; i<id->ndim; i++) {
+    int tmp;
+    tmp = id->mod[i];
+    serialize_int(&tmp, code);
+    if (code == SRZ_READ) id->mod[i] = tmp;
+  }
   if  (code == SRZ_READ)
     if (id->ndim >= 0)
       id->flags &= ~IDF_UNSIZED;
@@ -218,8 +231,8 @@ index_compare(at *p, at *q, int order)
   struct idx id1, id2;
   int type1 = ind1->st->srg.type;
   int type2 = ind2->st->srg.type;
-  real (*get1)(gptr,int) = *storage_type_getr[type1];
-  real (*get2)(gptr,int) = *storage_type_getr[type2];
+  real (*get1)(gptr,intg) = *storage_type_getr[type1];
+  real (*get2)(gptr,intg) = *storage_type_getr[type2];
   gptr base1, base2;
   real r1, r2;
   int i;
@@ -284,7 +297,7 @@ index_hash(at *p)
   struct index *ind = p->Object;
   struct idx id;
   int type = ind->st->srg.type;
-  real (*get)(gptr,int) = *storage_type_getr[type];
+  real (*get)(gptr,intg) = *storage_type_getr[type];
   gptr base;
   union { real r; long l[2]; } u;
   u.l[0] = u.l[1] = 0;
@@ -523,7 +536,7 @@ DX(xindex_size)
 {
   struct index *ind;
   int size, i;
-  extern int storage_type_size[];
+  extern size_t storage_type_size[];
 
   ARG_NUMBER(1);
   ARG_EVAL(1);
@@ -739,14 +752,14 @@ new_index(at *atst)
  * If one dimension is zero, compute it according to the storage size.
  */
 
-void 
-index_dimension(at *p, int ndim, int dim[])
+void
+index_dimension(at *p, int ndim, intg dim[])
 {
   struct index *ind;
   struct storage *st;
   at *atst;
   int i;
-  int size;
+  intg size;
   int unkn;
 
   ifn (indexp(p))
@@ -839,10 +852,11 @@ index_undimension(at *p)
 
 
 void 
-index_from_index(at *newp, at *basep, int *dim, int *start)
+index_from_index(at *newp, at *basep, intg *dim, intg *start)
 {
-  struct index *ind,*oldind;  
-  int i,ndim,off;
+  struct index *ind,*oldind;
+  int i,ndim;
+  intg off;
 
   ifn (indexp(newp))
     error(NIL,"not an index",newp);
@@ -894,8 +908,8 @@ index_from_index(at *newp, at *basep, int *dim, int *start)
 /* ------------- NEW_INDEX -------------- */
 
 
-static int 
-index_parse_dimlist(at *p, int *dim)
+static int
+index_parse_dimlist(at *p, intg *dim)
 {
   at *l;
   int nd;
@@ -917,8 +931,8 @@ index_parse_dimlist(at *p, int *dim)
 
 DX(xnew_index)
 {
-  int dim[MAXDIMS];
-  int start[MAXDIMS];
+  intg dim[MAXDIMS];
+  intg start[MAXDIMS];
   at *p;
   at *ans;
   int nd;
@@ -974,7 +988,7 @@ DX(xnew_index)
 
 
 static at *
-generic_matrix(at *atst, int ndim, int *dim)
+generic_matrix(at *atst, int ndim, intg *dim)
 {
   at *ans = new_index(atst);
   if (ndim >= 0)
@@ -987,21 +1001,21 @@ static at *
 xgeneric_matrix(at *atst, int arg_number, at **arg_array)
 {
   int i;
-  int dim[MAXDIMS];
+  intg dim[MAXDIMS];
   ALL_ARGS_EVAL;
   for(i=0;i<arg_number;i++)
     dim[i] = AINTEGER(i+1);
-  return generic_matrix(atst, arg_number, dim);  
+  return generic_matrix(atst, arg_number, dim);
 }
 
 static at *
-generic_matrix_nc(at *atst, int ndim, int *dim)
+generic_matrix_nc(at *atst, int ndim, intg *dim)
 {
   at *ans = new_index(atst);
   if (ndim >= 0)
     {
       int i;
-      int size = 1;
+      intg size = 1;
       for (i=0; i<ndim; i++)
         size *= dim[i];
       storage_malloc(atst, size, 0);
@@ -1015,15 +1029,15 @@ static at *
 xgeneric_matrix_nc(at *atst, int arg_number, at **arg_array)
 {
   int i;
-  int dim[MAXDIMS];
+  intg dim[MAXDIMS];
   ALL_ARGS_EVAL;
   for(i=0;i<arg_number;i++)
     dim[i] = AINTEGER(i+1);
-  return generic_matrix_nc(atst, arg_number, dim);  
+  return generic_matrix_nc(atst, arg_number, dim);
 }
 
 #define Generic_matrix_nnc(Prefix) \
-at *name2(Prefix,_matrix)(int ndim, int *dim) \
+at *name2(Prefix,_matrix)(int ndim, intg *dim) \
 { return generic_matrix(name3(new_,Prefix,_storage)(), \
                         ndim, dim ); } \
 DX(name3(x,Prefix,matrix)) \
@@ -1058,8 +1072,8 @@ DX(xsubindex)
 {
   at *p, *q;
   struct index *ind;
-  int dim[MAXDIMS];
-  int start[MAXDIMS];
+  intg dim[MAXDIMS];
+  intg start[MAXDIMS];
   int i;
 
   ALL_ARGS_EVAL;
@@ -1263,8 +1277,8 @@ index_set(struct index *ind, at *p[], at *value, int mode)
 
 
 static struct index *lastind = NULL;
-static int lastcoord[MAXDIMS];
-static int lastoffset;
+static intg lastcoord[MAXDIMS];
+static intg lastoffset;
 
 /*
  * easy_index_check(p,ndim,dim)
@@ -1280,7 +1294,7 @@ static int lastoffset;
  */
 
 struct index *
-easy_index_check(at *p, int ndim, int dim[])
+easy_index_check(at *p, int ndim, intg dim[])
 {
   int i;
   struct index *ind;
@@ -1332,10 +1346,11 @@ easy_index_check(at *p, int ndim, int dim[])
  *        There is a penalty to random accesses!
  */
 
-static int 
-make_offset(struct index *ind, int coord[])
+static intg
+make_offset(struct index *ind, intg coord[])
 {
-  int i,j,k,off,ndim;
+  int i,ndim;
+  intg j,k,off;
 
   ndim = ind->ndim;
   if (ind==lastind) {
@@ -1371,11 +1386,11 @@ make_offset(struct index *ind, int coord[])
 }
 
 
-real 
-easy_index_get(struct index *ind, int *coord)
+real
+easy_index_get(struct index *ind, intg *coord)
 {
   struct storage *st;
-  int offset;
+  intg offset;
   at *p;
   real x;
   
@@ -1389,11 +1404,11 @@ easy_index_get(struct index *ind, int *coord)
   return x;
 }
 
-void 
-easy_index_set(struct index *ind, int *coord, real x)
+void
+easy_index_set(struct index *ind, intg *coord, real x)
 {
   struct storage *st;
-  int offset;
+  intg offset;
   at *p;
   
   p = NEW_NUMBER(x);
@@ -1564,7 +1579,7 @@ DX(xnrmatrixp)
 
 
 flt *
-make_nrvector(at *p, int nl, int *size_p)
+make_nrvector(at *p, intg nl, intg *size_p)
 {
   char *s;
   flt *address;
@@ -1591,7 +1606,7 @@ make_nrvector(at *p, int nl, int *size_p)
  */
 
 flt **
-make_nrmatrix(at *p, int ncl, int nrl, int *sizec_p, int *sizer_p)
+make_nrmatrix(at *p, intg ncl, intg nrl, intg *sizec_p, intg *sizer_p)
 {
   int i;
   char *s;
@@ -1712,8 +1727,8 @@ void copy_index(struct index *i1, struct index *i2)
   default:
   default_copy:
     {
-      flt (*getf)(gptr,int) = storage_type_getf[idx1.srg->type];
-      void (*setf)(gptr,int,flt) = storage_type_setf[idx2.srg->type];
+      flt (*getf)(gptr,intg) = storage_type_getf[idx1.srg->type];
+      void (*setf)(gptr,intg,flt) = storage_type_setf[idx2.srg->type];
       begin_idx_aloop2(i1,i2,p1,p2) {
 	(*setf)(IDX_DATA_PTR(&idx2), p2, (*getf)(IDX_DATA_PTR(&idx1), p1) );
       } end_idx_aloop2(i1,i2,p1,p2);
@@ -2027,7 +2042,7 @@ format_save_ascii_matrix(at *p, FILE *f, int h)
   struct index *ind;
   struct idx id;
   int type;
-  flt (*getf)(gptr,int);
+  flt (*getf)(gptr,intg);
   gptr base;
   /* validation */  
   compatible_p();
@@ -2216,7 +2231,7 @@ import_text_matrix(at *p, FILE *f)
   int size, elsize, type;
   char *pntr;
   real x;
-  void (*setr)(gptr,int,real);
+  void (*setr)(gptr,intg,real);
 
   /* validate */
   mode_check(p, &size, &elsize);
@@ -2381,11 +2396,16 @@ load_matrix(FILE *f)
 {
   at *ans;
   int magic;
-  int ndim, dim[MAXDIMS];
+  int ndim;
   int swapflag = 0;
-  
+  int idim[MAXDIMS];
+  intg dim[MAXDIMS];
+  int i;
+
   /* Header */
-  load_matrix_header(f, &ndim, &magic, &swapflag, dim);
+  load_matrix_header(f, &ndim, &magic, &swapflag, idim);
+  for (i = 0; i < ndim && i < MAXDIMS; i++)
+    dim[i] = idim[i];
   /* Create */
   switch (magic) {
   case BINARY_MATRIX:
@@ -2485,8 +2505,11 @@ DX(xload_matrix)
 at *
 map_matrix(FILE *f)
 {
-  int ndim, dim[MAXDIMS];
+  int ndim;
   int magic, swapflag;
+  int idim[MAXDIMS];
+  intg dim[MAXDIMS];
+  int i;
   at *atst, *ans;
 #ifdef HAVE_FTELLO
   off_t pos;
@@ -2495,7 +2518,9 @@ map_matrix(FILE *f)
 #endif
 
   /* Header */
-  load_matrix_header(f,&ndim, &magic, &swapflag, dim);
+  load_matrix_header(f,&ndim, &magic, &swapflag, idim);
+  for (i = 0; i < ndim && i < MAXDIMS; i++)
+    dim[i] = idim[i];
   if (swapflag && magic!=BYTE_MATRIX && magic!=SHORT8_MATRIX)
     error(NIL,"Can't map this byteswapped matrix",NIL);
   /* Create storage */
@@ -2572,7 +2597,7 @@ DX(xindex_redim)
 {
   at *p;
   struct index *ind;
-  int dim[MAXDIMS];
+  intg dim[MAXDIMS];
   int nd;
   
   ALL_ARGS_EVAL;
@@ -2743,16 +2768,16 @@ DX(xindex_transpose)
   at *p;
   struct index *ind;
   int i, nd;
-  int table[MAXDIMS];
-  int tmp[MAXDIMS];
+  intg table[MAXDIMS];
+  intg tmp[MAXDIMS];
 
   ALL_ARGS_EVAL;
   ARG_NUMBER(2);
-  
+
   p = APOINTER(1);
   check_sized_index(p);
   ind = p->Object;
-  
+
   nd = index_parse_dimlist( ALIST(2), table);
   if (nd!=ind->ndim)
     error(NIL,"Permutation list is too short or too long",APOINTER(2));
@@ -2843,8 +2868,8 @@ DX(xindex_transclone)
   at *p, *q;
   struct index *ind1, *ind2;
   int i, j, n;
-  int table[MAXDIMS];
-  int tmp[MAXDIMS];
+  intg table[MAXDIMS];
+  intg tmp[MAXDIMS];
 
   ALL_ARGS_EVAL;
   ARG_NUMBER(2);

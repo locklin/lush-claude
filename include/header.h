@@ -398,9 +398,9 @@ LUSHAPI void del_finalizers(void*);
 TLAPI void garbage(int flag);
 
 /* Allocation functions */
-LUSHAPI void *lush_malloc(int,const char*,int);
-LUSHAPI void *lush_calloc(int,int,const char*,int);
-LUSHAPI void *lush_realloc(gptr,int,const char*,int);
+LUSHAPI void *lush_malloc(size_t,const char*,int);
+LUSHAPI void *lush_calloc(size_t,size_t,const char*,int);
+LUSHAPI void *lush_realloc(gptr,size_t,const char*,int);
 LUSHAPI void lush_free(gptr,const char*,int);
 LUSHAPI void lush_cfree(gptr,const char*,int);
 LUSHAPI void set_malloc_file(const char*);
@@ -938,7 +938,7 @@ enum storage_type {
   ST_LAST
 };
 
-extern LUSHAPI int storage_type_size[ST_LAST];
+extern LUSHAPI size_t storage_type_size[ST_LAST];
 extern LUSHAPI flt (*storage_type_getf[ST_LAST])(gptr, intg);
 extern LUSHAPI void (*storage_type_setf[ST_LAST])(gptr, intg, flt);
 extern LUSHAPI real (*storage_type_getr[ST_LAST])(gptr, intg);

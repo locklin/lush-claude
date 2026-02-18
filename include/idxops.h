@@ -684,7 +684,7 @@
   intg c1_m0 = (i1)->mod[0], c2_m0 = (i2)->mod[0]; \
   intg c1_m1 = (i1)->mod[1], c2_m1 = (i2)->mod[1]; \
   Type3 *d1, f; \
-  int i;    \
+  intg i;    \
   c1_0 = IDX_PTR((i1), Type1); \
   c2_0 = IDX_PTR((i2), Type2); \
   d1 = IDX_PTR((o1), Type3); \
@@ -1243,7 +1243,7 @@
   Type2 *ker; \
   intg c1_m2 = (i1)->mod[2], c2_m0 = (i2)->mod[0]; \
   intg c1_m3 = (i1)->mod[3], c2_m1 = (i2)->mod[1]; \
-  int k,l, kmax = (i2)->dim[0], lmax = (i2)->dim[1]; \
+  intg k,l, kmax = (i2)->dim[0], lmax = (i2)->dim[1]; \
   Type3 *d1_0, *d1, f; \
   intg c1_m0 = (i1)->mod[0], d1_m0 = (o1)->mod[0]; \
   intg c1_m1 = (i1)->mod[1], d1_m1 = (o1)->mod[1]; \

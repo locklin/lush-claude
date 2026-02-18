@@ -1097,7 +1097,7 @@ local_bread_array(at **pp)
 {
   struct index *ind;
   struct idx id;
-  int dim[MAXDIMS];
+  intg dim[MAXDIMS];
   int i, size, ndim;
   
   ndim = read_card24();

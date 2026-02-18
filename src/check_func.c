@@ -166,14 +166,11 @@ check_obj_class(void *obj, void *classvtable)
  *****************************************************************************/
 
 void
-srg_resize_compiled(struct srg *sr, int new_size, const char *file, int line)
+srg_resize_compiled(struct srg *sr, intg new_size, const char *file, int line)
 {
   if(sr->flags & STS_MALLOC)  {
     char *malloc_ptr;
-    int st_size;
-    SIZE_CHECK_OVERFLOW((long)storage_type_size[sr->type] * new_size,
-                        "srg_resize_compiled");
-    st_size = storage_type_size[sr->type] * new_size;
+    size_t st_size = (size_t)storage_type_size[sr->type] * new_size;
     if (sr->size != 0) {
       if (st_size==0) {
         lush_free(sr->data, file, line); 
@@ -199,15 +196,12 @@ srg_resize_compiled(struct srg *sr, int new_size, const char *file, int line)
 }
 
 void
-srg_resize(struct srg *sr, int new_size, const char *file, int line) 
+srg_resize(struct srg *sr, intg new_size, const char *file, int line)
 {
 #ifndef NOLISP
   if(sr->flags & STS_MALLOC) {
     char *malloc_ptr;
-    int st_size;
-    SIZE_CHECK_OVERFLOW((long)storage_type_size[sr->type] * new_size,
-                        "srg_resize");
-    st_size = storage_type_size[sr->type] * new_size;
+    size_t st_size = (size_t)storage_type_size[sr->type] * new_size;
     if (sr->size != 0) {
       if (st_size==0) {
 	lush_free(sr->data, file, line); 

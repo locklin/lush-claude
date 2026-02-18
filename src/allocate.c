@@ -485,48 +485,33 @@ void set_malloc_file(const char *s)
 }
 
 
-void *lush_malloc(int x, const char *file, int line)
+void *lush_malloc(size_t x, const char *file, int line)
 {
-    void *z;
-    if (x < 0)
-        fprintf(stderr, "LUSH 64-bit WARNING: negative malloc size %d "
-                "at %s:%d (likely truncated from 64-bit value)\n",
-                x, file, line);
-    z = malloc(x);
+    void *z = malloc(x);
     if (malloc_file)
-	fprintf(malloc_file,"%p\tmalloc\t%d\t%s:%d\n",z,x,file,line);
+	fprintf(malloc_file,"%p\tmalloc\t%zu\t%s:%d\n",z,x,file,line);
     if (!z)
       error (NIL, "Memory exhausted", NIL);
     return z;
 }
 
 
-void *lush_calloc(int x,int y,const char *file,int line)
+void *lush_calloc(size_t x,size_t y,const char *file,int line)
 {
-    void *z;
-    if (x < 0 || y < 0)
-        fprintf(stderr, "LUSH 64-bit WARNING: negative calloc size (%d, %d) "
-                "at %s:%d (likely truncated from 64-bit value)\n",
-                x, y, file, line);
-    z = calloc(x,y);
+    void *z = calloc(x,y);
     if (malloc_file)
-	fprintf(malloc_file,"%p\tcalloc\t%d\t%s:%d\n",z,x*y,file,line);
+	fprintf(malloc_file,"%p\tcalloc\t%zu\t%s:%d\n",z,x*y,file,line);
     if (!z)
       error (NIL, "Memory exhausted", NIL);
     return z;
 }
 
-void *lush_realloc(void *x,int y,const char *file,int line)
+void *lush_realloc(void *x,size_t y,const char *file,int line)
 {
-    void *z;
-    if (y < 0)
-        fprintf(stderr, "LUSH 64-bit WARNING: negative realloc size %d "
-                "at %s:%d (likely truncated from 64-bit value)\n",
-                y, file, line);
-    z = (void*)realloc(x,y);
+    void *z = (void*)realloc(x,y);
     if (malloc_file) {
-	fprintf(malloc_file,"%p\trefree\t%d\t%s:%d\n",x,y,file,line);
-	fprintf(malloc_file,"%p\trealloc\t%d\t%s:%d\n",z,y,file,line);
+	fprintf(malloc_file,"%p\trefree\t%zu\t%s:%d\n",x,y,file,line);
+	fprintf(malloc_file,"%p\trealloc\t%zu\t%s:%d\n",z,y,file,line);
     }
     if (!z)
       error (NIL, "Memory exhausted", NIL);

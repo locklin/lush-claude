@@ -401,6 +401,18 @@
 /* #undef vfork */
 
 
+/* Define to 1 to make intg typedef long instead of int on 64-bit platforms */
+#define INTG_IS_LONG 1
+
+/* The size of `void *', as computed by sizeof. */
+#define SIZEOF_VOID_P 8
+
+/* The size of `long', as computed by sizeof. */
+#define SIZEOF_LONG 8
+
+/* The size of `int', as computed by sizeof. */
+#define SIZEOF_INT 4
+
 /* lushconf.h: custom */
 # ifndef UNIX
 #  define UNIX

@@ -74,7 +74,7 @@ struct alloc_root storage_alloc = {
  */
 
 
-int storage_type_size[ST_LAST] = {
+size_t storage_type_size[ST_LAST] = {
   sizeof(at*),
   sizeof(char),
   sizeof(flt),
@@ -91,7 +91,7 @@ int storage_type_size[ST_LAST] = {
 /* --- the getf functions --- */
 
 
-static flt AT_getf(gptr pt, int off)
+static flt AT_getf(gptr pt, intg off)
 {
   at *p;
   p = ((at **)pt)[off];
@@ -100,21 +100,21 @@ static flt AT_getf(gptr pt, int off)
   return p->Number;
 }
 
-static flt P_getf(gptr pt, int off)
+static flt P_getf(gptr pt, intg off)
 {
   int b;
   b = ((signed char *)pt)[off];
   return (flt)b / 16.0;
 }
 
-static flt GPTR_getf(gptr pt, int off)
+static flt GPTR_getf(gptr pt, intg off)
 {
   error(NIL,"the accessed element is not a number",NIL);
 }
 
 
 #define Generic_getf(Prefix,Type)   					     \
-static flt name2(Prefix,_getf)(gptr pt, int off)        		     \
+static flt name2(Prefix,_getf)(gptr pt, intg off)        		     \
 {   									     \
   return (flt)(((Type*)pt)[off]);  					     \
 }
@@ -129,7 +129,7 @@ Generic_getf(U8, unsigned char)
 #undef Generic_getf
 
 
-flt (*storage_type_getf[ST_LAST])(gptr, int) = {
+flt (*storage_type_getf[ST_LAST])(gptr, intg) = {
   AT_getf,
   P_getf,
   F_getf,
@@ -146,7 +146,7 @@ flt (*storage_type_getf[ST_LAST])(gptr, int) = {
 /* --- the setf functions --- */
 
 
-static void AT_setf(gptr pt, int off, flt x)
+static void AT_setf(gptr pt, intg off, flt x)
 {
   at *p;
   p = ((at **)pt)[off];
@@ -154,7 +154,7 @@ static void AT_setf(gptr pt, int off, flt x)
   ((at **)pt)[off] = NEW_NUMBER(x);
 }
 
-static void P_setf(gptr pt, int off, flt x)
+static void P_setf(gptr pt, intg off, flt x)
 {
   if (x > 8.0-1.0/16.0)
     ((char *)pt)[off] = 127;
@@ -164,13 +164,13 @@ static void P_setf(gptr pt, int off, flt x)
     ((char *)pt)[off] = x*16.0;
 }
 
-static void GPTR_setf(gptr pt, int off, flt x)
+static void GPTR_setf(gptr pt, intg off, flt x)
 {
   error(NIL,"gptr arrays do not contain numbers",NIL);
 }
 
 #define Generic_setf(Prefix,Type)   					     \
-static void name2(Prefix,_setf)(gptr pt, int off, flt x)		     \
+static void name2(Prefix,_setf)(gptr pt, intg off, flt x)		     \
 {   									     \
   ((Type *)pt)[off] = x; 						     \
 }
@@ -185,7 +185,7 @@ Generic_setf(U8, unsigned char)
 #undef Generic_setf
 
 
-void (*storage_type_setf[ST_LAST])(gptr, int, flt) = {
+void (*storage_type_setf[ST_LAST])(gptr, intg, flt) = {
   AT_setf,
   P_setf,
   F_setf,
@@ -201,7 +201,7 @@ void (*storage_type_setf[ST_LAST])(gptr, int, flt) = {
 /* --- the getr functions --- */
 
 
-static real AT_getr(gptr pt, int off)
+static real AT_getr(gptr pt, intg off)
 {
   at *p;
   p = ((at **)pt)[off];
@@ -210,21 +210,21 @@ static real AT_getr(gptr pt, int off)
   return p->Number;
 }
 
-static real P_getr(gptr pt, int off)
+static real P_getr(gptr pt, intg off)
 {
   int b;
   b = ((signed char *)pt)[off];
   return (real)b / 16.0;
 }
 
-static real GPTR_getr(gptr pt, int off)
+static real GPTR_getr(gptr pt, intg off)
 {
   error(NIL,"the accessed element is not a number",NIL);
 }
 
 
 #define Generic_getr(Prefix,Type)   					     \
-static real name2(Prefix,_getr)(gptr pt, int off)        		     \
+static real name2(Prefix,_getr)(gptr pt, intg off)        		     \
 {   									     \
   return (real)(((Type*)pt)[off]);   					     \
 }
@@ -238,7 +238,7 @@ Generic_getr(U8, unsigned char)
 
 #undef Generic_getr
 
-real (*storage_type_getr[ST_LAST])(gptr, int) = {
+real (*storage_type_getr[ST_LAST])(gptr, intg) = {
   AT_getr,
   P_getr,
   F_getr,
@@ -254,7 +254,7 @@ real (*storage_type_getr[ST_LAST])(gptr, int) = {
 /* --- the setr functions --- */
 
 
-static void AT_setr(gptr pt, int off, real x)
+static void AT_setr(gptr pt, intg off, real x)
 {
   at *p;
   p = ((at **)pt)[off];
@@ -262,7 +262,7 @@ static void AT_setr(gptr pt, int off, real x)
   ((at **)pt)[off] = NEW_NUMBER(x);
 }
 
-static void P_setr(gptr pt, int off, real x)
+static void P_setr(gptr pt, intg off, real x)
 {
   if (x > 8.0-1.0/16.0)
     ((char *)pt)[off] = 127;
@@ -272,13 +272,13 @@ static void P_setr(gptr pt, int off, real x)
     ((char *)pt)[off] = x*16.0;
 }
 
-static void GPTR_setr(gptr pt, int off, real x)
+static void GPTR_setr(gptr pt, intg off, real x)
 {
   error(NIL,"gptr arrays do not contain numbers",NIL);
 }
 
 #define Generic_setr(Prefix,Type)   					     \
-static void name2(Prefix,_setr)(gptr pt, int off, real x)		     \
+static void name2(Prefix,_setr)(gptr pt, intg off, real x)		     \
 {   									     \
   ((Type *)pt)[off] = x;   						     \
 }
@@ -293,7 +293,7 @@ Generic_setr(U8, unsigned char)
 #undef Generic_setr
 
 
-void (*storage_type_setr[ST_LAST])(gptr, int, real) = {
+void (*storage_type_setr[ST_LAST])(gptr, intg, real) = {
   AT_setr,
   P_setr,
   F_setr,
@@ -553,7 +553,7 @@ Generic_class(GPTR);
 /*  STS_MALLOC and STS_MMAP getat */
 
 static at* 
-AT_getat(struct storage *st, int off)
+AT_getat(struct storage *st, intg off)
 {
   at **pt;
   at *p;
@@ -564,15 +564,15 @@ AT_getat(struct storage *st, int off)
 }
 
 static at* 
-N_getat(struct storage *st, int off)
+N_getat(struct storage *st, intg off)
 {
-  real (*get)(gptr,int);
+  real (*get)(gptr,intg);
   get = storage_type_getr[st->srg.type];
   return NEW_NUMBER( (*get)(st->srg.data,off) );
 }
 
 static at* 
-GPTR_getat(struct storage *st, int off)
+GPTR_getat(struct storage *st, intg off)
 {
   gptr *pt;
   pt = st->srg.data;
@@ -586,7 +586,7 @@ GPTR_getat(struct storage *st, int off)
 /*  STS_MALLOC and STS_MMAP setat */
 
 static void 
-AT_setat(struct storage *st, int off, at *x)
+AT_setat(struct storage *st, intg off, at *x)
 {
   at **pt;
   at *p;
@@ -600,9 +600,9 @@ AT_setat(struct storage *st, int off, at *x)
 }
 
 static void 
-N_setat(struct storage *st, int off, at *x)
+N_setat(struct storage *st, intg off, at *x)
 {
-  void (*set)(gptr,int,real);
+  void (*set)(gptr,intg,real);
   if (st->srg.flags & STF_RDONLY)
     error(NIL,"read only storage",NIL);
   ifn (NUMBERP(x))
@@ -613,7 +613,7 @@ N_setat(struct storage *st, int off, at *x)
 
 
 static void 
-GPTR_setat(struct storage *st, int off, at *x)
+GPTR_setat(struct storage *st, intg off, at *x)
 {
   gptr *pt;
   pt = st->srg.data;
@@ -827,8 +827,8 @@ new_storage_nc(int type, int size)
 
 /* ------------ ALLOCATION: MALLOC ------------ */
 
-void 
-storage_malloc(at *atp, int size, int clear_flag)
+void
+storage_malloc(at *atp, intg size, int clear_flag)
 {
   struct storage *st;
   
@@ -883,8 +883,8 @@ DX(xstorage_malloc_nc)
 
 
 
-void 
-storage_realloc(at *atp, int size, int clear_flag)
+void
+storage_realloc(at *atp, intg size, int clear_flag)
 {
   struct storage *st;
   gptr data;
