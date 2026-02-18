@@ -90,7 +90,7 @@
   (let (( (i beg end stp) args))
     `(let ((,i ,beg))
        ((-int-) ,i)
-       (cinline "for (; %s<(int)(%s); %s+=(int)(%s)) {" ,i ,end ,i ,stp)
+       (cinline "for (; %s<(intg)(%s); %s+=(intg)(%s)) {" ,i ,end ,i ,stp)
        ,@l
        (cinline "}")
        () ) ) )
@@ -110,7 +110,7 @@
 ;; two pointers (in bytes).
 (de gptr- (p1 p2)
   ((-gptr-) p1 p2)
-  (to-int #{ (int)((char*)($p2) - (char*)($p1)) #}))
+  (to-int #{ (intg)((char*)($p2) - (char*)($p1)) #}))
 
 
 #? (ptr-str <g>)

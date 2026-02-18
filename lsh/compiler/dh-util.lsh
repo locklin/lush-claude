@@ -378,7 +378,7 @@
 	  ((==> type is-a-srg)   "struct srg")
 	  ((==> type is-a-flt)   "flt")
 	  ((==> type is-a-real)  "real")
-	  ((==> type is-an-int)  "int")
+	  ((==> type is-an-int)  "intg")
 	  ((==> type is-a-short) "short")
 	  ((==> type is-a-byte)  "signed char")
 	  ((==> type is-a-ubyte) "unsigned char")

@@ -204,7 +204,7 @@
 (dhm-t to-int(source)
   (dhc-cast-t source 'dht-int (cons 'dht-dc dhc-number-types)))
 (dhm-c to-int(source treetype retplace)
-  (dhc-cast-c source "int" treetype retplace))
+  (dhc-cast-c source "intg" treetype retplace))
 
 (dhm-t to-real(source)
   (dhc-cast-t source 'dht-real (cons 'dht-dc dhc-number-types)))
@@ -220,7 +220,7 @@
 (dhm-t int(source)
   (dhc-cast-t source 'dht-int (cons 'dht-dc dhc-number-types)))
 (dhm-c int(source treetype retplace)
-  (concat "((int)floor((double)"
+  (concat "((intg)floor((double)"
           (dhc-parse-expr-c (cadr source) (cadr :treetype:tn-list) retplace)
           "))" ) )
 
@@ -687,11 +687,11 @@
                              idxs))
     (dhc-add-c-statements "{")
     (for (i 0 (1- idxi))
-         (dhc-add-c-statements (sprintf "int _%s_max = (%s)->dim[%d];"
+         (dhc-add-c-statements (sprintf "intg _%s_max = (%s)->dim[%d];"
                                         (nth i inames) (car idxs) i))
          (for (j 0 (1- n))
-              (dhc-add-c-statements 
-               (sprintf "int _%s_mod%d = (%s)->mod[%d];" 
+              (dhc-add-c-statements
+               (sprintf "intg _%s_mod%d = (%s)->mod[%d];"
                         (nth j idxs-names) i (nth j idxs) i))))
     
     (for (i 0 (1- idxi))
@@ -705,7 +705,7 @@
                 (nth j idxs) i (car idxs) i))))
     (dhc-add-c-statements "{")
     (for (i 0 (1- idxi))
-         (dhc-add-c-statements (sprintf "int %s;" (nth i inames)))
+         (dhc-add-c-statements (sprintf "intg %s;" (nth i inames)))
          (for (j 0 (1- n))
               (dhc-add-c-statements 
                (concat (sprintf "%s " (nth j idxtypes))
@@ -1480,7 +1480,7 @@
        ;; EXTRACTS ELEMENT SIZE FROM SRG
        (sprintf "(%s) = sizeof(%s);"
                 retplace (==> mattype get-element-decl))
-       "{int i;\n"
+       "{intg i;\n"
        (sprintf "for(i= %d-1;i>=0;i--) {\n"
                 (==> mattype is-an-idxptr))
        (sprintf "(%s) *= (%s)->dim[i];\n}\n}" retplace mat))
@@ -1628,7 +1628,7 @@
                     (dhc-error "Cannot compile this function (no cname)") ) )
          (faccess (concat "Midx_" cname (sprintf "(%s" mat)))
          (cnames (all ((so (cddr source)) (tn (cddr :treetype:tn-list)))
-                   (concat "((int)"
+                   (concat "((intg)"
                            (dhc-parse-expr-for-multi-use-c so tn ())
                            ")")))
          (ndim (==> :mattn:type is-an-idxptr))
@@ -1644,7 +1644,7 @@
              (sprintf "RTERR_DIM(%s < 0 || %s >= %d);"
                       (car cnames) (car cnames) ndim))))
       (dhc-add-c-statements 
-       (sprintf "{ int old_val=%s, min_size, max_size;" faccess)
+       (sprintf "{ intg old_val=%s, min_size, max_size;" faccess)
        (if (= (get-dhm-target source) :idx-changedim)
            (sprintf "RTERR_RANGE(%s < 0);" (cadr cnames)))
        (concat faccess " = " (last cnames) ";")
@@ -1875,9 +1875,9 @@
                    (dhc-parse-expr-for-multi-use-c so tn ())))
          (idx :idx-symb:c-name)
          (mat (nth 0 cnames))
-         (d (concat "((int)" (nth 1 cnames) ")"))
-         (sz (concat "((int)" (nth 2 cnames) ")"))
-         (st (concat "((int)" (nth 3 cnames) ")"))
+         (d (concat "((intg)" (nth 1 cnames) ")"))
+         (sz (concat "((intg)" (nth 2 cnames) ")"))
+         (st (concat "((intg)" (nth 3 cnames) ")"))
          (ndim (==> :mattn:type is-an-idxptr))
          (el-decl (==> :mattn:type get-element-decl))
          (temp (dhc-declare-temp-var (new dhc-type 'dht_int))) )
@@ -1952,8 +1952,8 @@
                    (dhc-parse-expr-for-multi-use-c so tn ())))
          (idx :idx-symb:c-name)
          (mat (nth 0 cnames))
-         (d (concat "((int)" (nth 1 cnames) ")"))
-         (x (concat "((int)" (nth 2 cnames) ")"))
+         (d (concat "((intg)" (nth 1 cnames) ")"))
+         (x (concat "((intg)" (nth 2 cnames) ")"))
          (ndim (==> :mattn:type is-an-idxptr))
          (el-decl (==> :mattn:type get-element-decl)) )
     (when ~dhc-unprotect
@@ -2019,15 +2019,15 @@
          (el-decl (==> :mattn:type get-element-decl)) )
     (dhc-add-c-statements
      (concat
-      (sprintf "{ int i,m,n; m = %d - %s; n = (%s)->dim[m];" ndim d mat)
-      (sprintf " for (i=1;i<(int)%s;i++)" d)
+      (sprintf "{ intg i,m,n; m = %d - %s; n = (%s)->dim[m];" ndim d mat)
+      (sprintf " for (i=1;i<(intg)%s;i++)" d)
       (if ~dhc-unprotect
           (sprintf "   RTERR_GEN(((%s)->dim[m+i] != n), %s);" mat
                    "\"The last dimensions should have the same size\"")
         "")
       "}") )
     (dhc-add-c-statements
-     (sprintf "Midx_diagclone(%s,%s,(int)%s,%s);"
+     (sprintf "Midx_diagclone(%s,%s,(intg)%s,%s);"
               idx mat d el-decl))
     idx))
 
@@ -2057,9 +2057,9 @@
          (cnames (all ((so (cdr source)) (tn (cdr :treetype:tn-list)))
                    (dhc-parse-expr-for-multi-use-c so tn ())))
          (mat (nth 0 cnames))
-         (d (concat "((int)" (nth 1 cnames) ")")) 
-         (sz (concat "((int)" (nth 2 cnames) ")"))
-         (st (concat "((int)" (nth 3 cnames) ")"))
+         (d (concat "((intg)" (nth 1 cnames) ")"))
+         (sz (concat "((intg)" (nth 2 cnames) ")"))
+         (st (concat "((intg)" (nth 3 cnames) ")"))
          (ndim (==> :idxtn:type is-an-idxptr))
          (el-decl (==> :idxtn:type get-element-decl)) )
     (when ~dhc-unprotect

@@ -409,8 +409,8 @@
         (call (list "ret." 
                     (dhc-arg-format (dhu-type :treetype:type)) 
                     " = "
-                    (if (==> (dhu-type :treetype:type) is-an-objptr) 
-                        "(int *)" "" )
+                    (if (==> (dhu-type :treetype:type) is-an-objptr)
+                        "(intg *)" "" )
                     " C_" c-name "(" ))
         ((lam args . body-treetype) :treetype:tn-list)
         (arg-list ())
