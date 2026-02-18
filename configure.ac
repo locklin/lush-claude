@@ -112,14 +112,10 @@ AC_SUBST([INDENT], [$ac_cv_path_INDENT])
 # misc
 AC_CHECK_LIB(m,sqrt)
 AC_CHECK_LIB(dl,dlopen)
-AC_CHECK_LIB(dld,shl_load)
 AC_CHECK_LIB(util,openpty)
 
-# NSModule API
-require_bfd=yes
-AC_CHECK_FUNCS(NSLinkModule,[require_bfd=no])
-
 # bfd
+require_bfd=yes
 AC_ARG_WITH(bfd,
     AS_HELP_STRING([--without-bfd],[Compile Lush without the BFD library.]),
     [require_bfd=$withval])
@@ -262,7 +258,7 @@ AC_CHECK_HEADERS([sys/wait.h])
 AC_CHECK_HEADERS(stdio.h stdlib.h wchar.h wctype.h langinfo.h iconv.h)
 AC_CHECK_HEADERS(memory.h string.h strings.h limits.h alloca.h)
 AC_CHECK_HEADERS(unistd.h sys/mman.h termios.h pty.h util.h)
-AC_CHECK_HEADERS(dlfcn.h dl.h ieeefp.h fpu_control.h fenv.h)
+AC_CHECK_HEADERS(dlfcn.h ieeefp.h fpu_control.h fenv.h)
 AC_CHECK_HEADERS(stropts.h sys/stropts.h sys/select.h sys/types.h sys/ttold.h)
 AC_CHECK_HEADERS(sys/time.h sys/timeb.h locale.h bfd.h)
 AC_CHECK_HEADERS(readline/readline.h readline/history.h)
@@ -281,14 +277,7 @@ AC_TYPE_MODE_T
 AC_TYPE_OFF_T
 AC_TYPE_SIZE_T
 AC_TYPE_PID_T
-AC_CACHE_CHECK([return type of signal handlers],[ac_cv_type_signal],[AC_COMPILE_IFELSE(
-    [AC_LANG_PROGRAM([#include <sys/types.h>
-                      #include <signal.h>],
-		 [return *(signal (0, 0)) (0) == 1;])],
-		   [ac_cv_type_signal=int],
-		   [ac_cv_type_signal=void])])
-AC_DEFINE_UNQUOTED([RETSIGTYPE],[$ac_cv_type_signal],[Define as the return type of signal handlers
-		    (`int' or `void').])
+AC_DEFINE([RETSIGTYPE],[void],[Signal handlers always return void on modern systems.])
 
 AC_CHECK_TYPES(long long int)
 AC_CHECK_TYPES(wchar_t,,,[#include "stddef.h"])
@@ -311,9 +300,8 @@ fi
 # ----------------------------------------
 
 AC_FUNC_MMAP
-AC_FUNC_FORK
 AC_FUNC_STRFTIME
-AC_CHECK_FUNCS(strchr memcpy sigaction sigvec strerror getcwd)
+AC_CHECK_FUNCS(strchr memcpy sigaction strerror getcwd)
 AC_CHECK_FUNCS(feenableexcept ieee_handler fpsetmask __setfpucw)
 AC_CHECK_FUNCS(tanh sincos dlopen sigsetjmp waitpid openpty)
 AC_CHECK_FUNCS(mprotect getpagesize gettimeofday ftime)
@@ -363,25 +351,6 @@ case "$host" in
     *-darwin* | *-macos10* | *-rhapsody*)
         SOEXT=dylib
         MAKESO="$LDCC -bundle -flat_namespace -o"
-        ;;
-    *-freebsd2*)
-        CC_PIC_FLAG='-fPIC'
-        MAKESO="$LDCC -Wl,-Bshareable"
-        test -r /usr/lib/c++rt0.o && MAKESO="$MAKESO,/usr/lib/c++rt0.o"
-        MAKESO="$MAKESO -o"
-        ;;
-    *-hpux-*)
-        SOEXT=sl
-        test x$GCC != xyes && CC_PIC_FLAG='+Z'
-        test x$GCC != xyes && CC_EXP_FLAG='-Wl,-E'
-        test x$GCC != xyes && MAKESO='ld -b +s +b -E -o'
-        ;;
-    *-irix*)
-        test x$GCC != xyes && CC_PIC_FLAG='-KPIC'
-        ;;
-    *-osf*)
-        text x$GCC = yes && MAKESO="$LDCC -shared -Wl,-expect_unresolved -o"
-        test x$GCC != xyes && MAKESO="$LDCC -Wl,-shared,-expect_unresolved -o"
         ;;
     *-solaris*|*-sunos5*)
         test x$GCC != xyes && CC_PIC_FLAG='-KPIC'

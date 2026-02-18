@@ -127,7 +127,7 @@
 # endif
 #endif
 
-typedef RETSIGTYPE (*SIGHANDLERTYPE)();
+typedef void (*SIGHANDLERTYPE)();
 
 /* Lush header files */
 #include "header.h"
@@ -228,7 +228,7 @@ goodsignal(int sig, SIGHANDLERTYPE vec)
 
 /* quit_irq -- signal handler for QUIT signal */
 
-static RETSIGTYPE
+static void
 quit_irq(void)
 {
 #ifdef SYSVSIGNAL
@@ -240,7 +240,7 @@ quit_irq(void)
 
 /* break_irq -- signal handler for Control-C */
 
-static RETSIGTYPE
+static void
 break_irq(void)
 {
   break_attempt = 1;
@@ -300,7 +300,7 @@ lastchance(const char *s)
 
 /* gasp_irq -- signal handler for hopeless situations */
 
-static RETSIGTYPE
+static void
 gasp_irq(int sig)
 {
   char buffer[80];
@@ -449,7 +449,7 @@ static int trigger_nfds = 0;
 static int trigger_fds[MAX_TRIGGER_NFDS];
 
 /* trigger_irq -- signal handler for trigger */
-static RETSIGTYPE
+static void
 trigger_irq(void)
 {
   async_attempt = 1;
@@ -1598,11 +1598,7 @@ unix_popen(const char *cmd, const char *mode)
   child_fd =  (rd ? p[1] : p[0]);
   std_fd = (rd ? fileno(stdout) : fileno(stdin));
   /* Fork */
-#ifdef HAVE_VFORK_OBSOLETE
-  pid = vfork();
-#else
   pid = fork();
-#endif
   if (pid < 0)
     {
       close(parent_fd);
@@ -1697,11 +1693,7 @@ filteropen(const char *cmd, FILE **pfw, FILE **pfr)
     close(fd_up[1]);
     test_file_error(NULL);
   }
-#ifdef HAVE_VFORK_OBSOLETE
-  pid = vfork();
-#else
   pid = fork();
-#endif
   if (pid < 0)
     {
       close(fd_up[0]);
@@ -1798,11 +1790,7 @@ filteropenpty(const char *cmd, FILE **pfw, FILE **pfr)
   sprintf(string_buffer,"exec %s",cmd);
   if (openpty(&master, &slave, 0, 0, 0) < 0)
     test_file_error(NULL);
-# ifdef HAVE_VFORK_OBSOLETE
-  pid = vfork();
-# else
   pid = fork();
-# endif
   if (pid < 0)
     {
       close(master);

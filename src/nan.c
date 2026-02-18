@@ -43,16 +43,8 @@
 #endif
 #include <signal.h>
 
-typedef RETSIGTYPE (*SIGHANDLERTYPE)();
+typedef void (*SIGHANDLERTYPE)();
 
-#ifdef linux
-# ifdef __hppa__          /* Checked (debian) 2003-07-14 */
-#  define BROKEN_SIGFPE
-# endif
-# ifdef __mips__          /* Checked (debian) 2004-03-06 */
-#   define BROKEN_SIGFPE
-# endif
-#endif
 
 
 /*================
@@ -332,7 +324,7 @@ setup_fpu(int doINV, int doOFL)
   
 #define DO(c,f) mask=((c)?(mask|(f)):(mask&~(f)));
 
-#if defined(__i386__) || defined(__alpha__) || (defined(__sh__) && defined(__SH4__))
+#if defined(__i386__) || (defined(__sh__) && defined(__SH4__))
 #ifdef _FPU_MASK_IM
   DO(!doINV, _FPU_MASK_IM);
 #endif
@@ -409,7 +401,7 @@ fpe_irq(int sig, int num)
   }
 }
 #else
-static RETSIGTYPE
+static void
 fpe_irq(void)
 {
   if (ieee_present)
@@ -424,7 +416,7 @@ fpe_irq(void)
 static int fpe_flag;
 static int fpe_isnan;
 
-static RETSIGTYPE
+static void
 probe_fpe_irq(void)
 {
 #ifdef WIN32
@@ -440,9 +432,6 @@ probe_fpe(void)
 {
   signal(SIGFPE, (SIGHANDLERTYPE)probe_fpe_irq);
   fpe_isnan = isnanD(3.0 + getnanD());
-#ifdef __alpha__
-  asm ("trapb");
-#endif
   signal(SIGFPE, SIG_IGN);
 }
 

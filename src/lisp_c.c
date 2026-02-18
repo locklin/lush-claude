@@ -2942,11 +2942,6 @@ DX(xto_gptr)
 	if ((dhdoc = (dhdoc_t*)(cfunc->info)) && dhdoc->lispdata.c_name)
 	  funcall = dld_get_func(dhdoc->lispdata.c_name);
 #endif
-#if HAVE_NSBUNDLE
-	extern void *nsbundle_lookup(const char *, int); /* defined in MODULE.C */
-	if ((dhdoc = (dhdoc_t*)(cfunc->info)) && dhdoc->lispdata.c_name)
-	  funcall = nsbundle_lookup(dhdoc->lispdata.c_name, 0);
-#endif
 	if (funcall)
 	  return NEW_GPTR(funcall);
       }

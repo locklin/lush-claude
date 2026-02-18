@@ -94,14 +94,6 @@ typedef void* gptr;
 # endif /* VC50 */
 #endif /* WIN32 */
 
-#ifdef AMIGA
-/* This is not up-to-date */
-# define INIT_MACHINE      init_amiga()
-# define CHECK_MACHINE(s)  check_amiga("Break "s)
-# define putc(c,stream)    aputc(c,stream)
-# define getc(stream)      agetc(stream)
-#endif
-
 #ifdef UNIX
 # define INIT_MACHINE      init_unix()
 # define FINI_MACHINE      fini_unix()

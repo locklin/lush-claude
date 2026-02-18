@@ -55,9 +55,6 @@
 /* Define to 1 if you have the `dlopen' function. */
 #define HAVE_DLOPEN 1
 
-/* Define to 1 if you have the <dl.h> header file. */
-/* #undef HAVE_DL_H */
-
 /* Define to 1 if you have the `feenableexcept' function. */
 #define HAVE_FEENABLEEXCEPT 1
 
@@ -69,9 +66,6 @@
 
 /* Define to 1 if you have the "fontconfig" library. */
 /* #undef HAVE_FONTCONFIG */
-
-/* Define to 1 if you have the `fork' function. */
-#define HAVE_FORK 1
 
 /* Define to 1 if you have the `fpathconf' function. */
 #define HAVE_FPATHCONF 1
@@ -130,9 +124,6 @@
 /* Define to 1 if you have the `dl' library (-ldl). */
 #define HAVE_LIBDL 1
 
-/* Define to 1 if you have the `dld' library (-ldld). */
-/* #undef HAVE_LIBDLD */
-
 /* Define to 1 if you have the `iberty' library (-liberty). */
 /* #undef HAVE_LIBIBERTY */
 
@@ -181,9 +172,6 @@
 /* Define to 1 if you have the `nl_langinfo' function. */
 #define HAVE_NL_LANGINFO 1
 
-/* Define to 1 if you have the `NSLinkModule' function. */
-/* #undef HAVE_NSLINKMODULE */
-
 /* Define to 1 if you have the `openpty' function. */
 #define HAVE_OPENPTY 1
 
@@ -216,9 +204,6 @@
 
 /* Define to 1 if you have the `sigsetjmp' function. */
 /* #undef HAVE_SIGSETJMP */
-
-/* Define to 1 if you have the `sigvec' function. */
-/* #undef HAVE_SIGVEC */
 
 /* Define to 1 if you have the `sincos' function. */
 #define HAVE_SINCOS 1
@@ -298,12 +283,6 @@
 /* Define to 1 if you have the <util.h> header file. */
 /* #undef HAVE_UTIL_H */
 
-/* Define to 1 if you have the `vfork' function. */
-#define HAVE_VFORK 1
-
-/* Define to 1 if you have the <vfork.h> header file. */
-/* #undef HAVE_VFORK_H */
-
 /* Define to 1 if you have the `waitpid' function. */
 #define HAVE_WAITPID 1
 
@@ -318,12 +297,6 @@
 
 /* Define to 1 if the system has the type `wint_t'. */
 #define HAVE_WINT_T 1
-
-/* Define to 1 if `fork' works. */
-#define HAVE_WORKING_FORK 1
-
-/* Define to 1 if `vfork' works. */
-#define HAVE_WORKING_VFORK 1
 
 /* Define to 1 if you have the "Xft" library. */
 /* #undef HAVE_XFT */
@@ -352,7 +325,7 @@
 /* Define to the version of this package. */
 #define PACKAGE_VERSION "1.0"
 
-/* Define as the return type of signal handlers (`int' or `void'). */
+/* Signal handlers always return void on modern systems. */
 #define RETSIGTYPE void
 
 /* The size of `int', as computed by sizeof. */
@@ -392,9 +365,6 @@
 
 /* Define to `unsigned int' if <sys/types.h> does not define. */
 /* #undef size_t */
-
-/* Define as `fork' if `vfork' does not work. */
-/* #undef vfork */
 
 
 /* lushconf.h: custom */

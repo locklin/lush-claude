@@ -29,9 +29,9 @@
 
 
 SHELL = /bin/bash
-VPATH = /workspaces/claude-sandbox/lush-claude
-srcdir = /workspaces/claude-sandbox/lush-claude
-top_srcdir = /workspaces/claude-sandbox/lush-claude
+
+srcdir = .
+top_srcdir = ..
 top_builddir = ..
 
 OPTS = -DNO_DEBUG -Wall -O3 -march=native
