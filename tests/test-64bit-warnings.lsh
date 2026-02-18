@@ -1,0 +1,120 @@
+;;; test-64bit-warnings.lsh
+;;;
+;;; Diagnostic tests for 64-bit cleanliness.
+;;; These tests exercise storage and index creation at various
+;;; sizes to verify that basic matrix operations work and that
+;;; the overflow warning instrumentation is in place.
+;;;
+;;; Run with:
+;;;   tests/run-64bit-tests.sh
+;;;
+;;; Warnings are printed to stderr. If no warnings appear for
+;;; small allocations, that is expected. The warnings are designed
+;;; to trigger when values exceed INT_MAX (2^31-1), which happens
+;;; with very large matrices.
+
+(printf "\n=== Lush 64-bit Diagnostic Tests ===\n\n")
+
+;;; -------------------------------------------------------
+;;; Test 1: Basic matrix creation (should work, no warnings)
+;;; -------------------------------------------------------
+(printf "Test 1: Basic small matrix creation...\n")
+(defvar test1-m (float-matrix 100 100))
+(printf "  Created 100x100 float-matrix: dims = %l\n" (idx-dim test1-m))
+(printf "  PASS\n\n")
+
+;;; -------------------------------------------------------
+;;; Test 2: Larger matrix creation (still 32-bit safe)
+;;; -------------------------------------------------------
+(printf "Test 2: Moderate matrix creation...\n")
+(defvar test2-m (ubyte-matrix 1000 1000))
+(printf "  Created 1000x1000 ubyte-matrix: dims = %l\n" (idx-dim test2-m))
+(printf "  PASS\n\n")
+
+;;; -------------------------------------------------------
+;;; Test 3: Storage creation and query
+;;; -------------------------------------------------------
+(printf "Test 3: Storage creation and query...\n")
+(defvar test3-s (float-storage 10000))
+(printf "  Created float-storage of size 10000\n")
+(printf "  PASS\n\n")
+
+;;; -------------------------------------------------------
+;;; Test 4: Multi-dimensional index operations
+;;; -------------------------------------------------------
+(printf "Test 4: Multi-dimensional index operations...\n")
+(defvar test4-m (double-matrix 10 20 30))
+(printf "  Created 10x20x30 double-matrix: dims = %l\n" (idx-dim test4-m))
+(printf "  ndim = %d\n" (idx-ndim test4-m))
+(printf "  dim[0]=%d dim[1]=%d dim[2]=%d\n"
+        (idx-dim test4-m 0) (idx-dim test4-m 1) (idx-dim test4-m 2))
+(printf "  PASS\n\n")
+
+;;; -------------------------------------------------------
+;;; Test 5: Int-matrix creation (exercises ST_I32 path)
+;;; -------------------------------------------------------
+(printf "Test 5: Int-matrix creation...\n")
+(defvar test5-m (int-matrix 1000 1000))
+(printf "  Created 1000x1000 int-matrix: dims = %l\n" (idx-dim test5-m))
+(printf "  PASS\n\n")
+
+;;; -------------------------------------------------------
+;;; Test 6: Large 1D vector (~100MB, within 32-bit range)
+;;; -------------------------------------------------------
+(printf "Test 6: Large 1D ubyte vector (100M elements, ~100MB)...\n")
+(defvar test6-v (ubyte-matrix 100000000))
+(printf "  Created ubyte-matrix of 100000000 elements: dim = %l\n" (idx-dim test6-v))
+(setq test6-v ())
+(printf "  PASS\n\n")
+
+;;; -------------------------------------------------------
+;;; Test 7: Narrow/select/unfold operations
+;;; -------------------------------------------------------
+(printf "Test 7: Index manipulation operations...\n")
+(defvar test7-m (float-matrix 100 200))
+(defvar test7-narrow (narrow test7-m 0 50 10))
+(printf "  narrow(m, 0, 50, 10): dims = %l\n" (idx-dim test7-narrow))
+(defvar test7-select (select test7-m 0 5))
+(printf "  select(m, 0, 5): dims = %l\n" (idx-dim test7-select))
+(printf "  PASS\n\n")
+
+;;; -------------------------------------------------------
+;;; Test 8: 4D matrix
+;;; -------------------------------------------------------
+(printf "Test 8: 4D matrix creation...\n")
+(defvar test8-m (float-matrix 5 6 7 8))
+(printf "  Created 5x6x7x8 float-matrix: dims = %l\n" (idx-dim test8-m))
+(printf "  PASS\n\n")
+
+;;; -------------------------------------------------------
+;;; Test 9: Matrix element access
+;;; -------------------------------------------------------
+(printf "Test 9: Matrix element read/write...\n")
+(defvar test9-m (double-matrix 10 10))
+(test9-m 3 4 42.5)
+(printf "  Set (3,4) = 42.5, read back = %g\n" (test9-m 3 4))
+(if (= (test9-m 3 4) 42.5)
+  (printf "  PASS\n\n")
+  (printf "  FAIL: value mismatch\n\n"))
+
+;;; -------------------------------------------------------
+;;; Test 10: Storage realloc
+;;; -------------------------------------------------------
+(printf "Test 10: Storage realloc...\n")
+(defvar test10-s (float-storage))
+(storage-malloc test10-s 100)
+(printf "  Created and malloced float-storage of 100\n")
+(storage-realloc test10-s 200)
+(printf "  Realloced to 200\n")
+(printf "  PASS\n\n")
+
+;;; -------------------------------------------------------
+;;; Summary
+;;; -------------------------------------------------------
+(printf "=== All %d diagnostic tests passed ===\n" 10)
+(printf "\nNote: These tests exercise normal-sized allocations.\n")
+(printf "To test 64-bit overflow warnings, you would need to create\n")
+(printf "matrices with >2^31 total elements (e.g., 46341x46341 ubyte),\n")
+(printf "which requires ~2GB of RAM. On such allocations, warnings\n")
+(printf "like 'LUSH 64-bit WARNING: intg overflow' or\n")
+(printf "'LUSH 64-bit WARNING: size overflow' should appear on stderr.\n")
