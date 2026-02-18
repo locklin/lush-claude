@@ -1651,11 +1651,11 @@
 #define Midx_m1permute(i1, per, o1, Type) \
 { \
   Type *c1, *d1; \
-  long *c2; \
+  int *c2; \
   intg i, imax = (o1)->dim[0]; \
   intg per_m0 = (per)->mod[0], o1_m0 = (o1)->mod[0]; \
   c1 = IDX_PTR((i1), Type); \
-  c2 = IDX_PTR((per), long); \
+  c2 = IDX_PTR((per), int); \
   d1 = IDX_PTR((o1), Type); \
   for (i=0; i<imax; i++) { \
     *(d1) = c1[ *(c2) ]; \
@@ -1668,14 +1668,14 @@
 { \
   Type *c1, *d1; \
   Type *d1_0; \
-  long *c2; \
-  long  *c2_0; \
+  int *c2; \
+  int  *c2_0; \
   intg i, imax = (o1)->dim[0]; \
   intg per_m1 = (per)->mod[1], o1_m1 = (o1)->mod[1]; \
   intg per_m0 = (per)->mod[0], o1_m0 = (o1)->mod[0]; \
   intg j, jmax = (o1)->dim[1]; \
   c1   = IDX_PTR((i1), Type); \
-  c2_0 = IDX_PTR((per), long); \
+  c2_0 = IDX_PTR((per), int); \
   d1_0 = IDX_PTR((o1), Type); \
   for (i=0; i<imax; i++) { \
     c2 = c2_0; \

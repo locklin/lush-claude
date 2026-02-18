@@ -157,7 +157,7 @@ string_name(at *p)
   char *s = ((struct string *) (p->Object))->start;
   char *name = string_buffer;
 #if HAVE_MBRTOWC
-  int n = strlen(s);
+  int n = (int)strlen(s);
   mbstate_t ps;
   memset(&ps, 0, sizeof(mbstate_t));
   *name++ = '\"'; 
@@ -313,7 +313,7 @@ void
 large_string_add(struct large_string *ls, char *s, int len)
 {
   if (len < 0)
-    len = strlen(s);
+    len = (int)strlen(s);
   if (ls->p > ls->buffer)
     if (ls->p + len > ls->buffer + sizeof(ls->buffer) - 1)
       {
@@ -342,7 +342,7 @@ large_string_collect(struct large_string *ls)
 {
   char *r;
   at *p, *q;
-  int len;
+  size_t len;
   *ls->p = 0;
   len = strlen(ls->buffer);
   for (p = ls->backup; p; p = p->Cdr)
@@ -387,7 +387,7 @@ recode(const char *s, const char *fromcode, const char *tocode)
           olen = sizeof(buffer);
           iconv(conv, &ibuf, &ilen, &obuf, &olen);
           if (obuf > buffer)
-            large_string_add(&ls, buffer, obuf-buffer);
+            large_string_add(&ls, buffer, (int)(obuf-buffer));
           if (ilen <= 0 || errno != E2BIG)
             break;
         }
@@ -474,7 +474,7 @@ DX(xstr_left)
   
   if (n < 0)
     error(NIL, badarg, NEW_NUMBER(n));
-  l = strlen(s);
+  l = (int)strlen(s);
   if (n > l)
     n = l;
   p = new_string_bylen(n+1);
@@ -500,7 +500,7 @@ DX(xstr_right)
   
   if (n < 0)
     error(NIL, badarg, NEW_NUMBER(n));
-  l = strlen(s);
+  l = (int)strlen(s);
   if (n > l)
     n = l;
   return new_string(s+l-n);
@@ -521,9 +521,9 @@ DX(xstr_mid)
     {
       s = ASTRING(1);
       n = AINTEGER(2);
-      l = strlen(s);
+      l = (int)strlen(s);
       if (n < 1)
-	error(NIL, badarg, NEW_NUMBER(n));	
+	error(NIL, badarg, NEW_NUMBER(n));
       if (n > l)
 	return new_safe_string(null_string);
       else
@@ -539,7 +539,7 @@ DX(xstr_mid)
 	error(NIL, badarg, NEW_NUMBER(n));	
       if (m < 0)
 	error(NIL, badarg, NEW_NUMBER(m));
-      l = strlen(s)-(n-1);
+      l = (int)strlen(s)-(n-1);
       if (m > l)
 	m = l;
       if (m < 1)
@@ -566,7 +566,7 @@ DX(xstr_concat)
   ALL_ARGS_EVAL;
   for (i=1; i<=arg_number; i++) {
     s = ASTRING(i);
-    length += strlen(s);
+    length += (int)strlen(s);
   }
   p = new_string_bylen(length+1);
   here = SADD(p->Object);
@@ -830,7 +830,7 @@ static at*
 str_del(char *s, int n, int l)
 {
   struct large_string ls;
-  int len = strlen(s);
+  int len = (int)strlen(s);
   n = (n>1) ? n-1 : 0;
   if (n > len)
     n = len;
@@ -860,7 +860,7 @@ static at *
 str_ins(char *s, int pos, char *what)
 {
   struct large_string ls;
-  int len = strlen(s);
+  int len = (int)strlen(s);
   if (pos > len)
     pos = len;
   large_string_init(&ls);
@@ -885,14 +885,14 @@ static at *
 str_subst(char *s, char *s1, char *s2)
 {
   struct large_string ls;
-  int len1 = strlen(s1);
-  int len2 = strlen(s2);
+  int len1 = (int)strlen(s1);
+  int len2 = (int)strlen(s2);
   char *last = s;
   large_string_init(&ls);
   while(*s) 
     {
       if ((*s == *s1) && (!strncmp(s,s1,len1)) ) {
-        large_string_add(&ls, last, s - last);
+        large_string_add(&ls, last, (int)(s - last));
         large_string_add(&ls, s2, len2);
         s += len1;
         last = s;
@@ -900,7 +900,7 @@ str_subst(char *s, char *s1, char *s2)
         s += 1;
     }
   if (s > last)
-    large_string_add(&ls, last, s - last);
+    large_string_add(&ls, last, (int)(s - last));
   return large_string_collect(&ls);
 }
 
@@ -928,7 +928,7 @@ DX(xupcase)
     struct large_string ls;
     mbstate_t ps1;
     mbstate_t ps2;
-    int n = strlen(s);
+    int n = (int)strlen(s);
     memset(&ps1, 0, sizeof(mbstate_t));
     memset(&ps2, 0, sizeof(mbstate_t));
     large_string_init(&ls);
@@ -940,7 +940,7 @@ DX(xupcase)
 	  break;
 	if (m > 0)
 	  {
-	    int d = wcrtomb(buffer, towupper(wc), &ps2);
+	    int d = (int)wcrtomb(buffer, towupper(wc), &ps2);
 	    if (d <= 0)
 	      large_string_add(&ls, s, m);
 	    else
@@ -983,7 +983,7 @@ DX(xupcase1)
   {
     char buffer[MB_LEN_MAX];
     struct large_string ls;
-    int n = strlen(s);
+    int n = (int)strlen(s);
     int m;
     wchar_t wc;
     mbstate_t ps1;
@@ -994,7 +994,7 @@ DX(xupcase1)
     m = (int)mbrtowc(&wc, s, n, &ps1);
     if (m > 0)
       {
-	int d = wcrtomb(buffer, towupper(wc), &ps2);
+	int d = (int)wcrtomb(buffer, towupper(wc), &ps2);
 	if (d > 0)
 	  {
 	    large_string_add(&ls, buffer, d);
@@ -1031,7 +1031,7 @@ DX(xdowncase)
     struct large_string ls;
     mbstate_t ps1;
     mbstate_t ps2;
-    int n = strlen(s);
+    int n = (int)strlen(s);
     memset(&ps1, 0, sizeof(mbstate_t));
     memset(&ps2, 0, sizeof(mbstate_t));
     large_string_init(&ls);
@@ -1043,7 +1043,7 @@ DX(xdowncase)
 	  break;
 	if (m > 0)
 	  {
-	    int d = wcrtomb(buffer, towlower(wc), &ps2);
+	    int d = (int)wcrtomb(buffer, towlower(wc), &ps2);
 	    if (d <= 0)
 	      large_string_add(&ls, s, m);
 	    else
@@ -1085,7 +1085,7 @@ DX(xisprint)
     return NIL;
 #if HAVE_MBRTOWC
   {
-    int n = strlen((char*)s);
+    int n = (int)strlen((char*)s);
     mbstate_t ps;
     memset(&ps, 0, sizeof(mbstate_t));
     while(n > 0)
@@ -1196,7 +1196,7 @@ explode_chars(char *s)
 #if HAVE_MBRTOWC
   at *p = NIL;
   at **where = &p;
-  int n = strlen(s);
+  int n = (int)strlen(s);
   mbstate_t ps;
   memset(&ps, 0, sizeof(mbstate_t));
   while (n > 0)

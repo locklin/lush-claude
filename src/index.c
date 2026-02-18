@@ -2290,13 +2290,13 @@ DX(ximport_text_matrix)
 }
 
 static void
-load_matrix_header(FILE *f, 
-                   int *ndim_p, int *magic_p, 
-                   int *swap_p, int *dim)
+load_matrix_header(FILE *f,
+                   int *ndim_p, int *magic_p,
+                   int *swap_p, intg *dim)
 {
   int swapflag = 0;
   int magic, ndim, i;
-  switch (magic = read4(f)) 
+  switch (magic = read4(f))
     {
     case SWAP( BINARY_MATRIX ):
     case SWAP( PACKED_MATRIX ):
@@ -2317,7 +2317,7 @@ load_matrix_header(FILE *f,
     case BYTE_MATRIX:
       ndim = 0;
       ndim = read4(f);
-      if (swapflag) 
+      if (swapflag)
         ndim = SWAP(ndim);
       if (ndim == -1)
         break;
@@ -2326,17 +2326,17 @@ load_matrix_header(FILE *f,
       for (i = 0; i < ndim; i++) {
         dim[i] = read4(f);
         if (swapflag)
-          dim[i] = SWAP(dim[i]);
+          dim[i] = SWAP((int)dim[i]);
         if (dim[i] < 1)
           goto trouble;
       }
       /* sn1 compatibility */
       if (ndim == 1 || ndim == 2)
         while (i++ < 3) {
-          dim[i] = read4(f);
+          int sn1dim = read4(f);
           if (swapflag)
-            dim[i] = SWAP(dim[i]);
-          if (dim[i] != 1)
+            sn1dim = SWAP(sn1dim);
+          if (sn1dim != 1)
             goto trouble;
         }
       break;
@@ -2344,12 +2344,12 @@ load_matrix_header(FILE *f,
       magic = SWAP(magic);
       /* no break */
     case ASCII_MATRIX:
-      if (fscanf(f, " %d", &ndim) != 1) 
+      if (fscanf(f, " %d", &ndim) != 1)
         goto trouble;
-      if (ndim < 0 || ndim > MAXDIMS) 
+      if (ndim < 0 || ndim > MAXDIMS)
         goto trouble;
       for (i = 0; i < ndim; i++)
-        if (fscanf(f, " %d ", &(dim[i])) != 1) 
+        if (fscanf(f, " %" FMT_INTG " ", &(dim[i])) != 1)
           goto trouble;
       break;
     default:
@@ -2404,14 +2404,10 @@ load_matrix(FILE *f)
   int magic;
   int ndim;
   int swapflag = 0;
-  int idim[MAXDIMS];
   intg dim[MAXDIMS];
-  int i;
 
   /* Header */
-  load_matrix_header(f, &ndim, &magic, &swapflag, idim);
-  for (i = 0; i < ndim && i < MAXDIMS; i++)
-    dim[i] = idim[i];
+  load_matrix_header(f, &ndim, &magic, &swapflag, dim);
   /* Create */
   switch (magic) {
   case BINARY_MATRIX:
@@ -2514,9 +2510,7 @@ map_matrix(FILE *f)
 {
   int ndim;
   int magic, swapflag;
-  int idim[MAXDIMS];
   intg dim[MAXDIMS];
-  int i;
   at *atst, *ans;
 #ifdef HAVE_FTELLO
   off_t pos;
@@ -2525,9 +2519,7 @@ map_matrix(FILE *f)
 #endif
 
   /* Header */
-  load_matrix_header(f,&ndim, &magic, &swapflag, idim);
-  for (i = 0; i < ndim && i < MAXDIMS; i++)
-    dim[i] = idim[i];
+  load_matrix_header(f, &ndim, &magic, &swapflag, dim);
   if (swapflag && magic!=BYTE_MATRIX && magic!=SHORT8_MATRIX)
     error(NIL,"Can't map this byteswapped matrix",NIL);
   /* Create storage */
