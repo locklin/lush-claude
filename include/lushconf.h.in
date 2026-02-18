@@ -40,16 +40,12 @@
 #undef HAVE_BFD_HASH_TABLE_INIT_WANTS_2_ARGS
 
 /* Define if bfd_set_section_size() takes three arguments */
-#undef HAVE_BFD_SET_SECTOIN_SIZE_WANTS_3_ARGS
-
-/* Define to 1 if you have the `cfree' function. */
-#undef HAVE_CFREE
+#undef HAVE_BFD_SET_SECTION_SIZE_WANTS_3_ARGS
 
 /* Define to 1 if the compiler supports complex numbers */
 #undef HAVE_COMPLEX
 
-/* Define to 1 if you have the <dirent.h> header file, and it defines `DIR'.
-   */
+/* Define to 1 if you have the <dirent.h> header file. */
 #undef HAVE_DIRENT_H
 
 /* Define to 1 if you have the <dlfcn.h> header file. */
@@ -181,9 +177,6 @@
 /* Define to 1 if you have the `mprotect' function. */
 #undef HAVE_MPROTECT
 
-/* Define to 1 if you have the <ndir.h> header file, and it defines `DIR'. */
-#undef HAVE_NDIR_H
-
 /* Define to 1 if you have the `nl_langinfo' function. */
 #undef HAVE_NL_LANGINFO
 
@@ -259,16 +252,8 @@
 /* Define to 1 if you have the `sysconf' function. */
 #undef HAVE_SYSCONF
 
-/* Define to 1 if you have the <sys/dir.h> header file, and it defines `DIR'.
-   */
-#undef HAVE_SYS_DIR_H
-
 /* Define to 1 if you have the <sys/mman.h> header file. */
 #undef HAVE_SYS_MMAN_H
-
-/* Define to 1 if you have the <sys/ndir.h> header file, and it defines `DIR'.
-   */
-#undef HAVE_SYS_NDIR_H
 
 /* Define to 1 if you have the <sys/param.h> header file. */
 #undef HAVE_SYS_PARAM_H
@@ -294,7 +279,7 @@
 /* Define to 1 if you have the <sys/types.h> header file. */
 #undef HAVE_SYS_TYPES_H
 
-/* Define to 1 if you have <sys/wait.h> that is POSIX.1 compatible. */
+/* Define to 1 if you have the <sys/wait.h> header file. */
 #undef HAVE_SYS_WAIT_H
 
 /* Define to 1 if you have the `tanh' function. */
@@ -345,6 +330,9 @@
 /* Define to 1 if you have the `__setfpucw' function. */
 #undef HAVE___SETFPUCW
 
+/* Define to 1 to make intg typedef long instead of int on 64-bit platforms */
+#undef INTG_IS_LONG
+
 /* Define to the address where bug reports for this package should be sent. */
 #undef PACKAGE_BUGREPORT
 
@@ -366,14 +354,22 @@
 /* Define as the return type of signal handlers (`int' or `void'). */
 #undef RETSIGTYPE
 
+/* The size of `int', as computed by sizeof. */
+#undef SIZEOF_INT
+
+/* The size of `long', as computed by sizeof. */
+#undef SIZEOF_LONG
+
+/* The size of `size_t', as computed by sizeof. */
+#undef SIZEOF_SIZE_T
+
+/* The size of `void *', as computed by sizeof. */
+#undef SIZEOF_VOID_P
+
 /* Define to 1 if all of the C90 standard headers exist (not just the ones
    required in a freestanding environment). This macro is provided for
    backward compatibility; new code need not use it. */
 #undef STDC_HEADERS
-
-/* Define to 1 if you can safely include both <sys/time.h> and <time.h>. This
-   macro is obsolete. */
-#undef TIME_WITH_SYS_TIME
 
 /* Define to 1 if the X Window System is missing or not being used. */
 #undef X_DISPLAY_MISSING
@@ -399,18 +395,6 @@
 /* Define as `fork' if `vfork' does not work. */
 #undef vfork
 
-
-/* Define to 1 to make intg typedef long instead of int on 64-bit platforms */
-#undef INTG_IS_LONG
-
-/* The size of `void *', as computed by sizeof. */
-#undef SIZEOF_VOID_P
-
-/* The size of `long', as computed by sizeof. */
-#undef SIZEOF_LONG
-
-/* The size of `int', as computed by sizeof. */
-#undef SIZEOF_INT
 
 /* lushconf.h: custom */
 # ifndef UNIX

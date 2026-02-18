@@ -6526,7 +6526,7 @@ rm -f core conftest.err conftest.$ac_objext conftest.beam conftest.$ac_ext
 printf "%s\n" "$bfd_set_section_size_3_args" >&6; }
         if test x$bfd_set_section_size_3_args = xyes ; then
             
-printf "%s\n" "@%:@define HAVE_BFD_SET_SECTOIN_SIZE_WANTS_3_ARGS 1" >>confdefs.h
+printf "%s\n" "@%:@define HAVE_BFD_SET_SECTION_SIZE_WANTS_3_ARGS 1" >>confdefs.h
 
         fi
     fi
@@ -7982,225 +7982,22 @@ printf "%s\n" "$ac_cv_path_EGREP" >&6; }
  
 
 
-ac_header_dirent=no
-for ac_hdr in dirent.h sys/ndir.h sys/dir.h ndir.h; do
-  as_ac_Header=`printf "%s\n" "ac_cv_header_dirent_$ac_hdr" | $as_tr_sh`
-{ printf "%s\n" "$as_me:${as_lineno-$LINENO}: checking for $ac_hdr that defines DIR" >&5
-printf %s "checking for $ac_hdr that defines DIR... " >&6; }
-if eval test \${$as_ac_Header+y}
+ac_fn_c_check_header_compile "$LINENO" "dirent.h" "ac_cv_header_dirent_h" "$ac_includes_default"
+if test "x$ac_cv_header_dirent_h" = xyes
 then :
-  printf %s "(cached) " >&6
-else $as_nop
-  cat confdefs.h - <<_ACEOF >conftest.$ac_ext
-/* end confdefs.h.  */
-#include <sys/types.h>
-#include <$ac_hdr>
-
-int
-main (void)
-{
-if ((DIR *) 0)
-return 0;
-  ;
-  return 0;
-}
-_ACEOF
-if ac_fn_c_try_compile "$LINENO"
-then :
-  eval "$as_ac_Header=yes"
-else $as_nop
-  eval "$as_ac_Header=no"
-fi
-rm -f core conftest.err conftest.$ac_objext conftest.beam conftest.$ac_ext
-fi
-eval ac_res=\$$as_ac_Header
-	       { printf "%s\n" "$as_me:${as_lineno-$LINENO}: result: $ac_res" >&5
-printf "%s\n" "$ac_res" >&6; }
-if eval test \"x\$"$as_ac_Header"\" = x"yes"
-then :
-  cat >>confdefs.h <<_ACEOF
-@%:@define `printf "%s\n" "HAVE_$ac_hdr" | $as_tr_cpp` 1
-_ACEOF
-
-ac_header_dirent=$ac_hdr; break
-fi
-
-done
-# Two versions of opendir et al. are in -ldir and -lx on SCO Xenix.
-if test $ac_header_dirent = dirent.h; then
-  { printf "%s\n" "$as_me:${as_lineno-$LINENO}: checking for library containing opendir" >&5
-printf %s "checking for library containing opendir... " >&6; }
-if test ${ac_cv_search_opendir+y}
-then :
-  printf %s "(cached) " >&6
-else $as_nop
-  ac_func_search_save_LIBS=$LIBS
-cat confdefs.h - <<_ACEOF >conftest.$ac_ext
-/* end confdefs.h.  */
-
-/* Override any GCC internal prototype to avoid an error.
-   Use char because int might match the return type of a GCC
-   builtin and then its argument prototype would still apply.  */
-char opendir ();
-int
-main (void)
-{
-return opendir ();
-  ;
-  return 0;
-}
-_ACEOF
-for ac_lib in '' dir
-do
-  if test -z "$ac_lib"; then
-    ac_res="none required"
-  else
-    ac_res=-l$ac_lib
-    LIBS="-l$ac_lib  $ac_func_search_save_LIBS"
-  fi
-  if ac_fn_c_try_link "$LINENO"
-then :
-  ac_cv_search_opendir=$ac_res
-fi
-rm -f core conftest.err conftest.$ac_objext conftest.beam \
-    conftest$ac_exeext
-  if test ${ac_cv_search_opendir+y}
-then :
-  break
-fi
-done
-if test ${ac_cv_search_opendir+y}
-then :
-  
-else $as_nop
-  ac_cv_search_opendir=no
-fi
-rm conftest.$ac_ext
-LIBS=$ac_func_search_save_LIBS
-fi
-{ printf "%s\n" "$as_me:${as_lineno-$LINENO}: result: $ac_cv_search_opendir" >&5
-printf "%s\n" "$ac_cv_search_opendir" >&6; }
-ac_res=$ac_cv_search_opendir
-if test "$ac_res" != no
-then :
-  test "$ac_res" = "none required" || LIBS="$ac_res $LIBS"
-  
-fi
-
-else
-  { printf "%s\n" "$as_me:${as_lineno-$LINENO}: checking for library containing opendir" >&5
-printf %s "checking for library containing opendir... " >&6; }
-if test ${ac_cv_search_opendir+y}
-then :
-  printf %s "(cached) " >&6
-else $as_nop
-  ac_func_search_save_LIBS=$LIBS
-cat confdefs.h - <<_ACEOF >conftest.$ac_ext
-/* end confdefs.h.  */
-
-/* Override any GCC internal prototype to avoid an error.
-   Use char because int might match the return type of a GCC
-   builtin and then its argument prototype would still apply.  */
-char opendir ();
-int
-main (void)
-{
-return opendir ();
-  ;
-  return 0;
-}
-_ACEOF
-for ac_lib in '' x
-do
-  if test -z "$ac_lib"; then
-    ac_res="none required"
-  else
-    ac_res=-l$ac_lib
-    LIBS="-l$ac_lib  $ac_func_search_save_LIBS"
-  fi
-  if ac_fn_c_try_link "$LINENO"
-then :
-  ac_cv_search_opendir=$ac_res
-fi
-rm -f core conftest.err conftest.$ac_objext conftest.beam \
-    conftest$ac_exeext
-  if test ${ac_cv_search_opendir+y}
-then :
-  break
-fi
-done
-if test ${ac_cv_search_opendir+y}
-then :
-  
-else $as_nop
-  ac_cv_search_opendir=no
-fi
-rm conftest.$ac_ext
-LIBS=$ac_func_search_save_LIBS
-fi
-{ printf "%s\n" "$as_me:${as_lineno-$LINENO}: result: $ac_cv_search_opendir" >&5
-printf "%s\n" "$ac_cv_search_opendir" >&6; }
-ac_res=$ac_cv_search_opendir
-if test "$ac_res" != no
-then :
-  test "$ac_res" = "none required" || LIBS="$ac_res $LIBS"
-  
-fi
+  printf "%s\n" "@%:@define HAVE_DIRENT_H 1" >>confdefs.h
 
 fi
 
 
   
-# Obsolete code to be removed.
-if test $ac_cv_header_sys_time_h = yes; then
-  
-printf "%s\n" "@%:@define TIME_WITH_SYS_TIME 1" >>confdefs.h
-
-fi
-
-{ printf "%s\n" "$as_me:${as_lineno-$LINENO}: checking for sys/wait.h that is POSIX.1 compatible" >&5
-printf %s "checking for sys/wait.h that is POSIX.1 compatible... " >&6; }
-if test ${ac_cv_header_sys_wait_h+y}
+ac_fn_c_check_header_compile "$LINENO" "sys/wait.h" "ac_cv_header_sys_wait_h" "$ac_includes_default"
+if test "x$ac_cv_header_sys_wait_h" = xyes
 then :
-  printf %s "(cached) " >&6
-else $as_nop
-  cat confdefs.h - <<_ACEOF >conftest.$ac_ext
-/* end confdefs.h.  */
-#include <sys/types.h>
-#include <sys/wait.h>
-#ifndef WEXITSTATUS
-# define WEXITSTATUS(stat_val) ((unsigned int) (stat_val) >> 8)
-#endif
-#ifndef WIFEXITED
-# define WIFEXITED(stat_val) (((stat_val) & 255) == 0)
-#endif
-
-int
-main (void)
-{
-  int s;
-  wait (&s);
-  s = WIFEXITED (s) ? WEXITSTATUS (s) : 1;
-  ;
-  return 0;
-}
-_ACEOF
-if ac_fn_c_try_compile "$LINENO"
-then :
-  ac_cv_header_sys_wait_h=yes
-else $as_nop
-  ac_cv_header_sys_wait_h=no
-fi
-rm -f core conftest.err conftest.$ac_objext conftest.beam conftest.$ac_ext
-fi
-{ printf "%s\n" "$as_me:${as_lineno-$LINENO}: result: $ac_cv_header_sys_wait_h" >&5
-printf "%s\n" "$ac_cv_header_sys_wait_h" >&6; }
-if test $ac_cv_header_sys_wait_h = yes; then
-  
-printf "%s\n" "@%:@define HAVE_SYS_WAIT_H 1" >>confdefs.h
+  printf "%s\n" "@%:@define HAVE_SYS_WAIT_H 1" >>confdefs.h
 
 fi
-     
+
 ac_fn_c_check_header_compile "$LINENO" "stdio.h" "ac_cv_header_stdio_h" "$ac_includes_default"
 if test "x$ac_cv_header_stdio_h" = xyes
 then :
@@ -8858,6 +8655,39 @@ printf "%s\n" "$ac_cv_sizeof_int" >&6; }
 printf "%s\n" "@%:@define SIZEOF_INT $ac_cv_sizeof_int" >>confdefs.h
 
 
+# The cast to long int works around a bug in the HP C Compiler
+# version HP92453-01 B.11.11.23709.GP, which incorrectly rejects
+# declarations like `int a3[[(sizeof (unsigned char)) >= 0]];'.
+# This bug is HP SR number 8606223364.
+{ printf "%s\n" "$as_me:${as_lineno-$LINENO}: checking size of size_t" >&5
+printf %s "checking size of size_t... " >&6; }
+if test ${ac_cv_sizeof_size_t+y}
+then :
+  printf %s "(cached) " >&6
+else $as_nop
+  if ac_fn_c_compute_int "$LINENO" "(long int) (sizeof (size_t))" "ac_cv_sizeof_size_t"        "$ac_includes_default"
+then :
+  
+else $as_nop
+  if test "$ac_cv_type_size_t" = yes; then
+     { { printf "%s\n" "$as_me:${as_lineno-$LINENO}: error: in \`$ac_pwd':" >&5
+printf "%s\n" "$as_me: error: in \`$ac_pwd':" >&2;}
+as_fn_error 77 "cannot compute sizeof (size_t)
+See \`config.log' for more details" "$LINENO" 5; }
+   else
+     ac_cv_sizeof_size_t=0
+   fi
+fi
+
+fi
+{ printf "%s\n" "$as_me:${as_lineno-$LINENO}: result: $ac_cv_sizeof_size_t" >&5
+printf "%s\n" "$ac_cv_sizeof_size_t" >&6; }
+
+
+
+printf "%s\n" "@%:@define SIZEOF_SIZE_T $ac_cv_sizeof_size_t" >>confdefs.h
+
+
 if test "$ac_cv_sizeof_void_p" -ge 8; then
   
 printf "%s\n" "@%:@define INTG_IS_LONG 1" >>confdefs.h
@@ -9450,12 +9280,6 @@ ac_fn_c_check_func "$LINENO" "ftime" "ac_cv_func_ftime"
 if test "x$ac_cv_func_ftime" = xyes
 then :
   printf "%s\n" "@%:@define HAVE_FTIME 1" >>confdefs.h
-
-fi
-ac_fn_c_check_func "$LINENO" "cfree" "ac_cv_func_cfree"
-if test "x$ac_cv_func_cfree" = xyes
-then :
-  printf "%s\n" "@%:@define HAVE_CFREE 1" >>confdefs.h
 
 fi
 

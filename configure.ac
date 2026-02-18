@@ -191,7 +191,7 @@ if test x$has_bfd = xyes ; then
         AC_COMPILE_IFELSE([AC_LANG_PROGRAM([[#include "bfd.h"]], [[abfd *b; asection *s; bfd_vma v; bfd_set_section_size(b,s,v);]])],[bfd_set_section_size_3_args=yes],[bfd_set_section_size_3_args=no])
         AC_MSG_RESULT($bfd_set_section_size_3_args)
         if test x$bfd_set_section_size_3_args = xyes ; then
-            AC_DEFINE(HAVE_BFD_SET_SECTOIN_SIZE_WANTS_3_ARGS,1,
+            AC_DEFINE(HAVE_BFD_SET_SECTION_SIZE_WANTS_3_ARGS,1,
                       [Define if bfd_set_section_size() takes three arguments])
         fi
     fi
@@ -256,15 +256,9 @@ AC_SEARCH_LIBS(iconv_open,iconv)
 AC_CHECK_INCLUDES_DEFAULT
 AC_PROG_EGREP
 
-AC_HEADER_DIRENT
+AC_CHECK_HEADERS([dirent.h])
 AC_CHECK_HEADERS_ONCE([sys/time.h])
-# Obsolete code to be removed.
-if test $ac_cv_header_sys_time_h = yes; then
-  AC_DEFINE([TIME_WITH_SYS_TIME],[1],[Define to 1 if you can safely include both <sys/time.h>
-	     and <time.h>.  This macro is obsolete.])
-fi
-
-AC_HEADER_SYS_WAIT     
+AC_CHECK_HEADERS([sys/wait.h])
 AC_CHECK_HEADERS(stdio.h stdlib.h wchar.h wctype.h langinfo.h iconv.h)
 AC_CHECK_HEADERS(memory.h string.h strings.h limits.h alloca.h)
 AC_CHECK_HEADERS(unistd.h sys/mman.h termios.h pty.h util.h)
@@ -304,6 +298,7 @@ AC_CHECK_TYPES(mbstate_t,,,[#include "wchar.h"])
 AC_CHECK_SIZEOF([void *])
 AC_CHECK_SIZEOF([long])
 AC_CHECK_SIZEOF([int])
+AC_CHECK_SIZEOF([size_t])
 if test "$ac_cv_sizeof_void_p" -ge 8; then
   AC_DEFINE([INTG_IS_LONG], [1],
             [Define to 1 to make intg typedef long instead of int on 64-bit platforms])
@@ -321,7 +316,7 @@ AC_FUNC_STRFTIME
 AC_CHECK_FUNCS(strchr memcpy sigaction sigvec strerror getcwd)
 AC_CHECK_FUNCS(feenableexcept ieee_handler fpsetmask __setfpucw)
 AC_CHECK_FUNCS(tanh sincos dlopen sigsetjmp waitpid openpty)
-AC_CHECK_FUNCS(mprotect getpagesize gettimeofday ftime cfree)
+AC_CHECK_FUNCS(mprotect getpagesize gettimeofday ftime)
 AC_CHECK_FUNCS(gethostbyname getaddrinfo flockfile sysconf fpathconf tcsetattr)
 AC_CHECK_FUNCS(setenv putenv fseeko ftello rl_getc)
 AC_FUNC_MBRTOWC

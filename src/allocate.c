@@ -528,11 +528,7 @@ void lush_free(void *x,const char *file,int line)
 
 void lush_cfree(void *x,const char *file,int line)
 {
-#if HAVE_CFREE
-    cfree(x);
-#else
     free(x);
-#endif
     if (malloc_file)
 	fprintf(malloc_file,"%p\tcfree\t%d\t%s:%d\n",x,0,file,line);
 }

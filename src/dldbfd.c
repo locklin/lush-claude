@@ -100,7 +100,7 @@
 # define my_bfd_hash_table_init(a,b,c) bfd_hash_table_init(a,b,c)
 #endif
 
-#if HAVE_BFD_SET_SECTOIN_SIZE_WANTS_3_ARGS
+#if HAVE_BFD_SET_SECTION_SIZE_WANTS_3_ARGS
 # define my_bfd_set_section_size(b,s,v) bfd_set_section_size(b,s,v)
 # define my_bfd_section_size(b,s) bfd_section_size(b,s)
 #else

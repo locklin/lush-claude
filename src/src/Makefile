@@ -29,8 +29,8 @@
 
 
 SHELL = /bin/bash
-VPATH = /workspaces/claude-sandbox/lush-claude
-srcdir = /workspaces/claude-sandbox/lush-claude
+VPATH = /workspaces/claude-sandbox/lush-claude/src
+srcdir = /workspaces/claude-sandbox/lush-claude/src
 top_srcdir = /workspaces/claude-sandbox/lush-claude
 top_builddir = ..
 

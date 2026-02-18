@@ -124,6 +124,13 @@ clean: FORCE
 distclean: clean FORCE
 	-${RM} 2>/dev/null Makefile
 
+check-warnings: FORCE
+	@echo "Building with -Wconversion -Wsign-conversion..."
+	-@for f in `echo ${LUSHOBJS} | sed -e 's:\.o:.c:g'`; do \
+	  ${CC} ${CPPFLAGS} ${CFLAGS} ${LUSHFLAGS} -Wconversion -Wsign-conversion -c $$f 2>&1 || true; \
+	done > ../check-warnings.log 2>&1
+	@echo "Warnings saved to check-warnings.log"
+
 FORCE:
 
 .PHONY: FORCE
