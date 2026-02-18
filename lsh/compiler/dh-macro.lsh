@@ -1162,7 +1162,7 @@
   (process-numerical-args-t (cdr source) 'dht-int))
 
 (dhm-c div(source treetype retplace)
-  (process-numerical-args-with-cast-c source treetype "int" "/") )
+  (process-numerical-args-with-cast-c source treetype "intg" "/") )
 
 (dhm-t mod(source)
   (when (<> 3 (length source))
@@ -1170,25 +1170,25 @@
   (process-numerical-args-t (cdr source) 'dht-int))
 
 (dhm-c mod(source treetype retplace)
-  (process-numerical-args-with-cast-c source treetype "int" "%") )
+  (process-numerical-args-with-cast-c source treetype "intg" "%") )
 
 (dhm-t bitand(source)
   (process-numerical-args-t (cdr source) 'dht-int))
 
 (dhm-c bitand(source treetype retplace)
-  (process-numerical-args-with-cast-c source treetype "int" "&"))
+  (process-numerical-args-with-cast-c source treetype "intg" "&"))
 
 (dhm-t bitor(source)
   (process-numerical-args-t (cdr source) 'dht-int))
 
 (dhm-c bitor(source treetype retplace)
-  (process-numerical-args-with-cast-c source treetype "int" "|"))
+  (process-numerical-args-with-cast-c source treetype "intg" "|"))
 
 (dhm-t bitxor(source)
   (process-numerical-args-t (cdr source) 'dht-int))
 
 (dhm-c bitxor(source treetype retplace)
-  (process-numerical-args-with-cast-c source treetype "int" "^"))
+  (process-numerical-args-with-cast-c source treetype "intg" "^"))
 
 (dhm-t bitshl(source)
   (when (<> 3 (length source))
@@ -1196,7 +1196,7 @@
   (process-numerical-args-t (cdr source) 'dht-int))
 
 (dhm-c bitshl(source treetype retplace)
-  (process-numerical-args-with-cast-c source treetype "int" "<<") )
+  (process-numerical-args-with-cast-c source treetype "intg" "<<") )
 
 (dhm-t bitshr(source)
   (when (<> 3 (length source))
@@ -1204,7 +1204,7 @@
   (process-numerical-args-t (cdr source) 'dht-int))
 
 (dhm-c bitshr(source treetype retplace)
-  (process-numerical-args-with-cast-c source treetype "int" ">>") )
+  (process-numerical-args-with-cast-c source treetype "intg" ">>") )
 
 (dhm-t **(source)
   (when (<> 3 (length source)) (dhc-error "wrong number of arguments"))
