@@ -1056,10 +1056,10 @@ char *
 generic_name(at *p)
 {
   if (p->Class->classname)
-    sprintf(string_buffer, "::%s:%" PRIxPTR,
+    snprintf(string_buffer, STRING_BUFFER, "::%s:%" PRIxPTR,
 	    nameof(p->Class->classname),(uintptr_t)p->Object);
   else
-    sprintf(string_buffer, "::%" PRIxPTR ":%" PRIxPTR,
+    snprintf(string_buffer, STRING_BUFFER, "::%" PRIxPTR ":%" PRIxPTR,
 	    (uintptr_t)p->Class, (uintptr_t)p->Object);
 
   return string_buffer;

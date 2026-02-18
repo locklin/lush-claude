@@ -124,19 +124,19 @@ index_name(at *p)
   ind = p->Object;
   s = string_buffer;
   if (ind->flags & IDF_UNSIZED) {
-    sprintf(s, "::%s:<unsized>", nameof(p->Class->classname));
+    snprintf(s, STRING_BUFFER, "::%s:<unsized>", nameof(p->Class->classname));
   } else {
-    sprintf(s, "::%s%d:<", nameof(p->Class->classname), ind->ndim);
+    snprintf(s, STRING_BUFFER, "::%s%d:<", nameof(p->Class->classname), ind->ndim);
     while (*s)
       s++;
     for (d = 0; d < ind->ndim; d++) {
-      sprintf(s, "%dx", ind->dim[d]);
+      snprintf(s, STRING_BUFFER - (s - string_buffer), "%" FMT_INTG "x", ind->dim[d]);
       while (*s)
 	s++;
     }
     if (s[-1] == 'x')
       *--s = 0;
-    sprintf(s,">");
+    snprintf(s, STRING_BUFFER - (s - string_buffer), ">");
   }
   return string_buffer;
 }
@@ -1308,7 +1308,7 @@ easy_index_check(at *p, int ndim, intg dim[])
     {
       for(i=0;i<ndim;i++)
 	if (dim[i]==0) {
-	  sprintf(msg,"unspecified dimension #%d",i);
+	  snprintf(msg,sizeof(msg),"unspecified dimension #%d",i);
 	  error(NIL,msg,p);
 	}
       index_dimension(p,ndim,dim);
@@ -1316,13 +1316,13 @@ easy_index_check(at *p, int ndim, intg dim[])
   else
     {
       if (ndim != ind->ndim) {
-	sprintf(msg,"%dD index expected",ndim);
+	snprintf(msg,sizeof(msg),"%dD index expected",ndim);
 	error(NIL,msg,p);
       }
       for (i=0;i<ndim;i++) {
 	if (dim[i]) {
 	  if (dim[i] != ind->dim[i]) {
-	    sprintf(msg,"illegal dimension #%d",i);
+	    snprintf(msg,sizeof(msg),"illegal dimension #%d",i);
 	    error(NIL,msg,p);
 	  }
 	} else
@@ -2064,7 +2064,7 @@ format_save_ascii_matrix(at *p, FILE *f, int h)
       int j;
       fprintf(f, ".MAT %d", ind->ndim); 
       for (j = 0; j < ind->ndim; j++)
-	fprintf(f, " %d", ind->dim[j]);
+	fprintf(f, " %" FMT_INTG, ind->dim[j]);
       fprintf(f, "\n");
     }
   /* iterate */

@@ -387,26 +387,26 @@ storage_name(at *p)
   
   st = p->Object;
   if (st->srg.flags & STS_MALLOC)
-    sprintf(string_buffer, "::%s:ram@%lx:<%d>", 
-	    nameof(p->Class->classname), (long)st->srg.data, st->srg.size);
+    snprintf(string_buffer, STRING_BUFFER, "::%s:ram@%" PRIxPTR ":<%" FMT_INTG ">",
+	    nameof(p->Class->classname), (uintptr_t)st->srg.data, st->srg.size);
   else if (st->srg.flags & STS_MMAP)
-    sprintf(string_buffer, "::%s:mmap@%lx:<%d>", 
-	    nameof(p->Class->classname), (long)st->srg.data, st->srg.size);
+    snprintf(string_buffer, STRING_BUFFER, "::%s:mmap@%" PRIxPTR ":<%" FMT_INTG ">",
+	    nameof(p->Class->classname), (uintptr_t)st->srg.data, st->srg.size);
   else if (st->srg.flags & STS_DISK)
-    sprintf(string_buffer, "::%s:disk@%lx:<%d>", 
-	    nameof(p->Class->classname), (long)st->srg.data, st->srg.size);
+    snprintf(string_buffer, STRING_BUFFER, "::%s:disk@%" PRIxPTR ":<%" FMT_INTG ">",
+	    nameof(p->Class->classname), (uintptr_t)st->srg.data, st->srg.size);
   else if (st->srg.flags & STS_REMOTE)
-    sprintf(string_buffer, "::%s:remote@%lx:<%d>", 
-	    nameof(p->Class->classname), (long)st->srg.data, st->srg.size);
+    snprintf(string_buffer, STRING_BUFFER, "::%s:remote@%" PRIxPTR ":<%" FMT_INTG ">",
+	    nameof(p->Class->classname), (uintptr_t)st->srg.data, st->srg.size);
   else if (st->srg.flags & STS_STATIC)
-    sprintf(string_buffer, "::%s:static@%lx",
-	    nameof(p->Class->classname), (long)st->srg.data);
+    snprintf(string_buffer, STRING_BUFFER, "::%s:static@%" PRIxPTR,
+	    nameof(p->Class->classname), (uintptr_t)st->srg.data);
   else if (st->srg.flags & STF_UNSIZED)
-    sprintf(string_buffer, "::%s:unsized@%lx",
-	    nameof(p->Class->classname), (long)st->srg.data);
-  else 
-    sprintf(string_buffer, "::%s:strange@%lx",
-	    nameof(p->Class->classname), (long)st->srg.data);
+    snprintf(string_buffer, STRING_BUFFER, "::%s:unsized@%" PRIxPTR,
+	    nameof(p->Class->classname), (uintptr_t)st->srg.data);
+  else
+    snprintf(string_buffer, STRING_BUFFER, "::%s:strange@%" PRIxPTR,
+	    nameof(p->Class->classname), (uintptr_t)st->srg.data);
   return string_buffer;
 }
 

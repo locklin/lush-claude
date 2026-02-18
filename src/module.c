@@ -211,7 +211,7 @@ nsbundle_symmark(nsbundle_t *bundle, nsbundle_t *mark)
       if (old && mark && old!=mark)
 	{
           static char buffer[512];
-          sprintf(buffer,"duplicate definition of symbol '%s'", sname);
+          snprintf(buffer,sizeof(buffer),"duplicate definition of symbol '%s'", sname);
           nsbundle_error = buffer;
           return -1;
 	}
@@ -406,13 +406,13 @@ nsbundle_load(const char *fname, nsbundle_t *bundle)
     {
       strcpy(bundle->name, tmpname("/tmp","bundle"));
       nsbundle_error = "cannot get object file symbols";
-      sprintf(cmd, "nm -gn \"%s\" > \"%s\"", fname, bundle->name);
+      snprintf(cmd, fnamelen + 256, "nm -gn \"%s\" > \"%s\"", fname, bundle->name);
       if (system(cmd) == 0 &&
 	  parse_nm_output(bundle, bundle->name) >= 0)
 	{
 	  remove(bundle->name);
 	  nsbundle_error = "Cannot create bundle from object file";
-	  sprintf(cmd, "cc -bundle -flat_namespace -undefined dynamic_lookup \"%s\" -o \"%s\"",
+	  snprintf(cmd, fnamelen + 256, "cc -bundle -flat_namespace -undefined dynamic_lookup \"%s\" -o \"%s\"",
 		  fname, bundle->name);
 	  if (system(cmd) == 0 &&
 	      nsbundle_symmark(bundle, bundle) >= 0 &&

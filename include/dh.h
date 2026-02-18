@@ -221,7 +221,7 @@ typedef union
   struct idx   *dh_idx_ptr;
   struct srg   *dh_srg_ptr;
   struct srg   *dh_str_ptr;
-  int          *dh_obj_ptr;
+  intg         *dh_obj_ptr;
 } dharg;
 
 
@@ -305,7 +305,7 @@ struct dhclassdoc_s
                                    (V_name_Rxxxxxxxx) */
     const char *k_name;         /* string with the name of the classdoc 
                                    (K_name_Rxxxxxxxx) */
-    int size;                   /* data size */
+    size_t size;                /* data size */
     int nmet;                   /* number of methods */
     void *vtable;               /* virtual table pointer */
     

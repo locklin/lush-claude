@@ -242,6 +242,14 @@ typedef void* gptr;
 # define enclose_in_string(a) "a"
 #endif
 
+/* --------- FORMAT MACROS ---------- */
+
+#ifdef INTG_IS_LONG
+# define FMT_INTG "ld"
+#else
+# define FMT_INTG "d"
+#endif
+
 /* --------- LISP CONSTANTS --------- */
 
 #define DXSTACKSIZE   (int)3000	/* max size for the DX stack */

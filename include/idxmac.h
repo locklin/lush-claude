@@ -353,30 +353,30 @@ struct srg *newi = & name2(_srg_,newi)
     var = 1; if(1 != (idx)->mod[2] || (idx)->dim[2] != (idx)->mod[1] || \
     (idx)->dim[1]*(idx)->dim[2] != (idx)->mod[0]) var = 0;
 #define Midx_contiguep4(idx, var) \
-{   intg size = 1; int i; var = 1\
+{   intg size = 1; int i; var = 1; \
     for(i=3;i>=0;i--) { \
 	if(size != (idx)->mod[i]) var = 0; \
-	size *= (%s)->dim[i]; }}
+	size *= (idx)->dim[i]; }}
 #define Midx_contiguep5(idx, var) \
-{   intg size = 1; int i; var = 1\
+{   intg size = 1; int i; var = 1; \
     for(i=4;i>=0;i--) { \
 	if(size != (idx)->mod[i]) var = 0; \
-	size *= (%s)->dim[i]; }}
+	size *= (idx)->dim[i]; }}
 #define Midx_contiguep6(idx, var) \
-{   intg size = 1; int i; var = 1\
+{   intg size = 1; int i; var = 1; \
     for(i=5;i>=0;i--) { \
 	if(size != (idx)->mod[i]) var = 0; \
-	size *= (%s)->dim[i]; }}
+	size *= (idx)->dim[i]; }}
 #define Midx_contiguep7(idx, var) \
-{   intg size = 1; int i; var = 1\
+{   intg size = 1; int i; var = 1; \
     for(i=6;i>=0;i--) { \
 	if(size != (idx)->mod[i]) var = 0; \
-	size *= (%s)->dim[i]; }}
+	size *= (idx)->dim[i]; }}
 #define Midx_contiguep8(idx, var) \
-{   intg size = 1; int i; var = 1\
+{   intg size = 1; int i; var = 1; \
     for(i=7;i>=0;i--) { \
 	if(size != (idx)->mod[i]) var = 0; \
-	size *= (%s)->dim[i]; }}
+	size *= (idx)->dim[i]; }}
 
 /* ============ ELOOPS, BLOOPS SUPPORT ============== */
 
