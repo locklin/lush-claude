@@ -64,7 +64,7 @@ enum binarytokens {
 
 /*** GLOBAL VARIABLES ****/
 
-int          in_bwrite = 0;
+intg         in_bwrite = 0;
 static int   opt_bwrite = 0;
 static FILE *fin;
 static FILE *fout;
@@ -888,8 +888,11 @@ local_write(at *p)
             ndim = -1;
           write_card8(TOK_ARRAY);
           write_card24(ndim);
-          for (i=0; i<ndim; i++)
+          for (i=0; i<ndim; i++) {
+            if (arr->dim[i] > INT_MAX)
+              error(NIL, "array dimension too large for binary format", NIL);
             write_card32(arr->dim[i]);
+          }
           return 0;
         }
       else
@@ -948,10 +951,10 @@ local_write(at *p)
  * Returns the number of bytes
  */
 
-int 
+intg
 bwrite(at *p, FILE *f, int opt)
 {
-  int count;
+  intg count;
   
   if (in_bwrite!=0)
     error(NIL,"Recursive binary read/write are forbidden",NIL);
@@ -974,9 +977,9 @@ bwrite(at *p, FILE *f, int opt)
 DX(xbwrite)
 {
   int i;
-  int count = 0;
+  intg count = 0;
   ALL_ARGS_EVAL;
-  for (i=1; i<=arg_number; i++) 
+  for (i=1; i<=arg_number; i++)
     count += bwrite( APOINTER(i), context->output_file, FALSE );
   return NEW_NUMBER(count);
 }
@@ -984,9 +987,9 @@ DX(xbwrite)
 DX(xbwrite_exact)
 {
   int i;
-  int count = 0;
+  intg count = 0;
   ALL_ARGS_EVAL;
-  for (i=1; i<=arg_number; i++) 
+  for (i=1; i<=arg_number; i++)
     count += bwrite( APOINTER(i), context->output_file, TRUE );
   return NEW_NUMBER(count);
 }
@@ -1098,7 +1101,8 @@ local_bread_array(at **pp)
   struct index *ind;
   struct idx id;
   intg dim[MAXDIMS];
-  int i, size, ndim;
+  int ndim;
+  intg i, size;
   
   ndim = read_card24();
   if (ndim == 0xFFFFFF) 

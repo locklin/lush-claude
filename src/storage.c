@@ -491,7 +491,7 @@ storage_serialize(at **pp, int code)
           FILE *f = serialization_file_descriptor(code);
           if (code == SRZ_WRITE) 
             {
-              extern int in_bwrite;
+              extern intg in_bwrite;
               in_bwrite += sizeof(int) + size * storage_type_size[type];
               write4(f, STORAGE_NORMAL);
               storage_save(*pp, f);
@@ -1016,7 +1016,7 @@ storage_mmap(at *atp, FILE *f, size_t offset)
 DX(xstorage_mmap)
 {
   at *atp, *atf;
-  int offset = 0;
+  size_t offset = 0;
 
   ALL_ARGS_EVAL;
   if (arg_number==3)

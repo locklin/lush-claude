@@ -1840,13 +1840,13 @@ compatible_p(void)
 }
 
 static void 
-mode_check(at *p, int *size_p, int *elem_p)
+mode_check(at *p, intg *size_p, int *elem_p)
 {
   struct index *ind;
   struct storage *st;
   int elsize;
   int type;
-  int size;
+  intg size;
   int i;
   
   if (! EXTERNP(p, &index_class))
@@ -1904,11 +1904,12 @@ swap_buffer(char *b, int n, int m)
  * returns the number of bytes written by a save_matrix!
  */
 
-int 
+intg
 save_matrix_len(at *p)
 {
   struct index *ind;
-  int size, elsize, ndim;
+  intg size;
+  int elsize, ndim;
   mode_check(p, &size, &elsize);
   ind = p->Object;
   ndim = ind->ndim;
@@ -1961,8 +1962,11 @@ format_save_matrix(at *p, FILE *f, int h)
       int ndim = ((ind->flags & IDF_UNSIZED) ? -1 : ind->ndim);
       write4(f, magic);
       write4(f, ndim);
-      for (j = 0; j < ndim; j++)
+      for (j = 0; j < ndim; j++) {
+	if (ind->dim[j] > INT_MAX)
+	  error(NIL, "dimension too large for 32-bit matrix format", NIL);
 	write4(f, ind->dim[j]);
+      }
       /* sn1 compatibility */
       if (ndim==1 || ndim==2)
         while (j++ < 3)
@@ -2139,12 +2143,13 @@ DX(xexport_text_matrix)
  * import_text_matrix(p,f)
  */
 
-void 
-import_raw_matrix(at *p, FILE *f, int offset)
+void
+import_raw_matrix(at *p, FILE *f, off_t offset)
 {
   struct index *ind;
   struct idx id;
-  int size, elsize, rsize;
+  intg size, rsize;
+  int elsize;
   char *pntr;
   int contiguous;
 
@@ -2200,7 +2205,7 @@ import_raw_matrix(at *p, FILE *f, int offset)
 
 DX(ximport_raw_matrix)
 {
-  int offset = 0;
+  off_t offset = 0;
   at *p;
   ALL_ARGS_EVAL;
   if (arg_number==3)
@@ -2228,7 +2233,8 @@ import_text_matrix(at *p, FILE *f)
 {
   struct index *ind;
   struct idx id;
-  int size, elsize, type;
+  intg size;
+  int elsize, type;
   char *pntr;
   real x;
   void (*setr)(gptr,intg,real);
@@ -2445,7 +2451,8 @@ load_matrix(FILE *f)
       if (swapflag) {
         struct index *ind;
         struct idx id;
-        int size, elsize;
+        intg size;
+        int elsize;
         char *pntr;
         mode_check(ans, &size, &elsize);
         if (elsize > 1) 

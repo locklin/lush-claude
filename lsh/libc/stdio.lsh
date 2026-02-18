@@ -684,12 +684,12 @@
   (cheader "#include <sys/types.h>")
   (cheader "#include <sys/stat.h>")
   (let ((ans -1))
-    ((-int-) ans)
+    ((-real-) ans)
     #{{
       struct stat buf;
       if (stat($fname->data, &buf)>=0)
       if (S_ISREG(buf.st_mode))
-      $ans = buf.st_size;
+      $ans = (double)buf.st_size;
     }#}
       ans ) )
 

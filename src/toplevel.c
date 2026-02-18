@@ -109,7 +109,7 @@ extern int isdump (const char *s);
 extern void undump (const char *s);
 
 /* From BINARY.C */
-extern int in_bwrite;
+extern intg in_bwrite;
 
 /* FORWARD */
 static void recur_doc_init(void);

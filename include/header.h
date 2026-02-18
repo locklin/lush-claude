@@ -858,7 +858,7 @@ enum serialize_action {
   SRZ_READ
 };
 
-TLAPI int bwrite(at *p, FILE *f, int opt);
+TLAPI intg bwrite(at *p, FILE *f, int opt);
 TLAPI at *bread(FILE *f, int opt);
 
 /* serialization functions */
@@ -1124,9 +1124,9 @@ LUSHAPI void index_write_idx(struct index *, struct idx *);
 LUSHAPI void index_rls_idx(struct index *, struct idx *);
 
 /* Other functions (TL compatible) */
-TLAPI void import_raw_matrix(at *p, FILE *f, int offset);
+TLAPI void import_raw_matrix(at *p, FILE *f, off_t offset);
 TLAPI void import_text_matrix(at *p, FILE *f);
-TLAPI int save_matrix_len (at *p);
+TLAPI intg save_matrix_len (at *p);
 TLAPI void save_matrix(at *p, FILE *f);
 TLAPI void export_matrix(at *p, FILE *f);
 TLAPI void save_ascii_matrix(at *p, FILE *f);
