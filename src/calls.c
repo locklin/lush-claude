@@ -144,7 +144,8 @@ again:
 #if defined(WIN32) && defined(_MSC_VER) && defined(_M_IX86)
       if (p->Number == q->Number) {
         float delta = (float)(p->Number - q->Number);
-        if (! *(long*)&delta)
+        int zero = 0;
+        if (!memcmp(&delta, &zero, sizeof(float)))
           return TRUE;
       }
 #else
@@ -197,7 +198,7 @@ tlsizeof(char *s)
   if( ! strcmp( s , "real" ) )
     return sizeof(real);
   if( ! strcmp( s , "long" ) )
-    return sizeof(int);
+    return sizeof(long);
   if( ! strcmp( s , "int" ) )
     return sizeof(int);
   if( ! strcmp( s , "short" ) )

@@ -254,7 +254,8 @@ unsigned long
 hash_pointer(at *p)
 {
   unsigned long x = (unsigned long)p;
-  x = x ^ (x>>16);
+  x ^= (x >> 32);
+  x ^= (x >> 16);
   return x;
 }
 
@@ -271,7 +272,7 @@ hash_value(at *p)
   at *slow = p;
 
 again:
-  x = (x<<1)|((x&0x80000000) ? 0 : 1);
+  x = (x<<1)|((x >> (sizeof(unsigned long)*8 - 1)) ^ 1);
   if (!p)
     {
       return x;

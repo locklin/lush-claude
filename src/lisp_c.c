@@ -896,7 +896,7 @@ DX(xlisp_c_map)
   if (p==0)
     return lisp_c_map(0);
   else if (p->flags & C_NUMBER)
-    return lisp_c_map((void*)(unsigned long)(p->Number));
+    return lisp_c_map((void*)(uintptr_t)(p->Number));
   else if (p->flags & X_OOSTRUCT)
     cptr = ((struct oostruct *)(p->Object))->cptr;
   else if (p->flags & X_INDEX)

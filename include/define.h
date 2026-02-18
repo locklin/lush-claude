@@ -53,6 +53,8 @@
 #include <stdio.h>
 #include <ctype.h>
 #include <math.h>
+#include <stdint.h>
+#include <inttypes.h>
 
 /* untyped pointer */
 typedef void* gptr;

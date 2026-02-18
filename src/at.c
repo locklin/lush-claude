@@ -958,9 +958,13 @@ DX(xnew_unode)
 
 DX(xunode_uid)
 {
+  uintptr_t uid;
   ARG_NUMBER(1);
   ARG_EVAL(1);
-  return NEW_NUMBER((long)unode_dive(APOINTER(1)));
+  uid = (uintptr_t)unode_dive(APOINTER(1));
+  if (uid != (uintptr_t)(real)uid)
+    error(NIL,"pointer value exceeds double precision",NIL);
+  return NEW_NUMBER((real)uid);
 }
 
 DX(xunode_val)
@@ -1052,11 +1056,11 @@ char *
 generic_name(at *p)
 {
   if (p->Class->classname)
-    sprintf(string_buffer, "::%s:%lx", 
-	    nameof(p->Class->classname),(long)p->Object);
+    sprintf(string_buffer, "::%s:%" PRIxPTR,
+	    nameof(p->Class->classname),(uintptr_t)p->Object);
   else
-    sprintf(string_buffer, "::%lx:%lx", 
-	    (long)p->Class, (long)p->Object);
+    sprintf(string_buffer, "::%" PRIxPTR ":%" PRIxPTR,
+	    (uintptr_t)p->Class, (uintptr_t)p->Object);
 
   return string_buffer;
 }

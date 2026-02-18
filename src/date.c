@@ -363,7 +363,7 @@ date_hash(at *p)
     n = 0;
     if (i <= d->to)
       n = d->x[i];
-    x = (x<<6) | ((x&0xfc000000)>>26);
+    x = (x<<6) | (x >> (sizeof(unsigned long)*8 - 6));
     x ^= n;
   }
   return x;

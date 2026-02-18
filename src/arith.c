@@ -96,7 +96,7 @@ complex_compare(at *p, at *q, int order)
 static unsigned long
 complex_hash(at *p)
 {
-  union { real r; long l[2]; } u[2];
+  union { real r; unsigned int l[2]; } u[2];
   complexreal *c = p->Object;
   unsigned long x = 0x1011;
   u[0].r = Creal(*c);
@@ -104,7 +104,7 @@ complex_hash(at *p)
   x ^= u[0].l[0];
   x = (x<<1)|((long)x<0 ? 0 : 1);
   x ^= u[1].l[0];
-  if (sizeof(real) >= 2*sizeof(unsigned long)) {
+  if (sizeof(real) >= 2*sizeof(unsigned int)) {
     x ^= u[0].l[1];
     x = (x<<1)|((long)x<0 ? 0 : 1);
     x ^= u[1].l[1];

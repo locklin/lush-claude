@@ -74,7 +74,7 @@ search_by_name(const unsigned char *s, int mode)
       unsigned char c = *ss++;
       if (! c)
         break;
-      hash = (hash<<6) | ((hash&0xfc000000)>>26);
+      hash = (hash<<6) | (hash >> (sizeof(unsigned long)*8 - 6));
       hash ^= c;
     }
   lasthn = names + (hash % (HASHTABLESIZE-1));

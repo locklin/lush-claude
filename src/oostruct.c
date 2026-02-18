@@ -372,7 +372,7 @@ class_name(at *p)
   if (c->classname)
     sprintf(string_buffer, "::class:%s", nameof(c->classname));
   else
-    sprintf(string_buffer, "::class:%lx", (long)c);
+    sprintf(string_buffer, "::class:%" PRIxPTR, (uintptr_t)c);
 
   return string_buffer;
 }
