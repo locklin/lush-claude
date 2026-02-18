@@ -538,11 +538,11 @@ DX(xnull)
 }
 
 
-int 
+intg
 length(at *p)
 {
   at *q = p;
-  int i = 0;
+  intg i = 0;
   while (CONSP(p)) 
   {
     i += 1;

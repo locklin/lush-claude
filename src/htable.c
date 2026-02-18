@@ -46,8 +46,8 @@ struct hashelt
 
 struct hashtable
 {
-  int   size;
-  int   nelems;
+  intg  size;
+  intg  nelems;
   int   pointerhashp;
   int   keylockp;
   int   rehashp;
@@ -327,9 +327,9 @@ again:
 /* htable_resize -- extend hash table */
 
 static void 
-htable_resize(struct hashtable *htable, int newsize)
+htable_resize(struct hashtable *htable, intg newsize)
 {
-  int i, j;
+  intg i, j;
   struct hashelt *n, *m;
   struct hashelt **newtable;
   /* allocate newtable */
@@ -584,10 +584,10 @@ DX(xhashcode)
 /* new_htable -- hashtable creation */
 
 LUSHAPI at *
-new_htable(int nelems, int pointerhashp)
-{ 
-  int i;
-  int size;
+new_htable(intg nelems, int pointerhashp)
+{
+  intg i;
+  intg size;
   struct hashtable *htable;
   struct hashelt **table;
   size = (nelems<16 ? 31 : nelems * 2 - 1);

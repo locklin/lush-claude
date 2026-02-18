@@ -89,7 +89,7 @@ new_safe_string(char *s)
  */
 
 at *
-new_string_bylen(int n)
+new_string_bylen(size_t n)
 {
   at *q;
   char *buffer;
@@ -587,8 +587,8 @@ DX(xstr_concat)
 /*------------------------ */
 
 
-int 
-str_index(char *s1, char *s2, int start)
+int
+str_index(char *s1, char *s2, intg start)
 {
   register int indx;
   register char *sa, *sb;

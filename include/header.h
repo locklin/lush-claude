@@ -307,7 +307,7 @@ TLAPI at *cddr(at *q);
 TLAPI at *rplaca(at *q, at *p);
 TLAPI at *rplacd(at *q, at *p);
 TLAPI at *displace(at *q, at *p);
-TLAPI int length(at *p);
+TLAPI intg length(at *p);
 TLAPI at *member(at *elem, at *list);
 TLAPI at *nfirst(int n, at *l);
 TLAPI at *nth(at *l, int n);
@@ -368,7 +368,7 @@ struct chunk_header {
 struct alloc_root {
   struct empty_alloc *freelist;	  /* List of free elems */
   struct chunk_header *chunklist; /* List of active chunkes */
-  int elemsize;			  /* Size of one elems */
+  size_t elemsize;		  /* Size of one elems */
   int chunksize;		  /* Number of elems in one chunk */
 };
 
@@ -561,8 +561,8 @@ struct string {
 
 TLAPI at *new_string(const char *s);
 TLAPI at *new_safe_string(char *s);
-TLAPI at *new_string_bylen(int n);
-TLAPI int str_index(char *s1, char *s2, int start);
+TLAPI at *new_string_bylen(size_t n);
+TLAPI int str_index(char *s1, char *s2, intg start);
 TLAPI at *str_val(char *s);
 TLAPI char *str_number(double x);
 TLAPI char *str_number_hex(double x);
@@ -742,7 +742,7 @@ extern TLAPI class htable_class;
 
 TLAPI unsigned long hash_value(at *);
 TLAPI unsigned long hash_pointer(at *);
-TLAPI at  *new_htable(int nelems, int pointerhashp);
+TLAPI at  *new_htable(intg nelems, int pointerhashp);
 TLAPI void htable_set(at *htable, at *key, at *value);
 TLAPI at  *htable_get(at *htable, at *key);
 
@@ -770,7 +770,7 @@ TLAPI real solve(real x1, real x2, real (*f) (real));
 
 /* CALLS.H ----------------------------------------------------- */
 
-TLAPI at *makelist(int n, at *v);
+TLAPI at *makelist(intg n, at *v);
 TLAPI int comp_test(at *p, at *q);
 TLAPI int eq_test (at *p, at *q);
 

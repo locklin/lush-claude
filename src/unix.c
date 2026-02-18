@@ -760,8 +760,8 @@ os_setup_async_poll(int* fds, int nfds, void(*apoll)(void))
   unblock_async_trigger();
 }
 
-void 
-os_curtime(int *sec, int *msec)
+void
+os_curtime(long *sec, int *msec)
 {
 #if defined(HAVE_GETTIMEOFDAY)
   struct timeval tv;
@@ -771,12 +771,12 @@ os_curtime(int *sec, int *msec)
 #elif defined(HAVE_FTIME)
   struct timeb tb;
   ftime(&tb);
-  *sec = (int)tb.time;
+  *sec = (long)tb.time;
   *msec = (int)tb.millitm;
 #else
   time_t tm;
   time(&tm);
-  *sec = (int)tm;
+  *sec = (long)tm;
   *msec = 0;
 #endif
 }
@@ -1189,7 +1189,8 @@ DX(xsys)
 DY(yrealtime)
 {
   at *q;
-  int s1, ms1, s2, ms2;
+  long s1, s2;
+  int ms1, ms2;
   os_curtime(&s1, &ms1);
   q = progn(ARG_LIST);
   os_curtime(&s2, &ms2);
@@ -1234,7 +1235,8 @@ DY(ytime)
 {
   if (! ARG_LIST) 
     {
-      int s, ms;
+      long s;
+      int ms;
       os_curtime(&s, &ms);
       return NEW_NUMBER( s + (double) ms * 0.001 );
     } 

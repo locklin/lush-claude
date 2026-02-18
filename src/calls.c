@@ -240,7 +240,7 @@ DX(xatgptr)
  * makelist ex:  (makelist 4 'a) -->  (a a a a)
  */
 at *
-makelist(int n, at *v)
+makelist(intg n, at *v)
 {
   at *ans;
 

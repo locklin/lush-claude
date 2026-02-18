@@ -60,10 +60,10 @@ typedef RETSIGTYPE (*SIGHANDLERTYPE)();
   Maybe it would be better to use ieee_functions ?
   ================*/
 
-static int ieee_nanf[1];
-static int ieee_inftyf[1];
-static int ieee_nand[2];
-static int ieee_inftyd[2];
+static uint32_t ieee_nanf[1];
+static uint32_t ieee_inftyf[1];
+static uint32_t ieee_nand[2];
+static uint32_t ieee_inftyd[2];
 static int ieee_present = 0;
 static int fpe_inv = 0;
 static int fpe_ofl = 0;
@@ -94,8 +94,8 @@ infinityF (void)
 int
 isinfF(flt x)
 {
-  union { float f; int i; } u;
-  int ix;
+  union { float f; int32_t i; } u;
+  int32_t ix;
   if (sizeof(flt)!=sizeof(ieee_nanf))
     return 0;
   if (ieee_present <= 0)
@@ -110,8 +110,8 @@ isinfF(flt x)
 int
 isnanF(flt x)
 {
-  union { float f; int i; } u;
-  int ix;
+  union { float f; int32_t i; } u;
+  int32_t ix;
   if (sizeof(flt)!=sizeof(ieee_nanf))
     return 0;
   if (ieee_present <= 0)
@@ -144,9 +144,10 @@ infinityD (void)
 int
 isinfD(real x)
 {
-  int ix, jx, a;
-  union { int i; char c[sizeof(int)]; } u;
-  union { real r; int i[2]; } v;
+  int32_t ix, jx;
+  int a;
+  union { int32_t i; char c[sizeof(int32_t)]; } u;
+  union { real r; int32_t i[2]; } v;
   if (sizeof(real)!=sizeof(ieee_nand))
     return 0;
   if (ieee_present <= 0)
@@ -167,9 +168,10 @@ isinfD(real x)
 int
 isnanD(real x)
 {
-  int ix, jx, a;
-  union { int i; char c[sizeof(int)]; } u;
-  union { real r; int i[2]; } v;
+  int32_t ix, jx;
+  int a;
+  union { int32_t i; char c[sizeof(int32_t)]; } u;
+  union { real r; int32_t i[2]; } v;
   if (sizeof(real)!=sizeof(ieee_nand))
     return 0;
   if (ieee_present <= 0)
@@ -518,7 +520,7 @@ DY(yprogn_without_fpe)
 void
 init_nan(void)
 {
-  if (sizeof(flt)==4 && sizeof(real)==8 && sizeof(int)==4)
+  if (sizeof(flt)==4 && sizeof(real)==8 && sizeof(int32_t)==4)
     {
       /* Setup bit patterns */
       int a = 1;

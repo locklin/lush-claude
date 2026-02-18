@@ -39,7 +39,7 @@ extern void os_block_async_poll(void);
 extern void os_unblock_async_poll(void);
 extern void os_setup_async_poll(int*fds, int nfds, void(*apoll)(void));
 extern int  os_wait(int nfds, int* fds, int console, unsigned long ms);
-extern void os_curtime(int *sec, int *msec);
+extern void os_curtime(long *sec, int *msec);
 
 
 /* ------------------------------------ */
@@ -221,7 +221,7 @@ event_get(void *handler, int remove)
 
 
 typedef struct evtime {
-  int sec;
+  long sec;
   int msec;
 } evtime_t;
 
@@ -307,7 +307,7 @@ ti_insert(struct event_timer *ti)
 
 
 static void *
-timer_add_sub(at *handler, int sec, int msec, int period)
+timer_add_sub(at *handler, long sec, int msec, int period)
 {
   struct event_timer *ti;
   if (handler)
@@ -359,7 +359,7 @@ timer_add(at *handler, int delay, int period)
 void *
 timer_abs(at *handler, real date)
 {
-  int sec = (int)date;
+  long sec = (long)date;
   int msec = (date - sec) * 1000;
   if (! handler)
     error(NIL,"Illegal null event handler",NIL);

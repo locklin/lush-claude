@@ -737,7 +737,7 @@ DX(xgraphics_sync)
 /* static structure for pixel_map, hinton_map, get_image... */
 
 static unsigned int *image = NULL;
-static unsigned int imagesize = 0;
+static size_t imagesize = 0;
 
 
 
@@ -991,14 +991,14 @@ color_draw_list(int xx, int y, register at *l, int ncol,
     
     /* special pixel_map call */
     
-    if (imagesize < sizeof(int) * ncol * nlin) {
+    if (imagesize < (size_t)sizeof(int) * ncol * nlin) {
       if (imagesize)
 	free(image);
       imagesize = 0;
-      image = malloc(sizeof(int) * ncol * nlin);
+      image = malloc((size_t)sizeof(int) * ncol * nlin);
       if (!image)
 	error(NIL, "no memory", NIL);
-      imagesize = sizeof(int) * ncol * nlin;
+      imagesize = (size_t)sizeof(int) * ncol * nlin;
     }
     im = image;
     
@@ -1116,15 +1116,15 @@ color_draw_idx(int x, int y, struct idx *idx,
       
       unsigned int *im;
       
-      if (imagesize < sizeof(int) * d1 * d2) {
+      if (imagesize < (size_t)sizeof(int) * d1 * d2) {
 	if (imagesize)
 	  free(image);
 	imagesize = 0;
-	image = malloc(sizeof(int) * d1 * d2);
+	image = malloc((size_t)sizeof(int) * d1 * d2);
 	ifn (image) {
             return 4;
 	}
-	imagesize = sizeof(int) * d1 * d2;
+	imagesize = (size_t)sizeof(int) * d1 * d2;
       }
       im = image;
 
@@ -1392,15 +1392,15 @@ rgb_draw_idx(int x, int y, struct idx *idx, int sx, int sy)
           return 6;
       }
       /* Check pixel image buffer */
-      if (imagesize < 4 * d1 * d2 * sx * sy) {
+      if (imagesize < (size_t)4 * d1 * d2 * sx * sy) {
         if (imagesize)
           free(image);
         imagesize = 0;
-        image = malloc(4 * d1 * d2 * sx * sy);
+        image = malloc((size_t)4 * d1 * d2 * sx * sy);
         ifn (image) {
             return 7;
         }
-        imagesize = 4 * d1 * d2 * sx * sy;
+        imagesize = (size_t)4 * d1 * d2 * sx * sy;
       }
       /* Copy image and zoom */
       im = (unsigned char*)image;
@@ -1520,15 +1520,15 @@ rgb_draw_idx(int x, int y, struct idx *idx, int sx, int sy)
       int off1, off2;
       /* Check pixel image buffer */
       unsigned int *im;
-      if (imagesize < sizeof(int) * d1 * d2) {
+      if (imagesize < (size_t)sizeof(int) * d1 * d2) {
         if (imagesize)
           free(image);
         imagesize = 0;
-        image = malloc(sizeof(int) * d1 * d2);
+        image = malloc((size_t)sizeof(int) * d1 * d2);
         ifn (image) {
             return 7;
         }
-        imagesize = sizeof(int) * d1 * d2;
+        imagesize = (size_t)sizeof(int) * d1 * d2;
       }
       im = (unsigned int*)image;
       /* Copy RGB into pixel image */
@@ -1698,14 +1698,14 @@ rgb_grab_idx(int x, int y, struct idx *idx)
   d2 = idx->dim[0];
   m2 = idx->mod[0];
 
-  if (imagesize < sizeof(int) * d1 * d2) {
+  if (imagesize < (size_t)sizeof(int) * d1 * d2) {
     if (imagesize)
       free(image);
     imagesize = 0;
-    image = malloc(sizeof(int) * d1 * d2);
-    if (! image) 
+    image = malloc((size_t)sizeof(int) * d1 * d2);
+    if (! image)
       return 7;
-    imagesize = sizeof(int) * d1 * d2;
+    imagesize = (size_t)sizeof(int) * d1 * d2;
   }
   im = image;
   (win->gdriver->begin) (win);
