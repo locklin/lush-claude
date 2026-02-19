@@ -51,7 +51,7 @@ struct alloc_root at_alloc = {
 void 
 purge(at *q)
 {
-  register at *h;
+  at *h;
 
 purge_loop:
 
@@ -99,7 +99,7 @@ purge_loop:
 at *
 cons(at *car, at *cdr)			/* CONS: you have to LOCK car and cdr */
 {
-  register at *new;
+  at *new;
 
   if ((new = (at *) at_alloc.freelist))
     at_alloc.freelist = ((struct empty_alloc *) new)->next;
@@ -117,7 +117,7 @@ cons(at *car, at *cdr)			/* CONS: you have to LOCK car and cdr */
 at *
 new_cons(at *car, at *cdr)		/* NEW_CONS: LOCKs car and cdr		 */
 {
-  register at *new;
+  at *new;
 
   if ((new = (at *) at_alloc.freelist))
     at_alloc.freelist = ((struct empty_alloc *) new)->next;
@@ -150,7 +150,7 @@ DX(xcons)
 at *
 new_number(double x)
 {
-  register at *new;
+  at *new;
 
   new = allocate(&at_alloc);
   new->flags = C_NUMBER;
@@ -168,7 +168,7 @@ new_number(double x)
 at * 
 new_gptr(gptr x)
 {
-  register at *new;
+  at *new;
 
   new = allocate(&at_alloc);
   new->flags = C_GPTR;
@@ -242,7 +242,7 @@ DY(ycompute_bump)
 at *
 new_extern(TLclass *cl, void *obj)
 {
-  register at *new;
+  at *new;
 
   new = allocate(&at_alloc);
   new->flags = C_EXTERN;
@@ -300,7 +300,7 @@ DX(xcdr)
 at *
 caar(at *q)
 {
-  register at *p;
+  at *p;
 
   p = car(q);
   q = car(p);
@@ -318,7 +318,7 @@ DX(xcaar)
 at *
 cadr(at *q)
 {
-  register at *p;
+  at *p;
 
   p = cdr(q);
   q = car(p);
@@ -336,7 +336,7 @@ DX(xcadr)
 at *
 cdar(at *q)
 {
-  register at *p;
+  at *p;
 
   p = car(q);
   q = cdr(p);
@@ -354,7 +354,7 @@ DX(xcdar)
 at *
 cddr(at *q)
 {
-  register at *p;
+  at *p;
 
   p = cdr(q);
   q = cdr(p);
@@ -441,7 +441,7 @@ DX(xdisplace)
 
 DX(xlistp)
 {
-  register at *q;
+  at *q;
 
   ARG_NUMBER(1);
   ARG_EVAL(1);
@@ -457,7 +457,7 @@ DX(xlistp)
 
 DX(xconsp)
 {
-  register at *q;
+  at *q;
 
   ARG_NUMBER(1);
   ARG_EVAL(1);
@@ -471,7 +471,7 @@ DX(xconsp)
 
 DX(xatomp)
 {
-  register at *q;
+  at *q;
 
   ARG_NUMBER(1);
   ARG_EVAL(1);
@@ -564,7 +564,7 @@ DX(xlength)
 
 
 at *
-last(register at *list)
+last(at *list)
 {
   if (CONSP(list)) {
     int toggle = 1;
@@ -597,7 +597,7 @@ DX(xlast)
 
 
 at *
-lastcdr(register at *list)
+lastcdr(at *list)
 {
   if (CONSP(list)) {
     at *q = list;
@@ -625,7 +625,7 @@ DX(xlastcdr)
 
 
 at *
-member(at *elem, register at *list)
+member(at *elem, at *list)
 {
   at *q = list;
   int toggle = 0;
@@ -654,10 +654,10 @@ DX(xmember)
 
 
 at *
-append(register at *l1, at *l2)
+append(at *l1, at *l2)
 {
   at *answer = NIL;
-  register at **where = &answer;
+  at **where = &answer;
   at *q = l1;
   int toggle = 0;
 
@@ -678,8 +678,8 @@ append(register at *l1, at *l2)
 
 DX(xappend)
 {
-  register at *last, *old;
-  register int i;
+  at *last, *old;
+  int i;
 
   ALL_ARGS_EVAL;
   if (arg_number == 0)
@@ -702,7 +702,7 @@ at *
 nfirst(int n, at *l)
 {
   at *answer = NIL;
-  register at **where = &answer;
+  at **where = &answer;
   while ( CONSP(l) && n-- > 0) 
     {
       *where = new_cons(l->Car, NIL);
@@ -726,7 +726,7 @@ DX(xnfirst)
 
 
 at *
-nth(register at *l, register int n)
+nth(at *l, int n)
 {
   while (n > 0 && CONSP(l)) {
     CHECK_MACHINE("on");
@@ -752,7 +752,7 @@ DX(xnth)
 
 
 at *
-nthcdr(register at *l, register int n)
+nthcdr(at *l, int n)
 {
   while (n > 0 && CONSP(l)) {
     n--;
@@ -777,9 +777,9 @@ DX(xnthcdr)
 
 
 at *
-reverse(register at *l)
+reverse(at *l)
 {
-  register at *r;
+  at *r;
   at *q = l;
   int toggle = 0;
 
@@ -806,7 +806,7 @@ DX(xreverse)
 
 
 static at **
-flat1(register at *l, register at **where)
+flat1(at *l, at **where)
 {
   at *slow = l;
   char toggle = 0;
@@ -1001,8 +1001,8 @@ DX(xunode_unify)
 int 
 used(void)
 {
-  register struct at *q;
-  register int inuse;
+  struct at *q;
+  int inuse;
 
   inuse = 0;
   q = named("result");
@@ -1075,8 +1075,8 @@ generic_eval(at *p)
 at *
 generic_listeval(at *p, at *q)
 {
-  register struct symbol *s;
-  register at *pp;
+  struct symbol *s;
+  at *pp;
 
   /* looking for stacked functional values */
   pp = q->Car;			

@@ -344,23 +344,11 @@ storage_dispose(at *p)
 #ifdef HAVE_MMAP
       if (st->srg.flags & STS_MMAP) 
         {
-          if (st->allinfo.sts_mmap.addr) 
+          if (st->allinfo.sts_mmap.addr)
             {
-#ifdef UNIX
               munmap(st->allinfo.sts_mmap.addr, st->allinfo.sts_mmap.len);
-#endif
-#ifdef WIN32
-              UnmapViewOfFile(st->allinfo.sts_mmap.addr);
-              CloseHandle((HANDLE)(st->allinfo.sts_mmap.xtra));
-#endif
             }
         }
-#endif
-#ifdef DISKARRAY
-      /* --- UNIMPLEMENTED --- */
-#endif
-#ifdef REMOTEARRAY
-      /* --- UNIMPLEMENTED --- */
 #endif
       if (st->cptr)
         lside_destroy_item(st->cptr);
@@ -381,12 +369,6 @@ storage_action(at *p, void (*action) (at *))
     for (i=0; i<st->srg.size; i++)
       (*action)(data[i]);
   }
-#ifdef HAVE_MMAP
-#endif
-#ifdef DISKARRAY
-#endif
-#ifdef REMOTEARRAY
-#endif
 }
 
 static char* 
@@ -1006,20 +988,10 @@ storage_mmap(at *atp, FILE *f, size_t offset)
     error(NIL,"cannot map an AT storage",atp);
   ifn (st->srg.flags & STF_UNSIZED)
     error(NIL,"An unsized storage is required",NIL);
-#ifdef UNIX
   xtra = 0;
   addr = mmap(0,len,PROT_READ,MAP_SHARED,fileno(f),0);
   if (addr == (void*)-1L)
     test_file_error(NIL);
-#endif
-#ifdef WIN32
-  if (! (xtra = (gptr)CreateFileMapping((HANDLE)(_get_osfhandle(fd)), 
-                                        NULL, PAGE_READONLY, 0, len, NULL)))
-    error(NIL,"Cannot create file mapping",NIL);
-  if (! (addr = (gptr)MapViewOfFile((HANDLE)(xtra), 
-                                    FILE_MAP_READ, 0, 0, size + pos)))
-    error(NIL,"Cannot create view on mapped file",NIL);
-#endif
   st->srg.size = (len - offset) / storage_type_size[st->srg.type];
   st->allinfo.sts_mmap.len  = len;
   st->allinfo.sts_mmap.xtra = xtra;
@@ -1056,18 +1028,6 @@ DX(xstorage_mmap)
 
 #endif
 
-
-/* ------------ ALLOCATION FUNCTION: DISK -------- */
-
-#ifdef DISKARRAY
-/* --- UNIMPLEMENTED --- */
-#endif
-
-/* ------------ ALLOCATION FUNCTION: REMOTE ------- */
-
-#ifdef REMOTEARRAY
-/* --- UNIMPLEMENTED --- */
-#endif
 
 
 

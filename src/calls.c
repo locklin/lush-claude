@@ -141,17 +141,8 @@ again:
   else if ((p->flags & C_NUMBER) && 
            (q->flags & C_NUMBER))
     {
-#if defined(WIN32) && defined(_MSC_VER) && defined(_M_IX86)
-      if (p->Number == q->Number) {
-        float delta = (float)(p->Number - q->Number);
-        int zero = 0;
-        if (!memcmp(&delta, &zero, sizeof(float)))
-          return TRUE;
-      }
-#else
       if (p->Number == q->Number)
         return TRUE;
-#endif
       return FALSE;
     }
   /* Comparison method provided */

@@ -64,8 +64,8 @@ static char *badarg = "Argument out of range";
 at *
 new_safe_string(char *s)
 {
-  register struct string *st;
-  register at *q;
+  struct string *st;
+  at *q;
 
   if (!s || !*s)
     s = null_string;
@@ -116,8 +116,8 @@ new_string_bylen(size_t n)
 at *
 new_string(const char *s)
 {
-  register struct string *st;
-  register at *q;
+  struct string *st;
+  at *q;
 
   if (!s || !*s)
     return new_safe_string(null_string);
@@ -137,7 +137,7 @@ new_string(const char *s)
 static void 
 string_dispose(at *p)
 {
-  register struct string *s;
+  struct string *s;
 
   s = p->Object;
   if (s->flag == STRING_ALLOCATED)
@@ -590,8 +590,8 @@ DX(xstr_concat)
 int
 str_index(char *s1, char *s2, intg start)
 {
-  register int indx;
-  register char *sa, *sb;
+  int indx;
+  char *sa, *sb;
 
   indx = 1;
   while (*s2) {
@@ -611,8 +611,8 @@ str_index(char *s1, char *s2, intg start)
 
 DX(xstr_index)
 {
-  register int start;
-  register char *s;
+  int start;
+  char *s;
 
   start = 1;
   ALL_ARGS_EVAL;
@@ -739,7 +739,7 @@ char *
 str_number(double x)
 {
   real y;
-  register char *s, *t;
+  char *s, *t;
   
   if (isnanD((real)x))
     return "Nan";
@@ -1312,7 +1312,7 @@ DX(ximplode_chars)
 
 DX(xstringp)
 {
-  register at *p;
+  at *p;
 
   ARG_NUMBER(1);
   ARG_EVAL(1);

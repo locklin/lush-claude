@@ -47,14 +47,9 @@ at* at_file;
 at *result;
 
 /* initialization functions */
-#ifdef UNIX
 extern void init_unix (void);
 extern void fini_unix (void);
 extern void init_user (void);
-#endif
-#ifdef WIN32
-extern void init_win32(void);
-#endif
 extern void init_oostruct (void);
 extern void init_symbol (void);
 extern void init_eval (void);
@@ -88,17 +83,9 @@ extern void init_ps_driver (void);
 extern void init_lisp_driver (void);
 extern void init_comdraw_driver (void);
 #ifndef NOGRAPHICS
-#ifdef UNIX
 #ifndef X_DISPLAY_MISSING
 extern void init_x11_driver (void);
 #endif
-#endif
-#ifdef WIN32
-extern void init_win_driver(void);
-#endif
-#endif
-#ifdef WIN32
-int isatty (int);
 #endif
 
 /* From AT.C */
@@ -195,13 +182,8 @@ init_lush(char *program_name)
   init_ps_driver();
   init_lisp_driver();
   init_comdraw_driver();
-#ifdef UNIX
 #ifndef X_DISPLAY_MISSING
   init_x11_driver();
-#endif
-#endif
-#ifdef WIN32
-  init_win_driver();
 #endif
 #endif
   /* Very simple way to define version :-) */
@@ -489,7 +471,7 @@ toplevel(const char *in, const char *out, const char *prompts)
 {
   FILE *f1, *f2;
   at *ans = NIL;
-  register at *q1, *q2;
+  at *q1, *q2;
   char *ps1 = 0;
   char *ps2 = 0;
   char *ps3 = 0;
@@ -621,7 +603,7 @@ toplevel(const char *in, const char *out, const char *prompts)
 
 DX(xload)
 {
-  register char *s,*prompt;
+  char *s,*prompt;
 
   ALL_ARGS_EVAL;
 

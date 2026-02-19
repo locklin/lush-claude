@@ -136,51 +136,10 @@ typedef void (*SIGHANDLERTYPE)();
 
 
 /* ---------------------------------------- */
-/* CYGWIN STUFF (untested)                  */
-/* ---------------------------------------- */
-
-#ifdef __CYGWIN32__
-#include <fcntl.h>
-#include <io.h>
-
-void 
-cygwin_fmode_text(FILE *f) 
-{
-  setmode(fileno(f), O_TEXT); 
-}
-void 
-cygwin_fmode_binary(FILE *f) 
-{
-  setmode(fileno(f), O_BINARY); 
-}
-
-#endif
-
-
-
-/* ---------------------------------------- */
 /* INTERRUPTIONS AND SIGNALS                */
 /* ---------------------------------------- */
 
-/* #define POSIXSIGNAL */
-/* #define BSDSIGNAL   */
-/* #define SYSVSIGNAL  */
-
-#ifndef POSIXSIGNAL
-#ifndef BSDSIGNAL
-#ifndef SYSVSIGNAL
-#ifdef HAVE_SIGACTION
-#define POSIXSIGNAL
-#else
-#ifdef HAVE_SIGVEC
-#define BSDSIGNAL
-#else
-#define SYSVSIGNAL
-#endif /* HAVE_SIGVEC */
-#endif /* HAVE_SIGACTION */
-#endif /* SYSVSIGNAL */
-#endif /* BSDSIGNAL */
-#endif /* POSIXSIGNAL */
+/* POSIX signal handling (sigaction) is always available on modern systems. */
 
 
 
@@ -197,10 +156,9 @@ static int async_attempt;
 
 /* goodsignal -- sets signal using POSIX or BSD when available */
 
-void 
+void
 goodsignal(int sig, SIGHANDLERTYPE vec)
 {
-#ifdef POSIXSIGNAL
   struct sigaction act;
   act.sa_handler = vec;
   act.sa_flags = 0;
@@ -209,20 +167,6 @@ goodsignal(int sig, SIGHANDLERTYPE vec)
   act.sa_flags |= SA_INTERRUPT;
 #endif
   sigaction(sig, &act, NULL);
-#endif /* POSIXSIGNAL */
-#ifdef BSDSIGNAL
-  struct sigvec act;
-  act.sv_handler = vec;
-  sv.sv_mask = 0L;
-  sv.sv_flags = 0L;
-#ifdef SV_BSDSIG
-  sv.sv_mask = SV_BSDSIG;
-#endif
-  sigvec(sig, &act, NULL);
-#endif /* BSDSIGNAL */
-#ifdef SYSVSIGNAL
-  signal(sig, vec);
-#endif /* SYSVSIGNAL */
 }
 
 
@@ -231,9 +175,6 @@ goodsignal(int sig, SIGHANDLERTYPE vec)
 static void
 quit_irq(void)
 {
-#ifdef SYSVSIGNAL
-  goodsignal(SIGQUIT, quit_irq);
-#endif
   error(NIL, "user quit", NIL);
 }
 
@@ -244,9 +185,6 @@ static void
 break_irq(void)
 {
   break_attempt = 1;
-#ifdef SYSVSIGNAL
-  goodsignal(SIGINT, break_irq);
-#endif
 }
 
 
@@ -393,22 +331,6 @@ set_irq(void)
 /* This is ported very directly from TL3 because it works 
    well and was close to implement the new stuff */
 
-#ifdef BROKEN_EVERYTHING
-#define BROKEN_FASYNC
-#define BROKEN_FIOASYNC
-#define BROKEN_SETSIG
-#define BROKEN_TIMER
-#define BROKEN_ALARM
-#endif
-
-#ifdef sun
-#ifdef svr4
-/* FASYNC exists but it broken on Solaris 2.4 */
-#define BROKEN_FASYNC
-#endif
-#endif
-
-
 /* trigger_mode -- operating system mode used for managing events */
 static enum { 
   MODE_UNKNOWN, 
@@ -455,20 +377,12 @@ trigger_irq(void)
   async_attempt = 1;
   if (trigger_signal < 0)
     return;
-  /* reset trigger signal */
-#ifdef SYSVSIGNAL
-  signal(trigger_signal, (SIGHANDLERTYPE) trigger_irq);
-#endif
-#ifndef BROKEN_ALARM
   if (trigger_mode == MODE_ALARM)
     alarm(1);
-#endif
-#ifndef BROKEN_TIMER
   if (trigger_mode == MODE_ITIMER) {
     static struct itimerval delay = {{0,0},{0,500000}};
     setitimer(ITIMER_REAL,&delay,0);
   }
-#endif
 }
 
 /* unblock_async_trigger -- stops blocking asynchronous trigger */
@@ -479,18 +393,11 @@ unblock_async_trigger(void)
     {
       if (trigger_signal >= 0 && trigger_nfds >= 0)
 	{
-#ifdef POSIXSIGNAL
 	  sigset_t sset;
-#endif
 	  trigger_irq();
-#ifdef POSIXSIGNAL
 	  sigemptyset(&sset);
 	  sigaddset(&sset, trigger_signal);
 	  sigprocmask(SIG_UNBLOCK,&sset,NULL);
-#endif
-#ifdef BSDSIGNAL
-	  sigsetmask(sigblock(0)&~(sigmask(trigger_signal)));
-#endif
 	}
     }
 }
@@ -503,28 +410,10 @@ block_async_trigger(void)
     {
       if (trigger_signal >= 0 && trigger_nfds >= 0)
       {
-#ifdef SYSVSIGNAL
-	signal(trigger_signal,SIG_IGN);
-#ifndef BROKEN_ALARM
-	if (trigger_mode == MODE_ALARM)
-	  alarm(0);
-#endif
-#ifndef BROKEN_TIMER
-	if (trigger_mode == MODE_ITIMER) {
-	  static struct itimerval delay = {{0,0},{0,0}};
-	  setitimer(ITIMER_REAL,&delay,0);
-	}
-#endif
-#endif /* SYSVSIGNAL */
-#ifdef POSIXSIGNAL
 	sigset_t sset;
 	sigemptyset(&sset);
 	sigaddset(&sset,trigger_signal);
 	sigprocmask(SIG_BLOCK,&sset,NULL);
-#endif /* POSIXSIGNAL */
-#ifdef BSDSIGNAL
-	sigblock(sigmask(trigger_signal));
-#endif /* BSDSIGNAL */
       }
     }
 }
@@ -533,44 +422,22 @@ block_async_trigger(void)
 static void
 setup_signal_once(void)
 {
-#ifdef POSIXSIGNAL
   sigset_t sset;
   struct sigaction sact;
   sact.sa_flags = 0L;
   sact.sa_handler = (SIGHANDLERTYPE)trigger_irq;
-#ifdef SA_BSDSIG
-  sact.sa_flags = SA_BSDSIG;
-#endif
 #ifdef SA_RESTART
   sact.sa_flags = SA_RESTART;
 #endif
   sigemptyset(&sact.sa_mask);
   if (block_count<0)
-    { 
+    {
       sigemptyset(&sset);
       sigaddset(&sset, trigger_signal);
       sigprocmask(SIG_BLOCK, &sset, NULL);
     }
   if (sigaction(trigger_signal, &sact, NULL) < 0)
     error(NIL,"internal error: sigaction failed",NIL);
-#endif /* POSIXSIGNAL */
-#ifdef BSDSIGNAL
-  struct sigvec sv;
-  sv.sv_handler = (SIGHANDLERTYPE)trigger_irq;
-  sv.sv_mask = 0L;
-  sv.sv_flags = 0L;
-#ifdef SV_BSDSIG
-  sv.sv_mask = SV_BSDSIG;
-#endif
-  if (block_count<0)
-    sigblock(sigmask(trigger_signal));
-  if (sigvec(trigger_signal, &sv, NULL) < 0)
-    error(NIL,"internal error: sigvec failed",NIL);
-#endif /* BSDSIGNAL */
-
-#ifdef DEBUG
-  printf("trigger_signal mode = %d\n", trigger_mode);
-#endif
 }
 
 /* unset_trigger_signal */
@@ -622,7 +489,6 @@ setup_trigger_signal()
       switch (trigger_mode)
         {
         case MODE_UNKNOWN:
-#ifndef BROKEN_FASYNC
 #ifdef FASYNC
 #ifdef F_SETOWN
           pid = getpid();
@@ -636,8 +502,6 @@ setup_trigger_signal()
               }
 #endif
 #endif
-#endif /* !BROKEN_FASYNC */
-#ifndef BROKEN_FIOASYNC
 #ifdef FIOASYNC
 #ifdef FIOSETOWN
           flag = 1;
@@ -652,8 +516,6 @@ setup_trigger_signal()
               }
 #endif
 #endif
-#endif /* !BROKEN_FIOASYNC */
-#ifndef BROKEN_SETSIG
 #ifdef I_SETSIG
 #ifdef I_GETSIG
           flag = 0;
@@ -667,23 +529,17 @@ setup_trigger_signal()
             }
 #endif
 #endif
-#endif /* !BROKEN_SETSIG */
-#ifndef BROKEN_TIMER
 #ifdef ITIMER_REAL
           trigger_mode = MODE_ITIMER;
           trigger_signal = SIGALRM;
           setup_signal_once();
           break;
 #endif
-#endif /* !BROKEN_TIMER */
-#ifndef BROKEN_ALARM
           trigger_mode = MODE_ALARM;
           trigger_signal = SIGALRM;
           setup_signal_once();
-#endif /* !BROKEN_ALARM */
           break;
-          
-#ifndef BROKEN_FASYNC
+
 #ifdef FASYNC
 #ifdef F_SETOWN
         case MODE_FASYNC:
@@ -693,9 +549,7 @@ setup_trigger_signal()
           break;
 #endif
 #endif
-#endif /* !BROKEN_FASYNC */
-          
-#ifndef BROKEN_FIOASYNC
+
 #ifdef FIOASYNC
 #ifdef FIOSETOWN
         case MODE_FIOASYNC:
@@ -706,9 +560,7 @@ setup_trigger_signal()
           break;
 #endif
 #endif
-#endif /* !BROKEN_FIOASYNC */
-          
-#ifndef BROKEN_SETSIG
+
 #ifdef I_GETSIG
 #ifdef I_SETSIG
         case MODE_SETSIG:
@@ -717,7 +569,6 @@ setup_trigger_signal()
           break;
 #endif
 #endif
-#endif /* !BROKEN_SETSIG */
         default:
           break;
         }
@@ -1616,13 +1467,7 @@ unix_popen(const char *cmd, const char *mode)
             _exit(127);
           close(child_fd);
         }
-#ifdef HAVE_SETPGRP
-# ifdef SETPGRP_VOID
       setpgrp();
-# else
-      setpgrp(0,0);
-# endif
-#endif
       for (i=0; i<kidpidsize; i++)
         if (kidpid[i])
           close(i);
@@ -1717,13 +1562,7 @@ filteropen(const char *cmd, FILE **pfw, FILE **pfr)
           _exit(127);
         close(fd_dn[1]);
       }
-#ifdef HAVE_SETPGRP
-# ifdef SETPGRP_VOID
       setpgrp();
-# else
-      setpgrp(0,0);
-# endif
-#endif
 #ifdef NEED_POPEN
       for (i=0; i<kidpidsize; i++)
         if (kidpid[i])
@@ -1807,13 +1646,7 @@ filteropenpty(const char *cmd, FILE **pfw, FILE **pfr)
         _exit(127);
       if (slave != fileno(stdin) && slave != fileno(stdout))
         close(slave);
-# ifdef HAVE_SETPGRP
-#  ifdef SETPGRP_VOID
       setpgrp();
-#  else
-      setpgrp(0,0);
-#  endif
-# endif
 # ifdef NEED_POPEN
       for (i=0; i<kidpidsize; i++)
         if (kidpid[i])

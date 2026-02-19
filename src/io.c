@@ -63,31 +63,6 @@ unsigned char char_map[256];
 
 
 
-/* --------- ALTERNATE TOUPPER TOLOWER FUNCTIONS ---------------- */
-
-#ifdef NEED_TOLOWER
-int 
-tolower(int c)
-{
-  if (isupper(toascii((unsigned char)c)))
-    return c - 'A' + 'a';
-  else
-    return c;
-}
-#endif
-
-#ifdef NEED_TOUPPER
-int 
-toupper(int c)
-{
-  if (islower(toascii((unsigned char)c)))
-    return c - 'a' + 'A';
-  else
-    return c;
-}
-#endif
-
-
 /* --------- GENERAL PURPOSE ROUTINES --------- */
 
 
@@ -96,7 +71,7 @@ toupper(int c)
 #define get_char_map(c)    (int)char_map[(unsigned char)c]
 
 static int 
-macrochp(register char *s)
+macrochp(char *s)
 {
   if (!s[1] && 
       (get_char_map(s[0]) & CHAR_MCHAR))
@@ -129,17 +104,9 @@ DX(xmacrochp)
  * print_char Outputs a character on the current output file. Updates
  * context->output_tab if necessary. Handles script features.
  */
-void 
-print_char(register char c)
+void
+print_char(char c)
 {
-#if defined(WIN32)
-  if (c=='\n')
-    print_char('\r');
-#endif
-#if defined(MAC)
-  if (c=='\n')
-    c = '\r';
-#endif
   if (context->output_file) {
     if (context->output_file == stdout)
       putc(c,stdout);
@@ -150,9 +117,6 @@ print_char(register char c)
     context->output_tab++;
   else
     switch (c) {
-#if defined(MAC)
-      case '\r':
-#endif
       case '\n':
 	context->output_tab = 0;
 	if (context->output_file)
@@ -172,12 +136,7 @@ print_char(register char c)
     }
   if (error_doc.script_file) {
     if (error_doc.script_mode != SCRIPT_OUTPUT) {
-#if defined(WIN32) || defined(MAC)
-      putc('\r', error_doc.script_file);
-#endif
-#if defined(UNIX) || defined(WIN32)
       putc('\n', error_doc.script_file);
-#endif
       error_doc.script_mode = SCRIPT_OUTPUT;
     }
     putc(c, error_doc.script_file);
@@ -217,12 +176,7 @@ fill_line_buffer(void)
 	for (s = line_buffer; *s; s++)
 	  c = *s;
 	ifn (c == '\n' || c == (char) EOF) {
-#if defined(WIN32) || defined(MAC)
-	  putc('\r', stdout);
-#endif
-#if defined(UNIX) || defined(WIN32)
 	  putc('\n', stdout);
-#endif
 	}
       }
     }
@@ -270,14 +224,9 @@ read_char(void)
       test_file_error(error_doc.script_file);
       error_doc.script_mode = SCRIPT_PROMPT;
     } else {
-      if (error_doc.script_mode == SCRIPT_OUTPUT 
+      if (error_doc.script_mode == SCRIPT_OUTPUT
 	  && context->output_tab > 0 ) {
-#if defined(WIN32) || defined(MAC)
-        putc('\r', error_doc.script_file);
-#endif
-#if defined(UNIX) || defined(WIN32)
         putc('\n', error_doc.script_file);
-#endif
       }
       if (error_doc.script_mode != SCRIPT_INPUT) {
 	if (prompt_string)
@@ -366,8 +315,8 @@ DX(xflush)
 int 
 ask(char *t)
 {
-  register char *s;
-  register int eof = 8;
+  char *s;
+  int eof = 8;
   
   putc('\n', stdout);
   forever
@@ -635,7 +584,7 @@ skip_to_expr(void)
 static char *
 read_word(void)
 {
-  register char c, *s;
+  char c, *s;
   s = string_buffer;
   c = skip_to_expr();
   if (c == '|') {
@@ -743,9 +692,9 @@ rl_utf8(long h, int nofail)
 
 
 static at *
-rl_string(register char *s)
+rl_string(char *s)
 {
-  register char *d, *ind;
+  char *d, *ind;
 
   d = string_buffer;
   while (*s) {
@@ -758,7 +707,7 @@ rl_string(register char *s)
 
 	
       } else if (*s == 'x' || *s == 'X') {
-	register int h, c;	/* hexa */
+	int h, c;	/* hexa */
 	h = 0;
 	s++;
 	for (c = 0; c < 2; c++) {
@@ -817,7 +766,7 @@ rl_string(register char *s)
 	s++;
 	
       } else {			/* octal */
-	register int h, c;
+	int h, c;
 
 	h = 0;
 	for (c = 0; c < 3; c++)
@@ -842,9 +791,9 @@ rl_string(register char *s)
 }
 
 static at *
-rl_mchar(register char *s)
+rl_mchar(char *s)
 {
-  register at *q, *p, *answer;
+  at *q, *p, *answer;
   at *(*sav_ptr) (at *);
 
   ifn (macrochp(s)) {
@@ -867,7 +816,7 @@ rl_mchar(register char *s)
 }
 
 static at *
-rl_read(register char *s)
+rl_read(char *s)
 {
   at *answer, **where;
 
@@ -998,7 +947,7 @@ dmc(char *s, at *l)
 {
   at *q;
   int type;
-  register char c;
+  char c;
 
   if (s[0] == '^' && (c = s[1]) && !s[2]) {
     type = CHAR_CARET;
@@ -1029,7 +978,7 @@ dmc(char *s, at *l)
 DY(ydmc)
 {
   at *q, *l;
-  register char *s;
+  char *s;
 
   ifn(CONSP(ARG_LIST))
     error("dmc", "bad arguments", NIL);
@@ -1178,8 +1127,8 @@ print_list(at *list)
 
 DX(xprint)
 {
-  register int i;
-  register at *q;
+  int i;
+  at *q;
 
   q = NIL;
   for (i = 1; i <= arg_number; i++) {
@@ -1196,8 +1145,8 @@ DX(xprint)
 
 DX(xprin)
 {
-  register int i;
-  register at *q;
+  int i;
+  at *q;
 
   q = NIL;
   for (i = 1; i <= arg_number; i++) {
@@ -1220,8 +1169,8 @@ DX(xprin)
 
 DX(xprintf)
 {
-  register char *fmt, *buf, c;
-  register int i, n, ok;
+  char *fmt, *buf, c;
+  int i, n, ok;
 
   if (arg_number < 1)
     error(NIL, "format string expected", NIL);
@@ -1365,9 +1314,9 @@ DX(xprintf)
 /* --------- LIST TO STRING CONVERSION ROUTINES --------- */
 
 static char *
-convert(register char *s, register at *list, register char *end)
+convert(char *s, at *list, char *end)
 {
-  register char *n, *m;
+  char *n, *m;
   at *p,*q=NIL;
   int mode;
 
@@ -1511,7 +1460,7 @@ DX(xpname)
 void 
 init_io(void)
 {
-  register int i;
+  int i;
 
   ifn((line_buffer = malloc(LINE_BUFFER)) &&
       (print_buffer = malloc(LINE_BUFFER)) &&

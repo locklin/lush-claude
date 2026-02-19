@@ -144,32 +144,6 @@ TLAPI void  filteropenpty(const char *cmd, FILE **pfw, FILE **pfr);
 TLAPI FILE* unix_popen(const char *cmd, const char *mode);
 TLAPI int   unix_pclose(FILE *f);
 TLAPI int   unix_setenv(const char *name, const char *value);
-/* cygwin */
-# ifdef __CYGWIN32__
-TLAPI void cygwin_fmode_text(FILE *f);
-TLAPI void cygwin_fmode_binary(FILE *f);
-# endif
-#endif
-
-#ifdef WIN32
-/* interruptions */
-extern TLAPI int break_attempt;
-extern TLAPI int kill_attempt;
-TLAPI void lastchance(char *s) no_return;
-/* system override */
-TLAPI void  win32_exit(int);
-TLAPI int   win32_isatty(int);
-TLAPI void  win32_user_break(char *s);
-TLAPI FILE* win32_popen(char *, char *);
-TLAPI int   win32_pclose(FILE *);
-TLAPI void  win32_fmode_text(FILE *f);
-TLAPI void  win32_fmode_binary(FILE *f);
-TLAPI int   win32_waitproc(void *wproc);
-/* console management */
-TLAPI void console_getline(char *prompt, char *buf, int size);
-/* openTL entry points */
-void init_user(void);
-DLLEXPORT int init_user_dll(int major, int minor);
 #endif
 
 
@@ -292,7 +266,7 @@ struct hashelem {
 };
 
 
-TLAPI void purge (register at *q);
+TLAPI void purge (at *q);
 TLAPI at *new_gptr(gptr x);
 TLAPI at *new_number(double x);
 TLAPI at *new_extern(class *cl, void *obj);
@@ -999,21 +973,8 @@ struct storage {
       size_t len;
     } sts_mmap;			/* for mmaps... */
 #endif
-#ifdef DISKARRAY
-    struct {
-      FILE *f;		/* ??? -> File ??? */
-      int blocksize;
-      struct storage_cache *cache;
-    } sts_disk;			/* for disk... */
-#endif
-#ifdef REMOTEARRAY    
-    struct {
-      struct rhandle *obj, *rpcget, *rpcset;
-      struct storage_cache *cache;
-    } sts_remote;		/* for remote... */
-#endif
 
-  } allinfo; 
+  } allinfo;
 };
 
 LUSHAPI void storage_read_srg(struct storage *);

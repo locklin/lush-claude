@@ -132,7 +132,6 @@
   move-call				; call shen up/down arrows are pressed
   space-call				; call shen space bar is pressed
   backspace-call			; call shen space bar is pressed
-
   icon-open				; string for open item "-"
   icon-closed				; string for closed item "+"
   icon-width				; width of icon string
@@ -440,8 +439,8 @@
 (defmethod TreeBrowser TreeBrowser (w1 h1 w2 h2 intree &optional horiz)
   (setq tree intree)
   (==> tree open)
-  (setq tree-explorer 
-	(new explorer tree w1 h1 
+  (setq tree-explorer
+	(new explorer tree w1 h1
              (lambda(c) (==> thisform show-func c))
              (lambda(c) (==> thisform open-func c))
              (lambda(c) (==> thisform close-func c))
@@ -449,8 +448,8 @@
              (lambda(c) (==> thisform space-func c))
              (lambda(c) (==> thisform backspace-func c)) ) )
   (setq tree-viewer (new scroller w1 h1 tree-explorer))
-  (setq ldoc-scroller 
-	(new ldocscroller w2 h2 
+  (setq ldoc-scroller
+	(new ldocscroller w2 h2
 	     (setq ldoc-pane (new ldocpane (- w2 26) (- h2 12)))))
   (setq search-string (new editstring 24))
   (==> search-string setcall (lambda(c) (==> thisform searchstr-func c)))

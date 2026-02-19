@@ -226,11 +226,11 @@ real
 dz_execute(real top, struct dz_cell *dz)
 {
 
-  register real x;
-  register inst *pc;
-  register real *sp;
-  register real y;
-  register int arg,op;
+  real x;
+  inst *pc;
+  real *sp;
+  real y;
+  int arg,op;
   
   x = top;
   pc = dz->program;

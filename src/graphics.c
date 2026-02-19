@@ -41,7 +41,7 @@ static at *at_window;
 static void 
 window_dispose(at *p)
 {
-  register struct window *win;
+  struct window *win;
   
   win = p->Object;
   UNLOCK(win->font);
@@ -59,7 +59,7 @@ window_dispose(at *p)
 static void 
 window_action(at *p, void (*action)(at *))
 {
-  register struct window *win;
+  struct window *win;
   
   win = p->Object;
   (*action)(win->font);
@@ -95,8 +95,8 @@ class window_class = {
 struct window *
 current_window(void)
 {
-  register at *w;
-  register struct window *ww;
+  at *w;
+  struct window *ww;
   w = var_get(at_window);
   if (!EXTERNP(w,&window_class))
     error("window", "symbol value is not a window", w);
@@ -109,8 +109,8 @@ current_window(void)
 struct window *
 current_window_no_error(void)
 {
-  register at *w;
-  register struct window *ww = 0;
+  at *w;
+  struct window *ww = 0;
   w = var_get(at_window);
   if (EXTERNP(w,&window_class))
     ww = w->Object;
@@ -126,7 +126,7 @@ current_window_no_error(void)
 
 DX(xgdriver)
 {
-  register struct window *win;
+  struct window *win;
   
   ARG_NUMBER(0);
   win = current_window();
@@ -135,7 +135,7 @@ DX(xgdriver)
 
 DX(xxsize)
 {
-  register struct window *win;
+  struct window *win;
   int size;
   
   ARG_NUMBER(0);
@@ -153,7 +153,7 @@ DX(xxsize)
 
 DX(xysize)
 {
-  register struct window *win;
+  struct window *win;
   int size;
   
   ARG_NUMBER(0);
@@ -226,7 +226,7 @@ DX(xfont)
 
 DX(xcls)
 {
-  register struct window *win;
+  struct window *win;
   
   ARG_NUMBER(0);
   win = current_window();
@@ -244,8 +244,8 @@ DX(xcls)
 
 DX(xdraw_line)
 {
-  register struct window *win;
-  register int x1, y1, x2, y2;
+  struct window *win;
+  int x1, y1, x2, y2;
   
   ARG_NUMBER(4);
   ALL_ARGS_EVAL;
@@ -267,8 +267,8 @@ DX(xdraw_line)
 
 DX(xdraw_rect)
 {
-  register struct window *win;
-  register int x1, y1, x2, y2;
+  struct window *win;
+  int x1, y1, x2, y2;
   
   ARG_NUMBER(4);
   ALL_ARGS_EVAL;
@@ -290,8 +290,8 @@ DX(xdraw_rect)
 
 DX(xdraw_circle)
 {
-  register struct window *win;
-  register int x1, y1, r;
+  struct window *win;
+  int x1, y1, r;
   
   ARG_NUMBER(3);
   ALL_ARGS_EVAL;
@@ -313,8 +313,8 @@ DX(xdraw_circle)
 
 DX(xfill_rect)
 {
-  register struct window *win;
-  register int x1, y1, x2, y2;
+  struct window *win;
+  int x1, y1, x2, y2;
   
   ARG_NUMBER(4);
   ALL_ARGS_EVAL;
@@ -336,8 +336,8 @@ DX(xfill_rect)
 
 DX(xfill_circle)
 {
-  register struct window *win;
-  register int x1, y1, r;
+  struct window *win;
+  int x1, y1, r;
   
   ARG_NUMBER(3);
   ALL_ARGS_EVAL;
@@ -362,8 +362,8 @@ DX(xfill_circle)
 
 DX(xdraw_text)
 {
-  register struct window *win;
-  register int x1, y1;
+  struct window *win;
+  int x1, y1;
   char *s;
   
   ARG_NUMBER(3);
@@ -385,7 +385,7 @@ DX(xdraw_text)
 
 DX(xrect_text)
 {
-  register struct window *win;
+  struct window *win;
   int x1, y1, w, h;
   char *s;
   
@@ -418,7 +418,7 @@ DX(xrect_text)
 
 DX(xfill_polygon)
 {
-  register struct window *win;
+  struct window *win;
   int i, j;
   short points[250][2];
   
@@ -448,7 +448,7 @@ DX(xfill_polygon)
 
 DX(xgspecial)
 {
-  register struct window *win;
+  struct window *win;
   
   ARG_NUMBER(1);
   ARG_EVAL(1);
@@ -465,7 +465,7 @@ DX(xgspecial)
 
 DX(xhilite)
 {
-  register struct window *win;
+  struct window *win;
   int code, x, y;
   unsigned int w, h;
   
@@ -495,8 +495,8 @@ DX(xhilite)
 
 DX(xclip)
 {
-  register struct window *win;
-  register int x, y, w, h;
+  struct window *win;
+  int x, y, w, h;
   
   ALL_ARGS_EVAL;
   win = current_window();
@@ -625,8 +625,8 @@ DX(xalloccolor)
 
 DX(xdraw_arc)
 {
-  register struct window *win;
-  register int x1, y1, r, from, to;
+  struct window *win;
+  int x1, y1, r, from, to;
   ARG_NUMBER(5);
   ALL_ARGS_EVAL;
   win = current_window();
@@ -653,8 +653,8 @@ DX(xdraw_arc)
 
 DX(xfill_arc)
 {
-  register struct window *win;
-  register int x1, y1, r, from, to;
+  struct window *win;
+  int x1, y1, r, from, to;
   
   ARG_NUMBER(5);
   ALL_ARGS_EVAL;
@@ -749,7 +749,7 @@ static size_t imagesize = 0;
 static void 
 draw_value(int x, int y, double v, double maxv, int maxs)
 {
-  register int size;
+  int size;
   struct window *win;
   void (*setcolor)(struct window *, int);
   void (*fill_rect)(struct window *, int, int, unsigned int, unsigned int);
@@ -799,13 +799,13 @@ DX(xdraw_value)
 
 
 static void 
-draw_list(int xx, int y, register at *l, int ncol, 
+draw_list(int xx, int y, at *l, int ncol, 
 	  double maxv, int apart, int maxs)
 {
-  register struct window *win;
-  register int x, size, len, nlin, ap2;
-  register double v;
-  register unsigned int *im;
+  struct window *win;
+  int x, size, len, nlin, ap2;
+  double v;
+  unsigned int *im;
   void (*setcolor)(struct window *, int);
   void (*fill_rect)(struct window *, int, int, unsigned int, unsigned int);
   
@@ -966,13 +966,13 @@ allocate_cube(int *cube)
 
 
 static void 
-color_draw_list(int xx, int y, register at *l, int ncol, 
+color_draw_list(int xx, int y, at *l, int ncol, 
 		double minv, double maxv, int apart, int *colors)
 {
-  register struct window *win;
-  register int x, len, nlin;
-  register unsigned int *im;
-  register int v;
+  struct window *win;
+  int x, len, nlin;
+  unsigned int *im;
+  int v;
   void (*setcolor)(struct window *, int);
   void (*fill_rect)(struct window *, int, int, unsigned int, unsigned int);
   
@@ -1936,7 +1936,7 @@ DX(xdraw_round_rect)
   int r = 3;
   int left,top,bottom,right;
   int almosttop,almostleft,almostright,almostbottom;
-  register struct window *win;
+  struct window *win;
   win = current_window();
   ALL_ARGS_EVAL;
   if (arg_number==5)
@@ -1982,7 +1982,7 @@ DX(xfill_round_rect)
   int left,top,bottom,right;
   int almosttop,almostleft,almostright,almostbottom;
   int almostwidth;
-  register struct window *win;
+  struct window *win;
   
   win = current_window();
   
@@ -2106,7 +2106,7 @@ DY(ygsave)
 
 DX(xaddclip)
 {
-  register struct window *win;
+  struct window *win;
   int x, y, w, h;
   int x1, y1, w1, h1;
   

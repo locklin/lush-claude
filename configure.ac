@@ -365,9 +365,7 @@ AC_SUBST(CC_PIC_FLAG)
 AC_SUBST(MAKESO)
 
 UNIX_YES=''
-WIN32_YES='#'
 AC_SUBST(UNIX_YES)
-AC_SUBST(WIN32_YES)
 
 AC_DEFINE_UNQUOTED(EXT_DLL, ".$SOEXT",  [Extension for shared libraries])
 AC_DEFINE_UNQUOTED(EXT_OBJ, ".$OBJEXT", [Extension for object files])

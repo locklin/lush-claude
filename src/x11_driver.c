@@ -44,15 +44,7 @@
 #include <X11/keysym.h>
 
 #ifndef X11RELEASE
-# ifdef XlibSpecificationRelease
-#  define X11RELEASE XlibSpecificationRelease
-# else
-#  ifdef PWinGravity
-#   define X11RELEASE 4
-#  else 
-#   define X11RELEASE 3
-#  endif
-# endif
+# define X11RELEASE XlibSpecificationRelease
 #endif
 
 #if X11RELEASE >= 4
@@ -180,8 +172,8 @@ static void handle_async_events(void);
 static char *
 search_display_name(void)
 {
-  register at *p;
-  register char *s;
+  at *p;
+  char *s;
   static char dpyname[128] = "unix:0.0";
   extern char *getenv(const char *);
 
@@ -382,8 +374,8 @@ x11_make_window(int x, int y, int w, int h, char *name)
   XGCValues context;
   XSetWindowAttributes xswattrs;
   unsigned long xswattrs_mask;
-  register int i;
-  register struct X_window *info;
+  int i;
+  struct X_window *info;
 
   if (!Xinitialised)
     x11_init();
@@ -636,9 +628,9 @@ static void x11_resize(struct X_window *info, int x, int y);
 static void
 handle_async_events(void)
 {
-  register int i;
-  register struct X_window *info;
-  register Window win;
+  int i;
+  struct X_window *info;
+  Window win;
   XEvent ev;
 
   while (XCheckMaskEvent(xdef.dpy, ASYNC_EVENTS, &ev))
@@ -667,9 +659,9 @@ handle_async_events(void)
 static int
 handle_sync_events(void)
 {
-  register int i;
-  register struct X_window *info;
-  register Window win;
+  int i;
+  struct X_window *info;
+  Window win;
   XEvent ev;
   KeySym ks;
   unsigned char s[8];
@@ -851,10 +843,6 @@ static void
 copy_buffer(struct X_window *info)
 {
   if (info->lwin.used && info->x1>=0) {
-#ifdef aix
-    info->x1 = (info->x1 - 2) & 0xfff0 + 2;
-    info->x2 = (info->x2 + 17) & 0xfff0 - 2;
-#endif
     XCopyArea(xdef.dpy, info->backwin, info->win,
 	      xdef.gccopy, info->x1 - 2, info->y1 - 2,
 	      info->x2 - info->x1 + 4, info->y2 - info->y1 + 4,
@@ -1701,8 +1689,8 @@ x11_pixel_map(struct window *linfo, unsigned int *image,
 {
   struct X_window *info = (struct X_window*)linfo;
   XImage *ximage;
-  register int i, j, k, l;
-  register unsigned int *im, *jm, *image2;
+  int i, j, k, l;
+  unsigned int *im, *jm, *image2;
   int sx_w = sx * w;
   int sy_h = sy * h;
 
@@ -1761,7 +1749,7 @@ x11_pixel_map(struct window *linfo, unsigned int *image,
     for (i = 0; i < h; i++) {
       im = image2 + sx_w * sy * i;
       for (k = 0; k < w; k++, image++) {
-	register int c;
+	int c;
 	c = *image;
 	jm = im;
 	for (j = 0; j < sy; j++, jm += sx_w)
@@ -2135,7 +2123,7 @@ DX(xx11_lookup_color)
 DX(xx11_text_to_clip)
 {
   char *s;
-  
+
   ARG_NUMBER(1);
   ARG_EVAL(1);
   s = ASTRING(1);

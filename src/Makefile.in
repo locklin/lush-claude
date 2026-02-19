@@ -85,7 +85,6 @@ OBJS1=allocate.o at.o binary.o calls.o arith.o check_func.o \
 
 @UNIX_YES@OBJS3=unix.o
 @UNIX_YES@@X_YES@OBJS2=x11_driver.o
-@WIN32_YES@OBJS3=win32.o win_driver.o
 @BFD_YES@OBJS4=dldbfd.o
 @CPP_YES@OBJS5=cpp.o
 

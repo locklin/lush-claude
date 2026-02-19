@@ -32,49 +32,32 @@
 # include "lushconf.h"
 #endif
 
-#ifdef WIN32
-# include <errno.h>
-# include <windows.h>
-# include <direct.h>
-# include <io.h>
-# include <time.h>
-# include <process.h>
-# include <fcntl.h>
-# include <sys/types.h>
-# include <sys/stat.h>
-# define access _access
-# define R_OK 04
-# define W_OK 02
+#include <errno.h>
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <time.h>
+#ifdef HAVE_SYS_TIME_H
+# include <sys/time.h>
 #endif
-
-#ifdef UNIX
-# include <errno.h>
-# include <sys/types.h>
-# include <sys/stat.h>
-# include <time.h>
-# ifdef HAVE_SYS_TIME_H
-#  include <sys/time.h>
+#include <fcntl.h>
+#include <stdio.h>
+#ifdef HAVE_UNISTD_H
+# include <unistd.h>
+#endif
+#ifdef HAVE_DIRENT_H
+# include <dirent.h>
+# define NAMLEN(dirent) strlen((dirent)->d_name)
+#else
+# define dirent direct
+# define NAMLEN(dirent) (dirent)->d_namlen
+# if HAVE_SYS_NDIR_H
+#  include <sys/ndir.h>
 # endif
-# include <fcntl.h>
-# include <stdio.h>
-# ifdef HAVE_UNISTD_H
-#  include <unistd.h>
+# if HAVE_SYS_DIR_H
+#  include <sys/dir.h>
 # endif
-# ifdef HAVE_DIRENT_H
-#  include <dirent.h>
-#  define NAMLEN(dirent) strlen((dirent)->d_name)
-# else
-#  define dirent direct
-#  define NAMLEN(dirent) (dirent)->d_namlen
-#  if HAVE_SYS_NDIR_H
-#   include <sys/ndir.h>
-#  endif
-#  if HAVE_SYS_DIR_H
-#   include <sys/dir.h>
-#  endif
-#  if HAVE_NDIR_H
-#   include <ndir.h>
-#  endif
+# if HAVE_NDIR_H
+#  include <ndir.h>
 # endif
 #endif
 
@@ -98,7 +81,6 @@ char lushdir_name[FILELEN];
 char *
 cwd(const char *s)
 {
-#ifdef UNIX
   if (s)
     {
       if (chdir(s)==-1)
@@ -108,16 +90,6 @@ cwd(const char *s)
   return getcwd(string_buffer,STRING_BUFFER);
 #else
   return getwd(string_buffer);
-#endif
-#endif
-#ifdef WIN32
-  char drv[2];
-  if (s)
-    if (_chdir(s)==-1)
-      test_file_error(NULL);
-  drv[0]='.'; drv[1]=0;
-  GetFullPathName(drv, STRING_BUFFER, string_buffer, &s);
-  return string_buffer;
 #endif
 }
 
@@ -140,8 +112,6 @@ files(const char *s)
 {
   at *ans = NIL;
   at **where = &ans;
-  /* UNIX code */
-#ifdef UNIX
   DIR *dirp;
   struct dirent *d;
   dirp = opendir(s);
@@ -157,44 +127,6 @@ files(const char *s)
     }
     closedir(dirp);
   }
-#endif
-  /* WIN32 code */
-#ifdef WIN32
-  struct _finddata_t info;
-  char *last;
-  long hfind;
-  if ((s[0]=='/' || s[0]=='\\') && 
-      (s[1]=='/' || s[1]=='\\') && !s[2]) 
-  {
-    hfind = GetLogicalDrives();
-    strcpy(info.name,"A:\\");
-    for (info.name[0]='A'; info.name[0]<='Z'; info.name[0]++)
-      if (hfind & (1<<(info.name[0]-'A'))) {
-       *where = cons(new_string(info.name),NIL);
-       where = &(*where)->Cdr;
-      }
-  } else if (dirp(s)) {
-    *where = cons(new_string(".."),NIL);
-    where = &(*where)->Cdr;
-  }
-  strcpy(string_buffer,s);
-  last = string_buffer + strlen(string_buffer);
-  if (last>string_buffer && last[-1]!='/' && last[-1]!='\\')
-    strcpy(last,"\\*.*");
-  else 
-    strcpy(last,"*.*");
-  hfind = _findfirst(string_buffer, &info);
-  if (hfind != -1) {
-    do {
-      if (strcmp(".",info.name) && strcmp("..",info.name)) {
-       *where = cons(new_string(info.name),NIL);
-       where = &(*where)->Cdr;
-      }
-    } while ( _findnext(hfind, &info) != -1 );
-    _findclose(hfind);
-  }
-#endif
-  /* Return */
   return ans;
 }
 
@@ -208,15 +140,10 @@ DX(xfiles)
 }
 
 
-static int 
+static int
 makedir(const char *s)
 {
-#ifdef UNIX
   return mkdir(s,0777);
-#endif
-#ifdef WIN32
-  return _mkdir(s);
-#endif
 }
 
 DX(xmkdir)
@@ -229,20 +156,13 @@ DX(xmkdir)
 }
 
 
-static int 
+static int
 deletefile(const char *s)
 {
-#ifdef WIN32
-   if (dirp(s))
-    return _rmdir(s);
-   else
-    return _unlink(s);
-#else
    if (dirp(s))
     return rmdir(s);
    else
     return unlink(s);
-#endif
 }
 
 DX(xunlink)
@@ -320,11 +240,7 @@ lockfile(const char *filename)
   time_t tl;
   char *s = string_buffer;
   ssize_t n;
-#ifdef WIN32
-  fd = _open(filename, _O_RDWR|_O_CREAT|_O_EXCL, 0644);
-#else
   fd = open(filename, O_RDWR|O_CREAT|O_EXCL, 0644);
-#endif
   if (fd<0) {
     if (errno==EEXIST)
       return 0;
@@ -332,33 +248,16 @@ lockfile(const char *filename)
       test_file_error(NULL);
   }
   time(&tl);
-#ifdef UNIX
   {
     char hname[80];
     char *user;
     gethostname(hname,79);
     if (! (user=getenv("USER")))
       if (! (user=getenv("LOGNAME")))
-        user="<unknown>";  
+        user="<unknown>";
     snprintf(string_buffer, STRING_BUFFER, "created by %s@%s (pid=%d)\non %s",
 	    user, hname, (int)getpid(), ctime(&tl));
   }
-#endif
-#ifdef WIN32
-  {
-    int size;
-    char user[80];
-    char computer[80];
-    size = sizeof(user);
-    if (! (GetUserName(user,&size)))
-      strcpy(user,"<unknown>");
-    size = sizeof(computer);
-    if (! (GetComputerName(computer,&size)))
-      strcpy(computer,"<unknown>");
-    snprintf(string_buffer, STRING_BUFFER, "created by %s@%s on %s",
-	    user, computer, time(&tl));
-  }
-#endif
   n = strlen(string_buffer);
   while (n > 0)
     {
@@ -390,34 +289,13 @@ DX(xlockfile)
 
 /** dirp **/
 
-int 
+int
 dirp(const char *s)
 {
-  /* UNIX implementation */
-#ifdef UNIX
   struct stat buf;
   if (stat(s,&buf)==0)
     if (buf.st_mode & S_IFDIR)
       return TRUE;
-#endif
-  /* WIN32 implementation (bug around) */
-#ifdef WIN32
-  char *last;
-  char buffer[FILELEN];
-  struct _stat buf;
-  if ((s[0]=='/' || s[0]=='\\') && 
-      (s[1]=='/' || s[1]=='\\') && !s[2]) 
-    return TRUE;
-  if (strlen(s) > sizeof(buffer) - 4)
-    error(NIL,"Filename too long",NIL);
-  strcpy(buffer,s);
-  last = buffer + strlen(buffer) - 1;
-  if (*last=='/' || *last=='\\' || *last==':')
-    strcat(last,".");
-  if (_stat(buffer,&buf)==0)
-    if (buf.st_mode & S_IFDIR)
-      return TRUE;
-#endif
   return FALSE;
 }
 
@@ -432,23 +310,14 @@ DX(xdirp)
 
 /** filep **/
 
-int 
+int
 filep(const char *s)
 {
-#ifdef UNIX
   struct stat buf;
   if (stat(s,&buf)==-1)
     return FALSE;
-  if (buf.st_mode & S_IFDIR) 
+  if (buf.st_mode & S_IFDIR)
     return FALSE;
-#endif
-#ifdef WIN32
-  struct _stat buf;
-  if (_stat(s,&buf)==-1)
-    return FALSE;
-  if (buf.st_mode & S_IFDIR) 
-    return FALSE;
-#endif
   return TRUE;
 }
 
@@ -467,20 +336,11 @@ DX(xfileinfo)
 {
   at *ans = NIL;
   at *type = NIL;
-#ifdef UNIX
   struct stat buf;
   ARG_NUMBER(1);
   ARG_EVAL(1);
   if (stat(ASTRING(1),&buf)==-1)
     return NIL;
-#endif
-#ifdef WIN32
-  struct _stat buf;
-  ARG_NUMBER(1);
-  ARG_EVAL(1);
-  if (_stat(ASTRING(1),&buf)==-1)
-    return NIL;
-#endif
   
   ans = cons(cons(named("ctime"), 
                   new_date_from_time(&buf.st_ctime, 
@@ -555,8 +415,6 @@ strcpyif(char *d, const char *s)
 const char *
 dirname(const char *fname)
 {
-  /* UNIX implementation */  
-#ifdef UNIX
   const char *s = fname;
   const char *p = 0;
   char *q = string_buffer;
@@ -579,61 +437,6 @@ dirname(const char *fname)
   } while (s<p);
   *q = 0;
   return string_buffer;
-#endif
-
-  /* WIN32 implementation */
-#ifdef WIN32
-  char *s, *p;
-  char *q = string_buffer;
-  /* Handle leading drive specifier */
-  if (fname[0] && fname[1]==':') {
-    *q++ = *fname++;
-    *q++ = *fname++;
-  }
-  /* Search last non terminal / or \ */
-  p = 0;
-  s = (char*)fname;
-  while (*s) {
-    if (s[0]=='\\' || s[0]=='/')
-      if (s[1] && s[1]!='/' && s[1]!='\\')
-        p = s;
-    s++;
-  }
-  /* Cannot find non terminal / or \ */
-  if (p == 0) {
-    if (q>string_buffer) {
-      if (fname[0]==0 || fname[0]=='/' || fname[0]=='\\')
-	return "\\\\";
-      *q = 0;
-      return string_buffer;
-    } else {
-      if (fname[0]=='/' || fname[0]=='\\')
-	return "\\\\";
-      else
-	return ".";
-    }
-  }
-  /* Single leading slash */
-  if (p == fname) {
-    strcpy(q,"\\");
-    return string_buffer;
-  }
-  /* Backtrack all slashes */
-  while (p>fname && (p[-1]=='/' || p[-1]=='\\'))
-    p--;
-  /* Multiple leading slashes */
-  if (p == fname)
-    return "\\\\";
-  /* Regular case */
-  s = fname;
-  if (p-s > STRING_BUFFER-4)
-    error(NIL,"filename is too long",NIL);
-  do {
-    *q++ = *s++;
-  } while (s<p);
-  *q = 0;
-  return string_buffer;
-#endif
 }
 
 
@@ -651,8 +454,6 @@ DX(xdirname)
 const char *
 basename(const char *fname, const char *suffix)
 {
-  /* UNIX implementation */
-#ifdef UNIX
   int sl;
   char *s;
   if (strlen(fname) > STRING_BUFFER-4)
@@ -676,50 +477,6 @@ basename(const char *fname, const char *suffix)
       *s = 0;
   }
   return string_buffer;
-#endif
-  
-  /* WIN32 implementation */
-#ifdef WIN32
-  int sl;
-  char *p = (char*)fname;
-  char *s = (char*)fname;
-  /* Special cases */
-  if (fname[0] && fname[1]==':') {
-    strcpyif(string_buffer,fname);
-    if (fname[2]==0)
-      return string_buffer;
-    string_buffer[2] = '\\'; 
-    if (fname[3]==0 && (fname[2]=='/' || fname[2]=='\\'))
-      return string_buffer;
-  }
-  /* Position p after last slash */
-  while (*s) {
-    if (s[0]=='\\' || s[0]=='/')
-        p = s + 1;
-    s++;
-  }
-  /* Copy into buffer */
-  if (strlen(p) > STRING_BUFFER-10)
-    error(NIL,"Filename too long",NIL);
-  s = string_buffer;
-  while (*p && *p!='/' && *p!='\\')
-    *s++ = *p++;
-  *s = 0;
-  /* Process suffix */
-  if (suffix==0 || suffix[0]==0)
-    return string_buffer;
-  if (suffix[0]=='.')
-    suffix += 1;
-  if (suffix[0]==0)
-    return string_buffer;    
-  sl = strlen(suffix);
-  if (s > string_buffer + sl) {
-    s = s - (sl + 1);
-    if (s[0]=='.' && stricmp(s+1,suffix)==0)
-      *s = 0;
-  }
-  return string_buffer;
-#endif
 }
 
 DX(xbasename)
@@ -739,10 +496,8 @@ DX(xbasename)
 const char *
 concat_fname(const char *from, const char *fname)
 {
-  /* UNIX implementation */
-#ifdef UNIX
   char *s;
-  if (fname && fname[0]=='/') 
+  if (fname && fname[0]=='/')
     strcpyif(string_buffer,"/");
   else if (from)
     strcpyif(string_buffer,concat_fname(NULL,from));
@@ -782,79 +537,6 @@ concat_fname(const char *from, const char *fname)
     }
     *s = 0;
   }
-#endif
-
-
-  /* WIN32 implementation */
-#ifdef WIN32
-  char *s;
-  char  drv[4];
-  /* Handle base */
-  if (from)
-    strcpyif(string_buffer, concat_fname(NULL,from));
-  else
-    strcpyif(string_buffer, cwd(NULL));
-  s = string_buffer;
-  if (fname==0)
-    return s;
-  /* Handle absolute part of fname */
-  if (fname[0]=='/' || fname[0]=='\\') {
-    if (fname[1]=='/' || fname[1]=='\\') {	    /* Case "//abcd" */
-      s[0]=s[1]='\\'; s[2]=0;
-    } else {					    /* Case "/abcd" */
-      if (s[0]==0 || s[1]!=':')
-	s[0] = _getdrive() + 'A' - 1;
-      s[1]=':'; s[2]='\\'; s[3]=0;
-    }
-  } else if (fname[0] && fname[1]==':') {
-    if (fname[2]!='/' && fname[2]!='\\') {	    /* Case "x:abcd"   */
-      if ( toupper((unsigned char)s[0])!=toupper((unsigned char)fname[0]) || s[1]!=':') {
-	drv[0]=fname[0]; drv[1]=':'; drv[2]='.'; drv[3]=0;
-	GetFullPathName(drv, STRING_BUFFER, string_buffer, &s);
-        s = string_buffer;
-      }
-      fname += 2;
-    } else if (fname[3]!='/' && fname[3]!='\\') {   /* Case "x:/abcd"  */
-	s[0]=toupper((unsigned char)fname[0]); s[1]=':'; s[2]='\\'; s[3]=0;
-	fname += 2;
-    } else {					    /* Case "x://abcd" */
-	s[0]=s[1]='\\'; s[2]=0;
-	fname += 2;
-    }
-  }
-  /* Process path components */
-  for (;;)
-  {
-    while (*fname=='/' || *fname=='\\')
-      fname ++;
-    if (*fname == 0)
-      break;
-    if (fname[0]=='.') {
-      if (fname[1]=='/' || fname[1]=='\\' || fname[1]==0) {
-	fname += 1;
-	continue;
-      }
-      if (fname[1]=='.')
-        if (fname[2]=='/' || fname[2]=='\\' || fname[2]==0) {
-	  fname += 2;
-	  strcpyif(string_buffer, dirname(string_buffer));
-	  s = string_buffer;
-	  continue;
-      }
-    }
-    while (*s) 
-      s++;
-    if (s[-1]!='/' && s[-1]!='\\')
-      *s++ = '\\';
-    while (*fname && *fname!='/' && *fname!='\\')
-      if (s-string_buffer > STRING_BUFFER-10)
-	error(NIL,"Filename is too long",NIL);
-      else
-        *s++ = *fname++;
-    *s = 0;
-  }
-  return string_buffer;
-#endif
 }
     
 DX(xconcat_fname)
@@ -880,7 +562,6 @@ relative_fname(const char *from, const char *fname)
   strcpyif(file_name, from);
   from = file_name;
   fname = concat_fname(NULL,fname);
-#ifdef UNIX
   if (fromlen>0 && !strncmp(from, fname, fromlen))
     {
       if ( fname[fromlen]==0 )
@@ -890,18 +571,6 @@ relative_fname(const char *from, const char *fname)
       if (fname[fromlen-1]=='/')
         return fname + fromlen;
     }
-#endif
-#ifdef WIN32
-  if (fromlen>3 && !strncmp(from, fname, fromlen))
-    {
-      if ( fname[fromlen]==0 )
-        return ".";
-      if (fname[fromlen]=='/' || fname[fromlen]=='\\')
-        return fname + fromlen + 1;
-      if (fname[fromlen-1]=='/' || fname[fromlen-1]=='\\')
-        return fname + fromlen;
-    }
-#endif
   return 0;
 }
 
@@ -963,15 +632,9 @@ tmpname(const char *dir, const char *suffix)
 
   /* searches free filename */
   do {
-#ifdef WIN32
-    snprintf(buffer, sizeof(buffer), "sn%d%s%s", ++uniq, dot, suffix);
-    tmp = concat_fname(dir, buffer);
-    fd = _open(tmp, _O_RDWR|_O_CREAT|_O_EXCL, 0644);
-#else
     snprintf(buffer, sizeof(buffer), "sn.%d.%d%s%s", (int)getpid(), ++uniq, dot, suffix);
     tmp = concat_fname(dir, buffer);
     fd = open(tmp, O_RDWR|O_CREAT|O_EXCL, 0644);
-#endif
   }
   while (fd<0 && errno==EEXIST);
   /* test for error and close file */
@@ -991,11 +654,7 @@ tmpname(const char *dir, const char *suffix)
 DX(xtmpname)
 {
   char tempdir[256];
-#ifdef WIN32
-  GetTempPath(sizeof(tempdir),tempdir);
-#else
   strcpy(tempdir,"/tmp");
-#endif
   ALL_ARGS_EVAL;
   switch (arg_number)
   {
@@ -1018,21 +677,20 @@ DX(xtmpname)
 static char *
 search_lushdir(char *progname)
 {
-#ifdef UNIX
-  /* Finds executable under UNIX */
+  /* Finds executable */
   if (!progname)
     abort("internal error (fileio): progname is null");
-  if (progname[0]=='/') 
+  if (progname[0]=='/')
     {
       /* explicit absolute name */
       strcpy(file_name,progname);
-    } 
-  else if (strchr(progname,'/'))  
+    }
+  else if (strchr(progname,'/'))
     {
       /* explicit relative name */
       strcpy(file_name,concat_fname(NULL,progname));
-    } 
-  else 
+    }
+  else
     {
       /* search along path */
       char *s1, *s2;
@@ -1054,16 +712,6 @@ search_lushdir(char *progname)
 	  break;
       }
     }
-#endif
-
-#ifdef WIN32
-  /* Finds executable under WIN32 (program_name is unecessary) */
-  if (GetModuleFileName(GetModuleHandle(NULL), file_name, FILELEN-1)==0)
-    return 0;
-#ifdef DEBUG_DIRSEARCH
-  printf("P %s\n",file_name);
-#endif
-#endif
 
   /* Tests for symlink */
 #ifdef S_IFLNK
@@ -1157,9 +805,6 @@ add_suffix(const char *q, const char *suffixes)
   /* Test if there is already a suffix */
   if ((s = strrchr(q,'.')))
     if (!strchr(s,'/'))
-#ifdef WIN32
-      if (!strchr(s,'\\'))
-#endif
 	return q;
 
   /* Test if this is a old style suffix */
@@ -1272,9 +917,7 @@ search_file(const char *ss, const char *suffixes)
   
   /* -- search along path */
   c = 0;
-#ifdef UNIX
   if (*s != '/')
-#endif
     if (EXTERNP(at_path, &symbol_class))
       {
         at *q = NIL;
@@ -1493,13 +1136,6 @@ attempt_open_write(const char *s, const char *suffixes)
   if (! strcmp(s, "$stderr"))
     return stderr;
 
-  /*** demo check ***/
-
-#ifdef DEMO
-  error(NIL,"Beyond the capabilities of the demo version",NIL);
-#endif
-
-
   /*** pipes ***/
   if (*s == '|') {
     errno = 0;
@@ -1561,11 +1197,6 @@ attempt_open_append(const char *s, const char *suffixes)
   if (!strcmp(s, "$stderr"))
     return stderr;
   
-  /*** demo check ***/
-#ifdef DEMO
-  error(NIL,"Beyond the capabilities of the demo version",NIL);
-#endif
-
   /*** pipes ***/
   if (*s == '|') {
     errno = 0;
@@ -1581,7 +1212,7 @@ attempt_open_append(const char *s, const char *suffixes)
     s = add_suffix(s, suffixes);
     strcpy(file_name, s);
   }
-  
+
   /*** open ***/
   if ((f = fopen(s, "a"))) {
     FMODE_BINARY(f);
@@ -2046,9 +1677,7 @@ init_fileio(char *program_name)
   if (!(s=search_lushdir(program_name)))
     if (!(s=search_lushdir("lush")))
       abort("Cannot locate library files");
-#ifdef UNIX
   unix_setenv("LUSHDIR",s);
-#endif
   q = new_string(s);
   var_set(at_lushdir, q);
   var_set(at_tl3dir, q);

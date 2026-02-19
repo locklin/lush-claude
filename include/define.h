@@ -32,14 +32,6 @@
 
 #ifdef HAVE_CONFIG_H
 # include "lushconf.h"
-#else
-# ifdef WIN32
-#  define HAVE_STRFTIME 1
-#  define STDC_HEADERS  1  
-#  define HAVE_STRCHR   1
-#  define HAVE_MEMCPY   1
-#  define HAVE_STRERROR 1
-# endif
 #endif
 
 /* --------- GENERAL PURPOSE DEFINITIONS ---------- */
@@ -68,32 +60,6 @@ typedef void* gptr;
 
 /* --------- MACHINE DEPENDANT STUFF -------- */
 
-#ifdef WIN32
-# define main             lushmain
-# define exit             win32_exit
-# define isatty           win32_isatty
-# define popen            win32_popen
-# define pclose           win32_pclose
-# define FMODE_TEXT(f)    win32_fmode_text(f);
-# define FMODE_BINARY(f)  win32_fmode_binary(f);
-# define INIT_MACHINE     init_win32()
-# define TOPLEVEL_MACHINE break_attempt=0
-# define CHECK_MACHINE(s) if (break_attempt) win32_user_break(s)
-# define DLLEXPORT        __declspec(dllexport)
-# define DLLIMPORT        __declspec(dllimport)
-# if ! defined(TLAPI)
-#  if defined(TL3DLL)
-#   define TLAPI DLLEXPORT
-#  else  /* !defined TL3DLL && !defined(_CONSOLE) */
-#   define TLAPI DLLIMPORT
-#  endif /* !defined(TL3DLL) */
-# endif /* !defined(TLAPI) */
-# if defined (_MSC_VER) && (_MSC_VER == 1100)
-#  pragma optimize("p",on)
-#  pragma warning(disable: 4056)
-# endif /* VC50 */
-#endif /* WIN32 */
-
 #ifdef UNIX
 # define INIT_MACHINE      init_unix()
 # define FINI_MACHINE      fini_unix()
@@ -104,10 +70,6 @@ typedef void* gptr;
 # endif
 # define popen             unix_popen
 # define pclose            unix_pclose
-# ifdef __CYGWIN32__
-#  define FMODE_TEXT(f)    cygwin_fmode_text(f);
-#  define FMODE_BINARY(f)  cygwin_fmode_binary(f);
-# endif
 #endif
 
 #ifndef TLAPI
@@ -137,39 +99,7 @@ typedef void* gptr;
 
 /* --------- AUTOCONF --------- */
 
-#if STDC_HEADERS
-# include <string.h>
-#else
-# ifdef HAVE_STRINGS_H
-#  include <strings.h>
-# else
-#  include <string.h>
-# endif
-# ifndef HAVE_STRCHR
-#  define strchr index
-#  define strrchr rindex
-# endif
-# ifdef HAVE_MEMORY_H
-#  include <memory.h>
-# endif
-# ifndef HAVE_MEMCPY
-#  define memcpy(d,s,n) bcopy((s),(d),(n))
-#  define memset(d,c,n) do{char *dd=d;size_t nn=n;while(nn-->0)*dd++=c;}while(0)
-# endif
-#endif
-
-#ifndef STDC_HEADERS
-#ifndef __APPLE__
-# ifdef toupper
-#  undef toupper
-# endif
-# ifdef tolower
-#  undef tolower
-# endif
-# define NEED_TOUPPER
-# define NEED_TOLOWER
-#endif
-#endif
+#include <string.h>
 
 #ifdef HAVE_WCHAR_H
 # include <wchar.h>
@@ -216,23 +146,14 @@ typedef void* gptr;
  * the machine dependent part, just below 
  */
 
-#ifdef __STDC__			/* Defined by ANSI compilers */
 # define name2(a,b)      _name2(a,b)
 # define _name2(a,b)     a##b
 # define name3(a,b,c)    _name3(a,b,c)
 # define _name3(a,b,c)   a##b##c
-#else
-# define name2(a,b)      a/**/b
-# define name3(a,b,c)    a/**/b/**/c
-#endif
 
 /* return the variable in a string */
-#ifdef __STDC__
 # define enclos2_in_string(a) #a
 # define enclose_in_string(a) enclos2_in_string(a)
-#else
-# define enclose_in_string(a) "a"
-#endif
 
 /* --------- FORMAT MACROS ---------- */
 

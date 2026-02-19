@@ -116,7 +116,7 @@ void
 oostruct_dispose(at *q)
 {
   struct context mycontext;
-  register struct oostruct *s;
+  struct oostruct *s;
   int oldready;
   int errflag;
   
@@ -157,7 +157,7 @@ oostruct_dispose(at *q)
 static void 
 oostruct_action(at *q, void (*action) (at *))
 {
-  register struct oostruct *s;
+  struct oostruct *s;
   s = q->Object;
   (*action)(s->class);
   zombie_action(q,action);
@@ -307,7 +307,7 @@ dispose_hashtable(class *s)
 static void 
 class_dispose(at *q)
 {
-  register class *s, **p;
+  class *s, **p;
 
   s = q->Object;
   q->Object = NIL;
@@ -344,7 +344,7 @@ class_dispose(at *q)
 static void 
 class_action(at *q, void (*action) (at *))
 {
-  register class *s;
+  class *s;
   int i;
 
   s = q->Object;
@@ -614,8 +614,8 @@ new_oostruct(at *cl)
   class *c;
   class *sc;
 
-  register int len,i;
-  register at *q, *p;
+  int len,i;
+  at *q, *p;
   struct oostruct *s;
   
   if (! EXTERNP(cl, &class_class))
@@ -801,8 +801,8 @@ setslot(at **pobj, at *prop, at *val)
 at *
 letslot(at *obj, at *f, at *q, int howmuch)
 {
-  register struct oostruct *s;
-  register int i;
+  struct oostruct *s;
+  int i;
   struct symbol *symb;
   at *ans;
   
@@ -904,7 +904,7 @@ DY(yletslot)
 void
 putmethod(class *cl, at *name, at *value)
 {
-  register at **last, *list, *q;
+  at **last, *list, *q;
 
   if (! EXTERNP(name, &symbol_class))
     error(NIL,"Not a symbol", name);

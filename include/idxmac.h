@@ -157,7 +157,7 @@ max = (idx)->offset; \
  */  
 #define Midx_unfold(i, d, sz, st, Type) \
 { \
-  register int nd; \
+  int nd; \
   nd = ((i)->ndim)++; \
   (i)->mod[nd] = (i)->mod[d]; \
   (i)->dim[nd] = sz; \
@@ -170,7 +170,7 @@ max = (idx)->offset; \
  */
 #define Midx_diagonal(i, d, Type) \
 { \
-  register int n; register intg m; \
+  int n; intg m; \
   for (m=0, n=(i)->ndim-d; n<(i)->ndim; n++) \
     m += (i)->mod[n]; \
   n = (i)->ndim - d; \
@@ -213,7 +213,7 @@ max = (idx)->offset; \
 #define Midx_transpose(i, p, Type) \
 { \
   intg tmp[MAXDIMS]; \
-  register int j; \
+  int j; \
   for (j=0; j<(i)->ndim; j++) { tmp[j] = (i)->dim[j]; } \
   for (j=0; j<(i)->ndim; j++) { (i)->dim[j] = tmp[p[j]] ; } \
   for (j=0; j<(i)->ndim; j++) { tmp[j] = (i)->mod[j]; } \
@@ -224,7 +224,7 @@ max = (idx)->offset; \
  */
 #define Midx_transpose2(i, d0, d1, Type) \
 { \
-  register intg b; \
+  intg b; \
   b = (i)->dim[d0]; (i)->dim[d0]=(i)->dim[d1]; (i)->dim[d1]=b; \
   b = (i)->mod[d0]; (i)->mod[d0]=(i)->mod[d1]; (i)->mod[d1]=b; \
 } 

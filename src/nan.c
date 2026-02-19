@@ -38,9 +38,6 @@
 #ifdef HAVE_FENV_H
 # include <fenv.h>
 #endif
-#ifdef WIN32
-# include <float.h>
-#endif
 #include <signal.h>
 
 typedef void (*SIGHANDLERTYPE)();
@@ -247,20 +244,7 @@ static int
 setup_fpu(int doINV, int doOFL)
 {
 
-#if defined(WIN32)
-
-  /* Win32 uses _controlfp() */
-
-  unsigned int mask = _controlfp(0,0);
-  fpe_inv = doINV;
-  fpe_ofl = doOFL;
-  if (doINV) mask&=(~_EM_INVALID); else mask|=(_EM_INVALID);
-  if (doOFL) mask&=(~_EM_OVERFLOW); else mask|=(_EM_OVERFLOW);
-  if (doOFL) mask&=(~_EM_ZERODIVIDE); else mask|=(_EM_ZERODIVIDE);
-  _controlfp(mask, _MCW_EM);
-  return 1;
-
-#elif defined(HAVE_FPSETMASK)
+#if defined(HAVE_FPSETMASK)
 
   /* SysVr4 defines fpsetmask() */
 
@@ -324,7 +308,7 @@ setup_fpu(int doINV, int doOFL)
   
 #define DO(c,f) mask=((c)?(mask|(f)):(mask&~(f)));
 
-#if defined(__i386__) || (defined(__sh__) && defined(__SH4__))
+#if defined(__i386__)
 #ifdef _FPU_MASK_IM
   DO(!doINV, _FPU_MASK_IM);
 #endif
@@ -382,25 +366,6 @@ setup_fpu(int doINV, int doOFL)
 
 /* fpe_irq -- signal handler for floating point exception */
 
-#ifdef WIN32
-static void 
-fpe_irq(int sig, int num)
-{
-  _clearfp();
-  if (ieee_present)
-    setup_fpu(fpe_inv, fpe_ofl);
-  signal(SIGFPE, (void(*)(int))fpe_irq);
-  switch(num)
-  {
-  case _FPE_INVALID:
-    error(NIL, "Floating exception: invalid", NIL);
-  case _FPE_OVERFLOW:
-    error(NIL, "Floating exception: overflow", NIL);
-  case _FPE_ZERODIVIDE:
-    error(NIL, "Floating exception: division by zero", NIL);
-  }
-}
-#else
 static void
 fpe_irq(void)
 {
@@ -409,7 +374,6 @@ fpe_irq(void)
   signal(SIGFPE, (SIGHANDLERTYPE)fpe_irq);
   error(NIL, "Floating exception", NIL);
 }
-#endif
 
 /* probe_fpe_irq -- signal handler for testing SIGFPE */
 
@@ -419,9 +383,6 @@ static int fpe_isnan;
 static void
 probe_fpe_irq(void)
 {
-#ifdef WIN32
-  _clearfp();
-#endif
   fpe_flag = 1;
   /* Avoid incorrect restarts */
   signal(SIGFPE, SIG_IGN);
@@ -443,9 +404,6 @@ set_fpe_irq(void)
   /* Setup fpu exceptions */
   setup_fpu(TRUE,TRUE);
   /* Check NAN behavior */
-#ifdef BROKEN_SIGFPE
-  ieee_present = 0;
-#else
   while (ieee_present)
     {
       signal(SIGFPE, SIG_IGN);
@@ -466,12 +424,8 @@ set_fpe_irq(void)
       fpe_flag = 0;
       return;
     }
-#endif
   /* We can now setup the real fpe handler */
   signal(SIGFPE, (SIGHANDLERTYPE)fpe_irq);
-#ifdef HAVE_IEEE_HANDLER
-  ieee_handler("set","common",fpe_irq);
-#endif
 }
 
 

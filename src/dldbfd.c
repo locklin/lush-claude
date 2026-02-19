@@ -81,18 +81,8 @@
 /* MISSING PROTOTYPES (watch) */
 
 
-#ifndef SEC_LINK_DUPLICATES_SAME_CONTENTS  /* bfd<=2.7 */
-# define bfd_alloc bfd_alloc_by_size
-# define bfd_size_type size_t
-#endif
-
-#ifdef bfd_get_section_size_before_reloc   /* bfd<2.15 */
-# define dldbfd_section_rawsize(p) ((p)->_raw_size)
-# define dldbfd_section_size(p) ((p)->_cooked_size)
-#else
-# define dldbfd_section_rawsize(p) ((p)->rawsize ? (p)->rawsize : (p)->size)
-# define dldbfd_section_size(p) ((p)->size)
-#endif
+#define dldbfd_section_rawsize(p) ((p)->rawsize ? (p)->rawsize : (p)->size)
+#define dldbfd_section_size(p) ((p)->size)
 
 #if HAVE_BFD_HASH_TABLE_INIT_WANTS_2_ARGS
 # define my_bfd_hash_table_init(a,b,c) bfd_hash_table_init(a,b)
@@ -140,11 +130,6 @@ bfd_log2 (bfd_vma x)
 # define DLOPEN 1
 typedef void* dlopen_handle_t;
 #endif
-#endif
-
-#ifdef WIN32
-# define DLOPEN 1
-typedef void* dlopen_handle_t;
 #endif
 
 #if DLOPEN
@@ -449,26 +434,6 @@ create_module_entry(bfd *abfd, module_entry **here, int archivep)
           THROW("Snafu in bfd section. Possible mismatch between libbfd and bfd.h");
     }
 #endif
-
-    /* Fix section flags (GCC2.7.2 on MIPS) */
-    if (bfd_get_flavour(abfd) == bfd_target_elf_flavour &&
-        bfd_get_arch(abfd) == bfd_arch_mips )
-      {
-        for (p=abfd->sections; p; p=p->next)
-          {
-            if (!(strcmp(p->name, ".rodata")) &&
-                !(p->flags & (SEC_LOAD|SEC_ALLOC)) )
-              {
-                p->flags |= SEC_ALLOC|SEC_READONLY|SEC_LOAD|SEC_DATA;
-              }
-            if (!(strcmp(p->name, ".reginfo")) &&
-                 (p->flags & (SEC_LOAD|SEC_ALLOC|SEC_RELOC)) )
-              {
-                p->flags &= ~(SEC_LOAD|SEC_ALLOC|SEC_RELOC); 
-                p->flags |=  (SEC_READONLY|SEC_DEBUGGING);
-              }
-          }
-      }
 
     /* Initialize */
     new = xballoc(abfd, sizeof(module_entry));
@@ -1533,22 +1498,6 @@ resolve_newly_defined_symbols(module_entry *chain)
 static void
 update_instruction_cache(bfd_vma s, bfd_size_type l)
 {
-  /* ----- POWER PC ----- */
-#if defined(__ppc__) || defined(__PPC__)
-# ifndef CACHELINESIZE
-#  define CACHELINESIZE 16
-# endif
-  char *start = vmaptr(s & ~(CACHELINESIZE-1));
-  char *end = vmaptr((s+l+CACHELINESIZE-1) & ~(CACHELINESIZE-1));
-  char *p;  
-# ifdef __GNUC__
-  for (p = start; p < end; p += CACHELINESIZE)
-    { __asm__ __volatile__ ("dcbf 0,%0" : : "r" ((long)p) ); }
-  __asm__ __volatile__ ("sync");
-# else
-#  error "GCC-dependent code here."
-# endif
-#endif /* __ppc__ */
 }
 
 
@@ -2303,17 +2252,6 @@ define_symbol_of_main_program(const char *exec)
 
     /* Read symbols of main program */
     abfd = bfd_openr(exec,"default");
-#if defined(__CYGWIN32__) || defined(WIN32)
-    if (! abfd)
-      {
-        char *l = malloc(strlen(exec)+8);
-        ASSERT(l);
-        strcpy(l, exec);
-        strcat(l, ".exe");
-        abfd = bfd_openr(l, "default");
-        free(l);
-      }
-#endif
     TRY
     {
         ASSERT_BFD(abfd);
@@ -2393,19 +2331,6 @@ define_symbol_of_main_program(const char *exec)
     }
     END_CATCH;
 }
-
-
-
-/* Some g++ versions need these symbols. */
-
-#if defined(__GNUC__) && (__GNUC__ < 3)
-void 
-__pure_virtual(void) 
-{ 
-  extern void run_time_error();
-  run_time_error("Pure virtual function called"); 
-}
-#endif
 
 
 
@@ -2575,7 +2500,7 @@ dld_find_executable (const char *file)
     while (*p) 
       {
 	char  name[MAXPATHLEN];
-	register char *next;
+	char *next;
 	next = name;
 	while (*p && *p != ':') *next++ = *p++;
 	*next = 0;

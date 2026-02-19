@@ -147,9 +147,9 @@ static at *index_ref(struct index*,at**);
 static at *
 index_listeval(at *p, at *q)
 {
-  register struct index *ind;
-  register int i;
-  register at *qsav;
+  struct index *ind;
+  int i;
+  at *qsav;
   at *myp[MAXDIMS];
 
   ind = p->Object;
@@ -272,10 +272,6 @@ index_compare(at *p, at *q, int order)
           r2 = (*get2)(base2, off2);
           if (r1 == r2)
             {
-#if defined(WIN32) && defined(_MSC_VER) && defined(_M_IX86)
-              float delta = (float)(r1 - r2);
-              if (! *(long*)&delta)  // Has to do with NaNs
-#endif
                 break;
             }
         fail:
@@ -1133,7 +1129,7 @@ index_ref(struct index *ind, at *p[])
   intg start, end;
   at *myp[MAXDIMS];
   at *ans = NIL;
-  register at **where = &ans;
+  at **where = &ans;
   struct storage *st;
 
   /* 1: numeric arguments only */
@@ -1141,7 +1137,7 @@ index_ref(struct index *ind, at *p[])
   st = ind->st;
   j = ind->offset;
   for (i = 0; i < ind->ndim; i++) {
-    register intg k;
+    intg k;
     q = p[i];
     if (q && (q->flags & C_NUMBER)) {
       k = (intg) (q->Number);
@@ -1206,7 +1202,7 @@ index_set(struct index *ind, at *p[], at *value, int mode)
 
   j = ind->offset;
   for (i = 0; i < ind->ndim; i++) {
-    register intg k;
+    intg k;
     q = p[i];
     if (q && (q->flags & C_NUMBER)) {
       k = (intg) (q->Number);
@@ -3055,7 +3051,7 @@ static int ebloop_args(at *p, at **syms, at **iats,
 DY(yeloop)
 {
   at *ans, *last_index;
-  register int i,j,d, n;
+  int i,j,d, n;
   struct index *ind;
   
   at *syms[MAXEBLOOP];
@@ -3095,7 +3091,7 @@ DY(yeloop)
 DY(ybloop)
 {
   at *ans, *last_index;
-  register int i,j,d,n,m;
+  int i,j,d,n,m;
   struct index *ind;
   
   at *syms[MAXEBLOOP];

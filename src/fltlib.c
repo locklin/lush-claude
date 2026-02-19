@@ -63,7 +63,7 @@
 flt
 FQtanh(flt x)
 {
-  register flt y;
+  flt y;
 
   if (x >= Fzero) 
     if (x < (flt)13) 
@@ -90,7 +90,7 @@ FQDtanh(flt x)
     x = -x;
   if (x < (flt)13) 
     {
-      register flt y;
+      flt y;
       y = A0+x*(A1+x*(A2+x*(A3)));
       y *= y;
       y *= y;
@@ -118,7 +118,7 @@ FQDtanh(flt x)
 real
 DQtanh(real x)
 {
-  register real y;
+  real y;
 
   if (x >= Dzero) 
     if (x < (real)13) 
@@ -145,7 +145,7 @@ DQDtanh(real x)
     x = -x;
   if (x < (real)13) 
     {
-      register real y;
+      real y;
       y = A0+x*(A1+x*(A2+x*(A3)));
       y *= y;
       y *= y;
@@ -180,7 +180,7 @@ DQDtanh(real x)
 flt
 FQstdsigmoid(flt x)
 {
-  register flt y;
+  flt y;
 
   if (x >= Fzero) 
     if (x < (flt)13) 
@@ -208,7 +208,7 @@ FQDstdsigmoid(flt x)
     x = -x;
   if (x < (flt)13) 
     {
-      register flt y;
+      flt y;
       y = A0+x*(A1+x*(A2+x*(A3)));
       y *= y;
       y *= y;
@@ -245,7 +245,7 @@ FQDstdsigmoid(flt x)
 real
 DQstdsigmoid(real x)
 {
-  register real y;
+  real y;
 
   if (x >= Dzero) 
     if (x < (real)13) 
@@ -273,7 +273,7 @@ DQDstdsigmoid(real x)
     x = -x;
   if (x < (real)13) 
     {
-      register real y;
+      real y;
       y = A0+x*(A1+x*(A2+x*(A3)));
       y *= y;
       y *= y;
@@ -341,7 +341,7 @@ FQexpmx(flt x)
   x = Fabs(x);
   if (x < (flt)13) 
     {
-      register flt y;
+      flt y;
       y = A0+x*(A1+x*(A2+x*(A3+x*A4)));
       y *= y;
       y *= y;
@@ -356,7 +356,7 @@ FQexpmx(flt x)
 flt
 FQDexpmx(flt x)
 {
-  register flt y;
+  flt y;
   y = Fabs(x);
   if (y < (flt)13) 
     {
@@ -403,7 +403,7 @@ DQexpmx(real x)
   x = Dabs(x);
   if (x < (real)13) 
     {
-      register real y;
+      real y;
       y = A0+x*(A1+x*(A2+x*(A3+x*A4)));
       y *= y;
       y *= y;
@@ -418,7 +418,7 @@ DQexpmx(real x)
 real
 DQDexpmx(real x)
 {
-  register real y;
+  real y;
   y = Dabs(x);
   if (y < (real)13) 
     {
@@ -752,7 +752,7 @@ Fseed(int x)
 flt 
 Frand(void)
 {
-  register int mj;
+  int mj;
 
   if (++inext == 56)
     inext = 1;
@@ -771,8 +771,8 @@ Fgauss(void)
    * Now a quick and dirty way to build
    * a quasi-normal random number.
    */
-  register int i;
-  register int mj, sum;
+  int i;
+  int mj, sum;
   mj = 0;
   sum = 0;
   for (i = 12; i; i--) {
@@ -799,7 +799,7 @@ void Dseed(int x) { Fseed(x); }
 real 
 Drand(void)
 {
-  register int mj;
+  int mj;
 
   if (++inext == 56)
     inext = 1;
@@ -818,8 +818,8 @@ Dgauss(void)
    * Now a quick and dirty way to build
    * a quasi-normal random number.
    */
-  register int i;
-  register int mj, sum;
+  int i;
+  int mj, sum;
   mj = 0;
   sum = 0;
   for (i = 12; i; i--) {

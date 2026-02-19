@@ -1133,7 +1133,7 @@ comdraw_pixel_map(struct window *linfo,
 {
   struct C_window *info = (struct C_window*)linfo; 
   char command[MAX_INPUT_SIZE*2];
-  register unsigned int *im, *jm, *data2;
+  unsigned int *im, *jm, *data2;
   int sx_w = sx * w;
   int sy_h = sy * h;
   int i,j,k,l,hcnt,wcnt;
@@ -1191,7 +1191,7 @@ comdraw_pixel_map(struct window *linfo,
     for (i = 0; i < h; i++) {
       im = data2 + sx_w * sy * i;
       for (k = 0; k < w; k++, data++) {
-	register int c;
+	int c;
 	c = *data;
 	jm = im;
 	for (j = 0; j < sy; j++, jm += sx_w)
