@@ -178,7 +178,7 @@ string_name(at *p)
 	  s += 1;
 	  continue;
 	} 
-      m = (int)mbrtowc(&wc, s, n, &ps);
+      m = (int)mbrtowc(&wc, s, (size_t)n, &ps);
       if (m <= 0)
 	{
 	  *name++ = '\\';
@@ -189,9 +189,9 @@ string_name(at *p)
 	  s += 1;
 	  continue;
 	}
-      if (iswprint(wc))
+      if (iswprint((wint_t)wc))
 	{
-	  memcpy(name, s, m);
+	  memcpy(name, s, (size_t)m);
 	  name += m;
 	}
       else if (m==1 && c<=' ')
@@ -278,7 +278,7 @@ string_hash(at *p)
   while (*s)
   {
     x = (x<<6) | ((x&0xfc000000)>>26);
-    x ^= (*s);
+    x ^= (unsigned char)(*s);
     s++;
   }
   return x;
@@ -322,17 +322,17 @@ large_string_add(struct large_string *ls, char *s, int len)
         ls->where = &((*ls->where)->Cdr);
         ls->p = ls->buffer;
       }
-  if (len > sizeof(ls->buffer) - 1)
+  if ((size_t)len > sizeof(ls->buffer) - 1)
     {
-      at *p = new_string_bylen(len);
-      memcpy(SADD(p->Object), s, len);
+      at *p = new_string_bylen((size_t)len);
+      memcpy(SADD(p->Object), s, (size_t)len);
       *ls->where = cons(p, NIL);
       ls->where = &((*ls->where)->Cdr);
       ls->p = ls->buffer;
     }
-  else 
+  else
     {
-      memcpy(ls->p, s, len);
+      memcpy(ls->p, s, (size_t)len);
       ls->p += len;
     }
 }
@@ -470,16 +470,16 @@ DX(xstr_left)
   ARG_NUMBER(2);
   ALL_ARGS_EVAL;
   s = ASTRING(1);
-  n = AINTEGER(2);
-  
+  n = (int)AINTEGER(2);
+
   if (n < 0)
     error(NIL, badarg, NEW_NUMBER(n));
   l = (int)strlen(s);
   if (n > l)
     n = l;
-  p = new_string_bylen(n+1);
+  p = new_string_bylen((size_t)n+1);
   a = SADD(p->Object);
-  strncpy(a,s,n);
+  strncpy(a,s,(size_t)n);
   a[n] = 0;
   return p;
 }
@@ -496,8 +496,8 @@ DX(xstr_right)
   ARG_NUMBER(2);
   ALL_ARGS_EVAL;
   s = ASTRING(1);
-  n = AINTEGER(2);
-  
+  n = (int)AINTEGER(2);
+
   if (n < 0)
     error(NIL, badarg, NEW_NUMBER(n));
   l = (int)strlen(s);
@@ -520,7 +520,7 @@ DX(xstr_mid)
   if (arg_number == 2)
     {
       s = ASTRING(1);
-      n = AINTEGER(2);
+      n = (int)AINTEGER(2);
       l = (int)strlen(s);
       if (n < 1)
 	error(NIL, badarg, NEW_NUMBER(n));
@@ -529,12 +529,12 @@ DX(xstr_mid)
       else
 	return new_string(s+n-1);
     }
-  else 
+  else
     {
       ARG_NUMBER(3);
       s = ASTRING(1);
-      n = AINTEGER(2);
-      m = AINTEGER(3);
+      n = (int)AINTEGER(2);
+      m = (int)AINTEGER(3);
       if (n < 1)
 	error(NIL, badarg, NEW_NUMBER(n));	
       if (m < 0)
@@ -544,9 +544,9 @@ DX(xstr_mid)
 	m = l;
       if (m < 1)
 	return new_safe_string(null_string);
-      p = new_string_bylen(m+1);
+      p = new_string_bylen((size_t)m+1);
       a = SADD(p->Object);
-      strncpy(a,s+(n-1),m);
+      strncpy(a,s+(n-1),(size_t)m);
       a[m] = 0;
       return p;
     }
@@ -568,7 +568,7 @@ DX(xstr_concat)
     s = ASTRING(i);
     length += (int)strlen(s);
   }
-  p = new_string_bylen(length+1);
+  p = new_string_bylen((size_t)length+1);
   here = SADD(p->Object);
   for (i=1; i<=arg_number; i++) {
     s = ASTRING(i);
@@ -617,7 +617,7 @@ DX(xstr_index)
   start = 1;
   ALL_ARGS_EVAL;
   if (arg_number == 3)
-    start = AINTEGER(3);
+    start = (int)AINTEGER(3);
   else
     ARG_NUMBER(2);
   s = ASTRING(1);
@@ -647,7 +647,7 @@ str_val_hex(char *s)
   s += 2;
   while (*s)
   {
-    if (x&0xf0000000)
+    if ((unsigned int)x & 0xf0000000u)
       return NIL;
     x <<= 4;
     if (*s>='0' && *s<='9')
@@ -849,9 +849,9 @@ DX(xstr_del)
   if (arg_number != 2)
     {
       ARG_NUMBER(3);
-      l = AINTEGER(3);
+      l = (int)AINTEGER(3);
     }
-  return str_del(ASTRING(1), AINTEGER(2), l);
+  return str_del(ASTRING(1), (int)AINTEGER(2), l);
 }
 
 /*------------------------ */
@@ -874,7 +874,7 @@ DX(xstr_ins)
 {
   ARG_NUMBER(3);
   ALL_ARGS_EVAL;
-  return str_ins(ASTRING(1),AINTEGER(2),ASTRING(3));
+  return str_ins(ASTRING(1),(int)AINTEGER(2),ASTRING(3));
 }
 
 
@@ -891,7 +891,7 @@ str_subst(char *s, char *s1, char *s2)
   large_string_init(&ls);
   while(*s) 
     {
-      if ((*s == *s1) && (!strncmp(s,s1,len1)) ) {
+      if ((*s == *s1) && (!strncmp(s,s1,(size_t)len1)) ) {
         large_string_add(&ls, last, (int)(s - last));
         large_string_add(&ls, s2, len2);
         s += len1;
@@ -935,12 +935,12 @@ DX(xupcase)
     while(n > 0)
       {
 	wchar_t wc = 0;
-	int m = (int)mbrtowc(&wc, s, n, &ps1);
+	int m = (int)mbrtowc(&wc, s, (size_t)n, &ps1);
 	if (m == 0)
 	  break;
 	if (m > 0)
 	  {
-	    int d = (int)wcrtomb(buffer, towupper(wc), &ps2);
+	    int d = (int)wcrtomb(buffer, (wchar_t)towupper((wint_t)wc), &ps2);
 	    if (d <= 0)
 	      large_string_add(&ls, s, m);
 	    else
@@ -950,8 +950,8 @@ DX(xupcase)
 	  }
 	else
 	  {
-	    memset(&ps1, 0, sizeof(mbstate_t));	 
-	    memset(&ps2, 0, sizeof(mbstate_t));	 
+	    memset(&ps1, 0, sizeof(mbstate_t));
+	    memset(&ps2, 0, sizeof(mbstate_t));
 	    large_string_add(&ls, s, 1);
 	    s += 1;
 	    n -= 1;
@@ -991,10 +991,10 @@ DX(xupcase1)
     memset(&ps1, 0, sizeof(mbstate_t));
     memset(&ps2, 0, sizeof(mbstate_t));
     large_string_init(&ls);
-    m = (int)mbrtowc(&wc, s, n, &ps1);
+    m = (int)mbrtowc(&wc, s, (size_t)n, &ps1);
     if (m > 0)
       {
-	int d = (int)wcrtomb(buffer, towupper(wc), &ps2);
+	int d = (int)wcrtomb(buffer, (wchar_t)towupper((wint_t)wc), &ps2);
 	if (d > 0)
 	  {
 	    large_string_add(&ls, buffer, d);
@@ -1038,12 +1038,12 @@ DX(xdowncase)
     while(n > 0)
       {
 	wchar_t wc = 0;
-	int m = (int)mbrtowc(&wc, s, n, &ps1);
+	int m = (int)mbrtowc(&wc, s, (size_t)n, &ps1);
 	if (m == 0)
 	  break;
 	if (m > 0)
 	  {
-	    int d = (int)wcrtomb(buffer, towlower(wc), &ps2);
+	    int d = (int)wcrtomb(buffer, (wchar_t)towlower((wint_t)wc), &ps2);
 	    if (d <= 0)
 	      large_string_add(&ls, s, m);
 	    else
@@ -1053,8 +1053,8 @@ DX(xdowncase)
 	  }
 	else
 	  {
-	    memset(&ps1, 0, sizeof(mbstate_t));	 
-	    memset(&ps2, 0, sizeof(mbstate_t));	 
+	    memset(&ps1, 0, sizeof(mbstate_t));
+	    memset(&ps2, 0, sizeof(mbstate_t));
 	    large_string_add(&ls, s, 1);
 	    s += 1;
 	    n -= 1;
@@ -1091,12 +1091,12 @@ DX(xisprint)
     while(n > 0)
       {
 	wchar_t wc = 0;
-	int m = (int)mbrtowc(&wc, (char*)s, n, &ps);
+	int m = (int)mbrtowc(&wc, (char*)s, (size_t)n, &ps);
 	if (m == 0)
 	  break;
 	if (m < 0)
 	  return NIL;
-	if (! iswprint(wc))
+	if (! iswprint((wint_t)wc))
 	  return NIL;
 	s += m;
 	n -= m;
@@ -1163,10 +1163,10 @@ DX(xstr_chr)
   char s[2];
   ARG_NUMBER(1);
   ARG_EVAL(1);
-  i = AINTEGER(1);
+  i = (int)AINTEGER(1);
   if (i<0 || i>255)
     error(NIL,"Out of range",APOINTER(1));
-  s[0]=i;
+  s[0]=(char)i;
   s[1]=0;
   return new_string(s);
 #endif
@@ -1202,7 +1202,7 @@ explode_chars(char *s)
   while (n > 0)
     {
       wchar_t wc = 0;
-      int m = (int)mbrtowc(&wc, s, n, &ps);
+      int m = (int)mbrtowc(&wc, s, (size_t)n, &ps);
       if (m == 0)
         break;
       if (m > 0)
@@ -1397,7 +1397,7 @@ static char *err[] = {
 
 #define serror(n)           { dat=err[n];siglongjmp(rejmpbuf,-1); }
 #define concatc(b1,c,in)    { if (b1.end>in.end-4) serror(0);\
-                              *b1.end++ = c; }
+                              *b1.end++ = (unsigned short)(c); }
 #define concatb(b1,b2,in)   { unsigned short *s=b2.beg;\
                               if (b1.end+(b2.end-b2.beg)>in.end-4) serror(0);\
 			      if (s==b1.end) b1.end=b2.end; else \
@@ -1419,7 +1419,7 @@ regex_single(bounds *ans, bounds buf, int *rnum)
 
   ans->beg = ans->end = buf.beg;
 
-  switch (c = *pat++) {
+  switch (c = (unsigned char)*pat++) {
 
   case 0:
     pat--;
@@ -1599,8 +1599,8 @@ regex_execute(char **regsptr, int *regslen, int nregs)
   int spmax = 2000;
 
   // allocate stack
-  bfail = malloc(sizeof(short*)*spmax);
-  dfail = malloc(sizeof(char*)*spmax);
+  bfail = malloc(sizeof(short*)*(size_t)spmax);
+  dfail = malloc(sizeof(char*)*(size_t)spmax);
   if (! bfail || !dfail)
     error(NIL,"Out of memory",NIL);
   
@@ -1665,8 +1665,8 @@ regex_execute(char **regsptr, int *regslen, int nregs)
     case RE_FAIL&0xf000:
       if (sp >= spmax) { /* grow stack */
         spmax += spmax;
-        bfail = realloc(bfail, sizeof(short*)*spmax);
-        dfail = realloc(dfail, sizeof(char*)*spmax);
+        bfail = realloc(bfail, sizeof(short*)*(size_t)spmax);
+        dfail = realloc(dfail, sizeof(char*)*(size_t)spmax);
         if (! bfail || !dfail)
           error(NIL,"Out of memory",NIL);
       }
@@ -1688,7 +1688,7 @@ regex_execute(char **regsptr, int *regslen, int nregs)
       if (c >= nregs)
         break;
       regsptr[c] = regsptr[nregs+c];
-      regslen[c] = dat-regsptr[c];
+      regslen[c] = (int)(dat-regsptr[c]);
       break;
     }
   }
@@ -1733,7 +1733,7 @@ regex_compile(char *pattern,
       if (strict) 
 	*buf.end++ = RE_DOLLAR;
       *buf.end = 0;
-      *bufstart = buf.end - bufstart + 1;
+      *bufstart = (unsigned short)(buf.end - bufstart + 1);
       return 0L;
     }
 }
@@ -1840,8 +1840,8 @@ DX(xregex_extract)
     error(NIL,pat,APOINTER(1));
   if (regnum > 0)
     {
-      regptr = malloc(2*regnum*sizeof(char*));
-      reglen = malloc(regnum*sizeof(int));
+      regptr = malloc(2*(size_t)regnum*sizeof(char*));
+      reglen = malloc((size_t)regnum*sizeof(int));
       if (!regptr || !reglen)
         error(NIL,"out of memory",NIL);
     }
@@ -1849,8 +1849,8 @@ DX(xregex_extract)
     {
       for (i=0; i<regnum; i++) 
 	{
-	  at *str = new_string_bylen(reglen[i]);
-	  strncpy(SADD(str->Object), regptr[i], reglen[i]);
+	  at *str = new_string_bylen((size_t)reglen[i]);
+	  strncpy(SADD(str->Object), regptr[i], (size_t)reglen[i]);
 	  *where = cons(str,NIL);
 	  where = &((*where)->Cdr);
 	}
@@ -1875,7 +1875,7 @@ DX(xregex_seek)
 
   ALL_ARGS_EVAL;
   if (arg_number==3)
-    n = AINTEGER(3);
+    n = (int)AINTEGER(3);
   else {
     n = 1;
     ARG_NUMBER(2);
@@ -1927,7 +1927,7 @@ DX(xregex_subst)
       start = end = dat + 1;
     if (dat < start) {
       s1 = dat;
-      large_string_add(&ls, s1, start-s1);
+      large_string_add(&ls, s1, (int)(start-s1));
       s1 = start;
     }
     if (start < end) {
@@ -1952,7 +1952,7 @@ DX(xregex_subst)
               char *s2 = s1;
               while (*s1 && *s1!='%')
                 s1 += 1;
-              large_string_add(&ls, s2, s1-s2);
+              large_string_add(&ls, s2, (int)(s1-s2));
             }
         }
     }
@@ -1999,7 +1999,7 @@ DX(xsprintf)
       buf = fmt;
       while (*fmt != 0 && *fmt != '%')
         fmt += 1;
-      large_string_add(&ls, buf, fmt-buf);
+      large_string_add(&ls, buf, (int)(fmt-buf));
       if (*fmt == 0)
         break;
       /* Copy format */
