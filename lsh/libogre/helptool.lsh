@@ -25,6 +25,52 @@
 ;;;;  $Id: helptool.lsh,v 1.13 2006-02-27 15:43:47 laseray Exp $
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
+;;; The helptool displays the Lush Manual in an OGRE GUI window.
+;;;
+;;; Usage:
+;;;   (helptool)              ;; open the full Lush Manual
+;;;   (helptool t)            ;; same, with alt format
+;;;   (helptool "file.hlp")   ;; open a specific help file
+;;;
+;;; The following global variables (defined in libogre/ogre.lsh)
+;;; control the appearance of helptool and all OGRE windows.
+;;; Set them with defvar before calling (helptool):
+;;;
+;;;   *ogre-font-scale*  (default: nil, treated as 1.0)
+;;;       Multiplier applied to all OGRE font pixel sizes.
+;;;       On a 4K monitor where the default 12px fonts are too
+;;;       small, set this to 1.5 or 2.0.  The helptool window
+;;;       and pane dimensions scale to match.
+;;;       Example:
+;;;         (setq *ogre-font-scale* 2.0)
+;;;         (helptool)
+;;;
+;;;   color-palette  (default: auto-generated from 0.65/0.8/0.9)
+;;;       The widget color theme, an array of 6 RGB triples used
+;;;       for button highlights, shadows, and selection colors.
+;;;       Generate a new palette with (new-palette R G B) where
+;;;       R, G, B are base color values from 0.0 to 1.0:
+;;;         (defvar color-palette (new-palette 0.7 0.75 0.85))
+;;;
+;;;   ostring-ok       (default "  Ok  ")
+;;;   ostring-cancel   (default "Cancel")
+;;;       Button labels in OGRE dialogs.  Override for localization.
+;;;
+;;;   ostring-freq-msg       (default "Choose a file")
+;;;   ostring-freq-create    (default "Create file \"%s\"?")
+;;;   ostring-freq-overwrite (default "Overwrite file \"%s\"?")
+;;;       Prompts shown in the OGRE file-requester dialog.
+;;;
+;;;   EditStringKeymap
+;;;       Association list mapping key sequences to editing actions
+;;;       for single-line text fields.  Default bindings include
+;;;       Emacs-style keys (C-a, C-e, C-k, C-y) and arrow keys.
+;;;
+;;;   TextPaneKeymap
+;;;       Association list mapping key sequences to editing actions
+;;;       for multi-line text panes.  Extends EditStringKeymap with
+;;;       page-up/down, begin/end of text, and meta-key prefix.
+
 (libload "libogre/ogre")
 (libload "libogre/treebrowser")
 (libload "libstd/help")
@@ -34,20 +80,55 @@
 (defvar *help-tool*)
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;; 
+
 (de helptool (&optional b title)
-  (let ((book ()))
-    (cond 
+  (let ((book ())
+        (s (or *ogre-font-scale* 1)))
+    (cond
      ((not b) (setq book (read-lush-manual ())) (setq title "Lush Manual" ))
      ((= t b) (setq book (read-lush-manual t)) (setq title "Lush Manual"))
      ((stringp b)
       (when (not title) (setq title b))
       (setq book (new help-book b title)))
      (t (error "invalid helptool argument")))
-    (setq *help-tool* 
-	  (new autowindowobject 0 0 980 610 title
-	       (new TreeBrowser 380 570 580 570 (==> book make-ltree) t)))
+    (setq *help-tool*
+	  (new autowindowobject 0 0 (int (* 980 s)) (int (* 610 s)) title
+	       (new TreeBrowser (int (* 380 s)) (int (* 570 s))
+                                (int (* 580 s)) (int (* 570 s))
+                                (==> book make-ltree) t)))
     book))
+
+#? * Configuration
+;; The following variables control the appearance
+;; of helptool and all OGRE windows.
+;; Set them with {<c> defvar} before calling
+;; {<c> (helptool)}.
+
+#? *ogre-font-scale*
+;; {<type> VAR}
+;; {<location> libogre/ogre.lsh}
+;; Multiplier applied to all OGRE font pixel sizes.
+;; When {<c> ()} (the default), all fonts render at their
+;; original pixel sizes (8, 12, 18).  On a 4K monitor where
+;; the default fonts are too small, set this to 1.5 or 2.0.
+;; The helptool window and pane dimensions scale to match.
+;; Use {<c> setq} because the variable is initialized at
+;; startup (so {<c> defvar} will not overwrite it):
+;; {<code>
+;; (setq *ogre-font-scale* 2.0)
+;; (helptool)
+;; </code>}
+
+#? color-palette
+;; {<type> VAR}
+;; {<location> libogre/ogre.lsh}
+;; {<see> (new-palette <r> <g> <b>)}
+;; Widget color theme used by OGRE.  An array of 6 RGB triples
+;; controlling button highlights, shadows, and selection colors.
+;; Generate a custom palette with {<c> new-palette}:
+;; {<code>
+;; (defvar color-palette (new-palette 0.7 0.75 0.85))
+;; </code>}
 
 ;; to show the brace document associated with the currently selected item
 ;; ^P:(caar :*help-tool*:contents):tree-explorer:current-item:data:data:doc

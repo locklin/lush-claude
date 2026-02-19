@@ -60,6 +60,11 @@
 (defvar ogre-text-to-clip ())
 (defvar color-palette ())
 
+;; Font scale factor for high-DPI displays.
+;; Set this before calling (ogre) or (helptool) to scale all OGRE fonts.
+;; Example: (setq *ogre-font-scale* 2.0)
+(defvar *ogre-font-scale*)
+
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;;
 ;;; Palette selection functions
@@ -216,17 +221,18 @@
                     (t     "Helvetica")))
         (fam2 (cond (mono  "Bitstream Vera Sans Mono,Mono")
                     (serif "Bitstream Vera Serif,Serif")
-                    (t     "Bitstream Vera Sans,Sans"))) )
+                    (t     "Bitstream Vera Sans,Sans")))
+        (size (int (* size (or *ogre-font-scale* 1)))) )
     (if (= (gdriver) "X11")
-        (or (font 
-             (sprintf ":family=%s:pixelsize=%d%s%s" 
+        (or (font
+             (sprintf ":family=%s:pixelsize=%d%s%s"
                       fam2 size (if bold ":bold" "")(if italic ":italic" "")))
-            (font 
+            (font
              (sprintf "-adobe-%s-%s-%s-*-*-%d-*-*-*-*-*-iso8859-1"
                       (downcase fam1) (if bold "bold" "medium")
                       (if italic (if (or serif mono) "i" "o") "r")
                       size ) )
-            (font 
+            (font
              "default") )
       (if (= (gdriver) "WBM")
           (setq fam1 (cond (mono  "Courier New")

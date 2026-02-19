@@ -479,7 +479,7 @@
 ;; parse a single help entry line and return the entry name
 (de read-help-entry-name ()
     (let* ((line (read-string "~{\n\r\f\e"))
-	   (pattern "^[ \t]*((\\**)[ \t]*((<<)?)[ \t]*(.*))$")
+	   (pattern "^[ \t]*((\\**)[ \t]+((<<)?)[ \t]*(.*))$")
 	   (txt (regex_subst "[ \t]+$" "" 
 			     (regex-subst pattern "%4" line)))
 	   (includep (= (regex-subst pattern "%2" line) "<<")))
