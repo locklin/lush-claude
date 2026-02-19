@@ -1,0 +1,78 @@
+;;; framework.lsh --- Lush test harness framework
+;;;
+;;; Minimal test framework for Lush. Provides structured PASS/FAIL
+;;; reporting with suite grouping and summary counts.
+;;;
+;;; Usage:
+;;;   (libload "tests/framework.lsh")
+;;;   (test-suite "My Tests"
+;;;     (test-equal "1+1" (+ 1 1) 2)
+;;;     (test-check "true is true" t))
+;;;   (test-summary)
+
+(defvar *test-pass-count* 0)
+(defvar *test-fail-count* 0)
+(defvar *test-error-count* 0)
+(defvar *test-current-suite* "")
+
+(de test-reset ()
+  "Reset all test counters."
+  (setq *test-pass-count* 0)
+  (setq *test-fail-count* 0)
+  (setq *test-error-count* 0)
+  (setq *test-current-suite* ""))
+
+(df test-suite args
+  "Run a group of tests under a named suite header."
+  (let ((name (eval (car args)))
+        (body (cdr args)))
+    (printf "\n--- %s ---\n" name)
+    (let ((*test-current-suite* name))
+      (each ((expr body))
+        (eval expr)))))
+
+(de test-check (desc val)
+  "Assert that val is truthy (not nil)."
+  (if val
+      (progn
+        (setq *test-pass-count* (+ *test-pass-count* 1))
+        (printf "  PASS: %s\n" desc))
+    (setq *test-fail-count* (+ *test-fail-count* 1))
+    (printf "  FAIL: %s\n" desc)))
+
+(de test-equal (desc actual expected)
+  "Assert numeric equality: (= actual expected)."
+  (if (= actual expected)
+      (progn
+        (setq *test-pass-count* (+ *test-pass-count* 1))
+        (printf "  PASS: %s\n" desc))
+    (setq *test-fail-count* (+ *test-fail-count* 1))
+    (printf "  FAIL: %s (got %g, expected %g)\n" desc actual expected)))
+
+(de test-str-equal (desc actual expected)
+  "Assert string equality."
+  (if (and (stringp actual) (stringp expected) (= actual expected))
+      (progn
+        (setq *test-pass-count* (+ *test-pass-count* 1))
+        (printf "  PASS: %s\n" desc))
+    (setq *test-fail-count* (+ *test-fail-count* 1))
+    (printf "  FAIL: %s (got \"%s\", expected \"%s\")\n"
+            desc (if actual actual "<nil>") (if expected expected "<nil>"))))
+
+(de test-near (desc actual expected tolerance)
+  "Assert approximate numeric equality within tolerance."
+  (if (< (abs (- actual expected)) tolerance)
+      (progn
+        (setq *test-pass-count* (+ *test-pass-count* 1))
+        (printf "  PASS: %s\n" desc))
+    (setq *test-fail-count* (+ *test-fail-count* 1))
+    (printf "  FAIL: %s (got %g, expected %g, tol %g)\n"
+            desc actual expected tolerance)))
+
+(de test-summary ()
+  "Print summary of test results. Returns 0 on all-pass, 1 on any failure."
+  (printf "\n========================================\n")
+  (printf "Results: %d passed, %d failed, %d errors\n"
+          *test-pass-count* *test-fail-count* *test-error-count*)
+  (printf "========================================\n")
+  (if (and (= *test-fail-count* 0) (= *test-error-count* 0)) 0 1))

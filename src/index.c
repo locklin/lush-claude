@@ -1128,8 +1128,9 @@ static at *
 index_ref(struct index *ind, at *p[])
 {
   at *q;
-  int i, j;
-  int start, end;
+  int i;
+  intg j;
+  intg start, end;
   at *myp[MAXDIMS];
   at *ans = NIL;
   register at **where = &ans;
@@ -1140,10 +1141,10 @@ index_ref(struct index *ind, at *p[])
   st = ind->st;
   j = ind->offset;
   for (i = 0; i < ind->ndim; i++) {
-    register int k;
+    register intg k;
     q = p[i];
     if (q && (q->flags & C_NUMBER)) {
-      k = (int) (q->Number);
+      k = (intg) (q->Number);
       if (k < 0 || k >= ind->dim[i])
 	error(NIL, "subscript out of range", q);
       j += k * ind->mod[i];
@@ -1189,14 +1190,15 @@ list_ref:
 
 static at *
 index_set(struct index *ind, at *p[], at *value, int mode)
-{				
+{
   /* MODE: 0 means 'value is constant'	       */
   /*       1 means 'get values from sublists'  */
   /*       2 means 'get values in sequence'    */
 
   at *q;
-  int i, j;
-  int start, end;
+  int i;
+  intg j;
+  intg start, end;
   struct storage *st;
   at *myp[MAXDIMS];
 
@@ -1204,10 +1206,10 @@ index_set(struct index *ind, at *p[], at *value, int mode)
 
   j = ind->offset;
   for (i = 0; i < ind->ndim; i++) {
-    register int k;
+    register intg k;
     q = p[i];
     if (q && (q->flags & C_NUMBER)) {
-      k = (int) (q->Number);
+      k = (intg) (q->Number);
       if (k < 0 || k >= ind->dim[i])
 	error(NIL, "indice out of range", q);
       j += k * ind->mod[i];

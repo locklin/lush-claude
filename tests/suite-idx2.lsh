@@ -1,0 +1,233 @@
+;;; suite-idx2.lsh --- Tests for idx2 (element-wise scalar) operations
+;;;
+;;; Tests idx-minus, idx-abs, idx-sqrt, idx-inv, idx-sin, idx-cos,
+;;; idx-log, idx-exp, and the activation functions across types.
+;;;
+;;; The C source src/idx2.c has no test code. These are the first
+;;; systematic tests for idx2 operations.
+
+;;; ============================================================
+;;; idx-minus — negate each element
+;;; ============================================================
+
+(test-suite "idx2: idx-minus — all types"
+  ;; float
+  (let ((v (float-matrix 3))
+        (r (float-matrix 3)))
+    (v 0 1) (v 1 -2) (v 2 3.5)
+    (idx-minus v r)
+    (test-near "float minus[0]" (r 0) -1.0 0.001)
+    (test-near "float minus[1]" (r 1) 2.0 0.001)
+    (test-near "float minus[2]" (r 2) -3.5 0.001))
+  ;; double
+  (let ((v (double-matrix 3))
+        (r (double-matrix 3)))
+    (v 0 1) (v 1 -2) (v 2 3.5)
+    (idx-minus v r)
+    (test-near "double minus[0]" (r 0) -1.0 1e-10)
+    (test-near "double minus[1]" (r 1) 2.0 1e-10)
+    (test-near "double minus[2]" (r 2) -3.5 1e-10))
+  ;; int
+  (let ((v (int-matrix 3))
+        (r (int-matrix 3)))
+    (v 0 100) (v 1 -200) (v 2 0)
+    (idx-minus v r)
+    (test-equal "int minus[0]" (r 0) -100)
+    (test-equal "int minus[1]" (r 1) 200)
+    (test-equal "int minus[2]" (r 2) 0))
+  ;; long
+  (let ((v (long-matrix 3))
+        (r (long-matrix 3)))
+    (v 0 5000000000) (v 1 -3000000000) (v 2 0)
+    (idx-minus v r)
+    (test-equal "long minus 5e9" (r 0) -5000000000)
+    (test-equal "long minus -3e9" (r 1) 3000000000))
+  ;; short
+  (let ((v (short-matrix 2))
+        (r (short-matrix 2)))
+    (v 0 100) (v 1 -100)
+    (idx-minus v r)
+    (test-equal "short minus[0]" (r 0) -100)
+    (test-equal "short minus[1]" (r 1) 100))
+  ;; byte
+  (let ((v (byte-matrix 2))
+        (r (byte-matrix 2)))
+    (v 0 50) (v 1 -50)
+    (idx-minus v r)
+    (test-equal "byte minus[0]" (r 0) -50)
+    (test-equal "byte minus[1]" (r 1) 50))
+)
+
+;;; ============================================================
+;;; idx-abs — absolute value
+;;; ============================================================
+
+(test-suite "idx2: idx-abs — all types"
+  (let ((v (float-matrix 3)) (r (float-matrix 3)))
+    (v 0 -5) (v 1 3) (v 2 0)
+    (idx-abs v r)
+    (test-near "float abs(-5)" (r 0) 5.0 0.001)
+    (test-near "float abs(3)" (r 1) 3.0 0.001)
+    (test-near "float abs(0)" (r 2) 0.0 0.001))
+  (let ((v (double-matrix 3)) (r (double-matrix 3)))
+    (v 0 -1e15) (v 1 1e15) (v 2 0)
+    (idx-abs v r)
+    (test-near "double abs(-1e15)" (r 0) 1e15 1.0))
+  (let ((v (int-matrix 3)) (r (int-matrix 3)))
+    (v 0 -2147483647) (v 1 2147483647) (v 2 0)
+    (idx-abs v r)
+    (test-equal "int abs(-INT_MAX)" (r 0) 2147483647)
+    (test-equal "int abs(INT_MAX)" (r 1) 2147483647))
+  (let ((v (long-matrix 3)) (r (long-matrix 3)))
+    (v 0 -5000000000) (v 1 5000000000) (v 2 0)
+    (idx-abs v r)
+    (test-equal "long abs(-5e9)" (r 0) 5000000000)
+    (test-equal "long abs(5e9)" (r 1) 5000000000))
+)
+
+;;; ============================================================
+;;; idx-sqrt — float and double only (integers truncate)
+;;; ============================================================
+
+(test-suite "idx2: idx-sqrt — float and double"
+  (let ((v (float-matrix 3)) (r (float-matrix 3)))
+    (v 0 4) (v 1 9) (v 2 2)
+    (idx-sqrt v r)
+    (test-near "float sqrt(4)" (r 0) 2.0 0.001)
+    (test-near "float sqrt(9)" (r 1) 3.0 0.001)
+    (test-near "float sqrt(2)" (r 2) 1.4142 0.001))
+  (let ((v (double-matrix 3)) (r (double-matrix 3)))
+    (v 0 4) (v 1 9) (v 2 2)
+    (idx-sqrt v r)
+    (test-near "double sqrt(4)" (r 0) 2.0 1e-10)
+    (test-near "double sqrt(9)" (r 1) 3.0 1e-10)
+    (test-near "double sqrt(2)" (r 2) 1.41421356 1e-6))
+)
+
+;;; ============================================================
+;;; idx-inv — reciprocal (1/x), float and double
+;;; ============================================================
+
+(test-suite "idx2: idx-inv — float and double"
+  (let ((v (float-matrix 3)) (r (float-matrix 3)))
+    (v 0 2) (v 1 4) (v 2 0.5)
+    (idx-inv v r)
+    (test-near "float 1/2" (r 0) 0.5 0.001)
+    (test-near "float 1/4" (r 1) 0.25 0.001)
+    (test-near "float 1/0.5" (r 2) 2.0 0.001))
+  (let ((v (double-matrix 3)) (r (double-matrix 3)))
+    (v 0 2) (v 1 4) (v 2 0.5)
+    (idx-inv v r)
+    (test-near "double 1/2" (r 0) 0.5 1e-10)
+    (test-near "double 1/4" (r 1) 0.25 1e-10)
+    (test-near "double 1/0.5" (r 2) 2.0 1e-10))
+)
+
+;;; ============================================================
+;;; idx-sin, idx-cos, idx-exp, idx-log — float and double
+;;; ============================================================
+
+(test-suite "idx2: transcendental functions — float and double"
+  ;; sin
+  (let ((v (float-matrix 2)) (r (float-matrix 2)))
+    (v 0 0) (v 1 1.5707963)  ;; pi/2
+    (idx-sin v r)
+    (test-near "float sin(0)" (r 0) 0.0 0.001)
+    (test-near "float sin(pi/2)" (r 1) 1.0 0.001))
+  ;; cos
+  (let ((v (double-matrix 2)) (r (double-matrix 2)))
+    (v 0 0) (v 1 3.14159265358979)
+    (idx-cos v r)
+    (test-near "double cos(0)" (r 0) 1.0 1e-10)
+    (test-near "double cos(pi)" (r 1) -1.0 1e-6))
+  ;; exp
+  (let ((v (double-matrix 2)) (r (double-matrix 2)))
+    (v 0 0) (v 1 1)
+    (idx-exp v r)
+    (test-near "double exp(0)" (r 0) 1.0 1e-10)
+    (test-near "double exp(1)" (r 1) 2.71828 1e-4))
+  ;; log
+  (let ((v (double-matrix 2)) (r (double-matrix 2)))
+    (v 0 1) (v 1 2.71828182845905)
+    (idx-log v r)
+    (test-near "double log(1)" (r 0) 0.0 1e-10)
+    (test-near "double log(e)" (r 1) 1.0 1e-4))
+)
+
+;;; ============================================================
+;;; 2D matrix tests — verify idx2 works on matrices, not just vectors
+;;; ============================================================
+
+(test-suite "idx2: 2D matrix element-wise operations"
+  ;; idx-minus on 2D
+  (let ((m (float-matrix 5 5))
+        (r (float-matrix 5 5)))
+    (m () () 3.0)
+    (idx-minus m r)
+    (test-near "float 5x5 minus(3)=[2,2]" (r 2 2) -3.0 0.001))
+  ;; idx-abs on 2D int
+  (let ((m (int-matrix 4 4))
+        (r (int-matrix 4 4)))
+    (m () () -42)
+    (idx-abs m r)
+    (test-equal "int 4x4 abs(-42)=[1,1]" (r 1 1) 42))
+  ;; idx-abs on 2D long with large values
+  (let ((m (long-matrix 3 3))
+        (r (long-matrix 3 3)))
+    (m () () -5000000000)
+    (idx-abs m r)
+    (test-equal "long 3x3 abs(-5e9)=[1,1]" (r 1 1) 5000000000))
+)
+
+;;; ============================================================
+;;; Large-dimension tests (above 32-bit barrier) for idx2
+;;; ============================================================
+;;; Tests that idx2 element-wise operations correctly process vectors
+;;; with >2^31 total elements and that results are accessible at
+;;; indices beyond INT_MAX.
+;;;
+;;; Skipped when *test-skip-large* is set (--quick flag).
+
+(when (not *test-skip-large*)
+
+(test-suite "idx2: above 32-bit barrier — large ubyte idx-minus"
+  (printf "  Allocating 2.5 billion element ubyte vectors (~5 GB total)...\n")
+  (let ((v (ubyte-matrix 2500000000))
+        (r (ubyte-matrix 2500000000)))
+    ;; Set values at indices including beyond INT_MAX
+    (v 0 100)
+    (v 2147483648 200)          ;; index = INT_MAX+1
+    (v 2499999999 50)           ;; last element
+    (idx-minus v r)
+    ;; ubyte negation wraps: -100 mod 256 = 156, -200 mod 256 = 56, -50 mod 256 = 206
+    (test-equal "ubyte minus[0] wraps" (r 0) 156)
+    (test-equal "ubyte minus[INT_MAX+1] wraps" (r 2147483648) 56)
+    (test-equal "ubyte minus[last] wraps" (r 2499999999) 206)
+    (printf "  Freeing large vectors...\n"))
+)
+
+(test-suite "idx2: above 32-bit barrier — large int idx-abs"
+  (printf "  Allocating 600M element int vectors (~4.8 GB total)...\n")
+  (let ((v (int-matrix 600000000))
+        (r (int-matrix 600000000)))
+    (v 0 -42)
+    (v 599999999 -99)
+    (idx-abs v r)
+    (test-equal "int abs at [0]" (r 0) 42)
+    (test-equal "int abs at [last]" (r 599999999) 99)
+    (printf "  Freeing large vectors...\n"))
+)
+
+(test-suite "idx2: above 32-bit barrier — large double idx-sqrt"
+  (printf "  Allocating 300M element double vectors (~4.8 GB total)...\n")
+  (let ((v (double-matrix 300000000))
+        (r (double-matrix 300000000)))
+    (v 0 4)
+    (v 299999999 9)
+    (idx-sqrt v r)
+    (test-near "double sqrt at [0]" (r 0) 2.0 1e-10)
+    (test-near "double sqrt at [last]" (r 299999999) 3.0 1e-10)
+    (printf "  Freeing large vectors...\n"))
+)
+
+) ;; end (when (not *test-skip-large*))

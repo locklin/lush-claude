@@ -1,0 +1,359 @@
+;;; suite-idx1.lsh --- Tests for idx1 (reduction) operations
+;;;
+;;; Tests idx-sum, idx-sup, idx-inf, idx-sumsqr, idx-copy, idx-clear,
+;;; and their accumulator variants across all numeric storage types.
+;;;
+;;; Existing C tests: tests/test-64bit-warnings.lsh exercises basic matrix
+;;; creation and element access but does NOT test idx1/idx2 operations.
+;;; The C source src/idx1.c has no test code -- just the implementations.
+;;; These Lush tests are the first systematic coverage of idx operations.
+
+;;; ============================================================
+;;; Small-scale correctness tests (below 32-bit barrier)
+;;; ============================================================
+
+(test-suite "idx1: idx-sum — all types, small"
+  ;; float
+  (let ((v (float-matrix 10)))
+    (for (i 0 9) (v i (+ i 1)))
+    (let ((s (float-matrix)))
+      (idx-sum v s)
+      (test-near "float idx-sum 1..10" (s) 55.0 0.001)))
+  ;; double
+  (let ((v (double-matrix 10)))
+    (for (i 0 9) (v i (+ i 1)))
+    (let ((s (double-matrix)))
+      (idx-sum v s)
+      (test-near "double idx-sum 1..10" (s) 55.0 1e-10)))
+  ;; int
+  (let ((v (int-matrix 10)))
+    (for (i 0 9) (v i (+ i 1)))
+    (let ((s (int-matrix)))
+      (idx-sum v s)
+      (test-equal "int idx-sum 1..10" (s) 55)))
+  ;; long
+  (let ((v (long-matrix 10)))
+    (for (i 0 9) (v i (+ i 1)))
+    (let ((s (long-matrix)))
+      (idx-sum v s)
+      (test-equal "long idx-sum 1..10" (s) 55)))
+  ;; short
+  (let ((v (short-matrix 10)))
+    (for (i 0 9) (v i (+ i 1)))
+    (let ((s (short-matrix)))
+      (idx-sum v s)
+      (test-equal "short idx-sum 1..10" (s) 55)))
+  ;; byte
+  (let ((v (byte-matrix 10)))
+    (for (i 0 9) (v i (+ i 1)))
+    (let ((s (byte-matrix)))
+      (idx-sum v s)
+      (test-equal "byte idx-sum 1..10" (s) 55)))
+  ;; ubyte
+  (let ((v (ubyte-matrix 10)))
+    (for (i 0 9) (v i (+ i 1)))
+    (let ((s (ubyte-matrix)))
+      (idx-sum v s)
+      (test-equal "ubyte idx-sum 1..10" (s) 55)))
+)
+
+(test-suite "idx1: idx-sup and idx-inf — all types"
+  ;; float
+  (let ((v (float-matrix 5)))
+    (v 0 3.0) (v 1 1.0) (v 2 5.0) (v 3 2.0) (v 4 4.0)
+    (let ((mx (float-matrix)) (mn (float-matrix)))
+      (idx-sup v mx)
+      (idx-inf v mn)
+      (test-near "float idx-sup" (mx) 5.0 0.001)
+      (test-near "float idx-inf" (mn) 1.0 0.001)))
+  ;; double
+  (let ((v (double-matrix 5)))
+    (v 0 3.0) (v 1 1.0) (v 2 5.0) (v 3 2.0) (v 4 4.0)
+    (let ((mx (double-matrix)) (mn (double-matrix)))
+      (idx-sup v mx)
+      (idx-inf v mn)
+      (test-near "double idx-sup" (mx) 5.0 1e-10)
+      (test-near "double idx-inf" (mn) 1.0 1e-10)))
+  ;; int
+  (let ((v (int-matrix 5)))
+    (v 0 3) (v 1 1) (v 2 5) (v 3 2) (v 4 4)
+    (let ((mx (int-matrix)) (mn (int-matrix)))
+      (idx-sup v mx)
+      (idx-inf v mn)
+      (test-equal "int idx-sup" (mx) 5)
+      (test-equal "int idx-inf" (mn) 1)))
+  ;; long
+  (let ((v (long-matrix 5)))
+    (v 0 3) (v 1 1) (v 2 5) (v 3 2) (v 4 4)
+    (let ((mx (long-matrix)) (mn (long-matrix)))
+      (idx-sup v mx)
+      (idx-inf v mn)
+      (test-equal "long idx-sup" (mx) 5)
+      (test-equal "long idx-inf" (mn) 1)))
+  ;; short
+  (let ((v (short-matrix 5)))
+    (v 0 3) (v 1 1) (v 2 5) (v 3 2) (v 4 4)
+    (let ((mx (short-matrix)) (mn (short-matrix)))
+      (idx-sup v mx)
+      (idx-inf v mn)
+      (test-equal "short idx-sup" (mx) 5)
+      (test-equal "short idx-inf" (mn) 1)))
+  ;; byte
+  (let ((v (byte-matrix 5)))
+    (v 0 3) (v 1 1) (v 2 5) (v 3 2) (v 4 4)
+    (let ((mx (byte-matrix)) (mn (byte-matrix)))
+      (idx-sup v mx)
+      (idx-inf v mn)
+      (test-equal "byte idx-sup" (mx) 5)
+      (test-equal "byte idx-inf" (mn) 1)))
+  ;; ubyte
+  (let ((v (ubyte-matrix 5)))
+    (v 0 3) (v 1 1) (v 2 200) (v 3 2) (v 4 4)
+    (let ((mx (ubyte-matrix)) (mn (ubyte-matrix)))
+      (idx-sup v mx)
+      (idx-inf v mn)
+      (test-equal "ubyte idx-sup" (mx) 200)
+      (test-equal "ubyte idx-inf" (mn) 1)))
+)
+
+(test-suite "idx1: idx-sumsqr — all types"
+  ;; 1^2 + 2^2 + 3^2 = 14
+  (let ((v (float-matrix 3)))
+    (v 0 1) (v 1 2) (v 2 3)
+    (let ((s (float-matrix)))
+      (idx-sumsqr v s)
+      (test-near "float idx-sumsqr [1,2,3]" (s) 14.0 0.001)))
+  (let ((v (double-matrix 3)))
+    (v 0 1) (v 1 2) (v 2 3)
+    (let ((s (double-matrix)))
+      (idx-sumsqr v s)
+      (test-near "double idx-sumsqr [1,2,3]" (s) 14.0 1e-10)))
+  (let ((v (int-matrix 3)))
+    (v 0 1) (v 1 2) (v 2 3)
+    (let ((s (int-matrix)))
+      (idx-sumsqr v s)
+      (test-equal "int idx-sumsqr [1,2,3]" (s) 14)))
+  (let ((v (long-matrix 3)))
+    (v 0 1) (v 1 2) (v 2 3)
+    (let ((s (long-matrix)))
+      (idx-sumsqr v s)
+      (test-equal "long idx-sumsqr [1,2,3]" (s) 14)))
+)
+
+(test-suite "idx1: idx-copy and idx-clear — all types"
+  ;; idx-clear
+  (let ((v (float-matrix 5)))
+    (v 0 1) (v 1 2) (v 2 3) (v 3 4) (v 4 5)
+    (idx-clear v)
+    (let ((s (float-matrix)))
+      (idx-sum v s)
+      (test-near "float idx-clear zeros all" (s) 0.0 0.001)))
+  ;; idx-copy (float to double)
+  (let ((src (float-matrix 5))
+        (dst (double-matrix 5)))
+    (for (i 0 4) (src i (+ i 1)))
+    (idx-copy src dst)
+    (let ((s (double-matrix)))
+      (idx-sum dst s)
+      (test-near "float->double idx-copy sum" (s) 15.0 0.001)))
+  ;; idx-copy (int to long)
+  (let ((src (int-matrix 5))
+        (dst (long-matrix 5)))
+    (for (i 0 4) (src i (+ i 1)))
+    (idx-copy src dst)
+    (let ((s (long-matrix)))
+      (idx-sum dst s)
+      (test-equal "int->long idx-copy sum" (s) 15)))
+  ;; idx-copy same type
+  (let ((src (int-matrix 5))
+        (dst (int-matrix 5)))
+    (for (i 0 4) (src i (* (+ i 1) 10)))
+    (idx-copy src dst)
+    (test-equal "int->int idx-copy [0]" (dst 0) 10)
+    (test-equal "int->int idx-copy [4]" (dst 4) 50))
+)
+
+(test-suite "idx1: idx-sumacc — accumulation"
+  (let ((v (float-matrix 5))
+        (s (float-matrix)))
+    (for (i 0 4) (v i 1))
+    (s 0)
+    (idx-sumacc v s)
+    (test-near "float sumacc first call" (s) 5.0 0.001)
+    (idx-sumacc v s)
+    (test-near "float sumacc second call accumulates" (s) 10.0 0.001))
+)
+
+;;; ============================================================
+;;; 2D matrix tests (idx operations on matrices)
+;;; ============================================================
+
+(test-suite "idx1: 2D matrix operations"
+  ;; idx-sum on a 2D matrix sums all elements
+  (let ((m (float-matrix 10 10)))
+    (m () () 1)
+    (let ((s (float-matrix)))
+      (idx-sum m s)
+      (test-near "float 10x10 all-ones sum" (s) 100.0 0.001)))
+  ;; idx-sum on 2D int
+  (let ((m (int-matrix 10 10)))
+    (m () () 1)
+    (let ((s (int-matrix)))
+      (idx-sum m s)
+      (test-equal "int 10x10 all-ones sum" (s) 100)))
+  ;; idx-sum on 2D long
+  (let ((m (long-matrix 10 10)))
+    (m () () 1)
+    (let ((s (long-matrix)))
+      (idx-sum m s)
+      (test-equal "long 10x10 all-ones sum" (s) 100)))
+)
+
+;;; ============================================================
+;;; Value boundary tests (near 32-bit limits)
+;;; ============================================================
+
+(test-suite "idx1: value boundaries — 32-bit limits"
+  ;; int: test near INT_MAX (2^31-1 = 2147483647)
+  (let ((v (int-matrix 2)))
+    (v 0 2147483647)
+    (v 1 0)
+    (let ((mx (int-matrix)))
+      (idx-sup v mx)
+      (test-equal "int sup at INT_MAX" (mx) 2147483647)))
+  ;; int: test near INT_MIN (-2^31 = -2147483648)
+  (let ((v (int-matrix 2)))
+    (v 0 0)
+    (v 1 -2147483648)
+    (let ((mn (int-matrix)))
+      (idx-inf v mn)
+      (test-equal "int inf at INT_MIN" (mn) -2147483648)))
+  ;; long: values above 32-bit range
+  (let ((v (long-matrix 3)))
+    (v 0 3000000000)
+    (v 1 4000000000)
+    (v 2 5000000000)
+    (let ((mx (long-matrix)) (mn (long-matrix)))
+      (idx-sup v mx)
+      (idx-inf v mn)
+      (test-equal "long sup 5 billion" (mx) 5000000000)
+      (test-equal "long inf 3 billion" (mn) 3000000000)))
+  ;; long: sum above 32-bit
+  (let ((v (long-matrix 3)))
+    (v 0 3000000000)
+    (v 1 4000000000)
+    (v 2 5000000000)
+    (let ((s (long-matrix)))
+      (idx-sum v s)
+      (test-equal "long sum 12 billion" (s) 12000000000)))
+  ;; double: very large values
+  (let ((v (double-matrix 3)))
+    (v 0 1e15)
+    (v 1 2e15)
+    (v 2 3e15)
+    (let ((s (double-matrix)))
+      (idx-sum v s)
+      (test-near "double sum 6e15" (s) 6e15 1e5)))
+  ;; ubyte: full range 0-255
+  (let ((v (ubyte-matrix 3)))
+    (v 0 0) (v 1 127) (v 2 255)
+    (let ((s (ubyte-matrix)) (mx (ubyte-matrix)) (mn (ubyte-matrix)))
+      (idx-sup v mx)
+      (idx-inf v mn)
+      (test-equal "ubyte sup=255" (mx) 255)
+      (test-equal "ubyte inf=0" (mn) 0)))
+  ;; short: near limits
+  (let ((v (short-matrix 2)))
+    (v 0 32767) (v 1 -32768)
+    (let ((mx (short-matrix)) (mn (short-matrix)))
+      (idx-sup v mx)
+      (idx-inf v mn)
+      (test-equal "short sup=32767" (mx) 32767)
+      (test-equal "short inf=-32768" (mn) -32768)))
+  ;; byte: near limits
+  (let ((v (byte-matrix 2)))
+    (v 0 127) (v 1 -128)
+    (let ((mx (byte-matrix)) (mn (byte-matrix)))
+      (idx-sup v mx)
+      (idx-inf v mn)
+      (test-equal "byte sup=127" (mx) 127)
+      (test-equal "byte inf=-128" (mn) -128)))
+)
+
+;;; ============================================================
+;;; Large-dimension tests (above 32-bit barrier)
+;;; ============================================================
+;;; 2^31 = 2,147,483,648. We test that idx operations correctly
+;;; iterate over vectors with >2^31 total elements, and that
+;;; element access works at indices beyond INT_MAX.
+;;;
+;;; Skipped when *test-skip-large* is set (--quick flag).
+
+(when (not *test-skip-large*)
+
+(test-suite "idx1: above 32-bit barrier — large ubyte vector"
+  (printf "  Allocating 2.5 billion element ubyte vector (~2.5 GB)...\n")
+  (let ((v (ubyte-matrix 2500000000)))
+    ;; Set elements at positions including beyond 2^31
+    (v 0 1)
+    (v 1000000000 2)
+    (v 2147483647 3)            ;; index = INT_MAX
+    (v 2147483648 4)            ;; index = INT_MAX+1 (first beyond 32-bit)
+    (v 2499999999 5)            ;; last element
+    ;; Read back
+    (test-equal "ubyte v[0]" (v 0) 1)
+    (test-equal "ubyte v[1e9]" (v 1000000000) 2)
+    (test-equal "ubyte v[INT_MAX]" (v 2147483647) 3)
+    (test-equal "ubyte v[INT_MAX+1]" (v 2147483648) 4)
+    (test-equal "ubyte v[last]" (v 2499999999) 5)
+    ;; idx-sum must iterate over ALL 2.5 billion elements.
+    ;; If the C loop uses 32-bit counter, it will wrap and produce wrong results.
+    (let ((s (ubyte-matrix)))
+      (idx-sum v s)
+      (test-equal "ubyte 2.5B sum (1+2+3+4+5=15)" (s) 15))
+    (let ((mx (ubyte-matrix)))
+      (idx-sup v mx)
+      (test-equal "ubyte 2.5B sup" (mx) 5))
+    (printf "  Freeing large vector...\n"))
+)
+
+(test-suite "idx1: above 32-bit barrier — large int idx-sum"
+  (printf "  Allocating 600M element int vector (~2.4 GB)...\n")
+  (let ((v (int-matrix 600000000)))
+    (v 0 100)
+    (v 599999999 200)
+    (test-equal "int v[0]" (v 0) 100)
+    (test-equal "int v[599999999]" (v 599999999) 200)
+    (let ((s (int-matrix)))
+      (idx-sum v s)
+      (test-equal "int 600M sum" (s) 300))
+    (printf "  Freeing large vector...\n"))
+)
+
+(test-suite "idx1: above 32-bit barrier — large long idx-sum"
+  (printf "  Allocating 300M element long vector (~2.4 GB)...\n")
+  (let ((v (long-matrix 300000000)))
+    (v 0 5000000000)
+    (v 299999999 7000000000)
+    (test-equal "long v[0] = 5e9" (v 0) 5000000000)
+    (test-equal "long v[last] = 7e9" (v 299999999) 7000000000)
+    (let ((s (long-matrix)))
+      (idx-sum v s)
+      (test-equal "long 300M sum 12e9" (s) 12000000000))
+    (printf "  Freeing large vector...\n"))
+)
+
+(test-suite "idx1: above 32-bit barrier — large double idx-sum"
+  (printf "  Allocating 300M element double vector (~2.4 GB)...\n")
+  (let ((v (double-matrix 300000000)))
+    (v 0 1e18)
+    (v 299999999 2e18)
+    (test-equal "double v[0]" (v 0) 1e18)
+    (test-equal "double v[last]" (v 299999999) 2e18)
+    (let ((s (double-matrix)))
+      (idx-sum v s)
+      (test-near "double 300M sum" (s) 3e18 1e8))
+    (printf "  Freeing large vector...\n"))
+)
+
+) ;; end (when (not *test-skip-large*))

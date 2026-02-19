@@ -141,6 +141,14 @@ install-nolink: install-sub install-dump
 install: all install-sub install-dump
 	@echo "-- Install done."
 
+test: ${mybindir}/lush ${mysysdir}/stdenv.dump
+	@echo "Running Lush test suites (quick)..."
+	${mybindir}/lush tests/run-all.lsh --quick
+
+test-large: ${mybindir}/lush ${mysysdir}/stdenv.dump
+	@echo "Running Lush test suites (including large-dimension tests)..."
+	${mybindir}/lush tests/run-all.lsh
+
 FORCE:
 
-.PHONY: FORCE
+.PHONY: FORCE test test-large
