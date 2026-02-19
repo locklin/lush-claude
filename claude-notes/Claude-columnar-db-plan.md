@@ -301,26 +301,221 @@ cleared if append breaks order.
   ...)
 ```
 
-### Stage 5: Dictionary-Encoded String Columns
+### Stage 5: StringColumn — Dictionary-Encoded Interned Strings
 
-For string columns with many repeated values (like stock symbols),
-store as:
-- An intern table: idx1 of AT storage containing unique strings
-- A column of int32 indices into the intern table
+String columns require special treatment. Storing millions of Lush string
+objects in an AT-storage idx1 would cost ~24 bytes per reference plus
+per-string heap allocation — prohibitive for large tables. Kerf solves
+this with per-column string interning, and we adopt the same approach.
 
-This matches Kerf's HASH type (intern/enum encoding). Benefits:
-- O(1) equality comparison (compare integers)
-- Much less memory for repeated strings
-- Fast GROUP BY (partition by integer key)
+#### Kerf's String Interning Model (reference)
+
+From Kerf's source and the blog post
+(https://getkerf.wordpress.com/2016/02/22/string-interning-done-right/):
+
+- An "intern" object is a HASH with two sub-objects:
+  - `INDEX`: a hashset containing the unique strings (the "pool")
+  - `KEYS`: an integer vector where each entry is a code pointing into INDEX
+- `cow_intern_add(x, y)` inserts string `y` into the hashset, gets back
+  an integer position `p`, then appends `p` to the integer KEYS vector
+- `klook_intern(z, i)` retrieves row `i`: reads integer code from
+  `KEYS[i]`, then looks up the actual string in `INDEX[code]`
+- Key design choice: **per-column local pools**, not a global pool.
+  Each intern column is self-contained — the pool travels with the data.
+  This means serialization/mmap requires zero translation: the same
+  structure works in memory, on disk, and over the network.
+- Overhead for the pool is small: ~3,000 NASDAQ ticker symbols × ~10
+  bytes average = ~30KB for the entire pool. Even with high cardinality
+  (many unique strings), the overhead of the hashset is negligible
+  compared to the savings from deduplication.
+
+#### Lush StringColumn Design
+
+The `StringColumn` is a **new data structure** that acts like an idx1
+of strings at the Lush command line, but internally stores:
+
+1. A **string pool** (htable + reverse-lookup array) containing only
+   the unique strings
+2. An **idx1 of int32 codes** (one per row) indexing into the pool
 
 ```lisp
-(defclass DictColumn object
-  ((-obj- (HTable)) intern-table)    ;; string -> integer
-  ((-idx1- (-int-)) codes)           ;; per-row integer codes
-  ((-idx1- (-obj-)) strings)         ;; integer -> string (reverse map)
-  ((-int-) next-code)
+(defclass StringColumn object
+  ;; Forward map: string -> integer code
+  ;; Uses Lush's existing HTable for O(1) lookup
+  ((-obj- (HTable)) str-to-code)
+
+  ;; Reverse map: integer code -> string
+  ;; An AT-storage idx1 holding the unique strings
+  ;; str-to-code and code-to-str are always consistent mirrors
+  ((-idx1- (-obj-)) code-to-str)
+
+  ;; Per-row data: each row stores an int32 code, not the string itself
+  ;; Same capacity-doubling growth strategy as other DataTable columns
+  ((-idx1- (-int-)) codes)
+
+  ;; Pool bookkeeping
+  ((-int-) pool-size)       ;; number of unique strings in pool
+  ((-int-) pool-capacity)   ;; allocated capacity of code-to-str
+  ((-int-) num-rows)        ;; logical row count
+  ((-int-) capacity)        ;; allocated capacity of codes
 )
 ```
+
+#### Core Operations
+
+**Append a string value:**
+```lisp
+(defmethod StringColumn append (s)
+  ;; 1. Check if string is already in pool
+  (let ((code (==> str-to-code get s)))
+    (when (not code)
+      ;; 2. New string: add to pool
+      (when (>= pool-size pool-capacity)
+        (grow-pool))              ;; double code-to-str capacity
+      (setq code pool-size)
+      (==> str-to-code put s code)
+      (code-to-str code s)       ;; store string in reverse map
+      (incr pool-size))
+    ;; 3. Append code to per-row array
+    (when (>= num-rows capacity)
+      (grow-codes))              ;; double codes capacity
+    (codes num-rows code)
+    (incr num-rows)))
+```
+
+**Read row i (looks like a string to the user):**
+```lisp
+(defmethod StringColumn get (i)
+  ;; Two-step lookup: row -> code -> string
+  ;; Same pattern as Kerf's klook_intern
+  (code-to-str (codes i)))
+```
+
+**Equality test (fast path — compare codes, not strings):**
+```lisp
+(defmethod StringColumn rows-equal (i j)
+  ;; Integer comparison, O(1)
+  (= (codes i) (codes j)))
+```
+
+**Filter by string value (WHERE column = "BTC"):**
+```lisp
+(defmethod StringColumn where-eq (s)
+  ;; 1. Look up code for target string: O(1)
+  (let ((target-code (==> str-to-code get s)))
+    (when target-code
+      ;; 2. Scan codes array comparing integers, not strings
+      ;; Much faster than strcmp on every row
+      (let ((result (int-array 0)) (n 0))
+        (idx-bloop ((c codes) (i (range num-rows)))
+          (when (= c target-code)
+            ;; collect matching row index
+            ...))
+        result))))
+```
+
+**GROUP BY (partition by string value):**
+```lisp
+(defmethod StringColumn group-by ()
+  ;; Returns a list of (string . row-indices) pairs
+  ;; Since codes are small integers, we can use them as array indices
+  ;; for O(n) grouping — no hashing needed at group time
+  (let ((groups (make-array pool-size)))
+    (idx-bloop ((c codes) (i (range num-rows)))
+      ;; Append row index i to groups[c]
+      ...)
+    groups))
+```
+
+#### Memory Layout
+
+For a 10-million row table with a "symbol" column containing 3,000
+unique ticker symbols (~10 chars average):
+
+| Component | Kerf (reference) | Lush StringColumn |
+|-----------|-----------------|-------------------|
+| Per-row storage | 4 bytes (int32 code) | 4 bytes (int32 code) |
+| Total row data | 40 MB | 40 MB |
+| Pool (unique strings) | ~30 KB hashset | ~30 KB HTable + ~30 KB AT array |
+| **Total** | **~40.03 MB** | **~40.06 MB** |
+
+Compare with naive AT-storage idx1: 10M × 24 bytes (pointer) + 10M ×
+~26 bytes (string objects with headers) = ~500 MB. **Dictionary encoding
+saves 12x memory.**
+
+Even with high cardinality (e.g., 1M unique strings out of 10M rows),
+the pool is ~10 MB and total is ~50 MB, still far less than the naive
+500 MB approach. The overhead of maintaining the pool is acceptable in
+all cases, as the user specified.
+
+#### Integration with DataTable
+
+The DataTable class treats StringColumn as a column type alongside idx1:
+
+```lisp
+(defmethod DataTable add-column (name type)
+  (cond
+    ((= type 'string)
+     ;; Create StringColumn instead of idx1
+     (let ((col (new StringColumn)))
+       (==> columns add col)
+       ...))
+    ((= type 'stamp)
+     ;; idx1 of ST_I64
+     ...)
+    (t
+     ;; numeric: idx1 of appropriate type
+     ...)))
+```
+
+When the user accesses a string column, the StringColumn's `get` method
+returns a string, so it **looks like an idx1 of strings at the Lush
+prompt**:
+
+```lisp
+(setq sym-col (==> t get-column "symbol"))
+(==> sym-col get 0)          ;; => "AAPL"
+(==> sym-col get 1)          ;; => "BTC"
+(==> t print 5)
+;; time                    symbol  price    volume
+;; 2026.02.19T14:30:00.123 AAPL    150.25   1000
+;; 2026.02.19T14:30:00.456 BTC     42000.0  200
+```
+
+The user never sees integer codes. The pretty-printer resolves codes
+to strings transparently.
+
+#### Persistence
+
+StringColumn serializes to two files per column:
+
+```
+col-2-codes.bin     ;; raw int32 codes array (mmappable)
+col-2-pool.lsh      ;; string pool as S-expression list
+```
+
+The codes file is a flat binary that can be mmap'd directly as an
+idx1 of int32 — same as any numeric column. The pool file is small
+(kilobytes for typical cardinality) and loaded into memory on open.
+
+This matches Kerf's self-contained design: the pool travels with the
+column. No global interning state, no external dependencies.
+
+#### Sorting StringColumn
+
+Sorting a StringColumn can work two ways:
+
+1. **Lexicographic:** Sort the pool alphabetically, remap codes to
+   reflect the new order, then sort the codes array. Or simpler:
+   compute grade vector by comparing `code-to-str[codes[i]]` values.
+
+2. **By insertion order:** Just sort the integer codes directly.
+   Since codes are assigned in insertion order, this groups identical
+   strings together (useful for GROUP BY optimization).
+
+The ATTR_SORTED flag applies to the codes array. If codes are sorted,
+WHERE-eq can use binary search on the codes (find the target code,
+then binary search for the range of that code in the sorted array).
 
 ### Stage 6: Persistence via mmap
 
@@ -357,7 +552,7 @@ writable mmap, we'd need:
 | 3a | Timestamp utilities (Lush level) | Pure Lush | Stage 1 |
 | 3b | Timestamp C primitives | Small C file | Stage 3a |
 | 4 | Sort/grade, WHERE, SELECT | Lush + maybe C | Stages 1-2 |
-| 5 | Dictionary-encoded strings | Pure Lush | Stage 1 |
+| 5 | StringColumn (interned dict-encoded strings) | Pure Lush | Stage 1 |
 | 6a | Read-only mmap persistence | Pure Lush | Stages 1-5 |
 | 6b | Read-write mmap persistence | C changes | Stage 6a |
 
@@ -389,8 +584,10 @@ Lush's existing capabilities.
 
 3. **String columns are expensive without dictionary encoding.**
    Lush AT-storage holds Lush `at*` pointers (24 bytes each + string
-   heap allocation). For millions of rows this is heavy. Dictionary
-   encoding (Stage 5) is essential for string-heavy tables.
+   heap allocation). For millions of rows this is heavy. **Resolved:**
+   Stage 5 defines the StringColumn class with per-column interned
+   dictionary encoding inspired by Kerf's HASH/intern type. This
+   reduces 500 MB of string data to ~40 MB for typical use cases.
 
 4. **No writable mmap in Lush.**
    `storage_mmap` uses `PROT_READ, MAP_SHARED`. For persist-on-write
@@ -440,7 +637,7 @@ Lush's existing capabilities.
 | FLOAT | double vector | idx1 of ST_D | Direct mapping via -real- |
 | STAMP | int64_t nanos | idx1 of ST_I64 | Same storage, different display |
 | CHARVEC | char vector | idx1 of ST_U8 | Or Lush string object |
-| HASH (intern) | int+dict | idx1 of ST_I32 + intern table | Dictionary encoding |
+| HASH (intern) | int+dict | StringColumn (HTable + idx1 of ST_I32) | Per-column pool, see Stage 5 |
 | BTREE (index) | AVL tree | idx1 of ST_I32 (grade vector) | Simpler: just precomputed sort |
 | ZIP (compressed) | LZ4 blocks | Not planned initially | Could add later |
 | LIST (mixed) | K0 pointer array | idx1 of ST_AT | Slow, avoid if possible |
@@ -531,9 +728,12 @@ Lush's existing capabilities.
    performance-critical operations?** This would make WHERE scans and
    aggregations much faster but adds compilation dependency.
 
-2. **Should string columns default to dictionary encoding or AT storage?**
-   Dictionary is faster/smaller but adds complexity. AT storage is
-   simpler but slow for large tables.
+2. **~~Should string columns default to dictionary encoding or AT storage?~~**
+   **Resolved:** All string columns use the StringColumn class with
+   per-column dictionary encoding (local string pool + int32 codes).
+   The overhead is acceptable even for high-cardinality columns, and
+   the user explicitly requested this as a new data structure rather
+   than an idx1 of strings.
 
 3. **How should we handle NULL/missing values?** Options:
    - NaN for float columns, MIN_INT64 for integer columns (Kerf approach)
