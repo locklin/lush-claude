@@ -70,7 +70,7 @@ window_action(at *p, void (*action)(at *))
 static char *
 window_name(at *p)
 {
-  sprintf(string_buffer, "::%s:%s:%" PRIxPTR,
+  snprintf(string_buffer, STRING_BUFFER, "::%s:%s:%" PRIxPTR,
 	  nameof(p->Class->classname),
 	  ((struct window *) (p->Object))->gdriver->name,
 	  (uintptr_t)p->Object);

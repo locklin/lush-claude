@@ -975,7 +975,7 @@ dz_define(char *name, char *opcode, real (*cfun)(real))
     dz->call = (dz_call_t)cfun;
   op = find_opname(opcode);
   ifn (op && dz_opnames[op][0]=='o' && dz_opnames[op][0]=='o') {
-    sprintf(string_buffer, "illegal opcode %s in %s", opcode, name);
+    snprintf(string_buffer, STRING_BUFFER, "illegal opcode %s in %s", opcode, name);
     error(NIL,string_buffer,NIL);
   }
   dz->program[0].code.op = op;
@@ -984,7 +984,7 @@ dz_define(char *name, char *opcode, real (*cfun)(real))
   dz->program[1].code.arg = 0;
   symb = new_symbol(name);
   if (((struct symbol *) (symb->Object))->mode == SYMBOL_LOCKED) {
-    sprintf(string_buffer, "symbol already exists: %s", name);
+    snprintf(string_buffer, STRING_BUFFER, "symbol already exists: %s", name);
     error("dz_lisp.c/dz_define", string_buffer, NIL);
   }
   var_set(symb, func);

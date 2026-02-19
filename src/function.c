@@ -73,7 +73,7 @@ cfunc_name(at *p)
     }
   if (EXTERNP(name, &symbol_class))
     {
-      sprintf(string_buffer, "::%s:", nameof(p->Class->classname));
+      snprintf(string_buffer, STRING_BUFFER, "::%s:", nameof(p->Class->classname));
       if (EXTERNP(clname, &symbol_class)) 
         {
           strcat(string_buffer, nameof(clname));
@@ -699,7 +699,7 @@ need_error(int i, int j, at **arg_array_ptr)
   if (i)
     p = arg_array_ptr[j];
   else if (j > 1) {
-    sprintf(need_arg_num, "%d arguments were expected", j);
+    snprintf(need_arg_num, sizeof(need_arg_num), "%d arguments were expected", j);
     s2 = need_arg_num;
   } else if (j == 1)
     s2 = "one argument was expected";

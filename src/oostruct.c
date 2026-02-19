@@ -370,9 +370,9 @@ class_name(at *p)
   c = p->Object;
 
   if (c->classname)
-    sprintf(string_buffer, "::class:%s", nameof(c->classname));
+    snprintf(string_buffer, STRING_BUFFER, "::class:%s", nameof(c->classname));
   else
-    sprintf(string_buffer, "::class:%" PRIxPTR, (uintptr_t)c);
+    snprintf(string_buffer, STRING_BUFFER, "::class:%" PRIxPTR, (uintptr_t)c);
 
   return string_buffer;
 }

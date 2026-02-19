@@ -340,7 +340,7 @@ lockfile(const char *filename)
     if (! (user=getenv("USER")))
       if (! (user=getenv("LOGNAME")))
         user="<unknown>";  
-    sprintf(string_buffer,"created by %s@%s (pid=%d)\non %s", 
+    snprintf(string_buffer, STRING_BUFFER, "created by %s@%s (pid=%d)\non %s",
 	    user, hname, (int)getpid(), ctime(&tl));
   }
 #endif
@@ -355,7 +355,7 @@ lockfile(const char *filename)
     size = sizeof(computer);
     if (! (GetComputerName(computer,&size)))
       strcpy(computer,"<unknown>");
-    sprintf(string_buffer,"created by %s@%s on %s", 
+    snprintf(string_buffer, STRING_BUFFER, "created by %s@%s on %s",
 	    user, computer, time(&tl));
   }
 #endif
@@ -964,11 +964,11 @@ tmpname(const char *dir, const char *suffix)
   /* searches free filename */
   do {
 #ifdef WIN32
-    sprintf(buffer,"sn%d%s%s", ++uniq, dot, suffix);
+    snprintf(buffer, sizeof(buffer), "sn%d%s%s", ++uniq, dot, suffix);
     tmp = concat_fname(dir, buffer);
     fd = _open(tmp, _O_RDWR|_O_CREAT|_O_EXCL, 0644);
 #else
-    sprintf(buffer,"sn.%d.%d%s%s", (int)getpid(), ++uniq, dot, suffix);
+    snprintf(buffer, sizeof(buffer), "sn.%d.%d%s%s", (int)getpid(), ++uniq, dot, suffix);
     tmp = concat_fname(dir, buffer);
     fd = open(tmp, O_RDWR|O_CREAT|O_EXCL, 0644);
 #endif
@@ -1400,7 +1400,7 @@ test_file_error(FILE *f)
     clearerr(f);
 #endif
   }
-  sprintf(buffer,"%s (errno=%d)",strerror(errno),errno);
+  snprintf(buffer, sizeof(buffer), "%s (errno=%d)", strerror(errno), errno);
   error(s,buffer,NIL);
 }
 

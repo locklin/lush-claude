@@ -694,7 +694,7 @@ read_word(void)
   return string_buffer;
 
 errw1:
-  sprintf(string_buffer, "illegal character : 0x%x", c & 0xff);
+  snprintf(string_buffer, STRING_BUFFER, "illegal character : 0x%x", c & 0xff);
   error("read", string_buffer, NIL);
 errw2:
   error("read", "too long string", NIL);

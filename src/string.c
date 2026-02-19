@@ -748,9 +748,9 @@ str_number(double x)
   
   y = fabs(x);
   if (y<1e-3 || y>1e10)
-    sprintf(string_buffer, "%g", (double) (x));
+    snprintf(string_buffer, STRING_BUFFER, "%g", (double) (x));
   else
-    sprintf(string_buffer, "%.4f", (double) (x));
+    snprintf(string_buffer, STRING_BUFFER, "%.4f", (double) (x));
   
   for (s = string_buffer; *s != 0; s++)
     if (*s == '.')
@@ -787,7 +787,7 @@ str_number_hex(double x)
   if (ix == 0)
     return "0";
 
-  sprintf(string_buffer, "0x%x", ix);
+  snprintf(string_buffer, STRING_BUFFER, "0x%x", ix);
   return string_buffer;
 }
 
@@ -803,7 +803,7 @@ DX(xstr_number_hex)
 char *
 str_gptr(gptr x)
 {
-    sprintf(string_buffer, "#$%lX", (unsigned long)(x));
+    snprintf(string_buffer, STRING_BUFFER, "#$%lX", (unsigned long)(x));
     return string_buffer;
 }
 

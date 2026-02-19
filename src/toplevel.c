@@ -707,8 +707,8 @@ error_text(void)
     prefixsep = "";
   if (!*text || !suffix)
     textsep = "";
-  sprintf(print_buffer,"%s%s%s%s%s", 
-	  prefix, prefixsep, text, textsep, 
+  snprintf(print_buffer, LINE_BUFFER, "%s%s%s%s%s",
+	  prefix, prefixsep, text, textsep,
 	  suffix ? first_line(suffix) : "" );
   return print_buffer;
 }

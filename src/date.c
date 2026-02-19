@@ -115,18 +115,18 @@ str_date_imp(struct date *d, char *s)
       switch(i)
 	{
 	case DATE_YEAR:
-	  sprintf(buffer," %04d",1900 + d->x[i]);
+	  snprintf(buffer, sizeof(buffer), " %04d", 1900 + d->x[i]);
 	  break;
 	case DATE_MONTH:
 	case DATE_DAY:
-	  sprintf(buffer,"-%02d",d->x[i]);
+	  snprintf(buffer, sizeof(buffer), "-%02d", d->x[i]);
 	  break;
 	case DATE_HOUR:
-	  sprintf(buffer," %02d",d->x[i]);
+	  snprintf(buffer, sizeof(buffer), " %02d", d->x[i]);
 	  break;
 	case DATE_MINUTE:
 	case DATE_SECOND:
-	  sprintf(buffer,":%02d",d->x[i]);
+	  snprintf(buffer, sizeof(buffer), ":%02d", d->x[i]);
 	  break;
 	}
       r = buffer;

@@ -789,36 +789,36 @@ static void
 avl_pnode(avlnode *n)
 {
   if (n->belong == BELONG_C)
-    sprintf(string_buffer,"C %p ", (n->citem));
+    snprintf(string_buffer, STRING_BUFFER, "C %p ", (n->citem));
   else if (n->belong == BELONG_LISP)
-    sprintf(string_buffer,"L %p ", (n->citem));
+    snprintf(string_buffer, STRING_BUFFER, "L %p ", (n->citem));
   else
-    sprintf(string_buffer,"? %p ", (n->citem));
+    snprintf(string_buffer, STRING_BUFFER, "? %p ", (n->citem));
   print_string(string_buffer);
 
   if (n->cinfo == CINFO_IDX)
-    sprintf(string_buffer,"%-16s ","idx");
+    snprintf(string_buffer, STRING_BUFFER, "%-16s ","idx");
   else if (n->cinfo == CINFO_SRG)
-    sprintf(string_buffer,"%-16s ","srg");
+    snprintf(string_buffer, STRING_BUFFER, "%-16s ","srg");
   else if (n->cinfo == CINFO_STR)
-    sprintf(string_buffer,"%-16s ","str");
+    snprintf(string_buffer, STRING_BUFFER, "%-16s ","str");
   else if (n->cinfo == CINFO_LIST)
-    sprintf(string_buffer,"%-16s ","list");
+    snprintf(string_buffer, STRING_BUFFER, "%-16s ","list");
   else if (n->cinfo == CINFO_OBJ)
-    sprintf(string_buffer,"obj:%-12s ",
+    snprintf(string_buffer, STRING_BUFFER, "obj:%-12s ",
             ((dhclassdoc_t*)(n->cmoreinfo))->lispdata.lname);
   else if (n->cinfo == CINFO_UNLINKED)
-    sprintf(string_buffer,"%-16s ","unlinked");
-  else	
-    sprintf(string_buffer,"%-16s ","[:-(]");
+    snprintf(string_buffer, STRING_BUFFER, "%-16s ","unlinked");
+  else
+    snprintf(string_buffer, STRING_BUFFER, "%-16s ","[:-(]");
   print_string(string_buffer);
 
   if (n->litem==0)
-    sprintf(string_buffer,"~\n");
+    snprintf(string_buffer, STRING_BUFFER, "~\n");
   else if (n->litem->count > 0)
-    sprintf(string_buffer,"%s\n",first_line(n->litem));
+    snprintf(string_buffer, STRING_BUFFER, "%s\n",first_line(n->litem));
   else
-    sprintf(string_buffer,"[:-(]\n");
+    snprintf(string_buffer, STRING_BUFFER, "[:-(]\n");
   print_string(string_buffer);
 
 }
@@ -1798,11 +1798,11 @@ lisp2c_error(char *s, at *errctx, at *p)
 {
   char errmsg[512];
   if (errctx == 0)
-    sprintf(errmsg,"(lisp_c) %c%s", 
+    snprintf(errmsg, sizeof(errmsg), "(lisp_c) %c%s",
             toupper(s[0]), s+1 );
   else
-    sprintf(errmsg,"(lisp_c) %c%s\n***    in object %s", 
-            toupper(s[0]), s+1, 
+    snprintf(errmsg, sizeof(errmsg), "(lisp_c) %c%s\n***    in object %s",
+            toupper(s[0]), s+1,
             first_line(errctx) );
   error(NIL,errmsg,p);
 }

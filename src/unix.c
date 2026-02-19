@@ -304,7 +304,7 @@ static void
 gasp_irq(int sig)
 {
   char buffer[80];
-  sprintf(buffer,"Signal %d has occurred",sig);
+  snprintf(buffer, sizeof(buffer), "Signal %d has occurred", sig);
   error_doc.ready_to_an_error = FALSE;
   argeval_ptr = eval_ptr = eval_std;
   lastchance(buffer);
@@ -1685,7 +1685,7 @@ filteropen(const char *cmd, FILE **pfw, FILE **pfr)
   int i, fd_up[2], fd_dn[2];
   pid_t pid;
   
-  sprintf(string_buffer,"exec %s",cmd);
+  snprintf(string_buffer, STRING_BUFFER, "exec %s", cmd);
   if (pipe(fd_up) < 0) 
     test_file_error(NULL);
   if (pipe(fd_dn) < 0) {
@@ -1787,7 +1787,7 @@ filteropenpty(const char *cmd, FILE **pfw, FILE **pfr)
   int i, master, slave;
   pid_t pid;
   
-  sprintf(string_buffer,"exec %s",cmd);
+  snprintf(string_buffer, STRING_BUFFER, "exec %s", cmd);
   if (openpty(&master, &slave, 0, 0, 0) < 0)
     test_file_error(NULL);
   pid = fork();
@@ -1897,7 +1897,7 @@ DX(xsocketopen)
     }
   hostname = ASTRING(1);
   portnumber = AINTEGER(2);
-  sprintf(servname, "%d", abs(portnumber));
+  snprintf(servname, sizeof(servname), "%d", abs(portnumber));
   memset(&addrinfo, 0, sizeof(addrinfo));
   addrinfo.ai_family = AF_UNSPEC;
   addrinfo.ai_socktype = SOCK_STREAM;
@@ -2017,7 +2017,7 @@ DX(xsocketaccept)
       char servname[16];
       struct addrinfo addrinfo, *addrs, *r;
       portnumber = AINTEGER(1);
-      sprintf(servname, "%d", abs(portnumber));
+      snprintf(servname, sizeof(servname), "%d", abs(portnumber));
       memset(&addrinfo, 0, sizeof(addrinfo));
       addrinfo.ai_family = AF_UNSPEC;
       addrinfo.ai_socktype = SOCK_STREAM;

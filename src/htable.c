@@ -576,7 +576,7 @@ DX(xhashcode)
   ARG_NUMBER(1);
   ARG_EVAL(1);
   x = hash_value(APOINTER(1));
-  sprintf(buffer,"%0*lx", l, x);
+  snprintf(buffer, sizeof(buffer), "%0*lx", l, x);
   return new_string(buffer);
 }
 
