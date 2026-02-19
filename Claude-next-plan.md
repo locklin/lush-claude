@@ -251,19 +251,26 @@ extensive analysis of all code paths that store pointers as numbers.
 
 ---
 
-## Implementation Order
+## Implementation Status
 
-If implementing these improvements, the recommended order is:
+| Item | Status | Notes |
+|------|--------|-------|
+| **1.1** Format warnings | DONE | |
+| **1.2** dh_obj_ptr | DONE | |
+| **1.3** dhclassdoc size | DONE | |
+| **1.4** snprintf | DONE | |
+| **1.5** idxmac.h %s | DONE | |
+| **2.1** Permutation macros | DONE | |
+| **2.2** .MAT format | DONE | |
+| **2.3** string.c -Wconversion | DONE | 62/79 warnings fixed; 17 from AREAL macro in header.h |
+| **3.1** Module loader (dlopen) | PLANNED | See `Claude-module-loader-plan.md` |
+| **3.2** ST_I64 | DONE | `long-matrix`, `long-storage`, `(-long-)` fully working |
+| **3.3** Dead platform cleanup | DONE | ~1300 lines removed |
+| **4.1** Pointer-in-double | NOT STARTED | Research only |
+| **4.2** vfork/RETSIGTYPE | DONE | Removed as part of 3.3 |
 
-1. **1.1** (format warnings) -- immediate, visible improvement
-2. **1.2** (dh_obj_ptr) -- small fix with correctness impact
-3. **1.3** (dhclassdoc size) -- small fix
-4. **1.5** (idxmac.h %s) -- dead code cleanup
-5. **1.4** (snprintf) -- safety improvement
-6. **2.1** (permutation macros) -- after investigating storage types
-7. **2.2** (.MAT format) -- after 1.1 is proven stable
-8. **2.3** (string.c warnings) -- moderate effort
-9. **3.3** (dead platforms) -- low priority cleanup
-10. **3.1** (dlopen) -- major project, separate branch
-11. **3.2** (ST_I64) -- major project, separate branch
-12. **4.1** (pointer-in-double) -- research only for now
+## Remaining Work
+
+1. **Build Lush test harness** — See `Claude-test-harness-design.md`
+2. **3.1 Module loader modernization** — See `Claude-module-loader-plan.md`
+3. **4.1 Pointer-in-double** — Research / deferred

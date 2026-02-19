@@ -72,7 +72,8 @@
                 (list -str-    'dht-str)
                 (list -obj-    'dht-obj)
                 (list -list-   'dht-list)
-                (list -gptr-   'dht-gptr) ) ) )
+                (list -gptr-   'dht-gptr)
+                (list -long-   'dht-long) ) ) )
 
 (de dhc-format-to-t-node(source)
   (let* ((target (get-dhm-target source))
@@ -1670,7 +1671,8 @@
     (dht-short short-matrix-nc short-matrix)
     (dht-flt float-matrix-nc float-matrix)
     (dht-real double-matrix-nc double-matrix)
-    (dht-gptr gptr-matrix-nc gptr-matrix) ) )
+    (dht-gptr gptr-matrix-nc gptr-matrix)
+    (dht-long long-matrix-nc long-matrix) ) )
 
 (defvar dhc-type-to-matrix 
   (mapcar (lambda ((x y z)) (cons x (eval `(list :,y :,z))))

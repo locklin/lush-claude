@@ -1451,7 +1451,7 @@
 (dm declare.autoreplace args
   (cons 'declare args) )
 
-(each ((fn '(-bool- -ubyte- -byte- -short- -int-
+(each ((fn '(-bool- -ubyte- -byte- -short- -int- -long-
              -flt- -real- -obj- -gptr- -str- -list-)))
   (eval `(progn
            (dm ,fn (fn . args)
@@ -1503,6 +1503,7 @@
 (putp -flt-    'srg-type |FSTORAGE|)
 (putp -real-   'srg-type |DSTORAGE|)
 (putp -gptr-   'srg-type |GPTRSTORAGE|)
+(putp -long-   'srg-type |I64STORAGE|)
 
 ;; boolean type check
 (putp -bool- 'type-syntax
@@ -1515,7 +1516,7 @@
         (or (let-filter (((fn) source)) stringp)
             (error where "Illegal syntax in boolean type" source) ) ) )
 ;; numeric type check
-(each ((fn (list -ubyte- -byte- -short- -int- -flt- -real-)))
+(each ((fn (list -ubyte- -byte- -short- -int- -long- -flt- -real-)))
   (putp fn 'type-syntax
         (lambda(where source)
           (or (let-filter (((fn) source)) numberp)

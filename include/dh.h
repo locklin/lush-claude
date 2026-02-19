@@ -95,6 +95,7 @@ enum dht_type {
     DHT_FLT,	    /* type */
     DHT_REAL,	    /* type */
     DHT_GPTR,	    /* type */
+    DHT_LONG,	    /* type (64-bit integer) */
     DHT_IDX,   	    /* type (+ srg type) */
     DHT_SRG,   	    /* type (+ base type) */
     DHT_LIST,	    /* type (+ component types + end_list */
@@ -218,6 +219,7 @@ typedef union
   flt           dh_flt;
   real          dh_real;
   gptr		dh_gptr;
+  int64_t       dh_long;
   struct idx   *dh_idx_ptr;
   struct srg   *dh_srg_ptr;
   struct srg   *dh_str_ptr;

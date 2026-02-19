@@ -72,6 +72,7 @@ init_storage_to_dht(void)
   storage_to_dht[ST_I8] = DHT_BYTE;
   storage_to_dht[ST_U8] = DHT_UBYTE;
   storage_to_dht[ST_GPTR] = DHT_GPTR;
+  storage_to_dht[ST_I64] = DHT_LONG;
   dht_to_storage[DHT_FLT] = ST_F;
   dht_to_storage[DHT_REAL] = ST_D;
   dht_to_storage[DHT_INT] = ST_I32;
@@ -79,6 +80,7 @@ init_storage_to_dht(void)
   dht_to_storage[DHT_UBYTE] = ST_U8;
   dht_to_storage[DHT_SHORT] = ST_I16;
   dht_to_storage[DHT_GPTR] = ST_GPTR;
+  dht_to_storage[DHT_LONG] = ST_I64;
 }
 
 
@@ -1743,6 +1745,9 @@ dharg_to_address(dharg *arg, char *addr, dhrecord *drec)
   case DHT_INT:
     *((int *) addr) = arg->dh_int;
     break;
+  case DHT_LONG:
+    *((int64_t *) addr) = arg->dh_long;
+    break;
   case DHT_FLT:
     *((flt *) addr) = arg->dh_flt;
     break;
@@ -1778,6 +1783,9 @@ address_to_dharg(dharg *arg, char *addr, dhrecord *drec)
     break;
   case DHT_INT:
     arg->dh_int = *((int *) addr);
+    break;
+  case DHT_LONG:
+    arg->dh_long = *((int64_t *) addr);
     break;
   case DHT_FLT:
     arg->dh_flt = *((flt *) addr);
@@ -1845,11 +1853,19 @@ at_to_dharg(at *at_obj, dharg *arg, dhrecord *drec, at *errctx)
     case DHT_INT:
       if (!at_obj)
         arg->dh_int = 0;
-      else if ((at_obj->flags & C_NUMBER) && 
+      else if ((at_obj->flags & C_NUMBER) &&
                (at_obj->Number == (int)(at_obj->Number)) )
-        arg->dh_int = (int) at_obj->Number; 
+        arg->dh_int = (int) at_obj->Number;
       else
         lisp2c_error("INT expected",errctx,at_obj);
+      return;
+    case DHT_LONG:
+      if (!at_obj)
+        arg->dh_long = 0;
+      else if (at_obj->flags & C_NUMBER)
+        arg->dh_long = (int64_t) at_obj->Number;
+      else
+        lisp2c_error("LONG expected",errctx,at_obj);
       return;
     case DHT_SHORT:
       if(!at_obj)
@@ -2094,6 +2110,8 @@ dharg_to_at(dharg *arg, dhrecord *drec, at *errctx)
     return NIL;
   case DHT_INT:
     return NEW_NUMBER(arg->dh_int);
+  case DHT_LONG:
+    return NEW_NUMBER(arg->dh_long);
   case DHT_BYTE:
     return NEW_NUMBER(arg->dh_char);
   case DHT_UBYTE:

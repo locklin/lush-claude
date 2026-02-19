@@ -379,6 +379,7 @@
 	  ((==> type is-a-flt)   "flt")
 	  ((==> type is-a-real)  "real")
 	  ((==> type is-an-int)  "intg")
+	  ((==> type is-a-long)  "int64_t")
 	  ((==> type is-a-short) "short")
 	  ((==> type is-a-byte)  "signed char")
 	  ((==> type is-a-ubyte) "unsigned char")
@@ -405,6 +406,7 @@
    ((==> type is-a-byte)   "dh_char")
    ((==> type is-a-ubyte)  "dh_uchar")
    ((==> type is-an-int)   "dh_int")
+   ((==> type is-a-long)   "dh_long")
    ((==> type is-a-real)   "dh_real")
    ((==> type is-a-gptr)   "dh_gptr")
    ((==> type is-a-bool)   "dh_char")
@@ -420,6 +422,7 @@
     (dht-ubyte "ST_U8")
     (dht-byte  "ST_I8")
     (dht-gptr  "ST_GPTR")
+    (dht-long  "ST_I64")
     (t (dhc-error "not a know type of matrix"))))
 
 (de dhc-ptr-cast(expr type &optional type2)
@@ -756,15 +759,15 @@
 
 ;; order is important in following lists 
 ;; because it determine numeric promotions
-(defvar dhc-simple-types 
+(defvar dhc-simple-types
   '(dht-dc dht-unk dht-int dht-flt dht-bool dht-nil
-    dht-short dht-byte dht-ubyte dht-real 
-    dht-gptr dht-number dht-dhm))
+    dht-short dht-byte dht-ubyte dht-real
+    dht-gptr dht-long dht-number dht-dhm))
 (defvar dhc-complex-types 
   '(dht-idx dht-srg dht-obj dht-class
     dht-func dht-ptr dht-str dht-list))
-(defvar dhc-int-types 
-  (reverse '(dht-int dht-short dht-byte dht-ubyte)))
+(defvar dhc-int-types
+  (reverse '(dht-long dht-int dht-short dht-byte dht-ubyte)))
 (defvar dhc-number-types 
   (append dhc-int-types '(dht-number dht-flt dht-real)) )
 (defvar dhc-all-types 
@@ -1000,6 +1003,8 @@
   (= (unode-val u-tclass) 'dht-unk))
 (defmethod dhc-type is-a-dc()
   (= (unode-val u-tclass) 'dht-dc))
+(defmethod dhc-type is-a-long()
+  (= (unode-val u-tclass) 'dht-long))
 (defmethod dhc-type is-a-gptr()
   (= (unode-val u-tclass) 'dht-gptr))
 (defmethod dhc-type is-a-number()
@@ -2718,6 +2723,7 @@
           ((= cls |I8STORAGE|)   'dht-char)
           ((= cls |U8STORAGE|)   'dht-uchar)
           ((= cls |GPTRSTORAGE|) 'dht-gptr)
+          ((= cls |I64STORAGE|)  'dht-long)
           (t (dhc-error "Illegal literal storage type")) ) ) ) )
 
 

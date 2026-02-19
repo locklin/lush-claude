@@ -934,6 +934,7 @@ enum storage_type {
   ST_F, ST_D,
   ST_I32, ST_I16, ST_I8, ST_U8,
   ST_GPTR,
+  ST_I64,
   /* TAG */
   ST_LAST
 };
@@ -1028,6 +1029,7 @@ LUSHAPI at *new_I16_storage(void);
 LUSHAPI at *new_I8_storage(void);
 LUSHAPI at *new_U8_storage(void);
 LUSHAPI at *new_GPTR_storage(void);
+LUSHAPI at *new_I64_storage(void);
 LUSHAPI at *new_storage(int,int);
 LUSHAPI at *new_storage_nc(int,int);
 

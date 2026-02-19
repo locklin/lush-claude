@@ -74,11 +74,12 @@
     case_type2(ST_I8, t1, signed char, FUNC_NAME) \
     case_type2(ST_I16, t1, short, FUNC_NAME) \
     case_type2(ST_I32, t1, int, FUNC_NAME) \
+    case_type2(ST_I64, t1, int64_t, FUNC_NAME) \
     case_type2(ST_F, t1, flt, FUNC_NAME) \
     case_type2(ST_D, t1, real, FUNC_NAME) \
     default: \
       error(NIL, "Unknown type for second argument", NIL); \
-    } 
+    }
 #endif
 
 #ifdef SHORT_IDX
@@ -96,11 +97,12 @@
     case_type2(ST_I8, t1, signed char, FUNC_NAME) \
     case_type2(ST_I16, t1, short, FUNC_NAME) \
     case_type2(ST_I32, t1, int, FUNC_NAME) \
+    case_type2(ST_I64, t1, int64_t, FUNC_NAME) \
     case_type2(ST_F, t1, flt, FUNC_NAME) \
     case_type2(ST_D, t1, real, FUNC_NAME) \
     default: \
       error(NIL, "Unknown type for second argument", NIL); \
-    } 
+    }
 #endif
 
 #define check_unitype2 \
@@ -149,11 +151,12 @@
     case_type1(ST_I8, signed char, FUNC_NAME) \
     case_type1(ST_I16, short, FUNC_NAME) \
     case_type1(ST_I32, int, FUNC_NAME) \
+    case_type1(ST_I64, int64_t, FUNC_NAME) \
     case_type1(ST_F, flt, FUNC_NAME) \
     case_type1(ST_D, real, FUNC_NAME) \
     default: \
       error(NIL, "Unknown type for first argument", NIL); \
-    } 
+    }
 #endif
 
 /* ================================================================ */

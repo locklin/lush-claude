@@ -84,6 +84,7 @@ size_t storage_type_size[ST_LAST] = {
   sizeof(signed char),
   sizeof(unsigned char),
   sizeof(gptr),
+  sizeof(int64_t),
 };
 
 
@@ -125,6 +126,7 @@ Generic_getf(I32, int)
 Generic_getf(I16, short)
 Generic_getf(I8, signed char)
 Generic_getf(U8, unsigned char)
+Generic_getf(I64, int64_t)
 
 #undef Generic_getf
 
@@ -139,6 +141,7 @@ flt (*storage_type_getf[ST_LAST])(gptr, intg) = {
   I8_getf,
   U8_getf,
   GPTR_getf,
+  I64_getf,
 };
 
 
@@ -181,6 +184,7 @@ Generic_setf(I32, int)
 Generic_setf(I16, short)
 Generic_setf(I8, signed char)
 Generic_setf(U8, unsigned char)
+Generic_setf(I64, int64_t)
 
 #undef Generic_setf
 
@@ -195,6 +199,7 @@ void (*storage_type_setf[ST_LAST])(gptr, intg, flt) = {
   I8_setf,
   U8_setf,
   GPTR_setf,
+  I64_setf,
 };
 
 
@@ -235,6 +240,7 @@ Generic_getr(I32, int)
 Generic_getr(I16, short)
 Generic_getr(I8, signed char)
 Generic_getr(U8, unsigned char)
+Generic_getr(I64, int64_t)
 
 #undef Generic_getr
 
@@ -248,6 +254,7 @@ real (*storage_type_getr[ST_LAST])(gptr, intg) = {
   I8_getr,
   U8_getr,
   GPTR_getr,
+  I64_getr,
 };
 
 
@@ -289,6 +296,7 @@ Generic_setr(I32, int)
 Generic_setr(I16, short)
 Generic_setr(I8, signed char)
 Generic_setr(U8, unsigned char)
+Generic_setr(I64, int64_t)
 
 #undef Generic_setr
 
@@ -303,6 +311,7 @@ void (*storage_type_setr[ST_LAST])(gptr, intg, real) = {
   I8_setr,
   U8_setr,
   GPTR_setr,
+  I64_setr,
 };
 
 
@@ -534,6 +543,7 @@ Generic_class(I16);
 Generic_class(I8);
 Generic_class(U8);
 Generic_class(GPTR);
+Generic_class(I64);
 
 
 
@@ -745,6 +755,7 @@ Generic_new_storage(I16, N, short)
 Generic_new_storage(I8, N, signed char)
 Generic_new_storage(U8, N, unsigned char)
 Generic_new_storage(GPTR, GPTR, gptr)
+Generic_new_storage(I64, N, int64_t)
 
 #undef Generic_new_storage
 
@@ -780,6 +791,8 @@ new_storage(int type, int size)
     p = new_P_storage(); break;
   case ST_GPTR:
     p = new_GPTR_storage(); break;
+  case ST_I64:
+    p = new_I64_storage(); break;
   default:
     error("storage.c/new_storage","unknown storage type",NEW_NUMBER(type));
   }
@@ -813,6 +826,8 @@ new_storage_nc(int type, int size)
     p = new_P_storage(); break;
   case ST_GPTR:
     p = new_GPTR_storage(); break;
+  case ST_I64:
+    p = new_I64_storage(); break;
   default:
     error("storage.c/new_storage","unknown storage type",NEW_NUMBER(type));
   }
@@ -1368,6 +1383,7 @@ void init_storage()
   class_define("I8STORAGE",&I8_storage_class);
   class_define("U8STORAGE",&U8_storage_class);
   class_define("GPTRSTORAGE",&GPTR_storage_class);
+  class_define("I64STORAGE",&I64_storage_class);
 
   dx_define("atom-storage",xnew_AT_storage);
   dx_define("packed-storage",xnew_P_storage);
@@ -1378,6 +1394,7 @@ void init_storage()
   dx_define("byte-storage",xnew_I8_storage);
   dx_define("ubyte-storage",xnew_U8_storage);
   dx_define("gptr-storage",xnew_GPTR_storage);
+  dx_define("long-storage",xnew_I64_storage);
 
   dx_define("storage-malloc",xstorage_malloc);
   dx_define("storage-malloc-nc",xstorage_malloc_nc);

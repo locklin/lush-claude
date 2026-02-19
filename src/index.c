@@ -1059,6 +1059,7 @@ Generic_matrix(I16);
 Generic_matrix(I8);
 Generic_matrix(U8);
 Generic_matrix(GPTR);
+Generic_matrix(I64);
 
 #undef Generic_matrix
 #undef Generic_matrix_nnc
@@ -1696,6 +1697,7 @@ void copy_index(struct index *i1, struct index *i2)
     GenericCopy(I16, short);
     GenericCopy(I8, char);
     GenericCopy(U8, unsigned char);
+    GenericCopy(I64, int64_t);
 
 #undef GenericCopy
 
@@ -1804,6 +1806,7 @@ DX(xcopy_matrix)
 #define BYTE_MATRIX	 (0x1e3d4c55)
 #define SHORT_MATRIX	 (0x1e3d4c56)
 #define SHORT8_MATRIX	 (0x1e3d4c57)
+#define INT64_MATRIX	 (0x1e3d4c58)
 #define ASCII_MATRIX	 (0x2e4d4154)	/* '.MAT' */
 
 #define SWAP(x) ((int)(((x&0xff)<<24)|((x&0xff00)<<8)|\
@@ -1950,7 +1953,8 @@ format_save_matrix(at *p, FILE *f, int h)
     case ST_I16:  magic=SHORT_MATRIX   ; break;
     case ST_I8:   magic=SHORT8_MATRIX  ; break;
     case ST_U8:   magic=BYTE_MATRIX    ; break;
-    default:      
+    case ST_I64:  magic=INT64_MATRIX   ; break;
+    default:
       error(NIL,"Cannot save an index this storage",ind->atst);
     }
   /* header */
@@ -2305,6 +2309,7 @@ load_matrix_header(FILE *f,
     case SWAP( SHORT8_MATRIX ):
     case SWAP( INTEGER_MATRIX ):
     case SWAP( BYTE_MATRIX ):
+    case SWAP( INT64_MATRIX ):
       magic = SWAP(magic);
       swapflag = 1;
       /* no break */
@@ -2315,6 +2320,7 @@ load_matrix_header(FILE *f,
     case SHORT8_MATRIX:
     case INTEGER_MATRIX:
     case BYTE_MATRIX:
+    case INT64_MATRIX:
       ndim = 0;
       ndim = read4(f);
       if (swapflag)
@@ -2432,6 +2438,9 @@ load_matrix(FILE *f)
   case BYTE_MATRIX:
     ans = U8_matrix(ndim, dim);
     break;
+  case INT64_MATRIX:
+    ans = I64_matrix(ndim, dim);
+    break;
   default:
     error("matrix.c/load_matrix",
 	  "internal error: unhandled format",NIL);
@@ -2532,6 +2541,7 @@ map_matrix(FILE *f)
     case SHORT_MATRIX:   atst = new_I16_storage(); break;
     case SHORT8_MATRIX:  atst = new_I8_storage();  break;
     case BYTE_MATRIX:    atst = new_U8_storage();  break;
+    case INT64_MATRIX:   atst = new_I64_storage(); break;
     default:
       error(NIL, "cannot map an ascii matrix file", NIL);
     }
@@ -3161,6 +3171,7 @@ void init_index()
   dx_define("byte-matrix", xI8matrix);
   dx_define("ubyte-matrix", xU8matrix);
   dx_define("gptr-matrix", xGPTRmatrix);
+  dx_define("long-matrix", xI64matrix);
   dx_define("packed-matrix-nc", xPmatrix_nc);
   dx_define("float-matrix-nc", xFmatrix_nc);
   dx_define("double-matrix-nc", xDmatrix_nc);
@@ -3169,6 +3180,7 @@ void init_index()
   dx_define("byte-matrix-nc", xI8matrix_nc);
   dx_define("ubyte-matrix-nc", xU8matrix_nc);
   dx_define("gptr-matrix-nc", xGPTRmatrix_nc);
+  dx_define("long-matrix-nc", xI64matrix_nc);
 
   /* nr */
   dx_define("nrvectorp", xnrvectorp);
