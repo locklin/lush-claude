@@ -1,0 +1,492 @@
+;;; mapper-db.lsh -- Mapper-SQLite integration
+;;;
+;;; Stores mapper datasets, run configurations, and graph results
+;;; in a SQLite database for persistence and visualization.
+;;;
+;;; Usage:
+;;;   (libload "mapper/mapper-db")
+;;;   (setq db (mapper-db-open "/path/to/project.db"))
+;;;   (setq did (mapper-db-store-dataset db data col-names "my data" "data.csv"))
+;;;   (setq rid (mapper-db-create-run db did 10 0.5 "euclidean" "slink" 0.5 3 1 "l_inf_centrality" "" ""))
+;;;   (setq graph (mapper-run data lens 10 0.5))
+;;;   (==> graph color-by-mean data 0)
+;;;   (mapper-db-store-graph db rid graph data)
+;;;   (mapper-db-close db)
+
+(libload "mapper")
+(libload "sqlite/sqlite")
+
+#? *** Mapper: SQLite Database Integration
+
+
+;; ============================================================
+;; Database open/close with schema initialization
+;; ============================================================
+
+#? (mapper-db-open <path>)
+;; Open (or create) a mapper project database at <path>.
+;; Creates all required tables if they don't exist.
+;; Enables WAL mode and sets a 5-second busy timeout.
+;; Returns a database handle (gptr).
+(de mapper-db-open (path)
+  (let ((db (sqlite-open path)))
+    (sqlite-enable-wal db)
+    (sqlite-busy-timeout db 5000)
+    (_mapper-db-create-schema db)
+    db ) )
+
+
+#? (mapper-db-close <db>)
+;; Close a mapper project database.
+(de mapper-db-close (db)
+  (sqlite-close db) )
+
+
+;; internal: create all tables if they don't exist
+(de _mapper-db-create-schema (db)
+  ;; Project metadata
+  (sqlite-exec db "CREATE TABLE IF NOT EXISTS project (key TEXT PRIMARY KEY, value TEXT)")
+
+  ;; Datasets
+  (sqlite-exec db "CREATE TABLE IF NOT EXISTS datasets (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, source_file TEXT, n_rows INTEGER NOT NULL, n_cols INTEGER NOT NULL, col_names TEXT, created_at TEXT DEFAULT (datetime('now')))")
+
+  ;; Dataset values (row-major storage)
+  (sqlite-exec db "CREATE TABLE IF NOT EXISTS dataset_values (dataset_id INTEGER NOT NULL, row_idx INTEGER NOT NULL, col_idx INTEGER NOT NULL, value REAL NOT NULL, PRIMARY KEY (dataset_id, row_idx, col_idx), FOREIGN KEY (dataset_id) REFERENCES datasets(id))")
+
+  ;; Mapper run configurations
+  (sqlite-exec db "CREATE TABLE IF NOT EXISTS mapper_runs (id INTEGER PRIMARY KEY AUTOINCREMENT, dataset_id INTEGER NOT NULL, name TEXT, n_cubes INTEGER NOT NULL, overlap REAL NOT NULL, metric TEXT NOT NULL, clusterer TEXT NOT NULL, eps REAL, min_pts INTEGER, min_intersection INTEGER DEFAULT 1, lens_type TEXT NOT NULL, lens_metric TEXT, column_selection TEXT, status TEXT DEFAULT 'pending', error_message TEXT, created_at TEXT DEFAULT (datetime('now')), completed_at TEXT, FOREIGN KEY (dataset_id) REFERENCES datasets(id))")
+
+  ;; Graphs
+  (sqlite-exec db "CREATE TABLE IF NOT EXISTS graphs (id INTEGER PRIMARY KEY AUTOINCREMENT, run_id INTEGER NOT NULL UNIQUE, n_nodes INTEGER NOT NULL, n_edges INTEGER NOT NULL, FOREIGN KEY (run_id) REFERENCES mapper_runs(id))")
+
+  ;; Graph nodes
+  (sqlite-exec db "CREATE TABLE IF NOT EXISTS graph_nodes (graph_id INTEGER NOT NULL, node_idx INTEGER NOT NULL, size INTEGER NOT NULL, color REAL, bin_idx INTEGER, members TEXT NOT NULL, PRIMARY KEY (graph_id, node_idx), FOREIGN KEY (graph_id) REFERENCES graphs(id))")
+
+  ;; Graph edges
+  (sqlite-exec db "CREATE TABLE IF NOT EXISTS graph_edges (graph_id INTEGER NOT NULL, source INTEGER NOT NULL, target INTEGER NOT NULL, weight INTEGER NOT NULL, PRIMARY KEY (graph_id, source, target), FOREIGN KEY (graph_id) REFERENCES graphs(id))")
+
+  ;; Node labels (user-defined groups)
+  (sqlite-exec db "CREATE TABLE IF NOT EXISTS node_labels (id INTEGER PRIMARY KEY AUTOINCREMENT, graph_id INTEGER NOT NULL, name TEXT NOT NULL, color TEXT, node_indices TEXT NOT NULL, created_at TEXT DEFAULT (datetime('now')), FOREIGN KEY (graph_id) REFERENCES graphs(id))")
+
+  ;; Display state
+  (sqlite-exec db "CREATE TABLE IF NOT EXISTS display_state (graph_id INTEGER PRIMARY KEY, active INTEGER DEFAULT 1, tab_order INTEGER, FOREIGN KEY (graph_id) REFERENCES graphs(id))")
+  t )
+
+
+;; ============================================================
+;; Dataset storage
+;; ============================================================
+
+;; internal: encode a list of strings as a JSON array string
+;; e.g. ("a" "b" "c") => "[\"a\",\"b\",\"c\"]"
+(de _mapper-db-json-string-list (lst)
+  (let ((s "[")
+        (first t) )
+    (each ((item lst))
+      (if first
+        (setq first ())
+        (setq s (concat s ",")) )
+      ;; Simple JSON escape: just handle backslash and double-quote
+      (let ((escaped "")
+            (n (len item)) )
+        (for (i 1 n)
+          (let ((ch (mid item i 1)))
+            (cond
+             ((= ch "\\") (setq escaped (concat escaped "\\\\")))
+             ((= ch "\"") (setq escaped (concat escaped "\\\"")))
+             (t (setq escaped (concat escaped ch))) ) ) )
+        (setq s (concat s "\"" escaped "\"")) ) )
+    (setq s (concat s "]"))
+    s ) )
+
+
+;; internal: encode a list of ints as a JSON array string
+;; e.g. (1 2 3) => "[1,2,3]"
+(de _mapper-db-json-int-list (lst)
+  (let ((s "[")
+        (first t) )
+    (each ((item lst))
+      (if first
+        (setq first ())
+        (setq s (concat s ",")) )
+      (setq s (concat s (sprintf "%d" item))) )
+    (setq s (concat s "]"))
+    s ) )
+
+
+;; internal: encode members of an idx1-of-int as a JSON array string
+(de _mapper-db-json-idx1 (arr)
+  (let ((s "[")
+        (n (idx-dim arr 0)) )
+    (for (i 0 (1- n))
+      (when (> i 0)
+        (setq s (concat s ",")) )
+      (setq s (concat s (sprintf "%d" (arr i)))) )
+    (setq s (concat s "]"))
+    s ) )
+
+
+#? (mapper-db-store-dataset <db> <data> <col-names> <name> [<source-file>])
+;; Store a dataset (NxD matrix) in the database.
+;; <db> is the database handle.
+;; <data> is an NxD idx2-of-double.
+;; <col-names> is a list of D strings (column names).
+;; <name> is a human-readable name for the dataset.
+;; <source-file> is an optional source filename string.
+;; Returns the dataset id.
+(de mapper-db-store-dataset (db data col-names name . rest)
+  (let ((source-file (if rest (car rest) ""))
+        (nr (idx-dim data 0))
+        (nc (idx-dim data 1)) )
+    ;; Encode column names as JSON
+    (let ((col-json (_mapper-db-json-string-list col-names)))
+      ;; Insert dataset record
+      (sqlite-exec db
+        "INSERT INTO datasets (name, source_file, n_rows, n_cols, col_names) VALUES (?, ?, ?, ?, ?)"
+        name source-file nr nc col-json)
+      (let ((did (sqlite-last-insert-id db)))
+        ;; Insert all values in a transaction for speed
+        (sqlite-exec db "BEGIN TRANSACTION")
+        (for (i 0 (1- nr))
+          (for (j 0 (1- nc))
+            (sqlite-exec db
+              "INSERT INTO dataset_values (dataset_id, row_idx, col_idx, value) VALUES (?, ?, ?, ?)"
+              did i j (data i j)) ) )
+        (sqlite-exec db "COMMIT")
+        did ) ) ) )
+
+
+;; ============================================================
+;; Mapper run records
+;; ============================================================
+
+#? (mapper-db-create-run <db> <dataset-id> <n-cubes> <overlap> <metric> <clusterer> <eps> <min-pts> <min-intersection> <lens-type> <lens-metric> <column-selection>)
+;; Create a mapper run record in the database.
+;; Returns the run id.
+(de mapper-db-create-run (db dataset-id n-cubes overlap metric clusterer
+                          eps min-pts min-intersection
+                          lens-type lens-metric column-selection)
+  (sqlite-exec db
+    "INSERT INTO mapper_runs (dataset_id, n_cubes, overlap, metric, clusterer, eps, min_pts, min_intersection, lens_type, lens_metric, column_selection, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')"
+    dataset-id n-cubes overlap metric clusterer
+    eps min-pts min-intersection
+    lens-type lens-metric column-selection)
+  (sqlite-last-insert-id db) )
+
+
+#? (mapper-db-update-run-status <db> <run-id> <status> [<error-message>])
+;; Update the status of a mapper run.
+;; <status> is "pending", "running", "completed", or "failed".
+;; <error-message> is an optional error string (for "failed" status).
+(de mapper-db-update-run-status (db run-id status . rest)
+  (let ((errmsg (if rest (car rest) ())))
+    (if (= status "completed")
+      (sqlite-exec db
+        "UPDATE mapper_runs SET status = ?, completed_at = datetime('now') WHERE id = ?"
+        status run-id)
+      (sqlite-exec db
+        "UPDATE mapper_runs SET status = ?, error_message = ? WHERE id = ?"
+        status errmsg run-id) ) ) )
+
+
+;; ============================================================
+;; Graph storage
+;; ============================================================
+
+#? (mapper-db-store-graph <db> <run-id> <graph> <data>)
+;; Store a MapperGraph and its associated data in the database.
+;; <db> is the database handle.
+;; <run-id> is the mapper_runs.id this graph belongs to.
+;; <graph> is a MapperGraph object.
+;; <data> is the original NxD data matrix (used for nothing here,
+;;   reserved for future per-node statistics).
+;; Returns the graph id.
+;; Also inserts a display_state record with active=1.
+(de mapper-db-store-graph (db run-id graph data)
+  (let ((nn (==> graph num-nodes))
+        (ne (==> graph num-edges)) )
+    ;; Insert graph record
+    (sqlite-exec db
+      "INSERT INTO graphs (run_id, n_nodes, n_edges) VALUES (?, ?, ?)"
+      run-id nn ne)
+    (let ((gid (sqlite-last-insert-id db)))
+      ;; Insert nodes in a transaction
+      (sqlite-exec db "BEGIN TRANSACTION")
+      (let ((k 0))
+        (each ((members :graph:nodes))
+          (let ((sz (idx-dim members 0))
+                (color (if :graph:node-colors (:graph:node-colors k) 0.0))
+                (bin (if :graph:node-bins (nth k :graph:node-bins) 0))
+                (members-json (_mapper-db-json-idx1 members)) )
+            (sqlite-exec db
+              "INSERT INTO graph_nodes (graph_id, node_idx, size, color, bin_idx, members) VALUES (?, ?, ?, ?, ?, ?)"
+              gid k sz color bin members-json) )
+          (incr k) ) )
+      ;; Insert edges
+      (when :graph:edges
+        (for (i 0 (1- ne))
+          (sqlite-exec db
+            "INSERT INTO graph_edges (graph_id, source, target, weight) VALUES (?, ?, ?, ?)"
+            gid (:graph:edges i 0) (:graph:edges i 1) (:graph:edge-weights i)) ) )
+      (sqlite-exec db "COMMIT")
+      ;; Mark for display
+      (sqlite-exec db
+        "INSERT OR REPLACE INTO display_state (graph_id, active, tab_order) VALUES (?, 1, ?)"
+        gid gid)
+      ;; Update run status
+      (mapper-db-update-run-status db run-id "completed")
+      gid ) ) )
+
+
+;; ============================================================
+;; Convenience: run mapper and store everything
+;; ============================================================
+
+#? (mapper-db-run <db> <data> <col-names> <name> <lens> <n-cubes> <overlap> . <kwargs>)
+;; Run the mapper algorithm and store the dataset, run record,
+;; and resulting graph all in the database.
+;; <db> is the database handle.
+;; <data> is the NxD data matrix.
+;; <col-names> is a list of D column name strings.
+;; <name> is a human-readable name for this run.
+;; <lens> is the Nxk filter values matrix.
+;; <n-cubes> is the number of cover intervals.
+;; <overlap> is the fractional overlap (0..1).
+;;
+;; Keyword arguments (passed through to mapper-run):
+;;   'metric, 'clusterer, 'eps, 'min-pts, 'min-intersection
+;;   'lens-type -- string label for the lens (default "custom")
+;;   'source-file -- original data filename (default "")
+;;   'color-col -- column index to color by mean (default 0)
+;;
+;; Returns an alist with keys:
+;;   "dataset-id", "run-id", "graph-id", "graph"
+(de mapper-db-run (db data col-names name lens n-cubes overlap . kwargs)
+  ;; Parse our own kwargs and pass the rest through
+  (let ((metric "euclidean")
+        (clusterer "slink")
+        (eps 0.5)
+        (min-pts 3)
+        (min-intersection 1)
+        (lens-type "custom")
+        (source-file "")
+        (color-col 0)
+        (mapper-kwargs ()) )
+    (let ((kw kwargs))
+      (while kw
+        (let ((key (car kw)))
+          (setq kw (cdr kw))
+          (when kw
+            (let ((val (car kw)))
+              (setq kw (cdr kw))
+              (cond
+               ((= key 'metric)
+                (setq metric val)
+                (setq mapper-kwargs (nconc1 (nconc1 mapper-kwargs 'metric) val)) )
+               ((= key 'clusterer)
+                (setq clusterer val)
+                (setq mapper-kwargs (nconc1 (nconc1 mapper-kwargs 'clusterer) val)) )
+               ((= key 'eps)
+                (setq eps val)
+                (setq mapper-kwargs (nconc1 (nconc1 mapper-kwargs 'eps) val)) )
+               ((= key 'min-pts)
+                (setq min-pts val)
+                (setq mapper-kwargs (nconc1 (nconc1 mapper-kwargs 'min-pts) val)) )
+               ((= key 'min-intersection)
+                (setq min-intersection val)
+                (setq mapper-kwargs (nconc1 (nconc1 mapper-kwargs 'min-intersection) val)) )
+               ((= key 'lens-type)
+                (setq lens-type val) )
+               ((= key 'source-file)
+                (setq source-file val) )
+               ((= key 'color-col)
+                (setq color-col val) )
+               (t
+                (setq mapper-kwargs (nconc1 (nconc1 mapper-kwargs key) val)) ) ) ) ) ) ) )
+
+    ;; Store dataset
+    (let ((did (mapper-db-store-dataset db data col-names name source-file)))
+      ;; Create run record
+      (let ((rid (mapper-db-create-run db did n-cubes overlap
+                                       metric clusterer eps min-pts
+                                       min-intersection lens-type "" "")))
+        ;; Mark as running
+        (mapper-db-update-run-status db rid "running")
+        ;; Run mapper
+        (let ((graph (apply mapper-run (nconc (list data lens n-cubes overlap) mapper-kwargs))))
+          ;; Color the graph
+          (when (and (> (idx-dim data 1) color-col) (>= color-col 0))
+            (==> graph color-by-mean data color-col) )
+          ;; Store graph
+          (let ((gid (mapper-db-store-graph db rid graph data)))
+            ;; Return results as alist
+            (list (cons "dataset-id" did)
+                  (cons "run-id" rid)
+                  (cons "graph-id" gid)
+                  (cons "graph" graph) ) ) ) ) ) ) )
+
+
+;; ============================================================
+;; Query helpers (for HTTP API)
+;; ============================================================
+
+#? (mapper-db-list-graphs <db>)
+;; Return a list of all graphs with their display state.
+;; Each entry is an alist with keys: "id", "run-id", "n-nodes",
+;; "n-edges", "active", "name".
+(de mapper-db-list-graphs (db)
+  (let ((rows (sqlite-query db "SELECT g.id, g.run_id, g.n_nodes, g.n_edges, COALESCE(ds.active, 0), COALESCE(mr.name, d.name) FROM graphs g JOIN mapper_runs mr ON g.run_id = mr.id JOIN datasets d ON mr.dataset_id = d.id LEFT JOIN display_state ds ON ds.graph_id = g.id ORDER BY g.id")))
+    (let ((result ()))
+      (each ((row rows))
+        (setq result
+          (nconc1 result
+            (list (cons "id" (nth 0 row))
+                  (cons "run-id" (nth 1 row))
+                  (cons "n-nodes" (nth 2 row))
+                  (cons "n-edges" (nth 3 row))
+                  (cons "active" (nth 4 row))
+                  (cons "name" (nth 5 row)) ) ) ) )
+      result ) ) )
+
+
+#? (mapper-db-get-graph <db> <graph-id>)
+;; Return full graph data as an alist suitable for JSON serialization.
+;; Keys: "id", "n-nodes", "n-edges", "nodes", "edges"
+;; "nodes" is a list of alists with: "id", "size", "color", "bin", "members"
+;; "edges" is a list of alists with: "source", "target", "weight"
+(de mapper-db-get-graph (db graph-id)
+  ;; Get graph record
+  (let ((rows (sqlite-query db
+    "SELECT id, run_id, n_nodes, n_edges FROM graphs WHERE id = ?"
+    graph-id)))
+    (when rows
+      (let ((grow (car rows))
+            (node-list ())
+            (edge-list ()) )
+        ;; Get nodes
+        (let ((nrows (sqlite-query db
+          "SELECT node_idx, size, color, bin_idx, members FROM graph_nodes WHERE graph_id = ? ORDER BY node_idx"
+          graph-id)))
+          (each ((nr nrows))
+            (setq node-list
+              (nconc1 node-list
+                (list (cons "id" (nth 0 nr))
+                      (cons "size" (nth 1 nr))
+                      (cons "color" (nth 2 nr))
+                      (cons "bin" (nth 3 nr))
+                      (cons "members" (nth 4 nr)) ) ) ) ) )
+        ;; Get edges
+        (let ((erows (sqlite-query db
+          "SELECT source, target, weight FROM graph_edges WHERE graph_id = ? ORDER BY source, target"
+          graph-id)))
+          (each ((er erows))
+            (setq edge-list
+              (nconc1 edge-list
+                (list (cons "source" (nth 0 er))
+                      (cons "target" (nth 1 er))
+                      (cons "weight" (nth 2 er)) ) ) ) ) )
+        ;; Assemble result
+        (list (cons "id" (nth 0 grow))
+              (cons "run-id" (nth 1 grow))
+              (cons "n-nodes" (nth 2 grow))
+              (cons "n-edges" (nth 3 grow))
+              (cons "nodes" node-list)
+              (cons "edges" edge-list) ) ) ) ) )
+
+
+#? (mapper-db-get-dataset-info <db> <dataset-id>)
+;; Return dataset metadata as an alist.
+;; Keys: "id", "name", "source-file", "n-rows", "n-cols", "col-names"
+(de mapper-db-get-dataset-info (db dataset-id)
+  (let ((rows (sqlite-query db
+    "SELECT id, name, source_file, n_rows, n_cols, col_names FROM datasets WHERE id = ?"
+    dataset-id)))
+    (when rows
+      (let ((row (car rows)))
+        (list (cons "id" (nth 0 row))
+              (cons "name" (nth 1 row))
+              (cons "source-file" (nth 2 row))
+              (cons "n-rows" (nth 3 row))
+              (cons "n-cols" (nth 4 row))
+              (cons "col-names" (nth 5 row)) ) ) ) ) )
+
+
+#? (mapper-db-get-column-data <db> <dataset-id> <col-indices>)
+;; Return column data for specified columns.
+;; <col-indices> is a list of column index integers.
+;; Returns a list of (col-idx . values-list) pairs,
+;; where values-list is ordered by row_idx.
+(de mapper-db-get-column-data (db dataset-id col-indices)
+  (let ((result ()))
+    (each ((ci col-indices))
+      (let ((rows (sqlite-query db
+        "SELECT value FROM dataset_values WHERE dataset_id = ? AND col_idx = ? ORDER BY row_idx"
+        dataset-id ci)))
+        (let ((vals ()))
+          (each ((row rows))
+            (setq vals (nconc1 vals (car row))) )
+          (setq result (nconc1 result (cons ci vals))) ) ) )
+    result ) )
+
+
+#? (mapper-db-get-run-info <db> <run-id>)
+;; Return mapper run info as an alist.
+(de mapper-db-get-run-info (db run-id)
+  (let ((rows (sqlite-query db "SELECT id, dataset_id, name, n_cubes, overlap, metric, clusterer, eps, min_pts, min_intersection, lens_type, status, error_message, created_at, completed_at FROM mapper_runs WHERE id = ?" run-id)))
+    (when rows
+      (let ((r (car rows)))
+        (list (cons "id" (nth 0 r))
+              (cons "dataset-id" (nth 1 r))
+              (cons "name" (nth 2 r))
+              (cons "n-cubes" (nth 3 r))
+              (cons "overlap" (nth 4 r))
+              (cons "metric" (nth 5 r))
+              (cons "clusterer" (nth 6 r))
+              (cons "eps" (nth 7 r))
+              (cons "min-pts" (nth 8 r))
+              (cons "min-intersection" (nth 9 r))
+              (cons "lens-type" (nth 10 r))
+              (cons "status" (nth 11 r))
+              (cons "error-message" (nth 12 r))
+              (cons "created-at" (nth 13 r))
+              (cons "completed-at" (nth 14 r)) ) ) ) ) )
+
+
+#? (mapper-db-set-display <db> <graph-id> <active>)
+;; Set the display state for a graph.
+;; <active> is 1 (show) or 0 (hide).
+(de mapper-db-set-display (db graph-id active)
+  (sqlite-exec db
+    "INSERT OR REPLACE INTO display_state (graph_id, active, tab_order) VALUES (?, ?, ?)"
+    graph-id active graph-id) )
+
+
+#? (mapper-db-save-label <db> <graph-id> <name> <color> <node-indices>)
+;; Save a node group label.
+;; <node-indices> is a list of node index integers.
+;; <color> is a hex color string (e.g. "#ff4444").
+;; Returns the label id.
+(de mapper-db-save-label (db graph-id name color node-indices)
+  (let ((indices-json (_mapper-db-json-int-list node-indices)))
+    (sqlite-exec db
+      "INSERT INTO node_labels (graph_id, name, color, node_indices) VALUES (?, ?, ?, ?)"
+      graph-id name color indices-json)
+    (sqlite-last-insert-id db) ) )
+
+
+#? (mapper-db-get-labels <db> <graph-id>)
+;; Return all node labels for a graph.
+;; Each entry is an alist with keys: "id", "name", "color", "node-indices"
+(de mapper-db-get-labels (db graph-id)
+  (let ((rows (sqlite-query db
+    "SELECT id, name, color, node_indices FROM node_labels WHERE graph_id = ? ORDER BY id"
+    graph-id)))
+    (let ((result ()))
+      (each ((row rows))
+        (setq result
+          (nconc1 result
+            (list (cons "id" (nth 0 row))
+                  (cons "name" (nth 1 row))
+                  (cons "color" (nth 2 row))
+                  (cons "node-indices" (nth 3 row)) ) ) ) )
+      result ) ) )

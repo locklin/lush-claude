@@ -1,0 +1,112 @@
+;;; httpd-static.lsh -- Static file serving for Lush HTTP server
+;;;
+;;; Serves files from a document root directory with MIME type detection.
+;;; Provides httpd-send-file, httpd-mime-type, and a route handler factory.
+
+#? *** HTTPD: Static File Serving
+
+;; ============================================================
+;; MIME type detection
+;; ============================================================
+
+(defvar *httpd-mime-types*
+  '(("html" . "text/html; charset=utf-8")
+    ("htm"  . "text/html; charset=utf-8")
+    ("css"  . "text/css; charset=utf-8")
+    ("js"   . "application/javascript; charset=utf-8")
+    ("json" . "application/json; charset=utf-8")
+    ("png"  . "image/png")
+    ("jpg"  . "image/jpeg")
+    ("jpeg" . "image/jpeg")
+    ("gif"  . "image/gif")
+    ("svg"  . "image/svg+xml")
+    ("ico"  . "image/x-icon")
+    ("txt"  . "text/plain; charset=utf-8")
+    ("csv"  . "text/csv; charset=utf-8")
+    ("xml"  . "application/xml")
+    ("woff" . "font/woff")
+    ("woff2" . "font/woff2")
+    ("ttf"  . "font/ttf")
+    ("map"  . "application/json") ) )
+
+
+#? (httpd-mime-type <filename>)
+;; Return the MIME type for a filename based on its extension.
+;; Returns "application/octet-stream" for unknown extensions.
+(de httpd-mime-type (filename)
+  (let ((ext "")
+        (dot-pos ()))
+    ;; Find last dot
+    (let ((i (len filename)))
+      (while (and (> i 0) (not dot-pos))
+        (if (= (mid filename i 1) ".")
+          (setq dot-pos i)
+          (setq i (- i 1)) ) ) )
+    (when dot-pos
+      (setq ext (downcase (mid filename (+ dot-pos 1)))) )
+    (let ((entry (alist-get ext *httpd-mime-types*)))
+      (if entry entry "application/octet-stream") ) ) )
+
+
+;; ============================================================
+;; File reading (binary-safe using read8)
+;; ============================================================
+
+#? (httpd-read-file <filepath>)
+;; Read an entire file as a string.
+;; Returns the file contents or () if the file does not exist.
+(de httpd-read-file (filepath)
+  (if (not (filep filepath))
+    ()
+    (let ((f (open-read filepath))
+          (parts ()) )
+      (when f
+        (reading f
+          (while (<> (skip-char "\n\r\f") "\e")
+            (setq parts (nconc1 parts (read-string)))
+            (let ((ch (skip-char "~\n\r\f\e")))
+              (when (or (= ch "\n") (= ch "\r"))
+                (setq parts (nconc1 parts "\n")) ) ) ) )
+        (apply concat parts) ) ) ) )
+
+
+#? (httpd-read-file-binary <filepath>)
+;; Read a file using read-string with byte count (fsize).
+;; Returns the contents as a string or () if file doesn't exist.
+(de httpd-read-file-binary (filepath)
+  (if (not (filep filepath))
+    ()
+    (let ((f (open-read filepath)))
+      (when f
+        (let ((sz (fsize f))
+              (content "") )
+          (when (> sz 0)
+            (setq content (reading f (read-string sz))) )
+          content ) ) ) ) )
+
+
+;; ============================================================
+;; Static file route handler
+;; ============================================================
+
+#? (httpd-make-static-handler <docroot>)
+;; Create a handler function that serves static files from <docroot>.
+;; The handler maps URL paths to filesystem paths under docroot.
+;; Returns 404 for files outside docroot or that don't exist.
+;;
+;; Usage with httpd-add-route:
+;;   (httpd-add-route server "GET" "/static/(.*)"
+;;                    (httpd-make-static-handler "/path/to/files"))
+(de httpd-make-static-handler (docroot)
+  (lambda (req)
+    (let* ((path (alist-get "path" req))
+           ;; Strip leading slash
+           (relpath (if (= (left path 1) "/") (mid path 2) path))
+           (filepath (concat-fname docroot relpath)) )
+      ;; Security: prevent path traversal
+      (if (index ".." filepath)
+        (list 403 "text/plain" "Forbidden")
+        (let ((content (httpd-read-file-binary filepath)))
+          (if content
+            (list 200 (httpd-mime-type filepath) content)
+            (list 404 "text/plain" (concat "Not found: " path)) ) ) ) ) ) )

@@ -1,0 +1,353 @@
+;;; httpd.lsh -- Minimal HTTP/1.0 server for Lush
+;;;
+;;; Serves localhost requests: parses HTTP requests, dispatches to
+;;; route handlers, sends responses.  Designed for single-user tools
+;;; (mapper visualization, etc.).
+;;;
+;;; Usage:
+;;;   (libload "packages/httpd/httpd")
+;;;   (setq server (httpd-new 8765))
+;;;   (httpd-add-route server "GET" "/" (lambda (req) (list 200 "text/html" "<h1>Hello</h1>")))
+;;;   (httpd-serve server)   ;; blocks, handling one request at a time
+
+(libload "httpd-json")
+(libload "httpd-static")
+
+#? *** HTTPD: Minimal HTTP Server
+
+
+;; ============================================================
+;; Server object: an htable holding port, socket, routes
+;; ============================================================
+
+#? (httpd-new <port>)
+;; Create a new HTTP server on <port>.
+;; Returns an htable representing the server, or raises an error
+;; if the port cannot be bound.
+(de httpd-new (port)
+  (let ((server (htable 8)))
+    (server "port" port)
+    (server "routes" ())
+    (server "running" ())
+    server ) )
+
+
+#? (httpd-add-route <server> <method> <pattern> <handler>)
+;; Add a route to the server.
+;; <method> is "GET" or "POST".
+;; <pattern> is a regex pattern matched against the request path.
+;;   Use capturing groups for path parameters:
+;;     "/api/graph/([0-9]+)" captures the graph id.
+;; <handler> is a function that receives a request alist and returns
+;;   (list <status-code> <content-type> <body-string>)
+;;   or a list with additional headers:
+;;   (list <status-code> <content-type> <body-string> <extra-headers-string>)
+;;
+;; The request alist has keys:
+;;   "method"  -- "GET" or "POST"
+;;   "path"    -- the URL path (e.g. "/api/graphs")
+;;   "query"   -- query string after ? (or "")
+;;   "headers" -- alist of header name -> value (lowercase names)
+;;   "body"    -- POST body string (or "")
+;;   "params"  -- list of regex capture groups from the pattern match
+(de httpd-add-route (server method pattern handler)
+  (let ((routes (server "routes")))
+    (server "routes"
+            (nconc1 routes (list method pattern handler))) ) )
+
+
+;; ============================================================
+;; HTTP request parsing
+;; ============================================================
+
+;; NOTE: We use read8 for all socket reads instead of (reading fin (read-string))
+;; because the `reading` redirect interferes with subsequent writes to fout
+;; on the same socket pair.
+
+;; internal: read a line from socket fd using read8
+;; Returns the line without the line ending.
+;; Returns "" for an empty line (just CRLF).
+;; Returns () only on immediate EOF (read8 returns -1 as first byte).
+(de _httpd-read-line (fd)
+  (let ((chars ())
+        (done ())
+        (got-data ()) )
+    (while (not done)
+      (let ((b (read8 fd)))
+        (cond
+         ((< b 0) (setq done t))            ;; EOF
+         ((= b 13)                           ;; CR — skip, await LF
+          (setq got-data t) )
+         ((= b 10)                           ;; LF — end of line
+          (setq got-data t)
+          (setq done t) )
+         (t
+          (setq got-data t)
+          (setq chars (nconc1 chars b)) ) ) ) )
+    (if (not got-data)
+      ()  ;; true EOF, no bytes read at all
+      (let ((s ""))
+        (each ((c chars))
+          (setq s (concat s (chr c))) )
+        s ) ) ) )
+
+
+;; internal: parse the HTTP request line "GET /path?query HTTP/1.1"
+;; Returns (method path query) or () on parse failure.
+(de _httpd-parse-request-line (line)
+  (let ((sp1 (index " " line))
+        (method "")
+        (rest "")
+        (path "")
+        (query "") )
+    (when sp1
+      (setq method (left line (- sp1 1)))
+      (setq rest (mid line (+ sp1 1)))
+      ;; Find end of URI (space before HTTP/x.x)
+      (let ((sp2 (index " " rest)))
+        (when sp2
+          (let ((uri (left rest (- sp2 1))))
+            ;; Split URI at ?
+            (let ((qpos (index "?" uri)))
+              (if qpos
+                (progn
+                  (setq path (left uri (- qpos 1)))
+                  (setq query (mid uri (+ qpos 1))) )
+                (setq path uri) ) ) ) ) )
+      (list method path query) ) ) )
+
+
+;; internal: read HTTP headers until blank line
+;; Returns an alist of (name . value) with lowercase header names.
+(de _httpd-read-headers (fd)
+  (let ((headers ())
+        (done ()) )
+    (while (not done)
+      (let ((line (_httpd-read-line fd)))
+        (if (or (not line) (= line ""))
+          (setq done t)
+          ;; Parse "Header-Name: value"
+          (let ((colon (index ":" line)))
+            (when colon
+              (let ((name (downcase (left line (- colon 1))))
+                    (value (mid line (+ colon 1))) )
+                ;; Trim leading space from value
+                (when (and (> (len value) 0) (= (left value 1) " "))
+                  (setq value (mid value 2)) )
+                (setq headers (nconc1 headers (cons name value))) ) ) ) ) ) )
+    headers ) )
+
+
+;; internal: read exactly n bytes from socket fd using read8
+(de _httpd-read-bytes (fd nbytes)
+  (let ((chars ()))
+    (for (i 1 nbytes)
+      (let ((b (read8 fd)))
+        (when (>= b 0)
+          (setq chars (nconc1 chars b)) ) ) )
+    (let ((s ""))
+      (each ((c chars))
+        (setq s (concat s (chr c))) )
+      s ) ) )
+
+
+#? (httpd-parse-request <fin>)
+;; Read and parse an HTTP request from file descriptor <fin>.
+;; Returns an alist with keys: "method", "path", "query", "headers", "body"
+;; or () on parse failure.
+(de httpd-parse-request (fin)
+  (let ((first-line (_httpd-read-line fin)))
+    (when (and first-line (> (len first-line) 0))
+      (let ((parsed (_httpd-parse-request-line first-line)))
+        (when parsed
+          (let* ((method  (car parsed))
+                 (path    (cadr parsed))
+                 (query   (caddr parsed))
+                 (headers (_httpd-read-headers fin))
+                 (content-length
+                  (let ((cl (alist-get "content-length" headers)))
+                    (if cl (val cl) 0) ) )
+                 (body "") )
+            ;; Read body for POST
+            (when (and (= method "POST") (> content-length 0))
+              (setq body (_httpd-read-bytes fin content-length)) )
+            (list (cons "method" method)
+                  (cons "path" path)
+                  (cons "query" query)
+                  (cons "headers" headers)
+                  (cons "body" body) ) ) ) ) ) ) )
+
+
+;; ============================================================
+;; HTTP response sending
+;; ============================================================
+
+;; internal: status code -> reason phrase
+(de _httpd-reason (code)
+  (cond
+   ((= code 200) "OK")
+   ((= code 201) "Created")
+   ((= code 204) "No Content")
+   ((= code 301) "Moved Permanently")
+   ((= code 302) "Found")
+   ((= code 400) "Bad Request")
+   ((= code 403) "Forbidden")
+   ((= code 404) "Not Found")
+   ((= code 405) "Method Not Allowed")
+   ((= code 500) "Internal Server Error")
+   (t "OK") ) )
+
+
+;; internal: write a string to fout byte-by-byte using write8
+(de _httpd-write (fout s)
+  (let ((n (len s)))
+    (for (i 1 n)
+      (write8 fout (asc (mid s i 1))) ) ) )
+
+;; internal: write a string to fout then CRLF
+(de _httpd-write-line (fout s)
+  (_httpd-write fout s)
+  (write8 fout 13) (write8 fout 10) )
+
+
+#? (httpd-send-response <fout> <code> <content-type> <body> [<extra-headers>])
+;; Send an HTTP/1.0 response on file descriptor <fout>.
+;; <code> is the status code (200, 404, etc.)
+;; <content-type> is the MIME type string.
+;; <body> is the response body string.
+;; <extra-headers> is an optional string of additional headers (with \r\n).
+(de httpd-send-response (fout code content-type body . rest)
+  (let ((extra (if rest (car rest) "")))
+    (_httpd-write-line fout (sprintf "HTTP/1.0 %d %s" code (_httpd-reason code)))
+    (_httpd-write-line fout (sprintf "Content-Type: %s" content-type))
+    (_httpd-write-line fout (sprintf "Content-Length: %d" (len body)))
+    (_httpd-write-line fout "Connection: close")
+    (_httpd-write-line fout "Access-Control-Allow-Origin: *")
+    (_httpd-write-line fout "Access-Control-Allow-Methods: GET, POST, OPTIONS")
+    (_httpd-write-line fout "Access-Control-Allow-Headers: Content-Type")
+    (when (and extra (> (len extra) 0))
+      (_httpd-write fout extra) )
+    ;; Blank line separating headers from body
+    (write8 fout 13) (write8 fout 10)
+    ;; Body
+    (_httpd-write fout body)
+    (flush fout) ) )
+
+
+#? (httpd-send-json <fout> <json-string>)
+;; Send a 200 JSON response.
+(de httpd-send-json (fout json-string)
+  (httpd-send-response fout 200 "application/json" json-string) )
+
+
+#? (httpd-send-404 <fout> <path>)
+;; Send a 404 Not Found response.
+(de httpd-send-404 (fout path)
+  (httpd-send-response fout 404 "text/plain"
+                       (concat "404 Not Found: " path)) )
+
+
+#? (httpd-send-error <fout> <code> <message>)
+;; Send an error response with the given status code and message.
+(de httpd-send-error (fout code message)
+  (httpd-send-response fout code "text/plain" message) )
+
+
+;; ============================================================
+;; Route matching and dispatch
+;; ============================================================
+
+;; internal: find matching route and extract params
+;; Returns (handler params) or ()
+(de _httpd-match-route (routes method path)
+  (let ((found ()))
+    (each ((route routes))
+      (when (not found)
+        (let ((route-method  (car route))
+              (route-pattern (cadr route))
+              (route-handler (caddr route)) )
+          (when (= route-method method)
+            ;; Try exact match first (anchored)
+            (let ((match (regex-extract (concat "^" route-pattern "$") path)))
+              (when match
+                (setq found (list route-handler match)) ) ) ) ) ) )
+    found ) )
+
+
+;; ============================================================
+;; Server loop
+;; ============================================================
+
+#? (httpd-serve <server>)
+;; Start the HTTP server event loop.  Blocks, handling one request
+;; at a time.  Use Ctrl-C to stop.
+;;
+;; For each connection: accept, parse request, dispatch to handler,
+;; send response, close connection.
+(de httpd-serve (server)
+  (let ((port (server "port"))
+        (routes (server "routes")) )
+    ;; Bind the listening socket (1-arg form returns the fd)
+    (let ((listen-sock (socketaccept port)))
+      (when (not listen-sock)
+        (error "httpd-serve" (concat "cannot bind port " (sprintf "%d" port))) )
+      (server "running" t)
+      (printf "httpd: listening on http://localhost:%d\n" port)
+      (flush)
+      ;; Accept loop (pass fd, not port, so it reuses the listening socket)
+      (let ((fin ())
+            (fout ()) )
+        (while (server "running")
+          (socketaccept listen-sock 'fin 'fout)
+        ;; Parse the request
+        (let ((req (httpd-parse-request fin)))
+          (if (not req)
+            ;; Bad request or empty connection
+            (httpd-send-error fout 400 "Bad Request")
+            ;; Handle CORS preflight
+            (if (= (alist-get "method" req) "OPTIONS")
+              (httpd-send-response fout 204 "text/plain" "")
+              ;; Find and invoke route handler
+              (let* ((method (alist-get "method" req))
+                     (path   (alist-get "path" req))
+                     (match  (_httpd-match-route routes method path)) )
+                (if (not match)
+                  (httpd-send-404 fout path)
+                  (let* ((handler (car match))
+                         (params  (cadr match))
+                         ;; Add params to request
+                         (req2 (nconc1 req (cons "params" params))) )
+                    ;; Call handler, catch errors
+                    (let ((result ()))
+                      (setq result (handler req2))
+                      (if (and result (listp result) (>= (length result) 3))
+                        ;; Handler returned (code content-type body [extra])
+                        (if (>= (length result) 4)
+                          (httpd-send-response fout
+                            (car result) (cadr result) (caddr result)
+                            (car (cdddr result)))
+                          (httpd-send-response fout
+                            (car result) (cadr result) (caddr result)) )
+                        ;; Handler returned something unexpected
+                        (httpd-send-error fout 500 "Internal Server Error") ) ) ) ) ) ) ) ) ) ) ) ) )
+
+
+#? (httpd-stop <server>)
+;; Signal the server to stop after the current request.
+(de httpd-stop (server)
+  (server "running" ()) )
+
+
+;; ============================================================
+;; Convenience: simple one-call server setup
+;; ============================================================
+
+#? (httpd-serve-directory <port> <docroot>)
+;; Start a simple static file server on <port> serving files from <docroot>.
+;; Serves index.html for the root path "/".
+(de httpd-serve-directory (port docroot)
+  (let ((server (httpd-new port))
+        (handler (httpd-make-static-handler docroot)) )
+    ;; Route everything through static handler
+    (httpd-add-route server "GET" "/(.*)" handler)
+    (httpd-serve server) ) )

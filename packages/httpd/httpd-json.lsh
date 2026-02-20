@@ -1,0 +1,115 @@
+;;; httpd-json.lsh -- JSON serialization helpers for Lush HTTP server
+;;;
+;;; Converts Lush values to JSON strings:
+;;;   ()        -> null
+;;;   t         -> true
+;;;   number    -> number
+;;;   string    -> "escaped string"
+;;;   list      -> array or object (see json-object)
+;;;   htable    -> object
+
+#? *** HTTPD: JSON Serialization
+
+;; ============================================================
+;; JSON string escaping
+;; ============================================================
+
+#? (json-escape <s>)
+;; Escape a string for JSON output.
+;; Handles: \ -> \\, " -> \", newline -> \n, tab -> \t, cr -> \r
+(de json-escape (s)
+  (let ((out "")
+        (n (len s)) )
+    (for (i 1 n)
+      (let ((ch (mid s i 1)))
+        (cond
+         ((= ch "\\") (setq out (concat out "\\\\")))
+         ((= ch "\"") (setq out (concat out "\\\"")))
+         ((= ch "\n") (setq out (concat out "\\n")))
+         ((= ch "\r") (setq out (concat out "\\r")))
+         ((= ch "\t") (setq out (concat out "\\t")))
+         (t (setq out (concat out ch))) ) ) )
+    out ) )
+
+
+;; ============================================================
+;; JSON value serialization
+;; ============================================================
+
+#? (json-encode <value>)
+;; Encode a Lush value as a JSON string.
+;; Mapping:
+;;   () -> "null"
+;;   t  -> "true"
+;;   number with (= val (int val)) -> integer
+;;   number -> float
+;;   string -> quoted escaped string
+;;   list -> JSON array
+;;   htable -> JSON object
+(de json-encode (value)
+  (cond
+   ((= value ()) "null")
+   ((= value t) "true")
+   ((numberp value)
+    (if (= value (int value))
+      (sprintf "%d" (int value))
+      (sprintf "%.10g" value) ) )
+   ((stringp value)
+    (concat "\"" (json-escape value) "\"") )
+   ((htablep value)
+    (json-encode-htable value) )
+   ((listp value)
+    (json-encode-list value) )
+   (t (concat "\"" (json-escape (sprintf "%l" value)) "\"")) ) )
+
+
+;; internal: encode a list as a JSON array
+(de json-encode-list (lst)
+  (let ((out "[")
+        (first t) )
+    (each ((item lst))
+      (if first
+        (setq first ())
+        (setq out (concat out ",")) )
+      (setq out (concat out (json-encode item))) )
+    (concat out "]") ) )
+
+
+;; internal: encode an htable as a JSON object
+(de json-encode-htable (ht)
+  (let ((out "{")
+        (first t) )
+    (each ((key (htable-keys ht)))
+      (if first
+        (setq first ())
+        (setq out (concat out ",")) )
+      (setq out (concat out "\"" (json-escape (if (stringp key) key (sprintf "%l" key)))
+                        "\":" (json-encode (ht key)))) )
+    (concat out "}") ) )
+
+
+#? (json-object . <pairs>)
+;; Build a JSON object string from alternating key-value pairs.
+;; Example: (json-object "name" "hello" "count" 42)
+;; => {"name":"hello","count":42}
+(de json-object pairs
+  (let ((out "{")
+        (first t)
+        (kv pairs) )
+    (while kv
+      (let ((key (car kv))
+            (val (cadr kv)) )
+        (if first
+          (setq first ())
+          (setq out (concat out ",")) )
+        (setq out (concat out "\"" (json-escape key) "\":"
+                          (json-encode val))) )
+      (setq kv (cddr kv)) )
+    (concat out "}") ) )
+
+
+#? (json-array . <items>)
+;; Build a JSON array string from arguments.
+;; Example: (json-array 1 2 3) => [1,2,3]
+(de json-array items
+  (json-encode-list items) )
