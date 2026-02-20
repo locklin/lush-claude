@@ -916,12 +916,242 @@ function exportCSV() {
 }
 
 // ============================================================
+// Upload dialog
+// ============================================================
+
+let pendingCsvText = null;
+
+function showUploadDialog() {
+  document.getElementById('upload-dialog').classList.add('visible');
+  document.getElementById('csv-file').value = '';
+  document.getElementById('dataset-name').value = '';
+  document.getElementById('csv-preview').innerHTML = '';
+  pendingCsvText = null;
+}
+
+function hideUploadDialog() {
+  document.getElementById('upload-dialog').classList.remove('visible');
+}
+
+// Preview CSV when file is selected
+document.getElementById('csv-file').addEventListener('change', function(e) {
+  const file = e.target.files[0];
+  if (!file) return;
+
+  // Auto-fill name from filename (strip extension)
+  const nameInput = document.getElementById('dataset-name');
+  if (!nameInput.value) {
+    nameInput.value = file.name.replace(/\.[^.]+$/, '');
+  }
+
+  const reader = new FileReader();
+  reader.onload = function(ev) {
+    pendingCsvText = ev.target.result;
+
+    // Show preview of first 5 rows
+    const lines = pendingCsvText.split('\n').filter(l => l.trim().length > 0);
+    if (lines.length === 0) {
+      document.getElementById('csv-preview').innerHTML = '<div class="preview-note">Empty file</div>';
+      return;
+    }
+
+    const previewLines = lines.slice(0, 6); // header + 5 data rows
+    let html = '<div class="preview-note">' + (lines.length - 1) + ' data rows</div>';
+    html += '<table class="csv-preview-table"><thead><tr>';
+
+    // Header
+    const headers = previewLines[0].split(',').map(h => h.trim().replace(/^"|"$/g, ''));
+    for (const h of headers) {
+      html += '<th>' + escapeHtml(h) + '</th>';
+    }
+    html += '</tr></thead><tbody>';
+
+    // Data rows (up to 5)
+    for (let i = 1; i < previewLines.length; i++) {
+      html += '<tr>';
+      const fields = previewLines[i].split(',');
+      for (let j = 0; j < headers.length; j++) {
+        const val = fields[j] ? fields[j].trim() : '';
+        html += '<td>' + escapeHtml(val) + '</td>';
+      }
+      html += '</tr>';
+    }
+    html += '</tbody></table>';
+    if (lines.length > 6) {
+      html += '<div class="preview-note">...and ' + (lines.length - 6) + ' more rows</div>';
+    }
+
+    document.getElementById('csv-preview').innerHTML = html;
+  };
+  reader.readAsText(file);
+});
+
+function escapeHtml(s) {
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+async function uploadDataset() {
+  if (!pendingCsvText) {
+    setStatus('No file selected');
+    return;
+  }
+
+  const name = document.getElementById('dataset-name').value || 'uploaded';
+  setStatus('Uploading dataset...');
+
+  try {
+    const resp = await fetch('/api/dataset?name=' + encodeURIComponent(name), {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/csv' },
+      body: pendingCsvText,
+    });
+
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({ error: resp.statusText }));
+      throw new Error(err.error || 'Upload failed');
+    }
+
+    const result = await resp.json();
+    setStatus('Dataset uploaded: ' + result.name + ' (' + result['n-rows'] + ' rows, ' + result['n-cols'] + ' cols)');
+    hideUploadDialog();
+
+    // Offer to run mapper on this dataset
+    showRunDialog(result.id);
+  } catch(e) {
+    setStatus('Upload error: ' + e.message);
+  }
+}
+
+// ============================================================
+// Run dialog
+// ============================================================
+
+async function showRunDialog(preselectedDatasetId) {
+  const dialog = document.getElementById('run-dialog');
+  const datasetSelect = document.getElementById('run-dataset');
+
+  // Fetch available datasets
+  try {
+    const datasets = await apiGet('/api/datasets');
+    datasetSelect.innerHTML = '';
+
+    if (datasets.length === 0) {
+      datasetSelect.innerHTML = '<option value="">No datasets — upload one first</option>';
+    } else {
+      for (const ds of datasets) {
+        const opt = document.createElement('option');
+        opt.value = ds.id;
+        opt.textContent = ds.name + ' (' + ds['n-rows'] + 'x' + ds['n-cols'] + ')';
+        datasetSelect.appendChild(opt);
+      }
+
+      // Preselect if specified
+      if (preselectedDatasetId) {
+        datasetSelect.value = preselectedDatasetId;
+      }
+    }
+  } catch(e) {
+    datasetSelect.innerHTML = '<option value="">Error loading datasets</option>';
+  }
+
+  dialog.classList.add('visible');
+}
+
+function hideRunDialog() {
+  document.getElementById('run-dialog').classList.remove('visible');
+}
+
+function onLensChange() {
+  const lens = document.getElementById('run-lens').value;
+  document.getElementById('col-select-group').style.display =
+    (lens === 'column') ? '' : 'none';
+}
+
+async function startRun() {
+  const datasetId = document.getElementById('run-dataset').value;
+  if (!datasetId) {
+    setStatus('No dataset selected');
+    return;
+  }
+
+  const params = {
+    dataset_id: datasetId,
+    name: document.getElementById('run-name').value || 'mapper run',
+    n_cubes: document.getElementById('run-ncubes').value,
+    overlap: document.getElementById('run-overlap').value,
+    metric: document.getElementById('run-metric').value,
+    clusterer: document.getElementById('run-clusterer').value,
+    eps: document.getElementById('run-eps').value,
+    min_pts: document.getElementById('run-minpts').value,
+    min_intersection: 1,
+    lens_type: document.getElementById('run-lens').value,
+    color_col: document.getElementById('run-colorcol').value || '0',
+  };
+
+  setStatus('Starting mapper run...');
+  hideRunDialog();
+
+  try {
+    const result = await apiPost('/api/run', params);
+    const runId = result['run-id'];
+    setStatus('Mapper run #' + runId + ' started');
+    startRunPolling(runId);
+  } catch(e) {
+    setStatus('Error starting run: ' + e.message);
+  }
+}
+
+// ============================================================
+// Run status polling
+// ============================================================
+
+let activeRunPolls = new Map(); // runId -> intervalId
+
+function startRunPolling(runId) {
+  const statusEl = document.getElementById('run-status');
+  statusEl.textContent = 'Running mapper (#' + runId + ')...';
+  statusEl.classList.add('active');
+
+  const pollId = setInterval(async () => {
+    try {
+      const info = await apiGet('/api/run/' + runId);
+      if (info.status === 'completed') {
+        clearInterval(pollId);
+        activeRunPolls.delete(runId);
+        statusEl.textContent = '';
+        statusEl.classList.remove('active');
+        setStatus('Run #' + runId + ' completed');
+        // pollForGraphs will auto-open the new graph
+        pollForGraphs();
+      } else if (info.status === 'failed') {
+        clearInterval(pollId);
+        activeRunPolls.delete(runId);
+        statusEl.textContent = '';
+        statusEl.classList.remove('active');
+        setStatus('Run #' + runId + ' failed: ' + (info['error-message'] || 'unknown error'));
+      }
+      // else still running/pending — keep polling
+    } catch(e) {
+      // Ignore poll errors
+    }
+  }, 2000);
+
+  activeRunPolls.set(runId, pollId);
+}
+
+// ============================================================
 // Initialization
 // ============================================================
 
 document.getElementById('tab-add').onclick = showGraphPicker;
 document.getElementById('graph-picker').onclick = function(e) {
   if (e.target === this) hideGraphPicker();
+};
+document.getElementById('upload-dialog').onclick = function(e) {
+  if (e.target === this) hideUploadDialog();
+};
+document.getElementById('run-dialog').onclick = function(e) {
+  if (e.target === this) hideRunDialog();
 };
 
 // Initial poll

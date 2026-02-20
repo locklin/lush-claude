@@ -16,6 +16,12 @@
 ;; Capture the viz directory path at load time
 (defvar *viz-root* (concat (dirname file-being-loaded) "/viz"))
 
+;; Capture the lush binary path at load time (for spawning workers)
+(defvar *viz-lush-bin* (concat (dirname file-being-loaded) "/../../bin/lush"))
+
+;; Capture the packages directory at load time (for worker libload paths)
+(defvar *viz-packages-dir* (concat (dirname file-being-loaded) "/.."))
+
 
 ;; ============================================================
 ;; JSON encoding for alists
@@ -83,6 +89,9 @@
 
 ;; internal: the database handle (set by mapper-viz-start)
 (defvar *viz-db* ())
+
+;; internal: the database file path (set by mapper-viz-start, used by worker generation)
+(defvar *viz-db-path* "")
 
 
 
@@ -248,6 +257,277 @@
 
 
 ;; ============================================================
+;; CSV parser
+;; ============================================================
+
+;; internal: split a string by a delimiter character, returns list of strings
+(de _viz-split-line (s delim)
+  (let ((result ()) (current "") (i 0) (n (len s)))
+    (while (< i n)
+      (let ((ch (mid s (1+ i) 1)))
+        (if (= ch delim)
+          (progn
+            (setq result (nconc1 result current))
+            (setq current "")
+            (setq i (1+ i)) )
+          (progn
+            (setq current (concat current ch))
+            (setq i (1+ i)) ) ) ) )
+    ;; Add last field
+    (setq result (nconc1 result current))
+    result ) )
+
+;; internal: strip leading/trailing whitespace and quotes from a string
+(de _viz-strip (s)
+  (let ((n (len s)) (start 1) (end n))
+    ;; Strip leading whitespace
+    (while (and (<= start end)
+                (let ((ch (mid s start 1)))
+                  (or (= ch " ") (= ch "\t") (= ch "\r")) ))
+      (setq start (1+ start)) )
+    ;; Strip trailing whitespace
+    (while (and (>= end start)
+                (let ((ch (mid s end 1)))
+                  (or (= ch " ") (= ch "\t") (= ch "\r")) ))
+      (setq end (1- end)) )
+    ;; Strip matching quotes
+    (when (and (>= end start)
+               (= (mid s start 1) "\"")
+               (= (mid s end 1) "\""))
+      (setq start (1+ start))
+      (setq end (1- end)) )
+    (if (> start end) ""
+      (mid s start (1+ (- end start))) ) ) )
+
+;; internal: split body text into lines, handling \r\n
+(de _viz-split-lines (body)
+  (let ((lines ()) (current "") (i 0) (n (len body)))
+    (while (< i n)
+      (let ((ch (mid body (1+ i) 1)))
+        (cond
+         ((= ch "\n")
+          (setq lines (nconc1 lines current))
+          (setq current "")
+          (setq i (1+ i)) )
+         ((= ch "\r")
+          ;; Skip \r, let \n handle the line break
+          (setq i (1+ i)) )
+         (t
+          (setq current (concat current ch))
+          (setq i (1+ i)) ) ) ) )
+    ;; Add last line if non-empty
+    (when (> (len current) 0)
+      (setq lines (nconc1 lines current)) )
+    lines ) )
+
+;; internal: parse CSV text into (list data col-names)
+;; Returns (data col-names) where data is NxD double-matrix
+;; and col-names is a list of D strings.
+(de _viz-parse-csv (body)
+  (let ((lines (_viz-split-lines body)))
+    ;; Skip empty leading lines
+    (while (and lines (= (len (car lines)) 0))
+      (setq lines (cdr lines)) )
+    (when lines
+      ;; First line: column names
+      (let ((header-fields (mapcar _viz-strip (_viz-split-line (car lines) ",")))
+            (data-lines (cdr lines)) )
+        ;; Filter out empty lines
+        (let ((non-empty ()))
+          (each ((line data-lines))
+            (when (> (len line) 0)
+              (setq non-empty (nconc1 non-empty line)) ) )
+          (setq data-lines non-empty) )
+        (let ((n-rows (length data-lines))
+              (n-cols (length header-fields)) )
+          (when (and (> n-rows 0) (> n-cols 0))
+            (let ((data (double-matrix n-rows n-cols))
+                  (row-idx 0) )
+              (each ((line data-lines))
+                (let ((fields (_viz-split-line line ","))
+                      (col-idx 0) )
+                  (each ((field fields))
+                    (when (< col-idx n-cols)
+                      (let ((v (val (_viz-strip field))))
+                        (data row-idx col-idx v) ) )
+                    (setq col-idx (1+ col-idx)) ) )
+                (setq row-idx (1+ row-idx)) )
+              (list data header-fields) ) ) ) ) ) ) )
+
+
+;; ============================================================
+;; Dataset upload API
+;; ============================================================
+
+;; internal: extract a query parameter value by name from query string
+(de _viz-query-param (query name)
+  (when (and query (> (len query) 0))
+    (let ((search (concat name "="))
+          (result ()) )
+      (let ((pos (index search query)))
+        (when pos
+          (let ((rest (mid query (+ pos (len search)))))
+            ;; Read until & or end
+            (let ((amp (index "&" rest)))
+              (if amp
+                (setq result (_viz-url-decode (left rest (1- amp))))
+                (setq result (_viz-url-decode rest)) ) ) ) ) )
+      result ) ) )
+
+;; POST /api/dataset -- upload CSV data
+(de _viz-api-upload-dataset (req)
+  (let ((body (alist-get "body" req))
+        (query (alist-get "query" req)) )
+    (if (and body (> (len body) 0))
+      (let ((parsed (_viz-parse-csv body)))
+        (if parsed
+          (let ((data (car parsed))
+                (col-names (cadr parsed))
+                (name (or (_viz-query-param query "name") "uploaded")) )
+            (let ((did (mapper-db-store-dataset *viz-db* data col-names name "uploaded")))
+              (let ((nr (idx-dim data 0))
+                    (nc (idx-dim data 1)) )
+                (list 200 "application/json"
+                  (concat "{\"id\":" (sprintf "%d" did)
+                          ",\"name\":\"" (json-escape name) "\""
+                          ",\"n-rows\":" (sprintf "%d" nr)
+                          ",\"n-cols\":" (sprintf "%d" nc)
+                          ",\"col-names\":" (_mapper-db-json-string-list col-names)
+                          "}") ) ) ) )
+          (list 400 "application/json" "{\"error\":\"failed to parse CSV\"}") ) )
+      (list 400 "application/json" "{\"error\":\"empty body\"}") ) ) )
+
+
+;; ============================================================
+;; Run API handlers
+;; ============================================================
+
+;; GET /api/datasets -- list all datasets
+(de _viz-api-datasets (req)
+  (let ((datasets (mapper-db-list-datasets *viz-db*)))
+    (list 200 "application/json" (_viz-json-list datasets)) ) )
+
+;; GET /api/runs -- list all runs
+(de _viz-api-runs (req)
+  (let ((runs (mapper-db-list-runs *viz-db*)))
+    (list 200 "application/json" (_viz-json-list runs)) ) )
+
+;; internal: generate worker script and return its path
+(de _viz-generate-worker (db-path run-id)
+  (let ((worker-path (concat "/tmp/claude/mapper-worker-" (sprintf "%d" run-id) ".lsh"))
+        (pkg-dir *viz-packages-dir*) )
+    ;; Write a self-contained worker script.
+    ;; Error handling: if the script crashes, the shell wrapper
+    ;; (in _viz-api-start-run) marks the run as failed.
+    ;; If it succeeds, mapper-db-store-graph marks it completed.
+    (writing worker-path
+      (printf ";;; Auto-generated mapper worker for run %d\n" run-id)
+        (printf "(addpath \"%s\")\n" pkg-dir)
+        (printf "(libload \"mapper/mapper-db\")\n")
+        (printf "(libload \"mapper/mapper\")\n")
+        (printf "(libload \"mapper/lens\")\n")
+        (printf "\n")
+        (printf "(let ((db (mapper-db-open \"%s\")))\n" db-path)
+        (printf "  (mapper-db-update-run-status db %d \"running\")\n" run-id)
+        (printf "  (let ((info (mapper-db-get-run-info db %d)))\n" run-id)
+        (printf "    (let ((did (cdr (assoc \"dataset-id\" info)))\n")
+        (printf "          (n-cubes (cdr (assoc \"n-cubes\" info)))\n")
+        (printf "          (overlap (cdr (assoc \"overlap\" info)))\n")
+        (printf "          (metric (cdr (assoc \"metric\" info)))\n")
+        (printf "          (clusterer (cdr (assoc \"clusterer\" info)))\n")
+        (printf "          (eps (cdr (assoc \"eps\" info)))\n")
+        (printf "          (min-pts (cdr (assoc \"min-pts\" info)))\n")
+        (printf "          (min-intersection (cdr (assoc \"min-intersection\" info)))\n")
+        (printf "          (lens-type (cdr (assoc \"lens-type\" info)))\n")
+        (printf "          (col-sel (cdr (assoc \"column-selection\" info))) )\n")
+        (printf "      (let ((ds (mapper-db-load-dataset db did)))\n")
+        (printf "        (let ((data (car ds)) (col-names (cadr ds)))\n")
+        (printf "          (let ((lens ()))\n")
+        (printf "            (cond\n")
+        (printf "             ((= lens-type \"l_inf_centrality\")\n")
+        (printf "              (setq lens (mapper-lens-linf-centrality data metric)) )\n")
+        (printf "             ((= lens-type \"eccentricity\")\n")
+        (printf "              (setq lens (mapper-lens-eccentricity data metric)) )\n")
+        (printf "             ((= lens-type \"pca\")\n")
+        (printf "              (setq lens (mapper-lens-pca data 1)) )\n")
+        (printf "             ((= lens-type \"sum\")\n")
+        (printf "              (setq lens (mapper-lens-sum data)) )\n")
+        (printf "             ((= lens-type \"mean\")\n")
+        (printf "              (setq lens (mapper-lens-mean data)) )\n")
+        (printf "             ((= lens-type \"variance\")\n")
+        (printf "              (setq lens (mapper-lens-variance data)) )\n")
+        (printf "             ((= lens-type \"kurtosis\")\n")
+        (printf "              (setq lens (mapper-lens-kurtosis data)) )\n")
+        (printf "             ((= lens-type \"l2norm\")\n")
+        (printf "              (setq lens (mapper-lens-l2norm data)) )\n")
+        (printf "             ((= lens-type \"column\")\n")
+        (printf "              (let ((ci (if (and col-sel (> (len col-sel) 0)) (val col-sel) 0)))\n")
+        (printf "                (setq lens (mapper-lens-column data ci)) ) )\n")
+        (printf "             (t\n")
+        (printf "              (setq lens (mapper-lens-linf-centrality data metric)) ) )\n")
+        (printf "            (let ((graph (mapper-run data lens n-cubes overlap\n")
+        (printf "                                     'metric metric\n")
+        (printf "                                     'clusterer clusterer\n")
+        (printf "                                     'eps eps\n")
+        (printf "                                     'min-pts min-pts\n")
+        (printf "                                     'min-intersection min-intersection)))\n")
+        (printf "              (let ((color-col (if (and col-sel (> (len col-sel) 0)) (val col-sel) 0)))\n")
+        (printf "                (when (and (> (idx-dim data 1) color-col) (>= color-col 0))\n")
+        (printf "                  (==> graph color-by-mean data color-col) ) )\n")
+        (printf "              ;; Store graph (also marks run as completed)\n")
+        (printf "              (mapper-db-store-graph db %d graph data)\n" run-id)
+        (printf "              (printf \"Worker %d completed successfully.\\n\") ) ) ) ) ) ) )\n" run-id)
+        (printf "  (mapper-db-close db) )\n")
+        (printf "(exit 0)\n") )
+    worker-path ) )
+
+;; POST /api/run -- start a mapper run in the background
+(de _viz-api-start-run (req)
+  (let ((body (alist-get "body" req)))
+    (if (and body (> (len body) 0))
+      (let ((form (_viz-parse-form body)))
+        (let ((dataset-id (val (or (cdr (assoc "dataset_id" form)) "0")))
+              (name (or (cdr (assoc "name" form)) "mapper run"))
+              (n-cubes (val (or (cdr (assoc "n_cubes" form)) "10")))
+              (overlap (val (or (cdr (assoc "overlap" form)) "0.5")))
+              (metric (or (cdr (assoc "metric" form)) "euclidean"))
+              (clusterer (or (cdr (assoc "clusterer" form)) "slink"))
+              (eps (val (or (cdr (assoc "eps" form)) "0.5")))
+              (min-pts (val (or (cdr (assoc "min_pts" form)) "3")))
+              (min-intersection (val (or (cdr (assoc "min_intersection" form)) "1")))
+              (lens-type (or (cdr (assoc "lens_type" form)) "l_inf_centrality"))
+              (color-col (or (cdr (assoc "color_col" form)) "0")) )
+          ;; Validate dataset exists
+          (let ((ds-info (mapper-db-get-dataset-info *viz-db* dataset-id)))
+            (if (not ds-info)
+              (list 400 "application/json" "{\"error\":\"dataset not found\"}")
+              ;; Create run record
+              (let ((rid (mapper-db-create-run *viz-db* dataset-id
+                           n-cubes overlap metric clusterer
+                           eps min-pts min-intersection
+                           lens-type "" color-col)))
+                ;; Update name
+                (sqlite-exec *viz-db*
+                  "UPDATE mapper_runs SET name = ? WHERE id = ?" name rid)
+                ;; Generate worker script
+                (let ((worker-path (_viz-generate-worker *viz-db-path* rid))
+                      (log-path (concat "/tmp/claude/mapper-worker-" (sprintf "%d" rid) ".log")) )
+                    ;; Fork worker in background with a shell wrapper:
+                    ;; On success, the Lush script's mapper-db-store-graph marks run completed.
+                    ;; On failure (non-zero exit), the wrapper marks run as failed via sqlite3.
+                    (sys (concat
+                      "( " *viz-lush-bin* " " worker-path " > " log-path " 2>&1"
+                      " || sqlite3 '" *viz-db-path* "'"
+                      " \"UPDATE mapper_runs SET status='failed',"
+                      " error_message='worker process crashed (see log)'"
+                      " WHERE id=" (sprintf "%d" rid) "\" ) &"))
+                    ;; Return run-id
+                    (list 200 "application/json"
+                      (concat "{\"run-id\":" (sprintf "%d" rid) "}") ) ) ) ) ) ) ) )
+      (list 400 "application/json" "{\"error\":\"empty body\"}") ) ) )
+
+
+;; ============================================================
 ;; Static file handler
 ;; ============================================================
 
@@ -288,6 +568,7 @@
   (let ((port (if rest (car rest) 8765)))
     ;; Open the database
     (setq *viz-db* (mapper-db-open db-path))
+    (setq *viz-db-path* db-path)
     (printf "Mapper-viz: database opened: %s\n" db-path)(flush)
 
     (printf "Mapper-viz: serving static files from %s\n" *viz-root*)(flush)
@@ -298,10 +579,14 @@
       ;; API routes
       (httpd-add-route server "GET" "/api/graphs" (lambda (req) (_viz-api-graphs req)))
       (httpd-add-route server "GET" "/api/graph/([0-9]+)" (lambda (req) (_viz-api-graph req)))
+      (httpd-add-route server "GET" "/api/datasets" (lambda (req) (_viz-api-datasets req)))
       (httpd-add-route server "GET" "/api/dataset/([0-9]+)" (lambda (req) (_viz-api-dataset req)))
       (httpd-add-route server "GET" "/api/dataset/([0-9]+)/columns" (lambda (req) (_viz-api-dataset-cols req)))
+      (httpd-add-route server "GET" "/api/runs" (lambda (req) (_viz-api-runs req)))
       (httpd-add-route server "GET" "/api/run/([0-9]+)" (lambda (req) (_viz-api-run req)))
       (httpd-add-route server "GET" "/api/labels/([0-9]+)" (lambda (req) (_viz-api-get-labels req)))
+      (httpd-add-route server "POST" "/api/dataset" (lambda (req) (_viz-api-upload-dataset req)))
+      (httpd-add-route server "POST" "/api/run" (lambda (req) (_viz-api-start-run req)))
       (httpd-add-route server "POST" "/api/label" (lambda (req) (_viz-api-save-label req)))
 
       ;; Static file routes (catch-all for /, *.html, *.js, *.css, etc.)
@@ -326,16 +611,21 @@
   (let ((port (if rest (car rest) 8765)))
     ;; Open the database
     (setq *viz-db* (mapper-db-open db-path))
+    (setq *viz-db-path* db-path)
 
     ;; Create the HTTP server
     (let ((server (httpd-new port)))
       ;; API routes
       (httpd-add-route server "GET" "/api/graphs" (lambda (req) (_viz-api-graphs req)))
       (httpd-add-route server "GET" "/api/graph/([0-9]+)" (lambda (req) (_viz-api-graph req)))
+      (httpd-add-route server "GET" "/api/datasets" (lambda (req) (_viz-api-datasets req)))
       (httpd-add-route server "GET" "/api/dataset/([0-9]+)" (lambda (req) (_viz-api-dataset req)))
       (httpd-add-route server "GET" "/api/dataset/([0-9]+)/columns" (lambda (req) (_viz-api-dataset-cols req)))
+      (httpd-add-route server "GET" "/api/runs" (lambda (req) (_viz-api-runs req)))
       (httpd-add-route server "GET" "/api/run/([0-9]+)" (lambda (req) (_viz-api-run req)))
       (httpd-add-route server "GET" "/api/labels/([0-9]+)" (lambda (req) (_viz-api-get-labels req)))
+      (httpd-add-route server "POST" "/api/dataset" (lambda (req) (_viz-api-upload-dataset req)))
+      (httpd-add-route server "POST" "/api/run" (lambda (req) (_viz-api-start-run req)))
       (httpd-add-route server "POST" "/api/label" (lambda (req) (_viz-api-save-label req)))
       ;; Static file routes
       (httpd-add-route server "GET" "/(.*)" (lambda (req) (_viz-static-handler req)))

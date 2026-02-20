@@ -411,6 +411,103 @@
               (cons "col-names" (nth 5 row)) ) ) ) ) )
 
 
+#? (mapper-db-load-dataset <db> <dataset-id>)
+;; Reconstruct a data matrix from the database.
+;; Returns a list (data col-names) where data is an NxD double-matrix
+;; and col-names is a list of D column name strings.
+;; Returns () if the dataset is not found.
+(de mapper-db-load-dataset (db dataset-id)
+  (let ((info (mapper-db-get-dataset-info db dataset-id)))
+    (when info
+      (let ((nr (cdr (assoc "n-rows" info)))
+            (nc (cdr (assoc "n-cols" info)))
+            (col-json (cdr (assoc "col-names" info))) )
+        (let ((data (double-matrix nr nc)))
+          ;; Fill matrix from all values
+          (let ((rows (sqlite-query db
+            "SELECT row_idx, col_idx, value FROM dataset_values WHERE dataset_id = ? ORDER BY row_idx, col_idx"
+            dataset-id)))
+            (each ((row rows))
+              (let ((ri (nth 0 row))
+                    (ci (nth 1 row))
+                    (v  (nth 2 row)) )
+                (data ri ci v) ) ) )
+          ;; Parse col-names from JSON string
+          ;; col-json is like ["x","y","z"] — simple parse
+          (let ((col-names (_mapper-db-parse-json-string-list col-json)))
+            (list data col-names) ) ) ) ) ) )
+
+
+;; internal: parse a JSON array of strings, e.g. ["a","b","c"] -> ("a" "b" "c")
+(de _mapper-db-parse-json-string-list (s)
+  (let ((result ()) (i 0) (n (len s)))
+    ;; Skip leading [
+    (setq i 1)
+    (while (< i n)
+      (let ((ch (mid s (1+ i) 1)))
+        (cond
+         ;; Opening quote — read string
+         ((= ch "\"")
+          (setq i (1+ i))
+          (let ((str "") (done ()))
+            (while (and (< i n) (not done))
+              (let ((c (mid s (1+ i) 1)))
+                (cond
+                 ((= c "\\")
+                  (setq i (1+ i))
+                  (when (< i n)
+                    (setq str (concat str (mid s (1+ i) 1)))
+                    (setq i (1+ i)) ) )
+                 ((= c "\"")
+                  (setq done t)
+                  (setq i (1+ i)) )
+                 (t
+                  (setq str (concat str c))
+                  (setq i (1+ i)) ) ) ) )
+            (setq result (nconc1 result str)) ) )
+         ;; Skip commas, spaces, closing bracket
+         (t (setq i (1+ i))) ) ) )
+    result ) )
+
+
+#? (mapper-db-list-runs <db>)
+;; Return a list of all mapper runs.
+;; Each entry is an alist with keys: "id", "dataset-id", "name",
+;; "status", "n-cubes", "overlap", "lens-type", "created-at".
+(de mapper-db-list-runs (db)
+  (let ((rows (sqlite-query db "SELECT id, dataset_id, name, status, n_cubes, overlap, lens_type, created_at FROM mapper_runs ORDER BY id DESC")))
+    (let ((result ()))
+      (each ((row rows))
+        (setq result
+          (nconc1 result
+            (list (cons "id" (nth 0 row))
+                  (cons "dataset-id" (nth 1 row))
+                  (cons "name" (nth 2 row))
+                  (cons "status" (nth 3 row))
+                  (cons "n-cubes" (nth 4 row))
+                  (cons "overlap" (nth 5 row))
+                  (cons "lens-type" (nth 6 row))
+                  (cons "created-at" (nth 7 row)) ) ) ) )
+      result ) ) )
+
+
+#? (mapper-db-list-datasets <db>)
+;; Return a list of all datasets.
+;; Each entry is an alist with keys: "id", "name", "n-rows", "n-cols", "created-at".
+(de mapper-db-list-datasets (db)
+  (let ((rows (sqlite-query db "SELECT id, name, n_rows, n_cols, created_at FROM datasets ORDER BY id DESC")))
+    (let ((result ()))
+      (each ((row rows))
+        (setq result
+          (nconc1 result
+            (list (cons "id" (nth 0 row))
+                  (cons "name" (nth 1 row))
+                  (cons "n-rows" (nth 2 row))
+                  (cons "n-cols" (nth 3 row))
+                  (cons "created-at" (nth 4 row)) ) ) ) )
+      result ) ) )
+
+
 #? (mapper-db-get-column-data <db> <dataset-id> <col-indices>)
 ;; Return column data for specified columns.
 ;; <col-indices> is a list of column index integers.
@@ -432,7 +529,7 @@
 #? (mapper-db-get-run-info <db> <run-id>)
 ;; Return mapper run info as an alist.
 (de mapper-db-get-run-info (db run-id)
-  (let ((rows (sqlite-query db "SELECT id, dataset_id, name, n_cubes, overlap, metric, clusterer, eps, min_pts, min_intersection, lens_type, status, error_message, created_at, completed_at FROM mapper_runs WHERE id = ?" run-id)))
+  (let ((rows (sqlite-query db "SELECT id, dataset_id, name, n_cubes, overlap, metric, clusterer, eps, min_pts, min_intersection, lens_type, status, error_message, created_at, completed_at, column_selection FROM mapper_runs WHERE id = ?" run-id)))
     (when rows
       (let ((r (car rows)))
         (list (cons "id" (nth 0 r))
@@ -449,7 +546,8 @@
               (cons "status" (nth 11 r))
               (cons "error-message" (nth 12 r))
               (cons "created-at" (nth 13 r))
-              (cons "completed-at" (nth 14 r)) ) ) ) ) )
+              (cons "completed-at" (nth 14 r))
+              (cons "column-selection" (nth 15 r)) ) ) ) ) )
 
 
 #? (mapper-db-set-display <db> <graph-id> <active>)
