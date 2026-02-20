@@ -1,0 +1,470 @@
+;;; stats.lsh -- Statistical test functions for Mapper
+;;;
+;;; Two-sample statistical tests and FDR correction for differential
+;;; analysis between groups of data points.
+;;;
+;;; Math helpers and basic statistics are compiled for performance.
+;;; Test functions are interpreted (return lists).
+;;;
+;;; Usage:
+;;;   (libload "mapper/stats")
+;;;   (let* ((result (mapper-welch-ttest sample-a sample-b))
+;;;          (tstat (nth 0 result))
+;;;          (df    (nth 1 result))
+;;;          (pval  (nth 2 result)) )
+;;;     (printf "t=%.4f  df=%.1f  p=%.6f\n" tstat df pval) )
+
+;; ============================================================
+;; Internal helpers (compiled)
+;; ============================================================
+
+(de mapper--fabs (x)
+  ;; Absolute value for doubles (compiled-safe).
+  ((-double-) x)
+  (if (>= x 0) x (- 0 x)) )
+
+(de mapper--sort-double (arr)
+  ;; In-place insertion sort of idx1-of-double, ascending.
+  ((-idx1- (-double-)) arr)
+  (let ((n (idx-dim arr 0)))
+    ((-int-) n)
+    (for (i 1 (1- n))
+      ((-int-) i)
+      (let ((key (arr i))
+            (j (1- i))
+            (done 0) )
+        ((-double-) key)
+        ((-int-) j done)
+        (while (and (>= j 0) (= done 0))
+          (if (> (arr j) key)
+            (progn
+              (arr (1+ j) (arr j))
+              (setq j (- j 1)) )
+            (setq done 1) ) )
+        (arr (1+ j) key) ) ) ) )
+
+(de mapper--argsort (arr)
+  ;; Returns int-matrix of indices that sort arr ascending.
+  ;; Does not modify arr.
+  ((-idx1- (-double-)) arr)
+  (let* ((n (idx-dim arr 0))
+         (idx (int-matrix n)) )
+    ((-int-) n)
+    (for (i 0 (1- n))
+      ((-int-) i)
+      (idx i i) )
+    (for (i 1 (1- n))
+      ((-int-) i)
+      (let ((ki (idx i))
+            (kv (arr (idx i)))
+            (j (1- i))
+            (done 0) )
+        ((-int-) ki j done)
+        ((-double-) kv)
+        (while (and (>= j 0) (= done 0))
+          (if (> (arr (idx j)) kv)
+            (progn
+              (idx (1+ j) (idx j))
+              (setq j (- j 1)) )
+            (setq done 1) ) )
+        (idx (1+ j) ki) ) )
+    idx ) )
+
+
+;; ============================================================
+;; Math helpers (compiled)
+;; ============================================================
+
+#? *** Mapper: Statistical Tests
+
+#? (mapper-lgamma <x>)
+;; Log-gamma function via Lanczos approximation (6 coefficients).
+;; Accurate to ~15 digits for x > 0.
+
+(de mapper-lgamma (x)
+  ((-double-) x)
+  (let ((y x)
+        (tmp (+ x 5.5))
+        (ser 1.000000000190015) )
+    ((-double-) y tmp ser)
+    (setq tmp (- tmp (* (+ x 0.5) (log tmp))))
+    (incr y) (incr ser (/ 76.18009172947146 y))
+    (incr y) (incr ser (/ -86.50532032941677 y))
+    (incr y) (incr ser (/ 24.01409824083091 y))
+    (incr y) (incr ser (/ -1.231739572450155 y))
+    (incr y) (incr ser (/ 0.001208650973866179 y))
+    (incr y) (incr ser (/ -0.000005395239384953 y))
+    (+ (- tmp) (log (/ (* 2.5066282746310005 ser) x))) ) )
+
+
+#? (mapper-beta-cf <a> <b> <x>)
+;; Continued fraction for the regularized incomplete beta function,
+;; using the modified Lentz method.  Called by mapper-reg-inc-beta.
+
+(de mapper-beta-cf (a b x)
+  ((-double-) a b x)
+  (let ((qab (+ a b))
+        (qap (+ a 1))
+        (qam (- a 1))
+        (c 1.0)
+        (d 0.0)
+        (h 0.0)
+        (mf 1.0)
+        (done 0) )
+    ((-double-) qab qap qam c d h mf)
+    ((-int-) done)
+    ;; Initialize d
+    (setq d (- 1 (/ (* qab x) qap)))
+    (when (< (mapper--fabs d) 1e-30) (setq d 1e-30))
+    (setq d (/ 1.0 d))
+    (setq h d)
+    (while (and (<= mf 200) (= done 0))
+      (let ((m2 (* 2.0 mf))
+            (aa 0.0)
+            (del 0.0) )
+        ((-double-) m2 aa del)
+        ;; Even step
+        (setq aa (/ (* (* mf (- b mf)) x)
+                    (* (+ qam m2) (+ a m2))))
+        (setq d (+ 1 (* aa d)))
+        (when (< (mapper--fabs d) 1e-30) (setq d 1e-30))
+        (setq c (+ 1 (/ aa c)))
+        (when (< (mapper--fabs c) 1e-30) (setq c 1e-30))
+        (setq d (/ 1.0 d))
+        (setq h (* h (* d c)))
+        ;; Odd step
+        (setq aa (/ (* (* (- 0 (+ a mf)) (+ qab mf)) x)
+                    (* (+ a m2) (+ qap m2))))
+        (setq d (+ 1 (* aa d)))
+        (when (< (mapper--fabs d) 1e-30) (setq d 1e-30))
+        (setq c (+ 1 (/ aa c)))
+        (when (< (mapper--fabs c) 1e-30) (setq c 1e-30))
+        (setq d (/ 1.0 d))
+        (setq del (* d c))
+        (setq h (* h del))
+        (when (< (mapper--fabs (- del 1)) 3e-12)
+          (setq done 1) ) )
+      (setq mf (+ mf 1)) )
+    h ) )
+
+
+#? (mapper-reg-inc-beta <a> <b> <x>)
+;; Regularized incomplete beta function I_x(a, b).
+;; Returns 0 for x<=0, 1 for x>=1.
+
+(de mapper-reg-inc-beta (a b x)
+  ((-double-) a b x)
+  (if (<= x 0) 0.0
+    (if (>= x 1) 1.0
+      (let* ((lbt (+ (- (- (mapper-lgamma (+ a b))
+                           (mapper-lgamma a))
+                        (mapper-lgamma b))
+                     (+ (* a (log x))
+                        (* b (log (- 1.0 x))))))
+             (bt (exp lbt)) )
+        ((-double-) lbt bt)
+        (if (< x (/ (+ a 1) (+ a b 2)))
+          (/ (* bt (mapper-beta-cf a b x)) a)
+          (- 1 (/ (* bt (mapper-beta-cf b a (- 1.0 x))) b)) ) ) ) ) )
+
+
+#? (mapper-t-cdf <tval> <df>)
+;; CDF of Student's t-distribution: P(T <= tval).
+;; Uses the regularized incomplete beta function.
+
+(de mapper-t-cdf (tval df)
+  ((-double-) tval df)
+  (let ((x (/ df (+ df (* tval tval)))))
+    ((-double-) x)
+    (- 1.0 (* 0.5 (mapper-reg-inc-beta (/ df 2.0) 0.5 x))) ) )
+
+
+#? (mapper-normal-cdf <z>)
+;; CDF of the standard normal distribution.
+;; Abramowitz & Stegun approximation 26.2.17.
+
+(de mapper-normal-cdf (z)
+  ((-double-) z)
+  (let* ((sign (if (< z 0) -1.0 1.0))
+         (x (/ (mapper--fabs z) (sqrt 2.0)))
+         (tt (/ 1.0 (+ 1.0 (* 0.3275911 x))))
+         (poly 1.061405429) )
+    ((-double-) sign x tt poly)
+    (setq poly (+ (* poly tt) -1.453152027))
+    (setq poly (+ (* poly tt) 1.421413741))
+    (setq poly (+ (* poly tt) -0.284496736))
+    (setq poly (+ (* poly tt) 0.254829592))
+    (let ((y (- 1.0 (* (* poly tt) (exp (- 0 (* x x)))))))
+      ((-double-) y)
+      (* 0.5 (+ 1.0 (* sign y))) ) ) )
+
+
+#? (mapper-ln-choose <n> <k>)
+;; Log of binomial coefficient C(n, k) via lgamma.
+;; Returns -1e30 (effectively -infinity) for invalid arguments.
+
+(de mapper-ln-choose (n k)
+  ((-double-) n k)
+  (if (or (< k 0) (> k n)) -1e30
+    (- (- (mapper-lgamma (+ n 1))
+          (mapper-lgamma (+ k 1)))
+       (mapper-lgamma (+ (- n k) 1))) ) )
+
+
+;; ============================================================
+;; Basic statistics (compiled)
+;; ============================================================
+
+#? (mapper-stat-mean <arr>)
+;; Mean of an idx1-of-double.
+
+(de mapper-stat-mean (arr)
+  ((-idx1- (-double-)) arr)
+  (let ((n (idx-dim arr 0))
+        (s 0.0) )
+    ((-int-) n)
+    ((-double-) s)
+    (for (i 0 (1- n))
+      ((-int-) i)
+      (incr s (arr i)) )
+    (/ s n) ) )
+
+
+#? (mapper-stat-variance <arr>)
+;; Sample variance of an idx1-of-double (Bessel's correction, n-1).
+;; Returns 0 for arrays with fewer than 2 elements.
+
+(de mapper-stat-variance (arr)
+  ((-idx1- (-double-)) arr)
+  (let ((n (idx-dim arr 0))
+        (s 0.0) )
+    ((-int-) n)
+    ((-double-) s)
+    (for (i 0 (1- n))
+      ((-int-) i)
+      (incr s (arr i)) )
+    (let ((mu (/ s n))
+          (ssq 0.0) )
+      ((-double-) mu ssq)
+      (for (i 0 (1- n))
+        ((-int-) i)
+        (let ((d (- (arr i) mu)))
+          ((-double-) d)
+          (incr ssq (* d d)) ) )
+      (if (< n 2) 0.0 (/ ssq (- n 1))) ) ) )
+
+
+;; ============================================================
+;; Two-sample tests (interpreted -- return lists)
+;; ============================================================
+
+#? (mapper-welch-ttest <x> <y>)
+;; Welch's t-test for two independent samples with unequal variances.
+;; <x> and <y> are idx1-of-double.
+;; Returns (list t-stat df p-value mean-a mean-b diff).
+;; The p-value is two-tailed.
+
+(de mapper-welch-ttest (x y)
+  (let* ((n1 (idx-dim x 0))
+         (n2 (idx-dim y 0))
+         (m1 (mapper-stat-mean x))
+         (m2 (mapper-stat-mean y))
+         (diff (- m1 m2)) )
+    (when (or (< n1 2) (< n2 2))
+      (error "mapper-welch-ttest" "need at least 2 elements per sample" ()) )
+    (let* ((v1 (mapper-stat-variance x))
+           (v2 (mapper-stat-variance y))
+           (s1 (/ v1 n1))
+           (s2 (/ v2 n2))
+           (se (sqrt (+ s1 s2))) )
+      (if (= se 0)
+        (list 0 (- (+ n1 n2) 2) (if (= m1 m2) 1.0 0.0) m1 m2 diff)
+        (let* ((tstat (/ diff se))
+               (num (* (+ s1 s2) (+ s1 s2)))
+               (den (+ (/ (* s1 s1) (- n1 1))
+                       (/ (* s2 s2) (- n2 1))))
+               (df (/ num den))
+               (p (mapper-reg-inc-beta (/ df 2) 0.5
+                    (/ df (+ df (* tstat tstat))))) )
+          (list tstat df p m1 m2 diff) ) ) ) ) )
+
+
+#? (mapper-mann-whitney-u <x> <y>)
+;; Mann-Whitney U test (Wilcoxon rank-sum) for two independent samples.
+;; <x> and <y> are idx1-of-double.
+;; Uses normal approximation (valid for n > 20).
+;; Returns (list U z p-value mean-a mean-b diff).
+;; The p-value is two-tailed.
+
+(de mapper-mann-whitney-u (x y)
+  (let* ((n1 (idx-dim x 0))
+         (n2 (idx-dim y 0))
+         (n (+ n1 n2))
+         (m1 (mapper-stat-mean x))
+         (m2 (mapper-stat-mean y)) )
+    (when (or (< n1 1) (< n2 1))
+      (error "mapper-mann-whitney-u" "need at least 1 element per sample" ()) )
+    ;; Combine into one array with group indicators
+    (let ((vals (double-matrix n))
+          (grp (int-matrix n)) )
+      (for (i 0 (1- n1))
+        (vals i (x i))
+        (grp i 0) )
+      (for (i 0 (1- n2))
+        (vals (+ n1 i) (y i))
+        (grp (+ n1 i) 1) )
+      ;; Argsort by value
+      (let ((order (mapper--argsort vals))
+            (ranks (double-matrix n)) )
+        ;; Assign average ranks (1-indexed)
+        (let ((i 0))
+          (while (< i n)
+            (let ((j i))
+              (while (and (< j n)
+                          (= (vals (order j)) (vals (order i))))
+                (setq j (+ j 1)) )
+              ;; Positions i..j-1 share a rank; average = (i+1+j)/2
+              (let ((avg-rank (/ (+ i 1.0 j) 2.0)))
+                (for (k i (1- j))
+                  (ranks (order k) avg-rank) ) )
+              (setq i j) ) ) )
+        ;; Sum ranks for group 0 (x)
+        (let ((r1 0.0))
+          (for (i 0 (1- n))
+            (when (= (grp i) 0)
+              (setq r1 (+ r1 (ranks i))) ) )
+          ;; U statistic and normal approximation
+          (let* ((u1 (- r1 (/ (* n1 (+ n1 1)) 2.0)))
+                 (mu (/ (* n1 n2) 2.0))
+                 (su (sqrt (/ (* (* n1 n2) (+ n 1)) 12.0))) )
+            (if (= su 0)
+              (list u1 0 1.0 m1 m2 (- m1 m2))
+              (let* ((z (/ (- u1 mu) su))
+                     (az (if (>= z 0) z (- 0 z)))
+                     (p (* 2 (- 1 (mapper-normal-cdf az)))) )
+                (list u1 z p m1 m2 (- m1 m2)) ) ) ) ) ) ) ) )
+
+
+#? (mapper-ks-test <x> <y>)
+;; Two-sample Kolmogorov-Smirnov test.
+;; <x> and <y> are idx1-of-double.
+;; Returns (list D p-value mean-a mean-b diff).
+
+(de mapper-ks-test (x y)
+  (let* ((n1 (idx-dim x 0))
+         (n2 (idx-dim y 0))
+         (m1 (mapper-stat-mean x))
+         (m2 (mapper-stat-mean y)) )
+    (when (or (< n1 1) (< n2 1))
+      (error "mapper-ks-test" "need at least 1 element per sample" ()) )
+    ;; Sort copies
+    (let ((s1 (double-matrix n1))
+          (s2 (double-matrix n2)) )
+      (for (i 0 (1- n1)) (s1 i (x i)))
+      (for (i 0 (1- n2)) (s2 i (y i)))
+      (mapper--sort-double s1)
+      (mapper--sort-double s2)
+      ;; Two-pointer walk to find max |F1 - F2|
+      (let ((i 0) (j 0) (dmax 0.0))
+        (while (or (< i n1) (< j n2))
+          (let ((v1 (if (< i n1) (s1 i) 1e300))
+                (v2 (if (< j n2) (s2 j) 1e300)) )
+            (when (<= v1 v2) (setq i (+ i 1)))
+            (when (<= v2 v1) (setq j (+ j 1)))
+            (let* ((fa (/ (* 1.0 i) n1))
+                   (fb (/ (* 1.0 j) n2))
+                   (diff (if (>= fa fb) (- fa fb) (- fb fa))) )
+              (when (> diff dmax) (setq dmax diff)) ) ) )
+        ;; Asymptotic p-value
+        (let* ((en (sqrt (/ (* n1 n2) (+ n1 n2))))
+               (s (* (+ en 0.12 (/ 0.11 en)) dmax))
+               (p 0.0) )
+          (for (k 1 100)
+            (let ((sign (if (= (mod k 2) 0) -1 1)))
+              (setq p (+ p (* (* 2 sign) (exp (* -2 (* (* k k) (* s s))))))) ) )
+          (when (< p 0) (setq p 0.0))
+          (when (> p 1) (setq p 1.0))
+          (list dmax p m1 m2 (- m1 m2)) ) ) ) ) )
+
+
+#? (mapper-hypergeometric-test <x> <y>)
+;; Hypergeometric (Fisher's exact) test for categorical data.
+;; <x> and <y> are idx1-of-double containing discrete values
+;; (at most 20 unique values).
+;; For each category, tests enrichment P(X >= observed) and
+;; reports the most significant category with Bonferroni correction.
+;; Returns (list p-value best-category).
+
+(de mapper-hypergeometric-test (x y)
+  (let* ((n1 (idx-dim x 0))
+         (n2 (idx-dim y 0))
+         (ntot (+ n1 n2)) )
+    ;; Collect unique values
+    (let ((cats ()))
+      (for (i 0 (1- n1))
+        (let ((v (x i)) (found ()))
+          (each ((c cats)) (when (= c v) (setq found t)))
+          (when (not found) (setq cats (cons v cats))) ) )
+      (for (i 0 (1- n2))
+        (let ((v (y i)) (found ()))
+          (each ((c cats)) (when (= c v) (setq found t)))
+          (when (not found) (setq cats (cons v cats))) ) )
+      (let ((ncat (length cats))
+            (min-p 1.0)
+            (best-cat 0) )
+        (when (and (>= ncat 2) (<= ncat 20))
+          (each ((c cats))
+            ;; Count occurrences in each group
+            (let ((ka 0) (kb 0))
+              (for (i 0 (1- n1))
+                (when (= (x i) c) (setq ka (+ ka 1))) )
+              (for (i 0 (1- n2))
+                (when (= (y i) c) (setq kb (+ kb 1))) )
+              ;; P(X >= ka) via hypergeometric sum
+              (let ((bigk (+ ka kb))
+                    (pval 0.0)
+                    (upper (if (< n1 (+ ka kb)) n1 (+ ka kb))) )
+                (for (xx ka upper)
+                  (let ((lp (- (+ (mapper-ln-choose (* 1.0 bigk) (* 1.0 xx))
+                                  (mapper-ln-choose (* 1.0 (- ntot bigk))
+                                                    (* 1.0 (- n1 xx))))
+                               (mapper-ln-choose (* 1.0 ntot) (* 1.0 n1)))))
+                    (setq pval (+ pval (exp lp))) ) )
+                (when (< pval min-p)
+                  (setq min-p pval)
+                  (setq best-cat c) ) ) ) ) )
+        ;; Bonferroni correction
+        (setq min-p (* min-p ncat))
+        (when (> min-p 1) (setq min-p 1.0))
+        (list min-p best-cat) ) ) ) )
+
+
+;; ============================================================
+;; Multiple testing correction
+;; ============================================================
+
+#? (mapper-benjamini-hochberg <pvalues>)
+;; Benjamini-Hochberg FDR correction.
+;; <pvalues> is an idx1-of-double of raw p-values.
+;; Returns an idx1-of-double of q-values (adjusted p-values)
+;; in the same order as the input.
+
+(de mapper-benjamini-hochberg (pvalues)
+  (let* ((n (idx-dim pvalues 0))
+         (order (mapper--argsort pvalues))
+         (qvalues (double-matrix n)) )
+    ;; Compute q-values in sorted order
+    (for (i 0 (1- n))
+      (let* ((pv (pvalues (order i)))
+             (qi (/ (* pv n) (+ i 1.0))) )
+        (when (> qi 1) (setq qi 1.0))
+        (qvalues (order i) qi) ) )
+    ;; Enforce monotonicity from bottom up (in sorted order)
+    (let ((i (- n 2)))
+      (while (>= i 0)
+        (let ((qi (qvalues (order i)))
+              (qi1 (qvalues (order (+ i 1)))) )
+          (when (> qi qi1)
+            (qvalues (order i) qi1) ) )
+        (setq i (- i 1)) ) )
+    qvalues ) )

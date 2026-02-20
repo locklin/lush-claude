@@ -20,6 +20,7 @@
 (libload "cover")
 (libload "graph")
 (libload "lens")
+(libload "stats")
 (libload "visualize")
 
 #? *** Mapper: Topological Data Analysis

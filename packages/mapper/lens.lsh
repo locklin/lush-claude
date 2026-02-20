@@ -162,7 +162,7 @@
             ((-int-) j)
             (let ((v (- (data i j) mu)))
               ((-double-) v)
-              (incr m4 (* v v v v)) ) )
+              (incr m4 (* (* v v) (* v v))) ) )
           (setq m4 (/ m4 d))
           ;; Excess kurtosis = m4/m2^2 - 3; 0 if constant row
           (if (> m2 0)
