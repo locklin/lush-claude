@@ -69,6 +69,108 @@
     out ) )
 
 
+#? (mapper-lens-mean <data>)
+;; Row-wise mean of all columns as a 1D lens.
+;; out[i] = (1/d) * sum_j data[i,j].
+;; Returns an Nx1 matrix.
+
+(de mapper-lens-mean (data)
+  ((-idx2- (-double-)) data)
+  (let* ((n (idx-dim data 0))
+         (d (idx-dim data 1))
+         (out (double-matrix n 1)) )
+    ((-int-) n d)
+    (for (i 0 (1- n))
+      ((-int-) i)
+      (let ((s 0.0))
+        ((-double-) s)
+        (for (j 0 (1- d))
+          ((-int-) j)
+          (incr s (data i j)) )
+        (out i 0 (/ s d)) ) )
+    out ) )
+
+
+#? (mapper-lens-variance <data>)
+;; Row-wise variance of all columns as a 1D lens.
+;; out[i] = (1/d) * sum_j (data[i,j] - mean_i)^2.
+;; Two-pass: compute mean first, then sum of squared deviations.
+;; Returns an Nx1 matrix.
+
+(de mapper-lens-variance (data)
+  ((-idx2- (-double-)) data)
+  (let* ((n (idx-dim data 0))
+         (d (idx-dim data 1))
+         (out (double-matrix n 1)) )
+    ((-int-) n d)
+    (for (i 0 (1- n))
+      ((-int-) i)
+      ;; Pass 1: mean
+      (let ((s 0.0))
+        ((-double-) s)
+        (for (j 0 (1- d))
+          ((-int-) j)
+          (incr s (data i j)) )
+        (let ((mu (/ s d))
+              (ssq 0.0) )
+          ((-double-) mu ssq)
+          ;; Pass 2: sum of squared deviations
+          (for (j 0 (1- d))
+            ((-int-) j)
+            (let ((v (- (data i j) mu)))
+              ((-double-) v)
+              (incr ssq (* v v)) ) )
+          (out i 0 (/ ssq d)) ) ) )
+    out ) )
+
+
+#? (mapper-lens-kurtosis <data>)
+;; Row-wise excess kurtosis of all columns as a 1D lens.
+;; out[i] = m4 / (m2^2) - 3, where m2 and m4 are the 2nd and 4th
+;; central moments of row i.
+;; Three-pass: mean, then variance (m2), then fourth moment (m4).
+;; Returns 0 for constant rows (variance = 0).
+;; Returns an Nx1 matrix.
+
+(de mapper-lens-kurtosis (data)
+  ((-idx2- (-double-)) data)
+  (let* ((n (idx-dim data 0))
+         (d (idx-dim data 1))
+         (out (double-matrix n 1)) )
+    ((-int-) n d)
+    (for (i 0 (1- n))
+      ((-int-) i)
+      ;; Pass 1: mean
+      (let ((s 0.0))
+        ((-double-) s)
+        (for (j 0 (1- d))
+          ((-int-) j)
+          (incr s (data i j)) )
+        (let ((mu (/ s d))
+              (m2 0.0)
+              (m4 0.0) )
+          ((-double-) mu m2 m4)
+          ;; Pass 2: second central moment (variance)
+          (for (j 0 (1- d))
+            ((-int-) j)
+            (let ((v (- (data i j) mu)))
+              ((-double-) v)
+              (incr m2 (* v v)) ) )
+          (setq m2 (/ m2 d))
+          ;; Pass 3: fourth central moment
+          (for (j 0 (1- d))
+            ((-int-) j)
+            (let ((v (- (data i j) mu)))
+              ((-double-) v)
+              (incr m4 (* v v v v)) ) )
+          (setq m4 (/ m4 d))
+          ;; Excess kurtosis = m4/m2^2 - 3; 0 if constant row
+          (if (> m2 0)
+            (out i 0 (- (/ m4 (* m2 m2)) 3))
+            (out i 0 0) ) ) ) )
+    out ) )
+
+
 ;; ============================================================
 ;; Geometry-based lenses
 ;; ============================================================
@@ -97,13 +199,14 @@
 
 
 #? (mapper-lens-eccentricity <data> <metric>)
-;; Mean distance from each point to all other points.
+;; Mean distance from each point to all other points (L1 centrality).
 ;; Uses the distance matrix internally.
 ;; <data> is NxD, <metric> is a metric name string.
 ;; Returns an Nx1 matrix.
 ;;.PP
 ;; This is a global geometry lens: points in the "center" of the
 ;; data cloud have low eccentricity; outliers have high eccentricity.
+;; Also known as L1 centrality (mean distance to all other points).
 
 (de mapper-lens-eccentricity (data metric)
   (let* ((n (idx-dim data 0))

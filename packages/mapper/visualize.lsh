@@ -7,11 +7,22 @@
 
 #? *** Mapper: Visualization
 
-#? (==> <MapperGraph> visualize <filename> <title>)
+#? (==> <MapperGraph> visualize <filename> <title> . <kwargs>)
 ;; Write a self-contained HTML file with a D3 v7 force-directed
 ;; graph visualization.
 ;; <filename> is the output path (e.g. "/tmp/mapper.html").
 ;; <title> is a string displayed as the page title.
+;;.PP
+;; Optional keyword arguments:
+;;.IP
+;; 'data -- idx2 double-matrix (full data, all columns).
+;;.IP
+;; 'col-names -- list of strings (all column names).
+;;.PP
+;; When 'data and 'col-names are provided, enables two-group
+;; comparison mode with statistical tests (Welch t, Mann-Whitney U,
+;; Kolmogorov-Smirnov, hypergeometric) and Benjamini-Hochberg FDR.
+;; When absent, generates the standard single-selection visualization.
 ;;.PP
 ;; Features:
 ;;.IP
@@ -23,15 +34,32 @@
 ;;.IP
 ;; Hover tooltip showing node ID, size, and color value.
 ;;.IP
-;; Click to select node and highlight its neighbors.
+;; Two-group selection (A vs B) for differential analysis.
 ;;.IP
-;; Lasso selection for picking subsets.
+;; Statistical comparison of all data columns between groups.
 ;;.IP
-;; Export selected node members to text area.
+;; Click gene row to re-color graph by that variable.
 ;;.PP
 ;; Requires a web browser to view.  D3 v7 is loaded from CDN.
 
-(defmethod MapperGraph visualize (filename title)
+(defmethod MapperGraph visualize (filename title . kwargs)
+  ;; Parse keyword arguments
+  (let ((comp-data ())
+        (comp-col-names ())
+        (has-comp-data ()) )
+    ;; Walk kwargs pairwise: 'key value 'key value ...
+    (let ((kw kwargs))
+      (while kw
+        (let ((key (car kw)))
+          (setq kw (cdr kw))
+          (when kw
+            (let ((val (car kw)))
+              (setq kw (cdr kw))
+              (cond
+                ((= key 'data) (setq comp-data val))
+                ((= key 'col-names) (setq comp-col-names val)) ) ) ) ) ) )
+    (when (and comp-data comp-col-names)
+      (setq has-comp-data t) )
   (let ((nn (==> this num-nodes))
         (ne (==> this num-edges)) )
     (writing filename
@@ -52,19 +80,79 @@
       (printf ".link { stroke: #556; stroke-opacity: 0.6; }\n")
       (printf ".node { stroke: #fff; stroke-width: 1px; cursor: pointer; }\n")
       (printf ".node.selected { stroke: #ff0; stroke-width: 3px; }\n")
+      (printf ".node.groupA { stroke: #ff4444; stroke-width: 3px; }\n")
+      (printf ".node.groupB { stroke: #4488ff; stroke-width: 3px; }\n")
+      (printf ".mode-btn { border: 2px solid transparent; cursor: pointer; }\n")
+      (printf ".mode-btn.active { border-color: #fff; }\n")
+      (printf "#results-panel { position: absolute; top: 10px; right: 10px; z-index: 10;\n")
+      (printf "  width: 500px; max-height: 90vh; overflow-y: auto;\n")
+      (printf "  background: rgba(0,0,0,0.85); padding: 12px; border-radius: 6px;\n")
+      (printf "  display: none; font-size: 12px; }\n")
+      (printf "#results-panel table { width: 100%%; border-collapse: collapse; }\n")
+      (printf "#results-panel th, #results-panel td { padding: 2px 5px; text-align: right;\n")
+      (printf "  border-bottom: 1px solid #333; font-size: 11px; }\n")
+      (printf "#results-panel td:first-child { text-align: left; max-width: 120px;\n")
+      (printf "  overflow: hidden; text-overflow: ellipsis; }\n")
+      (printf ".sig-high { color: #ff4444; font-weight: bold; }\n")
+      (printf ".sig-med  { color: #ffaa44; }\n")
+      (printf ".sig-low  { color: #888; }\n")
+      (printf ".row-selected { background: #333; }\n")
       (printf ".tooltip { position: absolute; background: rgba(0,0,0,0.8);\n")
       (printf "  color: #fff; padding: 6px; border-radius: 4px; font-size: 12px;\n")
       (printf "  pointer-events: none; }\n")
       (printf "</style></head><body>\n")
-      (printf "<div id=\"controls\">\n")
-      (printf "  <button onclick=\"resetSelection()\">Clear Selection</button>\n")
-      (printf "  <button onclick=\"showMembers()\">Show Members</button>\n")
-      (printf "  <span id=\"sel-info\"></span>\n")
-      (printf "</div>\n")
+
+      ;; Controls HTML -- conditional on has-comp-data
+      (if has-comp-data
+        (progn
+          (printf "<div id=\"controls\">\n")
+          (printf "  <button class=\"mode-btn active\" id=\"btn-groupA\" style=\"background:#ff4444;color:#fff\" onclick=\"setActiveGroup('A')\">Group A</button>\n")
+          (printf "  <button class=\"mode-btn\" id=\"btn-groupB\" style=\"background:#4488ff;color:#fff\" onclick=\"setActiveGroup('B')\">Group B</button>\n")
+          (printf "  <button onclick=\"resetSelection()\">Clear All</button>\n")
+          (printf "  <button onclick=\"compareGroups()\">Compare</button>\n")
+          (printf "  <button onclick=\"compareVsRest()\">vs Rest</button>\n")
+          (printf "  <button onclick=\"showMembers()\">Members</button>\n")
+          (printf "  <span id=\"sel-info\"></span>\n")
+          (printf "</div>\n") )
+        ;; else: simple controls (backward-compatible)
+        (progn
+          (printf "<div id=\"controls\">\n")
+          (printf "  <button onclick=\"resetSelection()\">Clear Selection</button>\n")
+          (printf "  <button onclick=\"showMembers()\">Show Members</button>\n")
+          (printf "  <span id=\"sel-info\"></span>\n")
+          (printf "</div>\n") ) )
+
       (printf "<div id=\"info\">%s &mdash; %d nodes, %d edges</div>\n"
                title nn ne)
       (printf "<textarea id=\"members\" readonly></textarea>\n")
       (printf "<div class=\"tooltip\" id=\"tooltip\"></div>\n")
+
+      ;; Results panel (only when comparison enabled)
+      (when has-comp-data
+        (printf "<div id=\"results-panel\">\n")
+        (printf "  <div style=\"display:flex;justify-content:space-between;align-items:center;margin-bottom:8px\">\n")
+        (printf "    <strong>Group Comparison</strong>\n")
+        (printf "    <span style=\"cursor:pointer;font-size:18px\" onclick=\"closeResults()\">&times;</span>\n")
+        (printf "  </div>\n")
+        (printf "  <div id=\"results-summary\" style=\"margin-bottom:8px;font-size:11px;color:#aaa\"></div>\n")
+        (printf "  <div style=\"margin-bottom:8px\">\n")
+        (printf "    <label>Test: </label>\n")
+        (printf "    <select id=\"test-select\" onchange=\"rerunTest()\">\n")
+        (printf "      <option value=\"welch\">Welch t-test</option>\n")
+        (printf "      <option value=\"mannwhitney\">Mann-Whitney U</option>\n")
+        (printf "      <option value=\"ks\">Kolmogorov-Smirnov</option>\n")
+        (printf "      <option value=\"hypergeometric\">Hypergeometric</option>\n")
+        (printf "    </select>\n")
+        (printf "    <label style=\"margin-left:8px\">Sort: </label>\n")
+        (printf "    <select id=\"sort-select\" onchange=\"resortResults()\">\n")
+        (printf "      <option value=\"pvalue\">p-value</option>\n")
+        (printf "      <option value=\"effect\">effect size</option>\n")
+        (printf "      <option value=\"name\">name</option>\n")
+        (printf "    </select>\n")
+        (printf "  </div>\n")
+        (printf "  <div id=\"results-table\"></div>\n")
+        (printf "</div>\n") )
+
       (printf "<svg></svg>\n")
 
       ;; Embed graph data as JSON
@@ -72,7 +160,15 @@
       (==> this write-json)
       (printf ";\n")
 
-      ;; D3 visualization code
+      ;; Embed comparison data (or null)
+      (if has-comp-data
+        (progn
+          (printf "const compData = ")
+          (==> this write-data-json comp-data comp-col-names)
+          (printf ";\n") )
+        (printf "const compData = null;\n") )
+
+      ;; D3 visualization code (shared for both modes)
       (printf "const width = window.innerWidth, height = window.innerHeight;\n")
       (printf "const svg = d3.select('svg').attr('width', width).attr('height', height);\n")
       (printf "const g = svg.append('g');\n")
@@ -98,36 +194,368 @@
       (printf "    .on('drag', (e,d) => { d.fx=e.x; d.fy=e.y; })\n")
       (printf "    .on('end', (e,d) => { if(!e.active) sim.alphaTarget(0); d.fx=null; d.fy=null; }));\n")
       (printf "const tooltip = d3.select('#tooltip');\n")
+      (printf "let currentColorLabel = 'color';\n")
       (printf "node.on('mouseover', (e, d) => {\n")
       (printf "  tooltip.style('display', 'block')\n")
-      (printf "    .html('Node '+d.id+'<br>Size: '+d.size+'<br>Color: '+d.color.toFixed(4))\n")
+      (printf "    .html('Node '+d.id+'<br>Size: '+d.size+'<br>'+currentColorLabel+': '+(d.currentColor!=null?d.currentColor:d.color).toFixed(4))\n")
       (printf "    .style('left', (e.pageX+10)+'px').style('top', (e.pageY-10)+'px');\n")
       (printf "}).on('mouseout', () => tooltip.style('display', 'none'));\n")
-      (printf "let selected = new Set();\n")
-      (printf "node.on('click', (e, d) => {\n")
-      (printf "  if (e.shiftKey) { selected.has(d.id) ? selected.delete(d.id) : selected.add(d.id); }\n")
-      (printf "  else { selected.clear(); selected.add(d.id); }\n")
-      (printf "  updateSelection();\n")
-      (printf "});\n")
-      (printf "function updateSelection() {\n")
-      (printf "  node.classed('selected', d => selected.has(d.id));\n")
-      (printf "  d3.select('#sel-info').text(selected.size > 0 ? selected.size + ' selected' : '');\n")
-      (printf "}\n")
-      (printf "function resetSelection() { selected.clear(); updateSelection(); d3.select('#members').style('display','none'); }\n")
-      (printf "function showMembers() {\n")
-      (printf "  let allm = [];\n")
-      (printf "  graphData.nodes.forEach(n => { if(selected.has(n.id)) allm.push(...n.members); });\n")
-      (printf "  allm = [...new Set(allm)].sort((a,b)=>a-b);\n")
-      (printf "  const ta = d3.select('#members').style('display','block');\n")
-      (printf "  ta.text(allm.join('\\n'));\n")
-      (printf "}\n")
+
+      ;; Selection model -- branch on comparison mode
+      (if has-comp-data
+        (progn
+          ;; Two-group selection model
+          (printf "let groupA = new Set(), groupB = new Set();\n")
+          (printf "let activeGroup = 'A';\n")
+          (printf "function setActiveGroup(g) {\n")
+          (printf "  activeGroup = g;\n")
+          (printf "  document.getElementById('btn-groupA').classList.toggle('active', g==='A');\n")
+          (printf "  document.getElementById('btn-groupB').classList.toggle('active', g==='B');\n")
+          (printf "}\n")
+          (printf "node.on('click', (e, d) => {\n")
+          (printf "  const grp = activeGroup === 'A' ? groupA : groupB;\n")
+          (printf "  const other = activeGroup === 'A' ? groupB : groupA;\n")
+          (printf "  if (e.shiftKey) { grp.has(d.id) ? grp.delete(d.id) : grp.add(d.id); }\n")
+          (printf "  else { grp.clear(); grp.add(d.id); }\n")
+          (printf "  other.delete(d.id);\n")
+          (printf "  updateSelection();\n")
+          (printf "});\n")
+          (printf "function updateSelection() {\n")
+          (printf "  node.classed('groupA', d => groupA.has(d.id));\n")
+          (printf "  node.classed('groupB', d => groupB.has(d.id));\n")
+          (printf "  d3.select('#sel-info').text('A: '+groupA.size+' nodes | B: '+groupB.size+' nodes');\n")
+          (printf "}\n")
+          (printf "function resetSelection() {\n")
+          (printf "  groupA.clear(); groupB.clear(); updateSelection();\n")
+          (printf "  d3.select('#members').style('display','none');\n")
+          (printf "  closeResults();\n")
+          (printf "}\n")
+          (printf "function showMembers() {\n")
+          (printf "  let allA = [], allB = [];\n")
+          (printf "  graphData.nodes.forEach(n => { if(groupA.has(n.id)) allA.push(...n.members); if(groupB.has(n.id)) allB.push(...n.members); });\n")
+          (printf "  allA = [...new Set(allA)].sort((a,b)=>a-b);\n")
+          (printf "  allB = [...new Set(allB)].sort((a,b)=>a-b);\n")
+          (printf "  const ta = d3.select('#members').style('display','block');\n")
+          (printf "  ta.text('Group A: '+allA.join(', ')+'\\n\\nGroup B: '+allB.join(', '));\n")
+          (printf "}\n")
+          (printf "function closeResults() { d3.select('#results-panel').style('display','none'); }\n")
+
+          ;; ======================================
+          ;; Statistical test implementations
+          ;; ======================================
+
+          ;; Math helpers
+          (printf "function lgamma(x) {\n")
+          (printf "  const c = [76.18009172947146,-86.50532032941677,24.01409824083091,\n")
+          (printf "    -1.231739572450155,0.1208650973866179e-2,-0.5395239384953e-5];\n")
+          (printf "  let y = x, tmp = x + 5.5; tmp -= (x+0.5)*Math.log(tmp);\n")
+          (printf "  let ser = 1.000000000190015;\n")
+          (printf "  for(let j=0;j<6;j++) ser += c[j]/++y;\n")
+          (printf "  return -tmp + Math.log(2.5066282746310005*ser/x);\n")
+          (printf "}\n")
+
+          (printf "function betaCF(a, b, x) {\n")
+          (printf "  const maxIter=200, eps=3e-12;\n")
+          (printf "  const qab=a+b, qap=a+1, qam=a-1;\n")
+          (printf "  let c=1, d=1-qab*x/qap; if(Math.abs(d)<1e-30) d=1e-30; d=1/d;\n")
+          (printf "  let h=d;\n")
+          (printf "  for(let m=1;m<=maxIter;m++) {\n")
+          (printf "    let m2=2*m;\n")
+          (printf "    let aa=m*(b-m)*x/((qam+m2)*(a+m2));\n")
+          (printf "    d=1+aa*d; if(Math.abs(d)<1e-30) d=1e-30; c=1+aa/c; if(Math.abs(c)<1e-30) c=1e-30;\n")
+          (printf "    d=1/d; h*=d*c;\n")
+          (printf "    aa=-(a+m)*(qab+m)*x/((a+m2)*(qap+m2));\n")
+          (printf "    d=1+aa*d; if(Math.abs(d)<1e-30) d=1e-30; c=1+aa/c; if(Math.abs(c)<1e-30) c=1e-30;\n")
+          (printf "    d=1/d; let del=d*c; h*=del;\n")
+          (printf "    if(Math.abs(del-1)<eps) break;\n")
+          (printf "  }\n")
+          (printf "  return h;\n")
+          (printf "}\n")
+
+          (printf "function regIncBeta(a, b, x) {\n")
+          (printf "  if(x<=0) return 0; if(x>=1) return 1;\n")
+          (printf "  const bt = Math.exp(lgamma(a+b)-lgamma(a)-lgamma(b)+a*Math.log(x)+b*Math.log(1-x));\n")
+          (printf "  if(x < (a+1)/(a+b+2)) return bt*betaCF(a,b,x)/a;\n")
+          (printf "  return 1 - bt*betaCF(b,a,1-x)/b;\n")
+          (printf "}\n")
+
+          (printf "function tCDF(t, df) {\n")
+          (printf "  const x = df/(df+t*t);\n")
+          (printf "  return 1 - 0.5*regIncBeta(df/2, 0.5, x);\n")
+          (printf "}\n")
+
+          (printf "function normalCDF(z) {\n")
+          (printf "  const a1=0.254829592,a2=-0.284496736,a3=1.421413741,a4=-1.453152027,a5=1.061405429,p=0.3275911;\n")
+          (printf "  const sign = z<0 ? -1 : 1, x = Math.abs(z)/Math.sqrt(2);\n")
+          (printf "  const t=1/(1+p*x), y=1-((((a5*t+a4)*t+a3)*t+a2)*t+a1)*t*Math.exp(-x*x);\n")
+          (printf "  return 0.5*(1+sign*y);\n")
+          (printf "}\n")
+
+          (printf "function lnChoose(n, k) {\n")
+          (printf "  if(k<0||k>n) return -Infinity;\n")
+          (printf "  return lgamma(n+1)-lgamma(k+1)-lgamma(n-k+1);\n")
+          (printf "}\n")
+
+          (printf "function mean(arr) { let s=0; for(let i=0;i<arr.length;i++) s+=arr[i]; return s/arr.length; }\n")
+          (printf "function variance(arr) { const m=mean(arr); let s=0; for(let i=0;i<arr.length;i++) { const d=arr[i]-m; s+=d*d; } return s/(arr.length-1); }\n")
+
+          ;; Welch's t-test
+          (printf "function welchTTest(xArr, yArr) {\n")
+          (printf "  const n1=xArr.length, n2=yArr.length;\n")
+          (printf "  if(n1<2||n2<2) return {t:0,df:1,p:1,meanA:mean(xArr),meanB:mean(yArr),diff:0};\n")
+          (printf "  const m1=mean(xArr), m2=mean(yArr), v1=variance(xArr), v2=variance(yArr);\n")
+          (printf "  const se=Math.sqrt(v1/n1+v2/n2);\n")
+          (printf "  if(se===0) return {t:0,df:n1+n2-2,p:m1===m2?1:0,meanA:m1,meanB:m2,diff:m1-m2};\n")
+          (printf "  const t=(m1-m2)/se;\n")
+          (printf "  const num=(v1/n1+v2/n2)**2;\n")
+          (printf "  const den=(v1/n1)**2/(n1-1)+(v2/n2)**2/(n2-1);\n")
+          (printf "  const df=num/den;\n")
+          (printf "  const p=2*(1-tCDF(Math.abs(t),df));\n")
+          (printf "  return {t,df,p,meanA:m1,meanB:m2,diff:m1-m2};\n")
+          (printf "}\n")
+
+          ;; Mann-Whitney U
+          (printf "function mannWhitneyU(xArr, yArr) {\n")
+          (printf "  const n1=xArr.length, n2=yArr.length;\n")
+          (printf "  if(n1<1||n2<1) return {U:0,z:0,p:1,meanA:mean(xArr||[0]),meanB:mean(yArr||[0]),diff:0};\n")
+          (printf "  const all=[];\n")
+          (printf "  for(let i=0;i<n1;i++) all.push({v:xArr[i],g:0});\n")
+          (printf "  for(let i=0;i<n2;i++) all.push({v:yArr[i],g:1});\n")
+          (printf "  all.sort((a,b)=>a.v-b.v);\n")
+          (printf "  // Assign average ranks with tie correction\n")
+          (printf "  const ranks=new Array(all.length);\n")
+          (printf "  let i=0;\n")
+          (printf "  while(i<all.length) {\n")
+          (printf "    let j=i; while(j<all.length&&all[j].v===all[i].v) j++;\n")
+          (printf "    const avgRank=(i+1+j)/2;\n")
+          (printf "    for(let k=i;k<j;k++) ranks[k]=avgRank;\n")
+          (printf "    i=j;\n")
+          (printf "  }\n")
+          (printf "  let R1=0; for(let i=0;i<all.length;i++) if(all[i].g===0) R1+=ranks[i];\n")
+          (printf "  const U1=R1-n1*(n1+1)/2;\n")
+          (printf "  const mU=n1*n2/2;\n")
+          (printf "  const sU=Math.sqrt(n1*n2*(n1+n2+1)/12);\n")
+          (printf "  if(sU===0) return {U:U1,z:0,p:1,meanA:mean(xArr),meanB:mean(yArr),diff:mean(xArr)-mean(yArr)};\n")
+          (printf "  const z=(U1-mU)/sU;\n")
+          (printf "  const p=2*(1-normalCDF(Math.abs(z)));\n")
+          (printf "  return {U:U1,z,p,meanA:mean(xArr),meanB:mean(yArr),diff:mean(xArr)-mean(yArr)};\n")
+          (printf "}\n")
+
+          ;; Kolmogorov-Smirnov
+          (printf "function ksTest(xArr, yArr) {\n")
+          (printf "  const n1=xArr.length, n2=yArr.length;\n")
+          (printf "  if(n1<1||n2<1) return {D:0,p:1,meanA:0,meanB:0,diff:0};\n")
+          (printf "  const s1=[...xArr].sort((a,b)=>a-b), s2=[...yArr].sort((a,b)=>a-b);\n")
+          (printf "  let i=0,j=0,D=0;\n")
+          (printf "  while(i<n1||j<n2) {\n")
+          (printf "    const v1=i<n1?s1[i]:Infinity, v2=j<n2?s2[j]:Infinity;\n")
+          (printf "    if(v1<=v2) i++; if(v2<=v1) j++;\n")
+          (printf "    const diff=Math.abs(i/n1-j/n2);\n")
+          (printf "    if(diff>D) D=diff;\n")
+          (printf "  }\n")
+          (printf "  const en=Math.sqrt(n1*n2/(n1+n2));\n")
+          (printf "  const s=(en+0.12+0.11/en)*D;\n")
+          (printf "  let p=0;\n")
+          (printf "  for(let k=1;k<=100;k++) { p+=2*((k%%2===1?1:-1))*Math.exp(-2*k*k*s*s); }\n")
+          (printf "  p=Math.min(1,Math.max(0,p));\n")
+          (printf "  return {D,p,meanA:mean(xArr),meanB:mean(yArr),diff:mean(xArr)-mean(yArr)};\n")
+          (printf "}\n")
+
+          ;; Hypergeometric test
+          (printf "function hypergeometricTest(xArr, yArr) {\n")
+          (printf "  // Count category frequencies\n")
+          (printf "  const allVals=[...xArr,...yArr];\n")
+          (printf "  const cats=[...new Set(allVals)];\n")
+          (printf "  if(cats.length>20||cats.length<2) return {category:'',p:1,freqA:{},freqB:{}};\n")
+          (printf "  const N=allVals.length, nA=xArr.length, nB=yArr.length;\n")
+          (printf "  let minP=1, bestCat='';\n")
+          (printf "  const freqA={}, freqB={};\n")
+          (printf "  cats.forEach(c => {\n")
+          (printf "    const kA=xArr.filter(v=>v===c).length, kB=yArr.filter(v=>v===c).length;\n")
+          (printf "    freqA[c]=kA; freqB[c]=kB;\n")
+          (printf "    const K=kA+kB; // total with this category\n")
+          (printf "    // P(X >= kA) via hypergeometric sum\n")
+          (printf "    let pVal=0;\n")
+          (printf "    for(let x=kA;x<=Math.min(nA,K);x++) {\n")
+          (printf "      pVal+=Math.exp(lnChoose(K,x)+lnChoose(N-K,nA-x)-lnChoose(N,nA));\n")
+          (printf "    }\n")
+          (printf "    if(pVal<minP) { minP=pVal; bestCat=c; }\n")
+          (printf "  });\n")
+          (printf "  // Bonferroni correction within column\n")
+          (printf "  minP=Math.min(1,minP*cats.length);\n")
+          (printf "  return {category:bestCat,p:minP,freqA,freqB,meanA:0,meanB:0,diff:0};\n")
+          (printf "}\n")
+
+          ;; Benjamini-Hochberg FDR
+          (printf "function benjaminiHochberg(results) {\n")
+          (printf "  const n=results.length;\n")
+          (printf "  const sorted=[...results].sort((a,b)=>a.p-b.p);\n")
+          (printf "  for(let i=0;i<n;i++) sorted[i].q=Math.min(1, sorted[i].p*n/(i+1));\n")
+          (printf "  // Enforce monotonicity from bottom up\n")
+          (printf "  for(let i=n-2;i>=0;i--) sorted[i].q=Math.min(sorted[i].q, sorted[i+1].q);\n")
+          (printf "  return sorted;\n")
+          (printf "}\n")
+
+          ;; Column type detection
+          (printf "function isCategorical(colIdx, memberSet) {\n")
+          (printf "  const vals=new Set();\n")
+          (printf "  memberSet.forEach(m => vals.add(compData.matrix[m][colIdx]));\n")
+          (printf "  return vals.size<=20;\n")
+          (printf "}\n")
+
+          ;; compareGroups orchestrator
+          (printf "let lastResults=[];\n")
+          (printf "function compareGroups() {\n")
+          (printf "  if(groupA.size===0||groupB.size===0) { alert('Select nodes in both Group A and Group B'); return; }\n")
+          (printf "  if(!compData) return;\n")
+          (printf "  // Collect members\n")
+          (printf "  let membersA=new Set(), membersB=new Set();\n")
+          (printf "  graphData.nodes.forEach(n => {\n")
+          (printf "    if(groupA.has(n.id)) n.members.forEach(m => membersA.add(m));\n")
+          (printf "    if(groupB.has(n.id)) n.members.forEach(m => membersB.add(m));\n")
+          (printf "  });\n")
+          (printf "  // Remove overlapping points\n")
+          (printf "  const overlap=new Set([...membersA].filter(m=>membersB.has(m)));\n")
+          (printf "  overlap.forEach(m => { membersA.delete(m); membersB.delete(m); });\n")
+          (printf "  const arrA=[...membersA], arrB=[...membersB];\n")
+          (printf "  if(arrA.length<2||arrB.length<2) { alert('Need at least 2 exclusive members per group'); return; }\n")
+          (printf "  // Summary\n")
+          (printf "  d3.select('#results-summary').html(\n")
+          (printf "    'Group A: '+groupA.size+' nodes ('+arrA.length+' patients) vs '+\n")
+          (printf "    'Group B: '+groupB.size+' nodes ('+arrB.length+' patients)'+\n")
+          (printf "    (overlap.size>0?' &mdash; '+overlap.size+' overlapping patients excluded':''));\n")
+          (printf "  runTests(arrA, arrB);\n")
+          (printf "  d3.select('#results-panel').style('display','block');\n")
+          (printf "  d3.select('#members').style('display','none');\n")
+          (printf "}\n")
+
+          ;; compareVsRest: compare active group against all other nodes
+          (printf "function compareVsRest() {\n")
+          (printf "  const sel = activeGroup==='A' ? groupA : groupB;\n")
+          (printf "  if(sel.size===0) { alert('Select at least one node in the active group'); return; }\n")
+          (printf "  if(!compData) return;\n")
+          (printf "  // Collect members of selected group\n")
+          (printf "  let membersS=new Set(), membersR=new Set();\n")
+          (printf "  graphData.nodes.forEach(n => {\n")
+          (printf "    if(sel.has(n.id)) n.members.forEach(m => membersS.add(m));\n")
+          (printf "    else n.members.forEach(m => membersR.add(m));\n")
+          (printf "  });\n")
+          (printf "  // Remove overlapping points\n")
+          (printf "  const overlap=new Set([...membersS].filter(m=>membersR.has(m)));\n")
+          (printf "  overlap.forEach(m => { membersS.delete(m); membersR.delete(m); });\n")
+          (printf "  const arrS=[...membersS], arrR=[...membersR];\n")
+          (printf "  if(arrS.length<2||arrR.length<2) { alert('Need at least 2 exclusive members per group'); return; }\n")
+          (printf "  d3.select('#results-summary').html(\n")
+          (printf "    'Group '+activeGroup+': '+sel.size+' nodes ('+arrS.length+' patients) vs '+\n")
+          (printf "    'Rest: '+(graphData.nodes.length-sel.size)+' nodes ('+arrR.length+' patients)'+\n")
+          (printf "    (overlap.size>0?' &mdash; '+overlap.size+' overlapping patients excluded':''));\n")
+          (printf "  runTests(arrS, arrR);\n")
+          (printf "  d3.select('#results-panel').style('display','block');\n")
+          (printf "  d3.select('#members').style('display','none');\n")
+          (printf "}\n")
+
+          ;; runTests
+          (printf "function runTests(arrA, arrB) {\n")
+          (printf "  const testType=document.getElementById('test-select').value;\n")
+          (printf "  const results=[];\n")
+          (printf "  for(let c=0;c<compData.nCols;c++) {\n")
+          (printf "    const vA=arrA.map(i=>compData.matrix[i][c]);\n")
+          (printf "    const vB=arrB.map(i=>compData.matrix[i][c]);\n")
+          (printf "    const allMembers=new Set([...arrA,...arrB]);\n")
+          (printf "    const cat=isCategorical(c, allMembers);\n")
+          (printf "    let res;\n")
+          (printf "    if(testType==='hypergeometric') {\n")
+          (printf "      if(!cat) continue;\n")
+          (printf "      res=hypergeometricTest(vA, vB);\n")
+          (printf "    } else {\n")
+          (printf "      if(cat) continue;\n")
+          (printf "      if(testType==='welch') res=welchTTest(vA, vB);\n")
+          (printf "      else if(testType==='mannwhitney') res=mannWhitneyU(vA, vB);\n")
+          (printf "      else if(testType==='ks') res=ksTest(vA, vB);\n")
+          (printf "    }\n")
+          (printf "    res.colIdx=c; res.name=compData.colNames[c];\n")
+          (printf "    results.push(res);\n")
+          (printf "  }\n")
+          (printf "  lastResults=benjaminiHochberg(results);\n")
+          (printf "  window._arrA=arrA; window._arrB=arrB;\n")
+          (printf "  renderResults();\n")
+          (printf "}\n")
+
+          ;; rerunTest / resortResults
+          (printf "function rerunTest() { if(window._arrA) runTests(window._arrA, window._arrB); }\n")
+          (printf "function resortResults() {\n")
+          (printf "  const sortBy=document.getElementById('sort-select').value;\n")
+          (printf "  if(sortBy==='pvalue') lastResults.sort((a,b)=>a.p-b.p);\n")
+          (printf "  else if(sortBy==='effect') lastResults.sort((a,b)=>Math.abs(b.diff)-Math.abs(a.diff));\n")
+          (printf "  else if(sortBy==='name') lastResults.sort((a,b)=>a.name.localeCompare(b.name));\n")
+          (printf "  renderResults();\n")
+          (printf "}\n")
+
+          ;; renderResults
+          (printf "function renderResults() {\n")
+          (printf "  const testType=document.getElementById('test-select').value;\n")
+          (printf "  let statLabel = testType==='welch'?'t':testType==='mannwhitney'?'U':testType==='ks'?'D':'cat';\n")
+          (printf "  let html='<table><tr><th>Column</th><th>Mean A</th><th>Mean B</th><th>Diff</th><th>'+statLabel+'</th><th>p-value</th><th>q-value</th></tr>';\n")
+          (printf "  lastResults.forEach((r,i) => {\n")
+          (printf "    const cls=r.q<0.01?'sig-high':r.q<0.05?'sig-med':'sig-low';\n")
+          (printf "    const stat=r.t!=null?r.t.toFixed(3):r.U!=null?r.U.toFixed(1):r.D!=null?r.D.toFixed(4):(r.category||'');\n")
+          (printf "    html+='<tr class=\"'+cls+'\" style=\"cursor:pointer\" onclick=\"colorByColumn('+r.colIdx+','+i+')\">';\n")
+          (printf "    html+='<td title=\"'+r.name+'\">'+r.name+'</td>';\n")
+          (printf "    html+='<td>'+(r.meanA!=null?r.meanA.toFixed(4):'')+'</td>';\n")
+          (printf "    html+='<td>'+(r.meanB!=null?r.meanB.toFixed(4):'')+'</td>';\n")
+          (printf "    html+='<td>'+(r.diff!=null?r.diff.toFixed(4):'')+'</td>';\n")
+          (printf "    html+='<td>'+stat+'</td>';\n")
+          (printf "    html+='<td>'+r.p.toExponential(2)+'</td>';\n")
+          (printf "    html+='<td>'+r.q.toExponential(2)+'</td></tr>';\n")
+          (printf "  });\n")
+          (printf "  html+='</table>';\n")
+          (printf "  d3.select('#results-table').html(html);\n")
+          (printf "}\n")
+
+          ;; colorByColumn (gene-click re-coloring)
+          (printf "function colorByColumn(colIdx, rowIdx) {\n")
+          (printf "  // Compute mean of column over each node's members\n")
+          (printf "  const nodeVals=graphData.nodes.map(n => {\n")
+          (printf "    let s=0; n.members.forEach(m => s+=compData.matrix[m][colIdx]); return s/n.members.length;\n")
+          (printf "  });\n")
+          (printf "  graphData.nodes.forEach((n,i) => n.currentColor=nodeVals[i]);\n")
+          (printf "  const ext=d3.extent(nodeVals);\n")
+          (printf "  colorScale.domain(ext);\n")
+          (printf "  currentColorLabel=compData.colNames[colIdx];\n")
+          (printf "  node.transition().duration(500).attr('fill', (d,i) => colorScale(nodeVals[i]));\n")
+          (printf "  // Highlight selected row\n")
+          (printf "  d3.selectAll('#results-table tr').classed('row-selected', false);\n")
+          (printf "  d3.selectAll('#results-table tr').filter((d,i)=>i===rowIdx+1).classed('row-selected', true);\n")
+          (printf "}\n") )
+        ;; else: simple selection model (backward-compatible)
+        (progn
+          (printf "let selected = new Set();\n")
+          (printf "node.on('click', (e, d) => {\n")
+          (printf "  if (e.shiftKey) { selected.has(d.id) ? selected.delete(d.id) : selected.add(d.id); }\n")
+          (printf "  else { selected.clear(); selected.add(d.id); }\n")
+          (printf "  updateSelection();\n")
+          (printf "});\n")
+          (printf "function updateSelection() {\n")
+          (printf "  node.classed('selected', d => selected.has(d.id));\n")
+          (printf "  d3.select('#sel-info').text(selected.size > 0 ? selected.size + ' selected' : '');\n")
+          (printf "}\n")
+          (printf "function resetSelection() { selected.clear(); updateSelection(); d3.select('#members').style('display','none'); }\n")
+          (printf "function showMembers() {\n")
+          (printf "  let allm = [];\n")
+          (printf "  graphData.nodes.forEach(n => { if(selected.has(n.id)) allm.push(...n.members); });\n")
+          (printf "  allm = [...new Set(allm)].sort((a,b)=>a-b);\n")
+          (printf "  const ta = d3.select('#members').style('display','block');\n")
+          (printf "  ta.text(allm.join('\\n'));\n")
+          (printf "}\n") ) )
+
+      ;; Tick handler (shared)
       (printf "sim.on('tick', () => {\n")
       (printf "  link.attr('x1',d=>d.source.x).attr('y1',d=>d.source.y)\n")
       (printf "      .attr('x2',d=>d.target.x).attr('y2',d=>d.target.y);\n")
       (printf "  node.attr('cx',d=>d.x).attr('cy',d=>d.y);\n")
       (printf "});\n")
       (printf "</script></body></html>\n") )
-    (printf "Wrote %s\n" filename) ) )
+    (printf "Wrote %s\n" filename) ) ) )
 
 
 ;; ============================================================
@@ -164,3 +592,37 @@
         (printf "{\"source\":%d,\"target\":%d,\"weight\":%d}"
                  (edges i 0) (edges i 1) (edge-weights i)) ) )
     (printf "],\"metadata\":{\"n_nodes\":%d,\"n_edges\":%d}}" nn ne) ) )
+
+
+#? (==> <MapperGraph> write-data-json <data> <col-names>)
+;; Write a data matrix and column names as JSON to the current output.
+;; <data> is an NxD double-matrix.
+;; <col-names> is a list of D strings (column names).
+;; Format: {"nRows":N,"nCols":D,"colNames":[...],"matrix":[[...], ...]}
+;; Uses %.6g for compact float representation.
+
+(defmethod MapperGraph write-data-json (data col-names)
+  ((-idx2- (-double-)) data)
+  (let ((nr (idx-dim data 0))
+        (nc (idx-dim data 1)) )
+    ((-int-) nr nc)
+    (printf "{\"nRows\":%d,\"nCols\":%d,\"colNames\":[" nr nc)
+    ;; Column names (escape " and \)
+    (let ((ci 0))
+      ((-int-) ci)
+      (each ((name col-names))
+        (when (> ci 0) (printf ","))
+        (printf "%l" name)
+        (incr ci) ) )
+    (printf "],\"matrix\":[")
+    ;; Data rows
+    (for (i 0 (1- nr))
+      ((-int-) i)
+      (when (> i 0) (printf ","))
+      (printf "[")
+      (for (j 0 (1- nc))
+        ((-int-) j)
+        (when (> j 0) (printf ","))
+        (printf "%.6g" (data i j)) )
+      (printf "]") )
+    (printf "]}") ) )

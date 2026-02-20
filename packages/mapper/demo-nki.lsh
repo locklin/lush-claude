@@ -128,5 +128,7 @@
               (let ((outfile (concat (dirname file-being-loaded)
                                      "/NKI/nki_mapper.html")))
                 (==> graph visualize outfile
-                     "NKI Gene Expression - Mapper")
+                     "NKI Gene Expression - Mapper"
+                     'data data
+                     'col-names gene-names)
                 (printf "Done.\n") ) ) ) ) ) ) ) ) )
