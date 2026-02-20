@@ -267,6 +267,51 @@ body {
 #graph-picker .graph-item .name { color: #ddd; }
 #graph-picker .graph-item .meta { color: #888; font-size: 11px; }
 
+/* Comparison panel */
+#comparison-panel { max-height: 50vh; overflow-y: auto; }
+#comparison-summary { color: #aaa; font-size: 11px; margin-bottom: 6px; }
+
+#comparison-table-wrap { max-height: 300px; overflow-y: auto; }
+#comparison-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 11px;
+}
+#comparison-table th {
+  background: #222;
+  color: #aaa;
+  padding: 4px 6px;
+  text-align: left;
+  position: sticky;
+  top: 0;
+  cursor: pointer;
+  user-select: none;
+  border-bottom: 1px solid #444;
+}
+#comparison-table th:hover { color: #fff; }
+#comparison-table td {
+  padding: 3px 6px;
+  border-bottom: 1px solid #2a2a3e;
+  white-space: nowrap;
+}
+#comparison-table tr:hover { background: #252540; }
+#comparison-table tr.sig-high td { color: #ff6666; }
+#comparison-table tr.sig-med td { color: #ffaa44; }
+#comparison-table tr.sig-low td { color: #aaa; }
+#comparison-table tr.clickable { cursor: pointer; }
+
+/* Toolbar buttons */
+#toolbar button {
+  font-size: 11px;
+  padding: 2px 8px;
+  background: #222;
+  color: #ddd;
+  border: 1px solid #444;
+  border-radius: 3px;
+  cursor: pointer;
+}
+#toolbar button:hover { background: #333; }
+
 /* Scrollbar styling */
 ::-webkit-scrollbar { width: 6px; }
 ::-webkit-scrollbar-track { background: transparent; }

@@ -6,6 +6,7 @@
 <link rel="stylesheet" href="/styles.css">
 <script src="https://unpkg.com/cytoscape@3.28.1/dist/cytoscape.min.js"></script>
 <script src="https://unpkg.com/cytoscape-fcose@2.2.0/cytoscape-fcose.js"></script>
+<script src="/stats.js"></script>
 </head>
 <body>
 
@@ -47,6 +48,29 @@
       <h3>Selected Nodes</h3>
       <div id="selected-details"></div>
       <div class="member-list" id="member-list"></div>
+      <div class="controls-row" style="margin-top:6px">
+        <button onclick="compareGroups()">Compare A vs B</button>
+        <button onclick="compareVsRest()">A vs Rest</button>
+      </div>
+    </div>
+
+    <div class="panel-section" id="comparison-panel" style="display:none">
+      <h3>Comparison Results</h3>
+      <div id="comparison-summary"></div>
+      <div id="comparison-table-wrap">
+        <table id="comparison-table">
+          <thead>
+            <tr>
+              <th class="sortable" onclick="sortCompTable('col')">Column</th>
+              <th class="sortable" onclick="sortCompTable('p')">p-value</th>
+              <th class="sortable" onclick="sortCompTable('q')">q-value</th>
+              <th class="sortable" onclick="sortCompTable('diff')">Diff</th>
+              <th>Test</th>
+            </tr>
+          </thead>
+          <tbody id="comparison-body"></tbody>
+        </table>
+      </div>
     </div>
 
     <div class="panel-section">
@@ -72,6 +96,8 @@
     <option value="size">Node size</option>
     <option value="degree">Degree</option>
   </select>
+  <button onclick="exportPNG()" title="Export graph as PNG">PNG</button>
+  <button onclick="exportCSV()" title="Export data as CSV">CSV</button>
   <span class="status" id="status-bar">Ready</span>
 </div>
 

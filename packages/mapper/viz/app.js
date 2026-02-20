@@ -7,10 +7,13 @@
 // State
 // ============================================================
 
-const openTabs = new Map();   // graphId -> { cy, data, runInfo, groupA, groupB }
+const openTabs = new Map();   // graphId -> { cy, data, runInfo, groupA, groupB, datasetInfo, colNames }
 let activeTabId = null;
 let activeGroup = 'A';
 let pollInterval = null;
+let compResults = [];          // current comparison results
+let compSortKey = 'p';
+let compSortAsc = true;
 
 // ============================================================
 // API client
@@ -18,6 +21,21 @@ let pollInterval = null;
 
 async function apiGet(path) {
   const resp = await fetch(path);
+  if (!resp.ok) throw new Error(`API error: ${resp.status}`);
+  return resp.json();
+}
+
+async function apiPost(path, data) {
+  // Send as form-encoded for simple Lush parsing
+  const parts = [];
+  for (const [k, v] of Object.entries(data)) {
+    parts.push(encodeURIComponent(k) + '=' + encodeURIComponent(String(v)));
+  }
+  const resp = await fetch(path, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: parts.join('&'),
+  });
   if (!resp.ok) throw new Error(`API error: ${resp.status}`);
   return resp.json();
 }
@@ -149,6 +167,18 @@ async function openGraph(graphId) {
       runInfo = await apiGet(`/api/run/${graphData['run-id']}`);
     } catch(e) { /* ok if no run info */ }
 
+    let datasetInfo = null;
+    let colNames = [];
+    if (runInfo && runInfo['dataset-id']) {
+      try {
+        datasetInfo = await apiGet(`/api/dataset/${runInfo['dataset-id']}`);
+        if (datasetInfo && datasetInfo['col-names']) {
+          colNames = datasetInfo['col-names'];
+          if (typeof colNames === 'string') colNames = JSON.parse(colNames);
+        }
+      } catch(e) { /* ok */ }
+    }
+
     const name = (runInfo && runInfo.name) || `Graph ${graphId}`;
 
     // Parse members from JSON strings
@@ -186,7 +216,7 @@ async function openGraph(graphId) {
     // Store state
     const state = {
       cy, data: graphData, runInfo, containerEl: container,
-      name, minColor, maxColor,
+      name, minColor, maxColor, datasetInfo, colNames,
       groupA: new Set(), groupB: new Set(),
       colorField: 'default',
     };
@@ -480,13 +510,18 @@ function runLayout() {
 // Recolor
 // ============================================================
 
-function recolor() {
+async function recolor() {
   if (!activeTabId) return;
   const state = openTabs.get(activeTabId);
   if (!state) return;
 
   const field = document.getElementById('color-select').value;
   state.colorField = field;
+
+  if (field.startsWith('col:')) {
+    await recolorByColumn(state, parseInt(field.split(':')[1]));
+    return;
+  }
 
   let values;
   if (field === 'size') {
@@ -506,13 +541,66 @@ function recolor() {
   });
 }
 
+async function recolorByColumn(state, colIdx) {
+  setStatus('Fetching column data...');
+  try {
+    const did = state.runInfo && state.runInfo['dataset-id'];
+    if (!did) { setStatus('No dataset'); return; }
+    const colData = await apiGet(`/api/dataset/${did}/columns?cols=${colIdx}`);
+    // colData is { columns: [ { name, values: [...] } ] } or list of column arrays
+    let values;
+    if (Array.isArray(colData) && colData.length > 0) {
+      values = colData[0];
+    } else if (colData.columns && colData.columns.length > 0) {
+      values = colData.columns[0].values || colData.columns[0];
+    } else {
+      setStatus('No column data'); return;
+    }
+
+    // Compute mean value per node from its members
+    const nodeValues = state.data.nodes.map(n => {
+      const members = n.members || [];
+      if (members.length === 0) return 0;
+      let sum = 0;
+      for (const m of members) {
+        sum += (values[m] !== undefined ? Number(values[m]) : 0);
+      }
+      return sum / members.length;
+    });
+
+    const minVal = Math.min(...nodeValues);
+    const maxVal = Math.max(...nodeValues);
+
+    state.cy.nodes().forEach((node, i) => {
+      node.style('background-color', colorForValue(nodeValues[i], minVal, maxVal));
+    });
+    setStatus('Colored by ' + (state.colNames[colIdx] || `col ${colIdx}`));
+  } catch(e) {
+    setStatus('Error: ' + e.message);
+  }
+}
+
 // ============================================================
 // Toolbar
 // ============================================================
 
 function updateToolbar() {
-  // Reset color select
-  document.getElementById('color-select').value = 'default';
+  const sel = document.getElementById('color-select');
+  // Remove old column options
+  while (sel.options.length > 3) sel.remove(3);
+  // Add column options from active tab's dataset
+  if (activeTabId && openTabs.has(activeTabId)) {
+    const state = openTabs.get(activeTabId);
+    if (state.colNames && state.colNames.length > 0) {
+      state.colNames.forEach((name, i) => {
+        const opt = document.createElement('option');
+        opt.value = 'col:' + i;
+        opt.textContent = name;
+        sel.appendChild(opt);
+      });
+    }
+  }
+  sel.value = 'default';
 }
 
 function setStatus(msg) {
@@ -570,6 +658,261 @@ async function pollForGraphs() {
   } catch(e) {
     // Silent failure on poll
   }
+}
+
+// ============================================================
+// Group comparison
+// ============================================================
+
+function getMembersForGroup(state, group) {
+  const members = new Set();
+  state.data.nodes.forEach(n => {
+    if (group.has(n.id)) {
+      (n.members || []).forEach(m => members.add(m));
+    }
+  });
+  return [...members].sort((a,b) => a-b);
+}
+
+async function compareGroups() {
+  if (!activeTabId) return;
+  const state = openTabs.get(activeTabId);
+  if (!state) return;
+
+  const membersA = getMembersForGroup(state, state.groupA);
+  const membersB = getMembersForGroup(state, state.groupB);
+
+  if (membersA.length < 2 || membersB.length < 2) {
+    setStatus('Need at least 2 points in each group');
+    return;
+  }
+
+  await runComparison(state, membersA, membersB, 'A vs B');
+}
+
+async function compareVsRest() {
+  if (!activeTabId) return;
+  const state = openTabs.get(activeTabId);
+  if (!state) return;
+
+  const membersA = getMembersForGroup(state, state.groupA);
+  if (membersA.length < 2) {
+    setStatus('Need at least 2 points in Group A');
+    return;
+  }
+
+  // "Rest" = all points not in group A
+  const aSet = new Set(membersA);
+  const allMembers = new Set();
+  state.data.nodes.forEach(n => {
+    (n.members || []).forEach(m => allMembers.add(m));
+  });
+  const membersB = [...allMembers].filter(m => !aSet.has(m)).sort((a,b) => a-b);
+
+  if (membersB.length < 2) {
+    setStatus('Rest group too small');
+    return;
+  }
+
+  await runComparison(state, membersA, membersB, 'A vs Rest');
+}
+
+async function runComparison(state, membersA, membersB, title) {
+  setStatus('Running comparison...');
+  const did = state.runInfo && state.runInfo['dataset-id'];
+  if (!did) { setStatus('No dataset linked'); return; }
+
+  try {
+    // Fetch all columns
+    const colIndices = state.colNames.map((_, i) => i);
+    const colData = await apiGet(`/api/dataset/${did}/columns?cols=${colIndices.join(',')}`);
+
+    let columns;
+    if (Array.isArray(colData)) {
+      columns = colData;
+    } else if (colData.columns) {
+      columns = colData.columns.map(c => c.values || c);
+    } else {
+      setStatus('Could not fetch column data'); return;
+    }
+
+    // Run tests for each column
+    const results = [];
+    for (let ci = 0; ci < columns.length; ci++) {
+      const vals = columns[ci];
+      const colName = state.colNames[ci] || `col_${ci}`;
+      const valsA = membersA.map(m => vals[m]).filter(v => v !== null && v !== undefined);
+      const valsB = membersB.map(m => vals[m]).filter(v => v !== null && v !== undefined);
+
+      if (valsA.length < 2 || valsB.length < 2) continue;
+
+      const numA = valsA.map(Number);
+      const numB = valsB.map(Number);
+      const anyNaN = numA.some(isNaN) || numB.some(isNaN);
+
+      let result;
+      if (anyNaN || isCategorical(valsA.concat(valsB))) {
+        result = hypergeometricTest(valsA, valsB);
+        result.test = 'hyper';
+      } else {
+        // Use both Welch t-test and Mann-Whitney, report more significant
+        const tRes = welchTTest(numA, numB);
+        const mwRes = mannWhitneyU(numA, numB);
+        if (tRes.p <= mwRes.p) {
+          result = tRes;
+          result.test = 'welch-t';
+        } else {
+          result = mwRes;
+          result.test = 'mann-whitney';
+        }
+      }
+
+      result.col = colName;
+      result.colIdx = ci;
+      results.push(result);
+    }
+
+    // FDR correction
+    compResults = benjaminiHochberg(results);
+    compSortKey = 'p';
+    compSortAsc = true;
+
+    renderCompResults(title, membersA.length, membersB.length);
+    setStatus(`Comparison done: ${compResults.length} columns tested`);
+  } catch(e) {
+    setStatus('Error: ' + e.message);
+    console.error(e);
+  }
+}
+
+function renderCompResults(title, nA, nB) {
+  const panel = document.getElementById('comparison-panel');
+  panel.style.display = 'block';
+
+  document.getElementById('comparison-summary').textContent =
+    `${title}: ${nA} vs ${nB} points, ${compResults.length} columns`;
+
+  const tbody = document.getElementById('comparison-body');
+  tbody.innerHTML = '';
+
+  for (const r of compResults) {
+    const tr = document.createElement('tr');
+    tr.className = 'clickable';
+    if (r.q < 0.01) tr.classList.add('sig-high');
+    else if (r.q < 0.05) tr.classList.add('sig-med');
+    else tr.classList.add('sig-low');
+
+    tr.innerHTML = `<td>${r.col}</td><td>${r.p.toExponential(2)}</td><td>${r.q.toExponential(2)}</td><td>${r.diff !== undefined ? r.diff.toFixed(3) : '--'}</td><td>${r.test}</td>`;
+
+    // Click to recolor by this column
+    tr.onclick = () => {
+      document.getElementById('color-select').value = 'col:' + r.colIdx;
+      recolor();
+    };
+
+    tbody.appendChild(tr);
+  }
+}
+
+function sortCompTable(key) {
+  if (compSortKey === key) {
+    compSortAsc = !compSortAsc;
+  } else {
+    compSortKey = key;
+    compSortAsc = true;
+  }
+
+  compResults.sort((a, b) => {
+    let va, vb;
+    if (key === 'col') { va = a.col; vb = b.col; }
+    else if (key === 'p') { va = a.p; vb = b.p; }
+    else if (key === 'q') { va = a.q; vb = b.q; }
+    else if (key === 'diff') { va = a.diff || 0; vb = b.diff || 0; }
+    else { va = a[key]; vb = b[key]; }
+
+    if (typeof va === 'string') {
+      return compSortAsc ? va.localeCompare(vb) : vb.localeCompare(va);
+    }
+    return compSortAsc ? va - vb : vb - va;
+  });
+
+  renderCompResults(
+    document.getElementById('comparison-summary').textContent.split(':')[0],
+    0, 0
+  );
+  // Restore the summary line from the data
+  const panel = document.getElementById('comparison-summary');
+  // Keep existing text
+}
+
+// ============================================================
+// Label persistence
+// ============================================================
+
+async function saveLabel(name, color, nodeIndices, graphId) {
+  try {
+    await apiPost('/api/label', {
+      graph_id: graphId,
+      name: name,
+      color: color,
+      nodes: nodeIndices.join(','),
+    });
+  } catch(e) {
+    console.error('Failed to save label:', e);
+  }
+}
+
+async function loadLabels(graphId) {
+  try {
+    return await apiGet(`/api/labels/${graphId}`);
+  } catch(e) {
+    return [];
+  }
+}
+
+// ============================================================
+// Export
+// ============================================================
+
+function exportPNG() {
+  if (!activeTabId) return;
+  const state = openTabs.get(activeTabId);
+  if (!state || !state.cy) return;
+
+  const png = state.cy.png({ scale: 2, bg: '#1a1a2e' });
+  const link = document.createElement('a');
+  link.href = png;
+  link.download = `mapper-graph-${activeTabId}.png`;
+  link.click();
+  setStatus('PNG exported');
+}
+
+function exportCSV() {
+  if (!activeTabId) return;
+  const state = openTabs.get(activeTabId);
+  if (!state) return;
+
+  // Build CSV: row_id, node_id, group
+  const rows = [['row_id', 'node_id', 'group']];
+  const membersA = new Set(getMembersForGroup(state, state.groupA));
+  const membersB = new Set(getMembersForGroup(state, state.groupB));
+
+  state.data.nodes.forEach(n => {
+    const group = state.groupA.has(n.id) ? 'A' : (state.groupB.has(n.id) ? 'B' : '');
+    (n.members || []).forEach(m => {
+      const memberGroup = membersA.has(m) ? 'A' : (membersB.has(m) ? 'B' : '');
+      rows.push([m, n.id, memberGroup]);
+    });
+  });
+
+  const csv = rows.map(r => r.join(',')).join('\n');
+  const blob = new Blob([csv], { type: 'text/csv' });
+  const link = document.createElement('a');
+  link.href = URL.createObjectURL(blob);
+  link.download = `mapper-graph-${activeTabId}.csv`;
+  link.click();
+  URL.revokeObjectURL(link.href);
+  setStatus('CSV exported');
 }
 
 // ============================================================

@@ -156,7 +156,95 @@
                             (setq col-indices (nconc1 col-indices (val s)))
                             (setq done t) ) ) ) ) ) ) ) ) )
           (let ((data (mapper-db-get-column-data *viz-db* did col-indices)))
-            (list 200 "application/json" (_viz-json-value data)) ) ) ) ) ) )
+            ;; Strip column indices from result — return just the value lists
+            (let ((vals-only ()))
+              (each ((pair data))
+                (setq vals-only (nconc1 vals-only (cdr pair))) )
+              (list 200 "application/json" (_viz-json-list vals-only)) ) ) ) ) ) ) )
+
+
+;; ============================================================
+;; Form-encoded body parser
+;; ============================================================
+
+;; internal: URL-decode a string (handles %XX and +)
+(de _viz-url-decode (s)
+  (let ((out "") (i 0) (n (len s)))
+    (while (< i n)
+      (let ((ch (mid s (1+ i) 1)))
+        (cond
+         ((= ch "%")
+          (when (<= (+ i 2) n)
+            (let ((hex (mid s (+ i 2) 2)))
+              (setq out (concat out (chr (val (concat "0x" hex)))))
+              (setq i (+ i 3)) ) ) )
+         ((= ch "+")
+          (setq out (concat out " "))
+          (setq i (1+ i)) )
+         (t
+          (setq out (concat out ch))
+          (setq i (1+ i)) ) ) ) )
+    out ) )
+
+;; internal: parse "key=value&key=value" form body into alist
+(de _viz-parse-form (body)
+  (let ((result ()) (s body) (done ()))
+    (while (not done)
+      (let ((amp (index "&" s)))
+        (let ((pair (if amp (left s (1- amp)) s)))
+          (let ((eq (index "=" pair)))
+            (when eq
+              (let ((key (_viz-url-decode (left pair (1- eq))))
+                    (val (_viz-url-decode (mid pair (1+ eq)))) )
+                (setq result (nconc1 result (cons key val))) ) ) ) )
+        (if amp
+          (setq s (mid s (1+ amp)))
+          (setq done t) ) ) )
+    result ) )
+
+
+;; ============================================================
+;; Label API handlers
+;; ============================================================
+
+;; internal: parse comma-separated int string into list of ints
+(de _viz-parse-int-list (s)
+  (let ((result ()) (str s) (done ()))
+    (while (not done)
+      (let ((cpos (index "," str)))
+        (if cpos
+          (progn
+            (setq result (nconc1 result (val (left str (1- cpos)))))
+            (setq str (mid str (1+ cpos))) )
+          (progn
+            (when (> (len str) 0)
+              (setq result (nconc1 result (val str))) )
+            (setq done t) ) ) ) )
+    result ) )
+
+;; POST /api/label -- save a node group label
+(de _viz-api-save-label (req)
+  (let ((body (alist-get "body" req)))
+    (if (and body (> (len body) 0))
+      (let ((form (_viz-parse-form body)))
+        (let ((graph-id (val (or (cdr (assoc "graph_id" form)) "0")))
+              (name (or (cdr (assoc "name" form)) "unnamed"))
+              (color (or (cdr (assoc "color" form)) "#ffffff"))
+              (nodes-str (or (cdr (assoc "nodes" form)) "")) )
+          (let ((node-indices (_viz-parse-int-list nodes-str)))
+            (mapper-db-save-label *viz-db* graph-id name color node-indices)
+            (list 200 "application/json" "{\"ok\":true}") ) ) )
+      (list 400 "application/json" "{\"error\":\"empty body\"}") ) ) )
+
+
+;; GET /api/labels/:graphId -- get all labels for a graph
+(de _viz-api-get-labels (req)
+  (let ((params (alist-get "params" req)))
+    (when params
+      (let* ((id-str (car params))
+             (gid (val id-str))
+             (labels (mapper-db-get-labels *viz-db* gid)) )
+        (list 200 "application/json" (_viz-json-list labels)) ) ) ) )
 
 
 ;; ============================================================
@@ -213,6 +301,8 @@
       (httpd-add-route server "GET" "/api/dataset/([0-9]+)" (lambda (req) (_viz-api-dataset req)))
       (httpd-add-route server "GET" "/api/dataset/([0-9]+)/columns" (lambda (req) (_viz-api-dataset-cols req)))
       (httpd-add-route server "GET" "/api/run/([0-9]+)" (lambda (req) (_viz-api-run req)))
+      (httpd-add-route server "GET" "/api/labels/([0-9]+)" (lambda (req) (_viz-api-get-labels req)))
+      (httpd-add-route server "POST" "/api/label" (lambda (req) (_viz-api-save-label req)))
 
       ;; Static file routes (catch-all for /, *.html, *.js, *.css, etc.)
       (httpd-add-route server "GET" "/(.*)" (lambda (req) (_viz-static-handler req)))
@@ -245,6 +335,8 @@
       (httpd-add-route server "GET" "/api/dataset/([0-9]+)" (lambda (req) (_viz-api-dataset req)))
       (httpd-add-route server "GET" "/api/dataset/([0-9]+)/columns" (lambda (req) (_viz-api-dataset-cols req)))
       (httpd-add-route server "GET" "/api/run/([0-9]+)" (lambda (req) (_viz-api-run req)))
+      (httpd-add-route server "GET" "/api/labels/([0-9]+)" (lambda (req) (_viz-api-get-labels req)))
+      (httpd-add-route server "POST" "/api/label" (lambda (req) (_viz-api-save-label req)))
       ;; Static file routes
       (httpd-add-route server "GET" "/(.*)" (lambda (req) (_viz-static-handler req)))
       server ) ) )
