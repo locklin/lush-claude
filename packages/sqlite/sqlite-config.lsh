@@ -1,0 +1,18 @@
+;;; sqlite-config.lsh -- Compile SQLite3 amalgamation + C wrappers
+;;;
+;;; This file compiles sqlite3.c and sqlite-c.c into a shared library
+;;; and loads it.  It must be loaded before sqlite.lsh.
+
+(libload "libc/make")
+
+(let ((dir (dirname file-being-loaded)))
+  (let ((lm (new lushmake))
+        (cc (or (getconf "CC") "gcc")))
+    (==> lm setflags (concat " -I" dir " -O2 -DSQLITE_THREADSAFE=0"
+                             " -DSQLITE_OMIT_LOAD_EXTENSION"))
+    (==> lm rule "sqlite3.o" '("sqlite3.c"))
+    (==> lm rule "sqlite-c.o" '("sqlite-c.c" "sqlite-c.h" "sqlite3.h"))
+    (==> lm rule "sqlite-c.so" '("sqlite3.o" "sqlite-c.o")
+         (concat cc " -shared -o $OBJ $SOURCES -ldl -lpthread"))
+    (==> lm make)
+    (==> lm load "sqlite-c.so") ) )

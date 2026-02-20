@@ -1,0 +1,348 @@
+;;; sqlite.lsh -- SQLite3 binding for Lush
+;;;
+;;; Two layers:
+;;;   1. DHC-compiled thin wrappers (_sqlite-open, _sqlite-close, etc.)
+;;;      that bridge Lush types to the C functions in sqlite-c.c.
+;;;   2. Interpreted high-level API (sqlite-open, sqlite-close, sqlite-exec,
+;;;      sqlite-query) that handle parameter binding, row iteration, and
+;;;      error checking in Lush — avoiding DHC compiler issues with
+;;;      complex control flow and list construction.
+
+(libload "sqlite-config")
+
+;; ============================================================
+;; DHC-compiled wrappers (gptr <-> C)
+;; ============================================================
+
+(de _sqlite-open (path)
+  ((-str-) path)
+  (let ((db (gptr ())))
+    ((-gptr-) db)
+    #{ $db = lush_sqlite3_open($path->data); #}
+    db ) )
+
+(de _sqlite-close (db)
+  ((-gptr-) db)
+  (let ((rc 0))
+    ((-int-) rc)
+    #{ $rc = lush_sqlite3_close($db); #}
+    rc ) )
+
+(de _sqlite-errmsg (db)
+  ((-gptr-) db)
+  (let ((msg ""))
+    ((-str-) msg)
+    #{ { const char *m = lush_sqlite3_errmsg($db);
+         int len = strlen(m);
+         Msrg_resize($msg, len + 1);
+         strcpy($msg->data, m); } #}
+    msg ) )
+
+(de _sqlite-busy-timeout (db ms)
+  ((-gptr-) db)
+  ((-int-) ms)
+  (let ((rc 0))
+    ((-int-) rc)
+    #{ $rc = lush_sqlite3_busy_timeout($db, $ms); #}
+    rc ) )
+
+(de _sqlite-prepare (db sql)
+  ((-gptr-) db)
+  ((-str-) sql)
+  (let ((stmt (gptr ())))
+    ((-gptr-) stmt)
+    #{ $stmt = lush_sqlite3_prepare($db, $sql->data); #}
+    stmt ) )
+
+(de _sqlite-step (stmt)
+  ((-gptr-) stmt)
+  (let ((rc 0))
+    ((-int-) rc)
+    #{ $rc = lush_sqlite3_step($stmt); #}
+    rc ) )
+
+(de _sqlite-finalize (stmt)
+  ((-gptr-) stmt)
+  (let ((rc 0))
+    ((-int-) rc)
+    #{ $rc = lush_sqlite3_finalize($stmt); #}
+    rc ) )
+
+(de _sqlite-reset (stmt)
+  ((-gptr-) stmt)
+  (let ((rc 0))
+    ((-int-) rc)
+    #{ $rc = lush_sqlite3_reset($stmt); #}
+    rc ) )
+
+(de _sqlite-bind-int (stmt idx val)
+  ((-gptr-) stmt)
+  ((-int-) idx val)
+  (let ((rc 0))
+    ((-int-) rc)
+    #{ $rc = lush_sqlite3_bind_int($stmt, $idx, $val); #}
+    rc ) )
+
+(de _sqlite-bind-double (stmt idx val)
+  ((-gptr-) stmt)
+  ((-int-) idx)
+  ((-double-) val)
+  (let ((rc 0))
+    ((-int-) rc)
+    #{ $rc = lush_sqlite3_bind_double($stmt, $idx, $val); #}
+    rc ) )
+
+(de _sqlite-bind-text (stmt idx val)
+  ((-gptr-) stmt)
+  ((-int-) idx)
+  ((-str-) val)
+  (let ((rc 0))
+    ((-int-) rc)
+    #{ $rc = lush_sqlite3_bind_text($stmt, $idx, $val->data); #}
+    rc ) )
+
+(de _sqlite-bind-null (stmt idx)
+  ((-gptr-) stmt)
+  ((-int-) idx)
+  (let ((rc 0))
+    ((-int-) rc)
+    #{ $rc = lush_sqlite3_bind_null($stmt, $idx); #}
+    rc ) )
+
+(de _sqlite-column-count (stmt)
+  ((-gptr-) stmt)
+  (let ((n 0))
+    ((-int-) n)
+    #{ $n = lush_sqlite3_column_count($stmt); #}
+    n ) )
+
+(de _sqlite-column-type (stmt col)
+  ((-gptr-) stmt)
+  ((-int-) col)
+  (let ((ctype 0))
+    ((-int-) ctype)
+    #{ $ctype = lush_sqlite3_column_type($stmt, $col); #}
+    ctype ) )
+
+(de _sqlite-column-int (stmt col)
+  ((-gptr-) stmt)
+  ((-int-) col)
+  (let ((v 0))
+    ((-int-) v)
+    #{ $v = lush_sqlite3_column_int($stmt, $col); #}
+    v ) )
+
+(de _sqlite-column-double (stmt col)
+  ((-gptr-) stmt)
+  ((-int-) col)
+  (let ((v 0.0))
+    ((-double-) v)
+    #{ $v = lush_sqlite3_column_double($stmt, $col); #}
+    v ) )
+
+(de _sqlite-column-text (stmt col)
+  ((-gptr-) stmt)
+  ((-int-) col)
+  (let ((s ""))
+    ((-str-) s)
+    #{ { const char *txt = lush_sqlite3_column_text($stmt, $col);
+         int len = strlen(txt);
+         Msrg_resize($s, len + 1);
+         strcpy($s->data, txt); } #}
+    s ) )
+
+(de _sqlite-changes (db)
+  ((-gptr-) db)
+  (let ((n 0))
+    ((-int-) n)
+    #{ $n = lush_sqlite3_changes($db); #}
+    n ) )
+
+(de _sqlite-last-insert-rowid (db)
+  ((-gptr-) db)
+  (let ((n 0))
+    ((-int-) n)
+    #{ $n = lush_sqlite3_last_insert_rowid($db); #}
+    n ) )
+
+(de _sqlite-enable-wal (db)
+  ((-gptr-) db)
+  (let ((rc 0))
+    ((-int-) rc)
+    #{ $rc = lush_sqlite3_enable_wal($db); #}
+    rc ) )
+
+
+;; Compile all DHC wrappers
+(let ((dhc-make-lushflags
+       (concat dhc-make-lushflags " -I" (dirname file-being-loaded))))
+  (dhc-make-with-libs () t
+    #{ #include "sqlite-c.h" #}
+    _sqlite-open _sqlite-close _sqlite-errmsg _sqlite-busy-timeout
+    _sqlite-prepare _sqlite-step _sqlite-finalize _sqlite-reset
+    _sqlite-bind-int _sqlite-bind-double _sqlite-bind-text _sqlite-bind-null
+    _sqlite-column-count _sqlite-column-type
+    _sqlite-column-int _sqlite-column-double _sqlite-column-text
+    _sqlite-changes _sqlite-last-insert-rowid _sqlite-enable-wal ) )
+
+
+;; ============================================================
+;; Interpreted high-level API
+;; ============================================================
+
+;; SQLite result codes
+(defvar SQLITE_OK    0)
+(defvar SQLITE_ROW   100)
+(defvar SQLITE_DONE  101)
+
+;; SQLite column type codes
+(defvar SQLITE_INTEGER 1)
+(defvar SQLITE_FLOAT   2)
+(defvar SQLITE_TEXT    3)
+(defvar SQLITE_BLOB    4)
+(defvar SQLITE_NULL    5)
+
+
+#? (sqlite-open <path>)
+;; Open an SQLite database at <path>.  Returns a database handle (gptr).
+;; Signals an error if the database cannot be opened.
+(de sqlite-open (path)
+  (let ((db (_sqlite-open path)))
+    (when (= db (gptr ()))
+      (error "sqlite-open: failed to open database" path) )
+    db ) )
+
+
+#? (sqlite-close <db>)
+;; Close a database handle.
+(de sqlite-close (db)
+  (let ((rc (_sqlite-close db)))
+    (when (<> rc SQLITE_OK)
+      (error "sqlite-close" (_sqlite-errmsg db)) ) )
+  () )
+
+
+#? (sqlite-busy-timeout <db> <ms>)
+;; Set the busy timeout in milliseconds.
+(de sqlite-busy-timeout (db ms)
+  (let ((rc (_sqlite-busy-timeout db ms)))
+    (when (<> rc SQLITE_OK)
+      (error "sqlite-busy-timeout" (_sqlite-errmsg db)) ) )
+  () )
+
+
+#? (sqlite-enable-wal <db>)
+;; Enable WAL journal mode for the database.
+(de sqlite-enable-wal (db)
+  (let ((rc (_sqlite-enable-wal db)))
+    (when (<> rc SQLITE_OK)
+      (error "sqlite-enable-wal" (_sqlite-errmsg db)) ) )
+  () )
+
+
+#? (sqlite-changes <db>)
+;; Return the number of rows changed by the last INSERT/UPDATE/DELETE.
+(de sqlite-changes (db)
+  (_sqlite-changes db) )
+
+
+#? (sqlite-last-insert-id <db>)
+;; Return the rowid of the last successful INSERT.
+(de sqlite-last-insert-id (db)
+  (_sqlite-last-insert-rowid db) )
+
+
+;; internal: bind a single parameter by dispatching on Lush type
+(de _sqlite-bind-param (stmt idx val)
+  (let ((rc 0))
+    (cond
+     ((= val ())
+      (setq rc (_sqlite-bind-null stmt idx)) )
+     ((stringp val)
+      (setq rc (_sqlite-bind-text stmt idx val)) )
+     ((and (numberp val) (= val (int val)))
+      (setq rc (_sqlite-bind-int stmt idx (int val))) )
+     ((numberp val)
+      (setq rc (_sqlite-bind-double stmt idx val)) )
+     (t (error "sqlite: unsupported bind type" val)) )
+    rc ) )
+
+
+;; internal: bind all parameters from a list
+(de _sqlite-bind-params (stmt params)
+  (let ((idx 1))
+    (each ((val params))
+      (let ((rc (_sqlite-bind-param stmt idx val)))
+        (when (<> rc SQLITE_OK)
+          (error "sqlite: bind failed at parameter" idx) ) )
+      (setq idx (+ idx 1)) ) ) )
+
+
+;; internal: read one column value based on its type
+(de _sqlite-read-column (stmt col)
+  (let ((ctype (_sqlite-column-type stmt col)))
+    (cond
+     ((= ctype SQLITE_INTEGER)
+      (_sqlite-column-int stmt col) )
+     ((= ctype SQLITE_FLOAT)
+      (_sqlite-column-double stmt col) )
+     ((= ctype SQLITE_TEXT)
+      (_sqlite-column-text stmt col) )
+     ((= ctype SQLITE_NULL)
+      () )
+     ((= ctype SQLITE_BLOB)
+      ;; Return blob as text representation for now
+      (_sqlite-column-text stmt col) )
+     (t ()) ) ) )
+
+
+;; internal: read all columns of the current row into a list
+(de _sqlite-read-row (stmt ncols)
+  (let ((row ()))
+    (for (i (- ncols 1) 0 -1)
+      (setq row (cons (_sqlite-read-column stmt i) row)) )
+    row ) )
+
+
+#? (sqlite-exec <db> <sql> . <params>)
+;; Execute an SQL statement that returns no result rows (INSERT, UPDATE,
+;; DELETE, CREATE, etc.).  Optional <params> are bound to ? placeholders.
+;; Signals an error on failure.
+(de sqlite-exec (db sql . params)
+  (let ((stmt (_sqlite-prepare db sql)))
+    (when (= stmt (gptr ()))
+      (error "sqlite-exec" (_sqlite-errmsg db)) )
+    (when params
+      (_sqlite-bind-params stmt params) )
+    (let ((rc (_sqlite-step stmt)))
+      (_sqlite-finalize stmt)
+      (when (and (<> rc SQLITE_DONE) (<> rc SQLITE_ROW))
+        (error "sqlite-exec" (_sqlite-errmsg db)) ) ) )
+  t )
+
+
+#? (sqlite-query <db> <sql> . <params>)
+;; Execute an SQL query and return all result rows as a list of lists.
+;; Each row is a list of column values (int, double, string, or () for NULL).
+;; Optional <params> are bound to ? placeholders.
+;;
+;; Example:
+;;   (sqlite-query db "SELECT * FROM test WHERE val > ?" 3.0)
+;;   => (("hello" 3.14) ("world" 2.72))
+(de sqlite-query (db sql . params)
+  (let ((stmt (_sqlite-prepare db sql)))
+    (when (= stmt (gptr ()))
+      (error "sqlite-query" (_sqlite-errmsg db)) )
+    (when params
+      (_sqlite-bind-params stmt params) )
+    (let ((ncols (_sqlite-column-count stmt))
+          (rows ())
+          (rc 0) )
+      (setq rc (_sqlite-step stmt))
+      (while (= rc SQLITE_ROW)
+        (setq rows (nconc1 rows (_sqlite-read-row stmt ncols)))
+        (setq rc (_sqlite-step stmt)) )
+      (_sqlite-finalize stmt)
+      (when (and (<> rc SQLITE_DONE) (<> rc SQLITE_ROW))
+        (error "sqlite-query" (_sqlite-errmsg db)) )
+      rows ) ) )
