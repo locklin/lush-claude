@@ -1,0 +1,250 @@
+;;; mapper-viz.lsh -- Mapper Visualization Server
+;;;
+;;; Wires together the HTTP server and mapper-DB to serve
+;;; a Cytoscape.js browser UI for interactive graph exploration.
+;;;
+;;; Usage:
+;;;   (libload "mapper/mapper-viz")
+;;;   (mapper-viz-start "/path/to/project.db")
+;;;   ;; Opens browser and starts serving on localhost:8765
+
+(libload "mapper/mapper-db")
+(libload "httpd/httpd")
+
+#? *** Mapper: Visualization Server
+
+;; Capture the viz directory path at load time
+(defvar *viz-root* (concat (dirname file-being-loaded) "/viz"))
+
+
+;; ============================================================
+;; JSON encoding for alists
+;; ============================================================
+
+;; internal: check if a list looks like an alist (list of cons pairs
+;; where each car is a string key)
+(de _viz-alist-p (lst)
+  (when (and (listp lst) (consp (car lst)))
+    (let ((is-alist t))
+      (each ((item lst))
+        (when (not (and (consp item) (stringp (car item))))
+          (setq is-alist ()) ) )
+      is-alist ) ) )
+
+
+;; internal: encode an alist as a JSON object
+(de _viz-json-alist (al)
+  (let ((out "{")
+        (first t) )
+    (each ((pair al))
+      (if first (setq first ()) (setq out (concat out ",")))
+      (let ((key (car pair))
+            (val (cdr pair)) )
+        (setq out (concat out "\"" (json-escape key) "\":"
+                          (_viz-json-value val))) ) )
+    (concat out "}") ) )
+
+
+;; internal: encode any value as JSON, with alist detection
+(de _viz-json-value (val)
+  (cond
+   ((= val ()) "null")
+   ((= val t) "true")
+   ((numberp val)
+    (if (= val (int val))
+      (sprintf "%d" (int val))
+      (sprintf "%.10g" val) ) )
+   ((stringp val)
+    ;; Check if string looks like a JSON array (members field)
+    ;; and pass it through raw
+    (if (and (> (len val) 0) (= (left val 1) "["))
+      val
+      (concat "\"" (json-escape val) "\"") ) )
+   ((_viz-alist-p val)
+    (_viz-json-alist val) )
+   ((listp val)
+    (_viz-json-list val) )
+   (t (concat "\"" (json-escape (sprintf "%l" val)) "\"")) ) )
+
+
+;; internal: encode a list as a JSON array
+(de _viz-json-list (lst)
+  (let ((out "[")
+        (first t) )
+    (each ((item lst))
+      (if first (setq first ()) (setq out (concat out ",")))
+      (setq out (concat out (_viz-json-value item))) )
+    (concat out "]") ) )
+
+
+;; ============================================================
+;; API route handlers
+;; ============================================================
+
+;; internal: the database handle (set by mapper-viz-start)
+(defvar *viz-db* ())
+
+
+
+;; GET /api/graphs -- list all graphs
+(de _viz-api-graphs (req)
+  (let ((graphs (mapper-db-list-graphs *viz-db*)))
+    (list 200 "application/json" (_viz-json-list graphs)) ) )
+
+
+;; GET /api/graph/:id -- get full graph data
+(de _viz-api-graph (req)
+  (let ((params (alist-get "params" req)))
+    (when params
+      (let* ((id-str (car params))
+             (gid (val id-str))
+             (gdata (mapper-db-get-graph *viz-db* gid)) )
+        (if gdata
+          (list 200 "application/json" (_viz-json-value gdata))
+          (list 404 "application/json" "{\"error\":\"graph not found\"}") ) ) ) ) )
+
+
+;; GET /api/dataset/:id -- get dataset info
+(de _viz-api-dataset (req)
+  (let ((params (alist-get "params" req)))
+    (when params
+      (let* ((id-str (car params))
+             (did (val id-str))
+             (info (mapper-db-get-dataset-info *viz-db* did)) )
+        (if info
+          (list 200 "application/json" (_viz-json-value info))
+          (list 404 "application/json" "{\"error\":\"dataset not found\"}") ) ) ) ) )
+
+
+;; GET /api/run/:id -- get run info
+(de _viz-api-run (req)
+  (let ((params (alist-get "params" req)))
+    (when params
+      (let* ((id-str (car params))
+             (rid (val id-str))
+             (info (mapper-db-get-run-info *viz-db* rid)) )
+        (if info
+          (list 200 "application/json" (_viz-json-value info))
+          (list 404 "application/json" "{\"error\":\"run not found\"}") ) ) ) ) )
+
+
+;; GET /api/dataset/:id/columns?cols=0,1,2 -- get column data
+(de _viz-api-dataset-cols (req)
+  (let ((params (alist-get "params" req))
+        (query (alist-get "query" req)) )
+    (when params
+      (let* ((id-str (car params))
+             (did (val id-str)) )
+        ;; Parse col indices from query string "cols=0,1,2"
+        ;; For now, return first 10 columns if no cols specified
+        (let ((col-indices (list 0)))
+          ;; Simple query parsing: find "cols=" and split by comma
+          (when (and query (> (len query) 0))
+            (let ((cpos (index "cols=" query)))
+              (when cpos
+                (let ((col-str (mid query (+ cpos 5))))
+                  ;; Parse comma-separated ints (simple approach)
+                  (setq col-indices ())
+                  (let ((s col-str) (done ()))
+                    (while (not done)
+                      (let ((cpos2 (index "," s)))
+                        (if cpos2
+                          (progn
+                            (setq col-indices (nconc1 col-indices (val (left s (1- cpos2)))))
+                            (setq s (mid s (1+ cpos2))) )
+                          (progn
+                            (setq col-indices (nconc1 col-indices (val s)))
+                            (setq done t) ) ) ) ) ) ) ) ) )
+          (let ((data (mapper-db-get-column-data *viz-db* did col-indices)))
+            (list 200 "application/json" (_viz-json-value data)) ) ) ) ) ) )
+
+
+;; ============================================================
+;; Static file handler
+;; ============================================================
+
+;; internal: serve a static file from the viz directory
+(de _viz-static-handler (req)
+  (let ((path (alist-get "path" req)))
+    ;; The catch-all route "/(.*)" captures everything after /
+    ;; For path "/", params will be ("") — map to index.html
+    (let ((params (alist-get "params" req)))
+      (when params
+        (let ((relpath (car params)))
+          (when (or (= relpath "") (= relpath "/"))
+            (setq relpath "index.html") )
+          ;; Security: reject paths with ..
+          (if (index ".." relpath)
+            (list 403 "text/plain" "Forbidden")
+            (let ((fpath (concat *viz-root* "/" relpath)))
+              (let ((content (httpd-read-file-binary fpath)))
+                (if content
+                  (list 200 (httpd-mime-type fpath) content)
+                  (list 404 "text/plain" (concat "File not found: " relpath)) ) ) ) ) ) ) ) ) )
+
+
+;; ============================================================
+;; Server startup
+;; ============================================================
+
+#? (mapper-viz-start <db-path> [<port>])
+;; Start the mapper visualization server.
+;; Opens the SQLite database at <db-path>, starts the HTTP server
+;; on <port> (default 8765), and opens the system browser.
+;; Blocks, handling one request at a time.
+;;
+;; Example:
+;;   (mapper-viz-start "/tmp/claude/my-project.db")
+;;   (mapper-viz-start "/tmp/claude/my-project.db" 9000)
+(de mapper-viz-start (db-path . rest)
+  (let ((port (if rest (car rest) 8765)))
+    ;; Open the database
+    (setq *viz-db* (mapper-db-open db-path))
+    (printf "Mapper-viz: database opened: %s\n" db-path)(flush)
+
+    (printf "Mapper-viz: serving static files from %s\n" *viz-root*)(flush)
+
+    ;; Create the HTTP server
+    (let ((server (httpd-new port)))
+
+      ;; API routes
+      (httpd-add-route server "GET" "/api/graphs" (lambda (req) (_viz-api-graphs req)))
+      (httpd-add-route server "GET" "/api/graph/([0-9]+)" (lambda (req) (_viz-api-graph req)))
+      (httpd-add-route server "GET" "/api/dataset/([0-9]+)" (lambda (req) (_viz-api-dataset req)))
+      (httpd-add-route server "GET" "/api/dataset/([0-9]+)/columns" (lambda (req) (_viz-api-dataset-cols req)))
+      (httpd-add-route server "GET" "/api/run/([0-9]+)" (lambda (req) (_viz-api-run req)))
+
+      ;; Static file routes (catch-all for /, *.html, *.js, *.css, etc.)
+      (httpd-add-route server "GET" "/(.*)" (lambda (req) (_viz-static-handler req)))
+
+      ;; Try to open the browser
+      (let ((url (sprintf "http://localhost:%d" port)))
+        (printf "Mapper-viz: starting on %s\n" url)(flush)
+        ;; Try xdg-open (Linux), then open (macOS)
+        (sys (concat "xdg-open " url " 2>/dev/null &"))
+        (sys (concat "open " url " 2>/dev/null &")) )
+
+      ;; Start serving (blocks)
+      (httpd-serve server) ) ) )
+
+
+#? (mapper-viz-setup <db-path> [<port>])
+;; Set up the mapper visualization server without starting it.
+;; Returns the server object, which can be customized with
+;; additional routes before calling (httpd-serve server).
+(de mapper-viz-setup (db-path . rest)
+  (let ((port (if rest (car rest) 8765)))
+    ;; Open the database
+    (setq *viz-db* (mapper-db-open db-path))
+
+    ;; Create the HTTP server
+    (let ((server (httpd-new port)))
+      ;; API routes
+      (httpd-add-route server "GET" "/api/graphs" (lambda (req) (_viz-api-graphs req)))
+      (httpd-add-route server "GET" "/api/graph/([0-9]+)" (lambda (req) (_viz-api-graph req)))
+      (httpd-add-route server "GET" "/api/dataset/([0-9]+)" (lambda (req) (_viz-api-dataset req)))
+      (httpd-add-route server "GET" "/api/dataset/([0-9]+)/columns" (lambda (req) (_viz-api-dataset-cols req)))
+      (httpd-add-route server "GET" "/api/run/([0-9]+)" (lambda (req) (_viz-api-run req)))
+      ;; Static file routes
+      (httpd-add-route server "GET" "/(.*)" (lambda (req) (_viz-static-handler req)))
+      server ) ) )

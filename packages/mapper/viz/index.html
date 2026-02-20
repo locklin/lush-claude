@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Mapper Visualization</title>
+<link rel="stylesheet" href="/styles.css">
+<script src="https://unpkg.com/cytoscape@3.28.1/dist/cytoscape.min.js"></script>
+<script src="https://unpkg.com/cytoscape-fcose@2.2.0/cytoscape-fcose.js"></script>
+</head>
+<body>
+
+<div id="tab-bar">
+  <span id="tab-add" title="Open graph">+</span>
+</div>
+
+<div id="main">
+  <div id="graph-container">
+    <div id="loading">No graphs loaded. Click + to open a graph.</div>
+    <div class="cy-tooltip" id="tooltip"></div>
+  </div>
+
+  <div id="side-panel">
+    <div class="panel-section" id="graph-info">
+      <h3>Graph Info</h3>
+      <div id="graph-info-content">
+        <div class="info-row"><span class="info-label">Name</span><span class="info-value" id="info-name">--</span></div>
+        <div class="info-row"><span class="info-label">Nodes</span><span class="info-value" id="info-nodes">--</span></div>
+        <div class="info-row"><span class="info-label">Edges</span><span class="info-value" id="info-edges">--</span></div>
+        <div class="info-row"><span class="info-label">Metric</span><span class="info-value" id="info-metric">--</span></div>
+        <div class="info-row"><span class="info-label">Clusterer</span><span class="info-value" id="info-clusterer">--</span></div>
+        <div class="info-row"><span class="info-label">Cubes</span><span class="info-value" id="info-cubes">--</span></div>
+        <div class="info-row"><span class="info-label">Overlap</span><span class="info-value" id="info-overlap">--</span></div>
+      </div>
+    </div>
+
+    <div class="panel-section" id="selection-controls">
+      <h3>Selection</h3>
+      <div class="controls-row">
+        <button class="group-btn group-a active" id="btn-group-a" onclick="setActiveGroup('A')">Group A</button>
+        <button class="group-btn group-b" id="btn-group-b" onclick="setActiveGroup('B')">Group B</button>
+        <button onclick="clearSelection()">Clear</button>
+      </div>
+      <div id="sel-summary" style="color:#888;font-size:11px;margin-top:4px"></div>
+    </div>
+
+    <div class="panel-section" id="selection-info" style="display:none">
+      <h3>Selected Nodes</h3>
+      <div id="selected-details"></div>
+      <div class="member-list" id="member-list"></div>
+    </div>
+
+    <div class="panel-section">
+      <h3>Layout</h3>
+      <div class="controls-row">
+        <select id="layout-select" onchange="runLayout()">
+          <option value="fcose">fCoSE (force-directed)</option>
+          <option value="cose">CoSE</option>
+          <option value="circle">Circle</option>
+          <option value="grid">Grid</option>
+          <option value="concentric">Concentric</option>
+        </select>
+        <button onclick="runLayout()">Re-layout</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div id="toolbar">
+  <label>Color:</label>
+  <select id="color-select" onchange="recolor()">
+    <option value="default">Default (lens value)</option>
+    <option value="size">Node size</option>
+    <option value="degree">Degree</option>
+  </select>
+  <span class="status" id="status-bar">Ready</span>
+</div>
+
+<div id="graph-picker">
+  <div class="modal">
+    <h2>Open Graph</h2>
+    <div id="graph-list"></div>
+  </div>
+</div>
+
+<script src="/app.js"></script>
+</body>
+</html>
