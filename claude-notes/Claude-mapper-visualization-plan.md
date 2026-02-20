@@ -125,11 +125,117 @@ and awkward integration with the mapper workflow.
 
 ---
 
-### Option D: Web App (Flask/FastAPI + Cytoscape.js) with SQLite
+### Option D: Lush HTTP Server + Cytoscape.js in Browser
 
-**Approach**: A local web server (Python or Node.js) that serves a browser-
-based UI. Cytoscape.js for visualization. SQLite for persistence. Lush
-communicates via SQLite; the web server polls for changes.
+**Approach**: Lush itself serves as the HTTP server, delivering a Cytoscape.js
+single-page application to the system browser. SQLite for persistence. No
+external server process — the Lush process that runs mapper also serves the
+visualization UI.
+
+Lush already has the required infrastructure:
+- `socketaccept` — listens on a TCP port, accepts connections (IPv4/IPv6)
+- `socketselect` — multiplexed I/O for handling concurrent connections
+- `read-string`, `read8`, `write8`, `printf` — byte-level socket I/O
+- `bin/lushsocket` — an existing socket server implementation (REPL over TCP)
+  that demonstrates the pattern
+
+The HTTP protocol layer needed is minimal: serve ~5 static files (HTML, JS,
+CSS) and ~5 JSON API endpoints. HTTP/1.1 keep-alive is not needed; HTTP/1.0
+close-after-response is sufficient. The server only ever talks to localhost.
+
+**Architecture**:
+```
++------------------------------------------+
+|  Lush Process                            |
+|                                          |
+|  +--------------+   +----------------+  |     +-----------+
+|  | mapper engine|   | HTTP server    |------->| Browser   |
+|  | (runs TDA)   |   | (port 8765)   |<-------| (Cyto.js) |
+|  +--------------+   +----------------+  |     +-----------+
+|        |                  |              |
+|        v                  v              |
+|  +----------------------------------+   |
+|  |         SQLite database          |   |
+|  +----------------------------------+   |
++------------------------------------------+
+```
+
+**HTTP endpoints**:
+```
+GET  /                     -> index.html (Cytoscape.js SPA)
+GET  /app.js               -> application JavaScript
+GET  /styles.css           -> stylesheet
+GET  /api/graphs           -> JSON list of graphs in DB
+GET  /api/graph/:id        -> JSON graph data (nodes, edges, members)
+GET  /api/dataset/:id      -> JSON dataset metadata + column names
+GET  /api/dataset/:id/cols -> JSON column data for selected columns
+POST /api/run              -> create mapper run (params in body)
+GET  /api/run/:id/status   -> check run status
+POST /api/label            -> save node group label
+```
+
+The Lush HTTP server would be implemented as a package (`packages/httpd/` or
+integrated into the mapper package) with ~200-300 lines of Lush code. The
+existing `lushsocket` pattern shows exactly how to structure it: `socketaccept`
+to listen, `reading`/`writing` to handle request/response, with a dispatch
+table mapping URL paths to handler functions.
+
+For forking new mapper runs from the browser: the Lush HTTP server receives
+the POST request, writes the run config to SQLite, and either:
+(a) runs mapper synchronously in a background thread (Lush has no threads,
+    so this blocks the server), or
+(b) forks a child Lush process (via `sys`) that runs mapper independently.
+Option (b) is correct — the child writes results to SQLite, the HTTP server
+continues responding to browser polls.
+
+**Pros**:
+- Same Cytoscape.js benefits as Option B — all the interactive graph
+  visualization, lasso selection (plugin), layouts, etc.
+- **No external dependencies** beyond a web browser (which every system has)
+- **No Electron** — no bundled Chromium, no 150MB app, no Node.js needed
+- **No separate server process** — Lush IS the server
+- **Single ecosystem** — everything lives in Lush packages; no polyglot build
+- **Minimal HTTP layer** — serving localhost static files + JSON APIs is
+  ~200 lines of Lush, not a framework
+- **Reuses existing D3/JS code** from current visualize.lsh (statistical
+  tests, comparison logic, table rendering)
+- **Natural integration** — the mapper engine and the server are in the same
+  process; running a new mapper job is just a function call (or fork)
+- **Lighter weight** than any other option — no JVM, no Electron, no pip
+- **SQLite communication** still works — the DB is the persistence layer;
+  the HTTP server just reads it and serves JSON to the browser
+- **Trivially launchable**: `(mapper-viz-start db-path)` opens a socket,
+  opens the browser with `sys "xdg-open http://localhost:8765"`, done
+
+**Cons**:
+- Must implement HTTP request parsing in Lush (~100 lines for the subset
+  we need: GET with path extraction, POST with body reading)
+- Browser security sandbox: no direct filesystem access (but the Lush
+  server handles all file operations, so this doesn't matter)
+- Browser tab can be accidentally closed (but just reopen the URL)
+- No native file dialogs (use an HTML file-upload input for CSV import;
+  the Lush server saves the uploaded data)
+- Lush's single-threaded nature means the HTTP server blocks during
+  request handling — but our requests are fast (SQLite reads) and
+  mapper runs are forked as child processes, so this is fine for a
+  single-user localhost tool
+- If the Lush process exits, the server goes away (but so does the
+  mapper engine — this is expected behavior)
+
+**Risk**: LOW — the HTTP subset needed is tiny (serve 5 static files, handle
+5 REST endpoints on localhost). Lush's socket infrastructure is proven. The
+browser-side code is the same Cytoscape.js that Option B uses.
+
+**Reward**: HIGH — same visualization capabilities as Option B, but with
+zero external dependencies and tight Lush integration. The simplest possible
+operational model: start Lush, call a function, browser opens.
+
+---
+
+### Option D-alt: Web App (Flask/FastAPI + Cytoscape.js) with SQLite
+
+**Approach**: A separate web server process (Python or Node.js) that serves
+a browser-based UI. This is the "external server" variant of Option D.
 
 **Pros**:
 - Same Cytoscape.js benefits as Option B
@@ -138,18 +244,17 @@ communicates via SQLite; the web server polls for changes.
 - Python backend could use existing data science libraries
 
 **Cons**:
-- Browser security sandbox prevents direct process spawning (can't fork Lush
-  from the browser; need the server as intermediary)
+- Browser security sandbox prevents direct process spawning
 - More moving parts: browser + web server + SQLite + Lush
-- Server process management adds complexity
+- Server process management adds complexity (separate install, separate start)
 - Harder to package as a self-contained application
+- External dependency on Python/pip or Node.js/npm
 - Browser tab can be accidentally closed; no system tray integration
-- No native file dialogs without extra libraries
 
-**Risk**: MEDIUM — more architectural pieces to coordinate, but each is
-simple individually.
+**Risk**: MEDIUM — more architectural pieces to coordinate.
 
-**Reward**: MEDIUM — lighter than Electron but more operationally complex.
+**Reward**: MEDIUM — lighter than Electron but more operationally complex
+than the Lush-native Option D.
 
 ---
 
@@ -177,47 +282,74 @@ graphics subsystem, with compiled C extensions for performance.
 
 ## Recommendation
 
-**Option B (Cytoscape.js + Electron)** is the clear winner on risk/reward.
+**Option D (Lush HTTP Server + Cytoscape.js)** is the recommended approach.
 
-| Criterion            | A (Gephi TK) | B (Electron) | C (Plugin) | D (Web App) | E (X11) |
-|----------------------|:---:|:---:|:---:|:---:|:---:|
-| Interactive graph viz | Must build | Built-in | Built-in | Built-in | Must build |
-| Lasso selection      | Must build | Plugin | Built-in | Plugin | Must build |
-| Statistical testing  | Must build | Reuse D3 JS | Must build | Reuse D3 JS | Must build |
-| SQLite integration   | Good | Good | Limited | Good | Must build |
-| Process management   | Manual | Native | Awkward | Via server | Native |
-| Multi-graph tabs     | Must build | Trivial | Plugin | Trivial | Must build |
-| Packaging            | JAR | Electron | Gephi install | Multiple | Single binary |
-| Dev speed            | Slow | Fast | Medium | Medium | Very slow |
-| Code reuse from D3   | None | High | None | High | None |
-| Risk                 | High | Low-Med | Med-High | Medium | Very High |
-| Reward               | Medium | High | Medium | Medium | Low |
+It provides the same browser-side visualization capabilities as Option B
+(Cytoscape.js, lasso selection, statistical testing, tabbed multi-graph) but
+with zero external dependencies and tight Lush integration. The HTTP server
+layer is minimal (~200-300 lines of Lush) because we only need to serve
+localhost with a handful of static files and JSON endpoints.
+
+Option B (Electron) remains a solid fallback if the Lush HTTP server proves
+insufficient for any reason, since the browser-side code is identical — the
+only difference is what serves it.
+
+| Criterion            | A (Gephi TK) | B (Electron) | C (Plugin) | D (Lush HTTP) | D-alt (Flask) | E (X11) |
+|----------------------|:---:|:---:|:---:|:---:|:---:|:---:|
+| Interactive graph viz | Must build | Built-in | Built-in | Built-in | Built-in | Must build |
+| Lasso selection      | Must build | Plugin | Built-in | Plugin | Plugin | Must build |
+| Statistical testing  | Must build | Reuse JS | Must build | Reuse JS | Reuse JS | Must build |
+| SQLite integration   | Good | Good | Limited | Native | Good | Must build |
+| Process management   | Manual | Native | Awkward | Native | Via server | Native |
+| Multi-graph tabs     | Must build | Trivial | Plugin | Trivial | Trivial | Must build |
+| External deps        | JVM | Electron/Node | Gephi | **None** | Python/Node | X11 |
+| Packaging            | JAR | Electron | Gephi install | **Lush pkg** | Multiple | Single binary |
+| Dev speed            | Slow | Fast | Medium | Fast | Medium | Very slow |
+| Code reuse from D3   | None | High | None | High | High | None |
+| Lush integration     | None | Fork | None | **Same process** | Fork | Native |
+| Risk                 | High | Low-Med | Med-High | **Low** | Medium | Very High |
+| Reward               | Medium | High | Medium | **High** | Medium | Low |
 
 ---
 
-## Detailed Design: Option B (Cytoscape.js + Electron)
+## Detailed Design: Option D (Lush HTTP Server + Cytoscape.js)
 
 ### System Architecture
 
 ```
-+------------------+          +-------------------+
-|                  |          |                   |
-|   Lush REPL      |  SQLite  |   Electron App    |
-|   (mapper runs)  |<-------->|   (visualization) |
-|                  |  .db     |                   |
-+------------------+  file    +-------------------+
-        |                            |
-        |  fork                      |  fork
-        v                            v
-+------------------+          +------------------+
-| Lush child       |          | Lush child       |
-| (mapper run from |  write   | (mapper run from |
-|  CLI)            |--------->|  viz tool)       |
-+------------------+  to DB   +------------------+
++------------------------------------------------------+
+|  Lush Process (main)                                 |
+|                                                      |
+|  +------------------+     +---------------------+   |
+|  | Mapper Engine     |     | HTTP Server         |   |
+|  | - mapper-run      |     | - socketaccept 8765 |   |
+|  | - mapper-db-run   |     | - serves static JS  |   |
+|  +--------+---------+     | - serves JSON APIs  |   |
+|           |               +----------+----------+   |
+|           v                          |              |
+|  +-----------------------------------+---+          |
+|  |         SQLite Database (.db)         |          |     +----------+
+|  +---------------------------------------+          |     | Browser  |
+|                                                     |<--->| Cyto.js  |
++-----------------------------------------------------+     +----------+
+        |                                          HTTP
+        |  fork (for long-running mapper jobs)  localhost:8765
+        v
++------------------+
+| Lush child       |
+| (mapper run      |
+|  writes to DB,   |
+|  then exits)     |
++------------------+
 ```
 
-All communication flows through a single SQLite database file. No sockets,
-no IPC, no shared memory. SQLite's file-level locking handles concurrency.
+The Lush process serves dual roles: mapper computation engine and HTTP server.
+The browser talks to Lush over HTTP on localhost. SQLite is the persistence
+layer — the HTTP server reads it to serve JSON, mapper writes results to it.
+
+For quick mapper runs, the main Lush process can run mapper directly. For
+longer runs (or runs triggered from the browser UI), a child Lush process is
+forked so the HTTP server remains responsive.
 
 ### Component 1: packages/sqlite — Lush SQLite Binding
 
@@ -375,10 +507,11 @@ CREATE TABLE display_state (
 );
 ```
 
-**Concurrency model**: Lush writes, Electron reads. For mapper runs launched
-from the viz tool, a child Lush process writes. SQLite WAL mode allows
-concurrent readers with one writer. The viz tool polls `display_state` and
-`mapper_runs` every ~5 seconds.
+**Concurrency model**: The main Lush process is the only writer for most
+operations. For mapper runs triggered from the browser, a child Lush process
+writes results. SQLite WAL mode allows the main process to keep reading while
+a child writes. The browser polls the HTTP server's JSON endpoints, which in
+turn query SQLite.
 
 ### Component 3: Mapper SQLite Integration (packages/mapper changes)
 
@@ -402,22 +535,103 @@ to) HTML:
 (mapper-db-run db dataset-id ...)
 ```
 
-### Component 4: Electron Visualization App
+### Component 4: Lush HTTP Server (packages/httpd)
+
+A minimal HTTP/1.0 server implemented in Lush, using the existing socket
+primitives. This is a general-purpose package, reusable beyond mapper.
+
+```
+packages/httpd/
+  httpd.lsh              ; HTTP server: listen, accept, parse, respond
+  httpd-static.lsh       ; Static file serving (with MIME types)
+  httpd-json.lsh         ; JSON serialization helpers for API responses
+```
+
+**Core implementation** (~200-300 lines of Lush):
+
+```lisp
+;; Start server on a port, with a route dispatch table
+(de httpd-start (port routes)
+  (let ((listen-sock (socketaccept port)))
+    (when (not listen-sock)
+      (error "httpd" "cannot bind port" port))
+    (printf "Mapper visualization: http://localhost:%d\n" port)
+    ;; Event loop: accept connection, handle request, close
+    (while t
+      (socketaccept listen-sock 'fin 'fout)
+      (let* ((request (httpd-parse-request fin))
+             (method  (car request))
+             (path    (cadr request))
+             (handler (httpd-find-route routes method path)))
+        (if handler
+            (handler fin fout request)
+          (httpd-send-404 fout path)))
+      ;; Close connection (HTTP/1.0 style)
+      (close fin)
+      (close fout))))
+
+;; Parse an HTTP request line + headers
+;; Returns (method path headers body)
+(de httpd-parse-request (fin)
+  (reading fin
+    (let* ((line (read-string))           ; "GET /api/graphs HTTP/1.1"
+           (parts (split-string line " "))
+           (method (car parts))
+           (path (cadr parts))
+           (headers (httpd-read-headers))
+           (body (when (= method "POST")
+                   (httpd-read-body headers))))
+      (list method path headers body))))
+
+;; Send a JSON response
+(de httpd-send-json (fout json-string)
+  (writing fout
+    (printf "HTTP/1.0 200 OK\r\n")
+    (printf "Content-Type: application/json\r\n")
+    (printf "Content-Length: %d\r\n" (len json-string))
+    (printf "Access-Control-Allow-Origin: *\r\n")
+    (printf "\r\n")
+    (printf "%s" json-string)
+    (flush)))
+
+;; Send a static file
+(de httpd-send-file (fout filepath mime-type)
+  (let ((content (read-file filepath)))
+    (writing fout
+      (printf "HTTP/1.0 200 OK\r\n")
+      (printf "Content-Type: %s\r\n" mime-type)
+      (printf "Content-Length: %d\r\n" (len content))
+      (printf "\r\n")
+      (printf "%s" content)
+      (flush))))
+```
+
+The server handles one request at a time. This is fine because:
+- Only one client (the local browser) connects
+- Requests are fast (SQLite reads, static file serves)
+- Long-running mapper jobs are forked as child processes
+- Browser uses `fetch()` with async/await, so it doesn't block on slow responses
+
+### Component 5: Browser UI (static files served by Lush)
 
 ```
 packages/mapper/viz/
-  package.json
-  main.js                 ; Electron main process
-  preload.js              ; Bridge between main and renderer
-  renderer/
-    index.html            ; Main window
-    app.js                ; Application logic
-    graph-view.js         ; Cytoscape.js graph rendering
-    stats-panel.js        ; Statistical comparison panel
-    run-config.js         ; New mapper run configuration UI
-    db.js                 ; SQLite database access
-    styles.css
+  index.html            ; Main page (single-page application)
+  app.js                ; Application logic, API client, tab management
+  graph-view.js         ; Cytoscape.js graph rendering and interaction
+  stats-panel.js        ; Statistical comparison panel (ported from D3 viz)
+  run-config.js         ; New mapper run configuration dialog
+  styles.css            ; Styling
+  lib/
+    cytoscape.min.js    ; Cytoscape.js (vendored, ~1MB)
+    cytoscape-lasso.js  ; Lasso selection plugin (vendored, ~10KB)
+    cytoscape-fcose.js  ; Force-directed layout plugin (vendored, ~50KB)
 ```
+
+These files are served by the Lush HTTP server as static assets. No build
+step, no npm, no bundler — just plain JS files loaded by the browser. The
+Cytoscape.js library and plugins are vendored (checked into the repo) so
+there are zero runtime dependencies beyond a web browser.
 
 **Main Window Layout**:
 ```
@@ -472,59 +686,73 @@ packages/mapper/viz/
    - Export selected node members as a subset for re-analysis
    - Export graph as image (PNG/SVG)
 
-5. **New Mapper Run from Viz Tool**
+5. **New Mapper Run from Browser**
    - Configuration dialog with:
-     - Dataset selection (from DB or load new CSV)
+     - Dataset selection (from DB or upload new CSV)
      - Metric selection (all options from metrics.lsh)
      - Lens selection (L-inf centrality, PCA, etc.)
      - Clustering method (slink / dbscan)
      - Parameters (n_cubes, overlap, eps, min_pts)
      - Column selection (top-N by variance, or manual selection)
    - On submit:
-     1. Write `mapper_runs` record with status='pending'
-     2. Fork a Lush child process:
-        `lush -e '(progn (load "packages/mapper/mapper.lsh")
-                         (mapper-db-run "/path/to/project.db" <run-id>))'`
-     3. Child process: reads params from DB, runs mapper, writes graph to DB,
+     1. Browser POSTs to `/api/run` with parameters
+     2. Lush HTTP handler writes `mapper_runs` record with status='pending'
+     3. Lush forks a child process:
+        `(sys (sprintf "lush -e '(progn (load ...) (mapper-db-run \"%s\" %d))' &"
+              db-path run-id))`
+     4. Child process: reads params from DB, runs mapper, writes graph to DB,
         sets status='completed', inserts into display_state, exits
-     4. Viz tool polls `mapper_runs` and `display_state`, sees new graph, opens tab
+     5. Browser polls `/api/run/:id/status` and `/api/graphs`, sees new graph,
+        opens tab
 
-6. **Database Polling Loop** (in main process)
+6. **Browser Polling Loop**
    ```javascript
-   setInterval(() => {
+   setInterval(async () => {
      // Check for new active graphs
-     const active = db.prepare(
-       `SELECT g.id, r.name FROM graphs g
-        JOIN display_state d ON g.id = d.graph_id
-        JOIN mapper_runs r ON g.run_id = r.id
-        WHERE d.active = 1`
-     ).all();
+     const resp = await fetch('/api/graphs?active=1');
+     const graphs = await resp.json();
      // Compare with currently open tabs, open new ones
-     // Check for completed mapper runs
-     const completed = db.prepare(
-       `SELECT id, name FROM mapper_runs
-        WHERE status = 'completed' AND id NOT IN
-        (SELECT run_id FROM graphs)`
-     ).all();
-     // ... handle new completions
+     for (const g of graphs) {
+       if (!openTabs.has(g.id)) openTab(g);
+     }
+     // Check status of pending mapper runs
+     for (const runId of pendingRuns) {
+       const status = await fetch(`/api/run/${runId}/status`);
+       // ... handle completions and errors
+     }
    }, 5000);
    ```
 
-### Component 5: Launcher Integration
+### Component 6: Launcher Integration
 
 From the Lush REPL:
 ```lisp
-;; Start the visualization tool, pointing at a project database
+;; Open a project and start the visualization server
 (mapper-viz-start "/path/to/project.db")
 
-;; This forks the Electron process and returns immediately
-;; The Lush REPL stays active for further work
+;; This:
+;; 1. Opens the SQLite database
+;; 2. Starts the HTTP server on an available port (e.g., 8765)
+;; 3. Opens the system browser: xdg-open http://localhost:8765
+;; 4. Enters the HTTP server event loop
+;;
+;; The REPL is occupied while the server runs. Press Ctrl-C to stop.
+;; Alternatively, run in background:
+
+(mapper-viz-start-bg "/path/to/project.db")
+
+;; This forks a child Lush process running the HTTP server,
+;; returns immediately so the REPL stays available for interactive work.
+;; The child Lush process has mapper loaded and serves the viz UI.
 ```
 
-Implementation: `(sys "packages/mapper/viz/start.sh /path/to/project.db &")`
+**Standalone launch** (no REPL):
+```bash
+$ lush -e '(progn (load "packages/mapper/mapper.lsh") \
+                  (mapper-viz-start "/path/to/project.db"))'
+```
 
-From the Electron app: the app can be launched standalone (double-click or
-command line), opening a file dialog to select or create a project database.
+This gives a clean operational model: one command starts everything.
 
 ---
 
@@ -540,7 +768,18 @@ Foundation that everything else depends on.
 4. Test: create DB, create table, insert, query, transactions
 5. Test concurrent access (Lush writer + external reader)
 
-### Phase 2: Mapper-SQLite Integration
+### Phase 2: HTTP Server Package (packages/httpd)
+
+The minimal HTTP server layer.
+
+1. Implement HTTP request parsing (method, path, headers, body)
+2. Implement response helpers (send-json, send-file, send-404)
+3. Implement route dispatch table (method + path pattern -> handler)
+4. Implement static file serving with MIME type detection
+5. Implement JSON serialization helpers (Lush lists/values -> JSON strings)
+6. Test: serve a static HTML page, serve a JSON endpoint, verify in browser
+
+### Phase 3: Mapper-SQLite Integration
 
 Wire mapper output into SQLite.
 
@@ -550,101 +789,131 @@ Wire mapper output into SQLite.
 4. Implement `mapper-db-run` (read params from DB, run, write results)
 5. Test: run demo-nki, store to DB, verify data integrity
 
-### Phase 3: Electron App — Core Visualization
+### Phase 4: Browser UI — Core Visualization
 
-Get the basic graph display working.
+Get the basic graph display working in the browser.
 
-1. Set up Electron project with Cytoscape.js and better-sqlite3
-2. Implement DB reader (load graph from SQLite, convert to Cytoscape elements)
-3. Implement graph rendering with node size/color mapping
+1. Write index.html with Cytoscape.js (vendored, no build step)
+2. Implement `/api/graphs` and `/api/graph/:id` Lush HTTP handlers
+3. Implement graph rendering with node size/color mapping in Cytoscape.js
 4. Implement zoom, pan, and basic node selection
-5. Implement polling loop for new graphs
-6. Test: store graph from Lush, see it appear in Electron app
+5. Implement browser polling for new graphs
+6. Wire up `mapper-viz-start` to open the browser
+7. Test: run demo-nki, store to DB, call mapper-viz-start, see graph in browser
 
-### Phase 4: Electron App — Interaction & Statistics
+### Phase 5: Browser UI — Interaction & Statistics
 
 Add the analytical capabilities.
 
-1. Implement lasso selection (cytoscape-lasso plugin)
-2. Implement Group A/B assignment and persistence
-3. Port statistical tests from visualize.lsh JavaScript
+1. Integrate cytoscape-lasso plugin for freeform node selection
+2. Implement Group A/B assignment UI and persistence via `/api/label`
+3. Port statistical tests from current visualize.lsh JavaScript
 4. Implement comparison panel with sortable results table
-5. Implement dynamic re-coloring by feature
+5. Implement dynamic re-coloring by feature (via `/api/dataset/:id/cols`)
 6. Implement data export (CSV with labels, PNG/SVG graph)
 
-### Phase 5: Electron App — Mapper Runner
+### Phase 6: Browser UI — Mapper Runner
 
-Enable launching mapper from the viz tool.
+Enable launching mapper from the browser.
 
-1. Implement run configuration dialog
-2. Implement dataset import from CSV (parse, store to DB)
-3. Implement Lush process forking with correct arguments
-4. Implement run status monitoring (poll mapper_runs.status)
-5. Implement automatic tab opening on run completion
-6. Test: configure run in UI, see graph appear when done
+1. Implement run configuration dialog (HTML form)
+2. Implement CSV upload via HTML file input + POST to `/api/dataset`
+3. Implement `/api/run` POST handler that forks a child Lush process
+4. Implement `/api/run/:id/status` handler for monitoring
+5. Implement automatic tab opening on run completion (browser polls)
+6. Test: configure run in browser, see graph appear when done
 
-### Phase 6: Polish & Packaging
+### Phase 7: Polish
 
-1. Graph browser (reopen closed graphs from DB)
-2. Project metadata display
+1. Graph browser dialog (reopen closed graphs from DB)
+2. `mapper-viz-start-bg` for background server (returns REPL to user)
 3. Column selection UI for datasets
 4. Error handling and user feedback
-5. Electron packaging (electron-builder for Linux/macOS)
-6. Documentation
+5. Documentation
 
 ---
 
 ## Key Design Decisions
 
-### Why SQLite for Communication (not sockets/pipes)?
+### Why Lush as the HTTP server (not Flask/Node/Electron)?
 
-1. **Persistence for free** — the communication channel IS the storage
-2. **Crash-resilient** — if either process dies, no orphaned connections
+1. **Zero external dependencies** — no Python, no Node.js, no JVM, no npm
+2. **Single ecosystem** — everything is Lush packages, one build system
+3. **Natural integration** — mapper engine and server share the same process;
+   the server can directly query the SQLite DB it just wrote to
+4. **Lush already has sockets** — `socketaccept`, `socketselect`, `read-string`,
+   `write8` are all built in; `bin/lushsocket` proves the pattern works
+5. **The HTTP subset needed is tiny** — serve ~5 static files and ~5 JSON
+   endpoints on localhost; no TLS, no authentication, no routing framework
+6. **Operationally simple** — one command starts everything; no separate
+   process to install, configure, or manage
+
+### Why SQLite for persistence?
+
+1. **Persistence for free** — project state survives process restarts
+2. **Crash-resilient** — no orphaned connections or corrupted state
 3. **Debuggable** — can inspect state with `sqlite3` CLI at any time
-4. **No protocol design** — schema IS the protocol
-5. **Concurrency handled** — WAL mode handles reader/writer safely
-6. **Language-agnostic** — C (Lush), JavaScript (Electron), Python all speak SQLite
+4. **Schema IS the protocol** — no separate serialization format to maintain
+5. **Concurrency handled** — WAL mode allows concurrent readers with one writer
+6. **Cross-process** — forked child Lush processes write results to the same DB
 
-### Why Electron over a Java thick client?
+### Why Cytoscape.js in a browser (not D3 or native X11)?
 
-1. **Cytoscape.js** provides interactive graph visualization that we'd have to
-   build from scratch in Java (gephi-toolkit excludes the rendering engine)
-2. **Code reuse** — our existing D3 statistical tests port directly to JS
-3. **Development speed** — HTML/CSS for UI is dramatically faster than Swing/JavaFX
-4. **Packaging** — Electron apps are self-contained; Java needs a JRE
+1. **Purpose-built for graphs** — Cytoscape.js is a graph visualization
+   library, not a general-purpose drawing library like D3
+2. **Interactive features built in** — zoom, pan, box select, node/edge events
+3. **Lasso plugin exists** — freeform selection is a one-line integration
+4. **Layout algorithms** — fcose, cola, dagre, elk — all available as plugins
+5. **Code reuse** — existing statistical test JS from visualize.lsh ports directly
+6. **UI development speed** — HTML/CSS for tables, tabs, forms is trivial
 
 ### Why not extend the existing D3 HTML approach?
 
 The D3 HTML files are static snapshots. To add persistence, multi-graph
-management, and process launching, we'd need a server anyway — at which point
-we're building Option B or D. The current D3 approach remains valuable as a
-quick-look export and should be preserved.
+management, and process launching, we need a server — which is what Option D
+provides. The current D3 approach remains valuable as a quick-look export
+and should be preserved alongside the new tool.
 
 ### Data storage: matrix in SQLite vs. blob?
 
-The schema above stores matrix values as individual rows in `dataset_values`.
+The schema stores matrix values as individual rows in `dataset_values`.
 For a 272x500 matrix that's 136,000 rows — SQLite handles this trivially
 (~5MB). This allows SQL queries over the data (e.g., "get column 3 for rows
 in node 7"). For very large datasets (>100K rows x 10K cols), we could switch
 to storing columns as BLOBs (packed float64 arrays), but this is a premature
 optimization. Start with the row-per-value approach for simplicity.
 
+### Single-threaded HTTP server: is it fast enough?
+
+Yes. The server handles one request at a time, which is fine because:
+- Only one client connects (the local browser)
+- Static file serves are instant (read file, write to socket)
+- JSON API responses are fast SQLite reads (~1ms for typical queries)
+- Long-running mapper jobs are forked as child processes, not run in-line
+- The browser uses async `fetch()`, so it doesn't block waiting for the server
+- A typical interaction involves ~1 request per second at most
+
+If we ever needed concurrency (unlikely for a single-user tool), Lush's
+`socketselect` could support a non-blocking event loop, but the simple
+blocking model is correct for this use case.
+
 ---
 
 ## Dependencies
 
-**Lush side**:
-- sqlite3 amalgamation (public domain, vendored, ~250KB source)
-- No new system dependencies
+**Lush side (all vendored, zero system dependencies)**:
+- sqlite3 amalgamation (public domain, ~250KB C source, ~7MB compiled)
+- No new system packages to install
 
-**Electron side**:
-- Node.js (for development and electron-builder)
-- Electron (~150MB bundled app size)
-- cytoscape (~1MB)
-- cytoscape-lasso (~10KB)
-- cytoscape-fcose (layout, ~50KB)
-- better-sqlite3 (native Node.js SQLite binding, fast, synchronous)
-- Packaging: electron-builder
+**Browser side (all vendored in packages/mapper/viz/lib/)**:
+- cytoscape.min.js (~1MB, MIT license)
+- cytoscape-lasso.js (~10KB, MIT license)
+- cytoscape-fcose.js (~50KB, MIT license)
+- No npm, no build step, no CDN — plain JS files served by Lush
+
+**Runtime requirements**:
+- A web browser (any modern browser: Firefox, Chrome, etc.)
+- That's it.
 
 ---
 
@@ -652,9 +921,10 @@ optimization. Start with the row-per-value approach for simplicity.
 
 | Risk | Mitigation |
 |------|------------|
+| Lush HTTP parsing edge cases | Only handle GET and POST; only serve localhost; test with major browsers |
 | SQLite contention under heavy writes | WAL mode + busy timeout; only one writer at a time by design |
-| Electron memory usage | One Cytoscape instance per active tab; lazy-load graph data |
 | Large datasets slow to store/load | Batch INSERT with transactions; consider BLOB storage if needed |
-| Lush child process failures | Write error to mapper_runs.error_message; viz tool shows error state |
-| Cytoscape.js performance with very large graphs | Limit display to ~5000 nodes; offer filtering; use WebGL renderer extension if needed |
-| Electron packaging complexity | Use electron-builder; test on Linux first (our primary platform) |
+| Lush child process failures | Write error to mapper_runs.error_message; browser shows error state |
+| Cytoscape.js perf with very large graphs | Limit display to ~5000 nodes; offer filtering; use WebGL renderer extension if needed |
+| Browser tab accidentally closed | Just reopen the URL; all state is in SQLite, nothing is lost |
+| Lush server blocks during request | Keep handlers fast (SQLite reads); fork long-running jobs; use socketselect if ever needed |
