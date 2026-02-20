@@ -48,8 +48,14 @@
 /* Define to 1 if you have the <dirent.h> header file. */
 #undef HAVE_DIRENT_H
 
+/* Define to 1 if C symbols have a leading underscore */
+#undef C_SYMBOLS_HAVE_UNDERSCORE
+
 /* Define to 1 if you have the <dlfcn.h> header file. */
 #undef HAVE_DLFCN_H
+
+/* Define to 1 if using dlopen-based dynamic loader */
+#undef HAVE_DLDDLOPEN
 
 /* Define to 1 if you have the `dlopen' function. */
 #undef HAVE_DLOPEN
@@ -59,6 +65,9 @@
 
 /* Define to 1 if you have the <fenv.h> header file. */
 #undef HAVE_FENV_H
+
+/* Command to create a loadable shared library from .o files */
+#undef MAKE_LOADABLE
 
 /* Define to 1 if you have the `flockfile' function. */
 #undef HAVE_FLOCKFILE

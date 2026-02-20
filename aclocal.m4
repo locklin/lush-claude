@@ -406,8 +406,35 @@ AC_DEFUN([AC_PATH_FONTCONFIG], [
   if test x$ac_cv_cc_fontconfig = xyes ; then
     AC_DEFINE(HAVE_FONTCONFIG,1, [Define to 1 if you have the "fontconfig" library.])
     ifelse([$1],,:,[$1])
-  else 
+  else
     ifelse([$2],,:,[$2])
   fi
+])
+
+dnl -------------------------------------------------------
+dnl @synopsis AC_C_UNDERSCORE_SYMBOLS
+dnl Checks whether external c symbols have a leading
+dnl underscore. Defines C_SYMBOLS_HAVE_UNDERSCORE if yes.
+dnl -------------------------------------------------------
+
+AC_DEFUN([AC_C_UNDERSCORE_SYMBOLS],
+  [AC_CACHE_CHECK([if C symbols have leading underscores],
+    [ac_cv_c_underscore_symbols],
+    [AC_LANG_PUSH([C])
+     AC_COMPILE_IFELSE(
+       [AC_LANG_PROGRAM([[int test_symbol(void) { return 0; }]], [[]])],
+       [if nm conftest.$ac_objext | grep _test_symbol >/dev/null 2>&1; then
+          ac_cv_c_underscore_symbols=yes
+        elif nm conftest.$ac_objext | grep test_symbol >/dev/null 2>&1; then
+          ac_cv_c_underscore_symbols=no
+        else
+          ac_cv_c_underscore_symbols=unknown
+        fi],
+       [ac_cv_c_underscore_symbols=unknown])
+     AC_LANG_POP([C])])
+   if test "$ac_cv_c_underscore_symbols" = yes; then
+     AC_DEFINE([C_SYMBOLS_HAVE_UNDERSCORE], [1],
+       [Define to 1 if C symbols have a leading underscore])
+   fi
 ])
 

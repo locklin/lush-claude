@@ -60,4 +60,5 @@
   { "MAKESO", "@MAKESO@" }, \
   { "EXEEXT", "@EXEEXT@" }, \
   { "OBJEXT", "@OBJEXT@" }, \
-  { "SOEXT", "@SOEXT@" }
+  { "SOEXT", "@SOEXT@" }, \
+  { "MAKELOADABLE", "@MAKELOADABLE@" }

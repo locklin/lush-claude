@@ -29,9 +29,9 @@
 
 #define LUSH_MAKE_MACROS \
   { "SHELL", "/bin/bash" }, \
-  { "OPTS", "-DNO_DEBUG -Wall -O3 -march=native" }, \
+  { "OPTS", "-DNO_DEBUG -Wall -O3 -march=native -fno-pie -no-pie" }, \
   { "DEFS", "-DHAVE_CONFIG_H" }, \
-  { "LIBS", "-lreadline -lcurses -lutil -ldl -lm " }, \
+  { "LIBS", "-lreadline -lcurses -lbfd -lutil -lm " }, \
   { "host", "x86_64-unknown-linux-gnu" }, \
   { "CPP", "gcc -E" }, \
   { "CPPFLAGS", "" }, \
@@ -60,4 +60,5 @@
   { "MAKESO", "g++ -shared -o" }, \
   { "EXEEXT", "" }, \
   { "OBJEXT", "o" }, \
-  { "SOEXT", "so" }
+  { "SOEXT", "so" }, \
+  { "MAKELOADABLE", "g++ -shared -fPIC -o" }

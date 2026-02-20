@@ -651,8 +651,8 @@ ac_header_c_list=
 ac_func_c_list=
 ac_subst_vars='LTLIBOBJS
 LIB@&t@OBJS
-WIN32_YES
 UNIX_YES
+MAKELOADABLE
 MAKESO
 CC_PIC_FLAG
 CC_EXP_FLAG
@@ -1720,39 +1720,6 @@ fi
 
 } @%:@ ac_fn_c_try_link
 
-@%:@ ac_fn_c_check_header_compile LINENO HEADER VAR INCLUDES
-@%:@ -------------------------------------------------------
-@%:@ Tests whether HEADER exists and can be compiled using the include files in
-@%:@ INCLUDES, setting the cache variable VAR accordingly.
-ac_fn_c_check_header_compile ()
-{
-  as_lineno=${as_lineno-"$1"} as_lineno_stack=as_lineno_stack=$as_lineno_stack
-  { printf "%s\n" "$as_me:${as_lineno-$LINENO}: checking for $2" >&5
-printf %s "checking for $2... " >&6; }
-if eval test \${$3+y}
-then :
-  printf %s "(cached) " >&6
-else $as_nop
-  cat confdefs.h - <<_ACEOF >conftest.$ac_ext
-/* end confdefs.h.  */
-$4
-@%:@include <$2>
-_ACEOF
-if ac_fn_c_try_compile "$LINENO"
-then :
-  eval "$3=yes"
-else $as_nop
-  eval "$3=no"
-fi
-rm -f core conftest.err conftest.$ac_objext conftest.beam conftest.$ac_ext
-fi
-eval ac_res=\$$3
-	       { printf "%s\n" "$as_me:${as_lineno-$LINENO}: result: $ac_res" >&5
-printf "%s\n" "$ac_res" >&6; }
-  eval $as_lineno_stack; ${as_lineno_stack:+:} unset as_lineno
-
-} @%:@ ac_fn_c_check_header_compile
-
 @%:@ ac_fn_c_check_func LINENO FUNC VAR
 @%:@ ----------------------------------
 @%:@ Tests whether FUNC exists, setting the cache variable VAR accordingly
@@ -1814,6 +1781,39 @@ printf "%s\n" "$ac_res" >&6; }
   eval $as_lineno_stack; ${as_lineno_stack:+:} unset as_lineno
 
 } @%:@ ac_fn_c_check_func
+
+@%:@ ac_fn_c_check_header_compile LINENO HEADER VAR INCLUDES
+@%:@ -------------------------------------------------------
+@%:@ Tests whether HEADER exists and can be compiled using the include files in
+@%:@ INCLUDES, setting the cache variable VAR accordingly.
+ac_fn_c_check_header_compile ()
+{
+  as_lineno=${as_lineno-"$1"} as_lineno_stack=as_lineno_stack=$as_lineno_stack
+  { printf "%s\n" "$as_me:${as_lineno-$LINENO}: checking for $2" >&5
+printf %s "checking for $2... " >&6; }
+if eval test \${$3+y}
+then :
+  printf %s "(cached) " >&6
+else $as_nop
+  cat confdefs.h - <<_ACEOF >conftest.$ac_ext
+/* end confdefs.h.  */
+$4
+@%:@include <$2>
+_ACEOF
+if ac_fn_c_try_compile "$LINENO"
+then :
+  eval "$3=yes"
+else $as_nop
+  eval "$3=no"
+fi
+rm -f core conftest.err conftest.$ac_objext conftest.beam conftest.$ac_ext
+fi
+eval ac_res=\$$3
+	       { printf "%s\n" "$as_me:${as_lineno-$LINENO}: result: $ac_res" >&5
+printf "%s\n" "$ac_res" >&6; }
+  eval $as_lineno_stack; ${as_lineno_stack:+:} unset as_lineno
+
+} @%:@ ac_fn_c_check_header_compile
 
 @%:@ ac_fn_c_check_type LINENO TYPE VAR INCLUDES
 @%:@ -------------------------------------------
@@ -5876,7 +5876,7 @@ INDENT=$ac_cv_path_INDENT
 # Libraries
 # ----------------------------------------
 
-# misc
+# misc libraries
 { printf "%s\n" "$as_me:${as_lineno-$LINENO}: checking for sqrt in -lm" >&5
 printf %s "checking for sqrt in -lm... " >&6; }
 if test ${ac_cv_lib_m_sqrt+y}
@@ -5917,49 +5917,6 @@ then :
   printf "%s\n" "@%:@define HAVE_LIBM 1" >>confdefs.h
 
   LIBS="-lm $LIBS"
-
-fi
-
-{ printf "%s\n" "$as_me:${as_lineno-$LINENO}: checking for dlopen in -ldl" >&5
-printf %s "checking for dlopen in -ldl... " >&6; }
-if test ${ac_cv_lib_dl_dlopen+y}
-then :
-  printf %s "(cached) " >&6
-else $as_nop
-  ac_check_lib_save_LIBS=$LIBS
-LIBS="-ldl  $LIBS"
-cat confdefs.h - <<_ACEOF >conftest.$ac_ext
-/* end confdefs.h.  */
-
-/* Override any GCC internal prototype to avoid an error.
-   Use char because int might match the return type of a GCC
-   builtin and then its argument prototype would still apply.  */
-char dlopen ();
-int
-main (void)
-{
-return dlopen ();
-  ;
-  return 0;
-}
-_ACEOF
-if ac_fn_c_try_link "$LINENO"
-then :
-  ac_cv_lib_dl_dlopen=yes
-else $as_nop
-  ac_cv_lib_dl_dlopen=no
-fi
-rm -f core conftest.err conftest.$ac_objext conftest.beam \
-    conftest$ac_exeext conftest.$ac_ext
-LIBS=$ac_check_lib_save_LIBS
-fi
-{ printf "%s\n" "$as_me:${as_lineno-$LINENO}: result: $ac_cv_lib_dl_dlopen" >&5
-printf "%s\n" "$ac_cv_lib_dl_dlopen" >&6; }
-if test "x$ac_cv_lib_dl_dlopen" = xyes
-then :
-  printf "%s\n" "@%:@define HAVE_LIBDL 1" >>confdefs.h
-
-  LIBS="-ldl $LIBS"
 
 fi
 
@@ -6007,8 +5964,109 @@ then :
 fi
 
 
+# dlopen
+has_dlopen=no
+{ printf "%s\n" "$as_me:${as_lineno-$LINENO}: checking for dlopen in -ldl" >&5
+printf %s "checking for dlopen in -ldl... " >&6; }
+if test ${ac_cv_lib_dl_dlopen+y}
+then :
+  printf %s "(cached) " >&6
+else $as_nop
+  ac_check_lib_save_LIBS=$LIBS
+LIBS="-ldl  $LIBS"
+cat confdefs.h - <<_ACEOF >conftest.$ac_ext
+/* end confdefs.h.  */
+
+/* Override any GCC internal prototype to avoid an error.
+   Use char because int might match the return type of a GCC
+   builtin and then its argument prototype would still apply.  */
+char dlopen ();
+int
+main (void)
+{
+return dlopen ();
+  ;
+  return 0;
+}
+_ACEOF
+if ac_fn_c_try_link "$LINENO"
+then :
+  ac_cv_lib_dl_dlopen=yes
+else $as_nop
+  ac_cv_lib_dl_dlopen=no
+fi
+rm -f core conftest.err conftest.$ac_objext conftest.beam \
+    conftest$ac_exeext conftest.$ac_ext
+LIBS=$ac_check_lib_save_LIBS
+fi
+{ printf "%s\n" "$as_me:${as_lineno-$LINENO}: result: $ac_cv_lib_dl_dlopen" >&5
+printf "%s\n" "$ac_cv_lib_dl_dlopen" >&6; }
+if test "x$ac_cv_lib_dl_dlopen" = xyes
+then :
+  has_dlopen=yes
+fi
+
+ac_fn_c_check_func "$LINENO" "dlopen" "ac_cv_func_dlopen"
+if test "x$ac_cv_func_dlopen" = xyes
+then :
+  has_dlopen=yes
+fi
+
+{ printf "%s\n" "$as_me:${as_lineno-$LINENO}: checking if C symbols have leading underscores" >&5
+printf %s "checking if C symbols have leading underscores... " >&6; }
+if test ${ac_cv_c_underscore_symbols+y}
+then :
+  printf %s "(cached) " >&6
+else $as_nop
+  ac_ext=c
+ac_cpp='$CPP $CPPFLAGS'
+ac_compile='$CC -c $CFLAGS $CPPFLAGS conftest.$ac_ext >&5'
+ac_link='$CC -o conftest$ac_exeext $CFLAGS $CPPFLAGS $LDFLAGS conftest.$ac_ext $LIBS >&5'
+ac_compiler_gnu=$ac_cv_c_compiler_gnu
+
+     cat confdefs.h - <<_ACEOF >conftest.$ac_ext
+/* end confdefs.h.  */
+int test_symbol(void) { return 0; }
+int
+main (void)
+{
+
+  ;
+  return 0;
+}
+_ACEOF
+if ac_fn_c_try_compile "$LINENO"
+then :
+  if nm conftest.$ac_objext | grep _test_symbol >/dev/null 2>&1; then
+          ac_cv_c_underscore_symbols=yes
+        elif nm conftest.$ac_objext | grep test_symbol >/dev/null 2>&1; then
+          ac_cv_c_underscore_symbols=no
+        else
+          ac_cv_c_underscore_symbols=unknown
+        fi
+else $as_nop
+  ac_cv_c_underscore_symbols=unknown
+fi
+rm -f core conftest.err conftest.$ac_objext conftest.beam conftest.$ac_ext
+     ac_ext=c
+ac_cpp='$CPP $CPPFLAGS'
+ac_compile='$CC -c $CFLAGS $CPPFLAGS conftest.$ac_ext >&5'
+ac_link='$CC -o conftest$ac_exeext $CFLAGS $CPPFLAGS $LDFLAGS conftest.$ac_ext $LIBS >&5'
+ac_compiler_gnu=$ac_cv_c_compiler_gnu
+
+fi
+{ printf "%s\n" "$as_me:${as_lineno-$LINENO}: result: $ac_cv_c_underscore_symbols" >&5
+printf "%s\n" "$ac_cv_c_underscore_symbols" >&6; }
+   if test "$ac_cv_c_underscore_symbols" = yes; then
+     
+printf "%s\n" "@%:@define C_SYMBOLS_HAVE_UNDERSCORE 1" >>confdefs.h
+
+   fi
+
+
 # bfd
-require_bfd=yes
+has_bfd=no
+require_bfd=unk
 
 @%:@ Check whether --with-bfd was given.
 if test ${with_bfd+y}
@@ -6017,9 +6075,29 @@ then :
 fi
 
 
-if test x$require_bfd = xno ; then
-    BFD_YES='#'
-else
+case "$host" in
+    *-darwin* | *-macos10* )
+        can_bfd=no ;;
+    i*86* | x86_64* | mips* | alpha* | arm64 )
+        can_bfd=yes ;;
+    *)
+        can_bfd=no ;;
+esac
+if test x$can_bfd = xno ; then
+    if test x$require_bfd = xyes ; then
+	as_fn_error $? "Unable to use BFD on this platform.
+-----------------------------------------------------------------
+The BFD library is unlikely to work on this platform.
+Try with option --without-bfd for a slightly inferior
+but more portable solution.
+-----------------------------------------------------------------" "$LINENO" 5
+    else
+        require_bfd=no
+    fi
+fi
+
+
+if test x$require_bfd != xno ; then
     BFD_YES=''
     has_bfd=yes
     { printf "%s\n" "$as_me:${as_lineno-$LINENO}: checking for xmalloc in -liberty" >&5
@@ -6235,6 +6313,12 @@ else $as_nop
   has_bfd=no
 fi
 
+fi
+
+
+# Check if it compiles
+if test x$has_bfd = xyes ; then
+    n_LIBS=$LIBS
     
  opt="-fno-pie"
  { printf "%s\n" "$as_me:${as_lineno-$LINENO}: checking if $CC accepts $opt" >&5
@@ -6252,12 +6336,6 @@ printf "%s\n" "no" >&6; }
     
  fi
 
-fi
-
-
-# Check if it compiles
-if test x$has_bfd = xyes ; then
-    n_LIBS=$LIBS
     has_intl=
     { printf "%s\n" "$as_me:${as_lineno-$LINENO}: checking for dcgettext in -lintl" >&5
 printf %s "checking for dcgettext in -lintl... " >&6; }
@@ -6477,16 +6555,41 @@ printf "%s\n" "@%:@define HAVE_BFD_SET_SECTION_SIZE_WANTS_3_ARGS 1" >>confdefs.h
 fi
 
 if test x$has_bfd = xno ; then
-    as_fn_error $? "Unable to locate BFD development files.
--------------------------------------------------------------
+    BFD_YES='#'
+    if test x$require_bfd = xyes; then
+	as_fn_error $? "Unable to locate BFD development files.
+-----------------------------------------------------------------
 We were unable to locate required GNU binutils files.
 - Some Linux distributions do not install these by default.
   You need to install the 'libbinutils-devel' package.
 - On other platforms, get GNU binutils on www.fsf.org.
-You can configure Lush to run without these files by using 
-option \"--without-bfd\".  The dynamic loader/linker/compiler 
-will not work and Lush will be seriously crippled.
 -----------------------------------------------------------------" "$LINENO" 5
+    elif test x$has_dlopen = xyes; then
+	
+printf "%s\n" "@%:@define HAVE_DLDDLOPEN 1" >>confdefs.h
+
+	if test x$can_bfd = xyes; then
+	    { printf "%s\n" "$as_me:${as_lineno-$LINENO}: Unable to locate BFD development files.
+-----------------------------------------------------------------
+Using dlopen instead, with a slightly degraded functionality.
+Alternatively, install the 'libbinutils-devel' package,
+or get GNU binutils on www.fsf.org.
+-----------------------------------------------------------------" >&5
+printf "%s\n" "$as_me: Unable to locate BFD development files.
+-----------------------------------------------------------------
+Using dlopen instead, with a slightly degraded functionality.
+Alternatively, install the 'libbinutils-devel' package,
+or get GNU binutils on www.fsf.org.
+-----------------------------------------------------------------" >&6;}
+	fi
+    elif test x$require_bfd != xno; then
+	as_fn_error $? "Unable to use either DLOPEN or BFD
+-------------------------------------------------------------
+Although lush can be compiled Without means to dynamically load
+object files, the experience will be crippled. Please use the
+option --without-bfd to force this to happen.
+-----------------------------------------------------------------" "$LINENO" 5
+    fi
 fi
 
 # x11
@@ -7318,7 +7421,7 @@ printf "%s\n" "$ac_cv_cc_fontconfig" >&6; }
 printf "%s\n" "@%:@define HAVE_FONTCONFIG 1" >>confdefs.h
 
     :
-  else 
+  else
     :
   fi
 
@@ -9149,12 +9252,15 @@ case "$host" in
     *-darwin* | *-macos10* | *-rhapsody*)
         SOEXT=dylib
         MAKESO="$LDCC -bundle -flat_namespace -o"
+        MAKELOADABLE="${MAKESO% -o} -undefined dynamic_lookup -o"
         ;;
     *-solaris*|*-sunos5*)
         test x$GCC != xyes && CC_PIC_FLAG='-KPIC'
         test x$GCC != xyes && MAKESO='$LDCC -Wl,-G -o'
         ;;
 esac
+test -z "$MAKELOADABLE" && MAKELOADABLE="${MAKESO% -o} $CC_PIC_FLAG -o"
+
 
 
 
@@ -9163,8 +9269,6 @@ esac
 
 
 UNIX_YES=''
-WIN32_YES='#'
-
 
 
 
@@ -9173,6 +9277,8 @@ printf "%s\n" "@%:@define EXT_DLL \".$SOEXT\"" >>confdefs.h
 
 printf "%s\n" "@%:@define EXT_OBJ \".$OBJEXT\"" >>confdefs.h
 
+
+printf "%s\n" "@%:@define MAKE_LOADABLE \"$MAKELOADABLE\"" >>confdefs.h
 
 
 # ----------------------------------------

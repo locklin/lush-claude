@@ -34,9 +34,9 @@ srcdir = .
 top_srcdir = ..
 top_builddir = ..
 
-OPTS = -DNO_DEBUG -Wall -O3 -march=native
+OPTS = -DNO_DEBUG -Wall -O3 -march=native -fno-pie -no-pie
 DEFS = -DHAVE_CONFIG_H
-LIBS = -lreadline -lcurses -lutil -ldl -lm 
+LIBS = -lreadline -lcurses -lbfd -lutil -lm 
 host = x86_64-unknown-linux-gnu
 CPP = gcc -E
 CPPFLAGS = 
@@ -85,8 +85,7 @@ OBJS1=allocate.o at.o binary.o calls.o arith.o check_func.o \
 
 OBJS3=unix.o
 OBJS2=x11_driver.o
-#OBJS3=win32.o win_driver.o
-#OBJS4=dldbfd.o
+OBJS4=dldbfd.o
 OBJS5=cpp.o
 
 LUSHFLAGS = ${DEFS} ${OPTS} ${INCS} ${PTHREAD_FLAGS} ${X_CFLAGS}

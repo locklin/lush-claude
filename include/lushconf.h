@@ -49,8 +49,14 @@
 /* Define to 1 if you have the <dirent.h> header file. */
 #define HAVE_DIRENT_H 1
 
+/* Define to 1 if C symbols have a leading underscore */
+/* #undef C_SYMBOLS_HAVE_UNDERSCORE */
+
 /* Define to 1 if you have the <dlfcn.h> header file. */
 #define HAVE_DLFCN_H 1
+
+/* Define to 1 if using dlopen-based dynamic loader */
+/* #undef HAVE_DLDDLOPEN */
 
 /* Define to 1 if you have the `dlopen' function. */
 #define HAVE_DLOPEN 1
@@ -60,6 +66,9 @@
 
 /* Define to 1 if you have the <fenv.h> header file. */
 #define HAVE_FENV_H 1
+
+/* Command to create a loadable shared library from .o files */
+#define MAKE_LOADABLE "g++ -shared -fPIC -o"
 
 /* Define to 1 if you have the `flockfile' function. */
 #define HAVE_FLOCKFILE 1
@@ -113,16 +122,16 @@
 /* #undef HAVE_IEEE_HANDLER */
 
 /* Define to 1 if you have the <inttypes.h> header file. */
-/* #undef HAVE_INTTYPES_H */
+#define HAVE_INTTYPES_H 1
 
 /* Define to 1 if you have the <langinfo.h> header file. */
 #define HAVE_LANGINFO_H 1
 
 /* Define to 1 if you have the `bfd' library (-lbfd). */
-/* #undef HAVE_LIBBFD */
+#define HAVE_LIBBFD 1
 
 /* Define to 1 if you have the `dl' library (-ldl). */
-#define HAVE_LIBDL 1
+/* #undef HAVE_LIBDL */
 
 /* Define to 1 if you have the `iberty' library (-liberty). */
 /* #undef HAVE_LIBIBERTY */
@@ -209,7 +218,7 @@
 #define HAVE_SINCOS 1
 
 /* Define to 1 if you have the <stdint.h> header file. */
-/* #undef HAVE_STDINT_H */
+#define HAVE_STDINT_H 1
 
 /* Define to 1 if you have the <stdio.h> header file. */
 #define HAVE_STDIO_H 1
@@ -242,13 +251,13 @@
 #define HAVE_SYS_MMAN_H 1
 
 /* Define to 1 if you have the <sys/param.h> header file. */
-/* #undef HAVE_SYS_PARAM_H */
+#define HAVE_SYS_PARAM_H 1
 
 /* Define to 1 if you have the <sys/select.h> header file. */
 #define HAVE_SYS_SELECT_H 1
 
 /* Define to 1 if you have the <sys/stat.h> header file. */
-/* #undef HAVE_SYS_STAT_H */
+#define HAVE_SYS_STAT_H 1
 
 /* Define to 1 if you have the <sys/stropts.h> header file. */
 /* #undef HAVE_SYS_STROPTS_H */
@@ -343,7 +352,7 @@
 /* Define to 1 if all of the C90 standard headers exist (not just the ones
    required in a freestanding environment). This macro is provided for
    backward compatibility; new code need not use it. */
-/* #undef STDC_HEADERS */
+#define STDC_HEADERS 1
 
 /* Define to 1 if the X Window System is missing or not being used. */
 /* #undef X_DISPLAY_MISSING */

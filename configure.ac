@@ -109,20 +109,46 @@ AC_SUBST([INDENT], [$ac_cv_path_INDENT])
 # Libraries
 # ----------------------------------------
 
-# misc
+# misc libraries
 AC_CHECK_LIB(m,sqrt)
-AC_CHECK_LIB(dl,dlopen)
 AC_CHECK_LIB(util,openpty)
 
+# dlopen
+has_dlopen=no
+AC_CHECK_LIB(dl,dlopen,[has_dlopen=yes])
+AC_CHECK_FUNC(dlopen,[has_dlopen=yes])
+AC_C_UNDERSCORE_SYMBOLS
+
 # bfd
-require_bfd=yes
+has_bfd=no
+require_bfd=unk
 AC_ARG_WITH(bfd,
     AS_HELP_STRING([--without-bfd],[Compile Lush without the BFD library.]),
     [require_bfd=$withval])
 
-if test x$require_bfd = xno ; then
-    BFD_YES='#'
-else
+case "$host" in
+    *-darwin* | *-macos10* )
+        can_bfd=no ;;
+    i*86* | x86_64* | mips* | alpha* | arm64 )
+        can_bfd=yes ;;
+    *)
+        can_bfd=no ;;
+esac
+if test x$can_bfd = xno ; then
+    if test x$require_bfd = xyes ; then
+	AC_MSG_ERROR([Unable to use BFD on this platform.
+-----------------------------------------------------------------
+The BFD library is unlikely to work on this platform.
+Try with option --without-bfd for a slightly inferior
+but more portable solution.
+-----------------------------------------------------------------])
+    else
+        require_bfd=no
+    fi
+fi
+
+
+if test x$require_bfd != xno ; then
     BFD_YES=''
     has_bfd=yes
     AC_CHECK_LIB(iberty, xmalloc)
@@ -132,13 +158,13 @@ else
     fi
     AC_CHECK_HEADER(bfd.h,,has_bfd=no)
     AC_CHECK_LIB(bfd, bfd_init,,[has_bfd=no])
-    AC_CHECK_CC_OPT([-fno-pie],[OPTS="$OPTS -fno-pie -no-pie"])
 fi
 AC_SUBST(BFD_YES)
 
 # Check if it compiles
 if test x$has_bfd = xyes ; then
     n_LIBS=$LIBS
+    AC_CHECK_CC_OPT([-fno-pie],[OPTS="$OPTS -fno-pie -no-pie"])
     has_intl=
     AC_CHECK_LIB(intl, dcgettext, [has_intl=yes],[has_intl=no])
     i_LIBS=`echo $n_LIBS | sed -e 's/-liberty/& -lintl/'`
@@ -197,16 +223,34 @@ if test x$has_bfd = xyes ; then
 fi
 
 if test x$has_bfd = xno ; then
-    AC_MSG_ERROR([Unable to locate BFD development files.
--------------------------------------------------------------
+    BFD_YES='#'
+    if test x$require_bfd = xyes; then
+	AC_MSG_ERROR([Unable to locate BFD development files.
+-----------------------------------------------------------------
 We were unable to locate required GNU binutils files.
 - Some Linux distributions do not install these by default.
   You need to install the 'libbinutils-devel' package.
 - On other platforms, get GNU binutils on www.fsf.org.
-You can configure Lush to run without these files by using 
-option "--without-bfd".  The dynamic loader/linker/compiler 
-will not work and Lush will be seriously crippled.
 -----------------------------------------------------------------])
+    elif test x$has_dlopen = xyes; then
+	AC_DEFINE(HAVE_DLDDLOPEN, 1,
+		  [Define to 1 if using dlopen-based loader instead of BFD])
+	if test x$can_bfd = xyes; then
+	    AC_MSG_NOTICE([Unable to locate BFD development files.
+-----------------------------------------------------------------
+Using dlopen instead, with a slightly degraded functionality.
+Alternatively, install the 'libbinutils-devel' package,
+or get GNU binutils on www.fsf.org.
+-----------------------------------------------------------------])
+	fi
+    elif test x$require_bfd != xno; then
+	AC_MSG_ERROR([Unable to use either DLOPEN or BFD
+-------------------------------------------------------------
+Although lush can be compiled Without means to dynamically load
+object files, the experience will be crippled. Please use the
+option --without-bfd to force this to happen.
+-----------------------------------------------------------------])
+    fi
 fi
 
 # x11
@@ -351,25 +395,28 @@ case "$host" in
     *-darwin* | *-macos10* | *-rhapsody*)
         SOEXT=dylib
         MAKESO="$LDCC -bundle -flat_namespace -o"
+        MAKELOADABLE="${MAKESO% -o} -undefined dynamic_lookup -o"
         ;;
     *-solaris*|*-sunos5*)
         test x$GCC != xyes && CC_PIC_FLAG='-KPIC'
         test x$GCC != xyes && MAKESO='$LDCC -Wl,-G -o'
         ;;
 esac
+test -z "$MAKELOADABLE" && MAKELOADABLE="${MAKESO% -o} $CC_PIC_FLAG -o"
 
 AC_SUBST(LDCC)
 AC_SUBST(SOEXT)
 AC_SUBST(CC_EXP_FLAG)
 AC_SUBST(CC_PIC_FLAG)
 AC_SUBST(MAKESO)
+AC_SUBST(MAKELOADABLE)
 
 UNIX_YES=''
 AC_SUBST(UNIX_YES)
 
 AC_DEFINE_UNQUOTED(EXT_DLL, ".$SOEXT",  [Extension for shared libraries])
 AC_DEFINE_UNQUOTED(EXT_OBJ, ".$OBJEXT", [Extension for object files])
-
+AC_DEFINE_UNQUOTED(MAKE_LOADABLE, "$MAKELOADABLE", [Command to make dylib])
 
 # ----------------------------------------
 # Output

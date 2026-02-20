@@ -40,7 +40,7 @@
 #endif
 #include <signal.h>
 
-typedef void (*SIGHANDLERTYPE)();
+typedef void (*SIGHANDLERTYPE)(int);
 
 
 
@@ -367,7 +367,7 @@ setup_fpu(int doINV, int doOFL)
 /* fpe_irq -- signal handler for floating point exception */
 
 static void
-fpe_irq(void)
+fpe_irq(int junk)
 {
   if (ieee_present)
     setup_fpu(fpe_inv, fpe_ofl);
@@ -381,7 +381,7 @@ static int fpe_flag;
 static int fpe_isnan;
 
 static void
-probe_fpe_irq(void)
+probe_fpe_irq(int junk)
 {
   fpe_flag = 1;
   /* Avoid incorrect restarts */

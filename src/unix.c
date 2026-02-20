@@ -127,7 +127,7 @@
 # endif
 #endif
 
-typedef void (*SIGHANDLERTYPE)();
+typedef void (*SIGHANDLERTYPE)(int);
 
 /* Lush header files */
 #include "header.h"
@@ -173,7 +173,7 @@ goodsignal(int sig, SIGHANDLERTYPE vec)
 /* quit_irq -- signal handler for QUIT signal */
 
 static void
-quit_irq(void)
+quit_irq(int junk)
 {
   error(NIL, "user quit", NIL);
 }
@@ -182,7 +182,7 @@ quit_irq(void)
 /* break_irq -- signal handler for Control-C */
 
 static void
-break_irq(void)
+break_irq(int junk)
 {
   break_attempt = 1;
 }
@@ -372,7 +372,7 @@ static int trigger_fds[MAX_TRIGGER_NFDS];
 
 /* trigger_irq -- signal handler for trigger */
 static void
-trigger_irq(void)
+trigger_irq(int junk)
 {
   async_attempt = 1;
   if (trigger_signal < 0)
@@ -394,7 +394,7 @@ unblock_async_trigger(void)
       if (trigger_signal >= 0 && trigger_nfds >= 0)
 	{
 	  sigset_t sset;
-	  trigger_irq();
+	  trigger_irq(0);
 	  sigemptyset(&sset);
 	  sigaddset(&sset, trigger_signal);
 	  sigprocmask(SIG_UNBLOCK,&sset,NULL);
@@ -1371,7 +1371,10 @@ DX(xgetconf)
     { "LUSH_TIME", __TIME__ },
 #endif
     LUSH_MAKE_MACROS,
-    { 0, 0 } 
+#if HAVE_DLDDLOPEN
+    { "DLDDLOPEN", "1" },
+#endif
+    { 0, 0 }
   };
   ARG_NUMBER(1);
   ARG_EVAL(1);

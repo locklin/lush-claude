@@ -1242,7 +1242,7 @@ file_close(FILE *f)
   if (f!=stdin && f!=stdout && f!=stderr && f) 
     {
       if (pclose(f)<0 && fclose(f)<0)
-	test_file_error(f);
+	test_file_error(NULL);
     }
 }
 

@@ -279,7 +279,7 @@ dx_listeval(at *p, at *q)
   int arg_num;
   at *answer, **arg_pos, **spbuff;
   struct cfunction *cfunc = p->Object;
-  at *(*call)(int, at**) = (at*(*)()) cfunc->call;
+  at *(*call)(int, at**) = (at*(*)(int,at**)) cfunc->call;
 
   if (CONSP(cfunc->name))
     check_primitive(cfunc->name, cfunc->info);
@@ -345,7 +345,7 @@ at *
 dy_listeval(at *p, at *q)
 {
   struct cfunction *cfunc = p->Object;
-  at *(*call)(at*) = (at*(*)()) cfunc->call;
+  at *(*call)(at*) = (at*(*)(at*)) cfunc->call;
   
   if (CONSP(cfunc->name))
     check_primitive(cfunc->name, cfunc->info);

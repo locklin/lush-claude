@@ -936,8 +936,10 @@
 ;; Compilation flags used by <dhc-make-o>.
 ;; This is similar to the variable LUSHFLAGS in the makefiles.
 ;; Variables prefixed with <$> will be expanded using <dhc-substitute-env>.
-(defvar dhc-make-lushflags 
-  "$CPPFLAGS $CFLAGS $OPTS $PTHREAD_FLAGS" )
+(defvar dhc-make-lushflags
+  (if (getconf "DLDDLOPEN")
+      "$CPPFLAGS $CFLAGS $OPTS $PTHREAD_FLAGS $CC_PIC_FLAG"
+      "$CPPFLAGS $CFLAGS $OPTS $PTHREAD_FLAGS" ) )
 
 #? dhc-make-command
 ;;.TYPE VAR
