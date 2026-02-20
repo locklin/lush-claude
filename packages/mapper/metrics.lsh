@@ -1,0 +1,59 @@
+;;; metrics.lsh -- Distance metrics for the mapper package
+
+(libload "mapper-config")
+(libload "libidx/idx-double")
+
+#? *** Mapper: Distance Metrics
+;; Distance metric functions for computing pairwise distances.
+;; Available metrics: "euclidean", "sqeuclidean", "cityblock"
+;; (alias "manhattan"), "chebyshev", "cosine", "correlation",
+;; "hamming", "spearman", "kendall".
+
+#? (mapper-distance-matrix <data> <metric>)
+;; Compute pairwise distance matrix for all rows of <data>.
+;; <data> is an NxD matrix (idx2 of doubles).
+;; <metric> is a string naming the distance metric.
+;; Returns a flat lower-triangle distance matrix as idx1 of doubles
+;; with N*(N-1)/2 elements.  Access element (i,j) for j<i as
+;; dm[i*(i-1)/2 + j].
+;;.SEE (mapper-dm-ref <dm> <i> <j>)
+
+(de mapper-distance-matrix (data metric)
+  ((-idx2- (-double-)) data)
+  ((-str-) metric)
+  (let* ((n (idx-dim data 0))
+         (nc (idx-dim data 1))
+         (dmsz (/ (* n (- n 1)) 2))
+         (dm (double-matrix dmsz)) )
+    ((-int-) n nc dmsz)
+    #{{
+       if ($data->mod[1] != 1) {
+         error(NIL, "data must be contiguous (mod[1]=1)", NIL);
+       }
+       metric_fn_t mf = mapper_select_metric($metric->data);
+       if (!mf) error(NIL, "unknown metric", new_string($metric->data));
+       mapper_distance_matrix(IDX_PTR($data, double), $n, $nc, mf,
+                              IDX_PTR($dm, double));
+    }#}
+    dm ) )
+
+
+#? (mapper-dm-ref <dm> <i> <j>)
+;; Access element (i,j) of a lower-triangle distance matrix <dm>.
+;; Returns distance between row i and row j.
+
+(de mapper-dm-ref (dm i j)
+  ((-idx1- (-double-)) dm)
+  ((-int-) i j)
+  (cond
+   ((= i j) 0)
+   ((< i j) (dm (+ (/ (* j (- j 1)) 2) i)))
+   (t       (dm (+ (/ (* i (- i 1)) 2) j))) ) )
+
+
+;; Compile
+(let ((dhc-make-lushflags
+       (concat dhc-make-lushflags " -I" (dirname file-being-loaded))))
+  (dhc-make-with-libs () t
+    #{ #include "mapper-c.h" #}
+    mapper-distance-matrix ) )

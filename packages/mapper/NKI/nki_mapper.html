@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html><head>
+<meta charset="utf-8">
+<title>NKI Gene Expression - Mapper</title>
+<script src="https://d3js.org/d3.v7.min.js"></script>
+<style>
+body { margin: 0; font-family: monospace; background: #1a1a2e; color: #eee; }
+#controls { position: absolute; top: 10px; left: 10px; z-index: 10; }
+#controls button { margin: 2px; padding: 4px 8px; }
+#info { position: absolute; bottom: 10px; left: 10px; z-index: 10;
+  background: rgba(0,0,0,0.7); padding: 8px; border-radius: 4px; }
+#members { position: absolute; top: 10px; right: 10px; z-index: 10;
+  width: 200px; height: 300px; display: none; }
+svg { width: 100vw; height: 100vh; }
+.link { stroke: #556; stroke-opacity: 0.6; }
+.node { stroke: #fff; stroke-width: 1px; cursor: pointer; }
+.node.selected { stroke: #ff0; stroke-width: 3px; }
+.tooltip { position: absolute; background: rgba(0,0,0,0.8);
+  color: #fff; padding: 6px; border-radius: 4px; font-size: 12px;
+  pointer-events: none; }
+</style></head><body>
+<div id="controls">
+  <button onclick="resetSelection()">Clear Selection</button>
+  <button onclick="showMembers()">Show Members</button>
+  <span id="sel-info"></span>
+</div>
+<div id="info">NKI Gene Expression - Mapper &mdash; 78 nodes, 44 edges</div>
+<textarea id="members" readonly></textarea>
+<div class="tooltip" id="tooltip"></div>
+<svg></svg>
+<script>
+const graphData = {"nodes":[{"id":0,"size":1,"color":0.8671,"members":[153]},{"id":1,"size":1,"color":-1.2861,"members":[264]},{"id":2,"size":7,"color":-0.7729,"members":[17,82,149,153,161,171,214]},{"id":3,"size":23,"color":-1.1485,"members":[10,17,25,39,41,64,82,110,111,115,121,127,128,149,161,163,166,171,175,214,221,252,260]},{"id":4,"size":2,"color":-0.9464,"members":[253,258]},{"id":5,"size":1,"color":-0.0153,"members":[263]},{"id":6,"size":39,"color":-1.1655,"members":[5,10,15,25,39,41,42,46,64,96,109,110,111,121,128,142,144,150,166,175,184,189,192,194,195,204,218,219,221,225,238,250,252,253,258,259,260,266,268]},{"id":7,"size":1,"color":-0.0153,"members":[263]},{"id":8,"size":42,"color":-0.8521,"members":[0,15,18,29,31,42,46,57,65,75,86,96,112,132,142,144,158,162,164,169,183,184,189,192,195,204,210,219,225,228,232,234,238,242,243,248,250,251,259,262,265,268]},{"id":9,"size":1,"color":-1.3526,"members":[205]},{"id":10,"size":1,"color":-0.0826,"members":[6]},{"id":11,"size":1,"color":-0.787,"members":[141]},{"id":12,"size":1,"color":-0.5731,"members":[269]},{"id":13,"size":1,"color":-0.7278,"members":[239]},{"id":14,"size":1,"color":-1.1508,"members":[62]},{"id":15,"size":1,"color":0.0449,"members":[223]},{"id":16,"size":1,"color":-0.0807,"members":[173]},{"id":17,"size":51,"color":-0.7502,"members":[0,12,14,18,20,31,36,54,57,65,66,71,75,76,100,101,118,119,132,137,148,155,156,159,164,169,172,187,190,196,197,198,206,207,210,213,220,224,226,231,232,234,242,243,244,245,248,251,255,262,265]},{"id":18,"size":1,"color":-0.2081,"members":[202]},{"id":19,"size":1,"color":-1.627,"members":[147]},{"id":20,"size":1,"color":-0.0807,"members":[173]},{"id":21,"size":1,"color":-1.1508,"members":[62]},{"id":22,"size":1,"color":0.0449,"members":[223]},{"id":23,"size":1,"color":-0.5004,"members":[236]},{"id":24,"size":1,"color":-0.7278,"members":[239]},{"id":25,"size":1,"color":-1.3526,"members":[205]},{"id":26,"size":1,"color":-0.0826,"members":[6]},{"id":27,"size":1,"color":0.9351,"members":[165]},{"id":28,"size":47,"color":-0.854,"members":[1,4,11,14,16,27,36,47,54,69,70,71,73,78,91,93,114,117,118,119,139,148,155,167,172,181,185,187,191,193,196,197,198,206,211,212,220,229,230,231,244,245,246,254,255,257,269]},{"id":29,"size":1,"color":-0.2237,"members":[79]},{"id":30,"size":1,"color":-1.627,"members":[147]},{"id":31,"size":1,"color":0.6401,"members":[129]},{"id":32,"size":1,"color":0.9351,"members":[165]},{"id":33,"size":1,"color":-1.1593,"members":[4]},{"id":34,"size":1,"color":-1.4064,"members":[215]},{"id":35,"size":1,"color":-0.3132,"members":[23]},{"id":36,"size":1,"color":-0.5004,"members":[236]},{"id":37,"size":1,"color":-1.4617,"members":[186]},{"id":38,"size":1,"color":-1.1642,"members":[70]},{"id":39,"size":48,"color":-0.6174,"members":[1,7,11,16,26,28,32,37,38,47,53,59,69,78,85,87,91,93,103,107,108,114,122,130,131,133,134,135,136,139,140,143,145,167,168,180,181,185,191,193,202,203,208,211,216,246,254,257]},{"id":40,"size":1,"color":0.2325,"members":[104]},{"id":41,"size":1,"color":-1.25,"members":[35]},{"id":42,"size":1,"color":0.6401,"members":[129]},{"id":43,"size":1,"color":-1.2332,"members":[98]},{"id":44,"size":1,"color":-1.4064,"members":[215]},{"id":45,"size":1,"color":-0.3132,"members":[23]},{"id":46,"size":1,"color":0.0476,"members":[178]},{"id":47,"size":34,"color":-0.6182,"members":[7,26,28,32,37,44,45,53,63,80,83,85,87,88,103,107,122,130,133,134,135,136,140,145,146,151,160,168,199,201,203,227,233,256]},{"id":48,"size":1,"color":0.2325,"members":[104]},{"id":49,"size":1,"color":0.3637,"members":[116]},{"id":50,"size":1,"color":0.4435,"members":[97]},{"id":51,"size":1,"color":-1.3694,"members":[22]},{"id":52,"size":1,"color":0.0476,"members":[178]},{"id":53,"size":1,"color":-0.0721,"members":[209]},{"id":54,"size":14,"color":-0.5628,"members":[2,30,43,45,60,63,68,83,151,160,201,227,247,256]},{"id":55,"size":10,"color":-1.4363,"members":[9,21,48,61,74,124,146,157,233,237]},{"id":56,"size":1,"color":0.3637,"members":[116]},{"id":57,"size":1,"color":1.2072,"members":[200]},{"id":58,"size":1,"color":0.4435,"members":[97]},{"id":59,"size":1,"color":-0.0895,"members":[52]},{"id":60,"size":1,"color":-1.0178,"members":[68]},{"id":61,"size":10,"color":-0.73,"members":[30,33,43,50,55,60,72,95,106,222]},{"id":62,"size":19,"color":-1.3133,"members":[9,21,24,48,74,90,92,105,113,123,124,157,177,179,188,237,267,270,271]},{"id":63,"size":1,"color":-1.5955,"members":[241]},{"id":64,"size":1,"color":0.737,"members":[89]},{"id":65,"size":1,"color":1.2072,"members":[200]},{"id":66,"size":1,"color":1.2899,"members":[3]},{"id":67,"size":6,"color":-0.1244,"members":[33,55,95,106,126,222]},{"id":68,"size":13,"color":-1.261,"members":[24,34,51,92,105,123,177,182,188,217,267,270,271]},{"id":69,"size":1,"color":-1.4607,"members":[138]},{"id":70,"size":15,"color":-1.517,"members":[8,13,40,49,51,58,84,120,125,154,176,182,217,235,249]},{"id":71,"size":1,"color":-1.4607,"members":[138]},{"id":72,"size":1,"color":0.6753,"members":[152]},{"id":73,"size":1,"color":-1.5455,"members":[8]},{"id":74,"size":16,"color":-1.384,"members":[13,40,56,58,84,94,99,102,120,125,154,174,176,240,249,261]},{"id":75,"size":1,"color":0.1649,"members":[77]},{"id":76,"size":1,"color":0.6753,"members":[152]},{"id":77,"size":10,"color":-1.3575,"members":[19,67,81,94,99,102,170,174,240,261]}],"edges":[{"source":0,"target":2,"weight":1},{"source":2,"target":3,"weight":6},{"source":3,"target":6,"weight":14},{"source":4,"target":6,"weight":2},{"source":5,"target":7,"weight":1},{"source":6,"target":8,"weight":17},{"source":8,"target":17,"weight":18},{"source":9,"target":25,"weight":1},{"source":10,"target":26,"weight":1},{"source":12,"target":28,"weight":1},{"source":13,"target":24,"weight":1},{"source":14,"target":21,"weight":1},{"source":15,"target":22,"weight":1},{"source":16,"target":20,"weight":1},{"source":17,"target":28,"weight":19},{"source":18,"target":39,"weight":1},{"source":19,"target":30,"weight":1},{"source":23,"target":36,"weight":1},{"source":27,"target":32,"weight":1},{"source":28,"target":33,"weight":1},{"source":28,"target":38,"weight":1},{"source":28,"target":39,"weight":19},{"source":31,"target":42,"weight":1},{"source":34,"target":44,"weight":1},{"source":35,"target":45,"weight":1},{"source":39,"target":47,"weight":20},{"source":40,"target":48,"weight":1},{"source":46,"target":52,"weight":1},{"source":47,"target":54,"weight":8},{"source":47,"target":55,"weight":2},{"source":49,"target":56,"weight":1},{"source":50,"target":58,"weight":1},{"source":54,"target":60,"weight":1},{"source":54,"target":61,"weight":3},{"source":55,"target":62,"weight":7},{"source":57,"target":65,"weight":1},{"source":61,"target":67,"weight":5},{"source":62,"target":68,"weight":9},{"source":68,"target":70,"weight":3},{"source":69,"target":71,"weight":1},{"source":70,"target":73,"weight":1},{"source":70,"target":74,"weight":9},{"source":72,"target":76,"weight":1},{"source":74,"target":77,"weight":6}],"metadata":{"n_nodes":78,"n_edges":44}};
+const width = window.innerWidth, height = window.innerHeight;
+const svg = d3.select('svg').attr('width', width).attr('height', height);
+const g = svg.append('g');
+svg.call(d3.zoom().on('zoom', e => g.attr('transform', e.transform)));
+const colorScale = d3.scaleSequential(d3.interpolateViridis)
+  .domain(d3.extent(graphData.nodes, d => d.color));
+const sizeScale = d3.scaleSqrt()
+  .domain(d3.extent(graphData.nodes, d => d.size))
+  .range([3, 20]);
+const sim = d3.forceSimulation(graphData.nodes)
+  .force('link', d3.forceLink(graphData.edges).id(d => d.id).distance(40))
+  .force('charge', d3.forceManyBody().strength(-50))
+  .force('center', d3.forceCenter(width/2, height/2));
+const link = g.selectAll('.link').data(graphData.edges).join('line')
+  .attr('class', 'link')
+  .attr('stroke-width', d => Math.max(1, d.weight));
+const node = g.selectAll('.node').data(graphData.nodes).join('circle')
+  .attr('class', 'node')
+  .attr('r', d => sizeScale(d.size))
+  .attr('fill', d => colorScale(d.color))
+  .call(d3.drag()
+    .on('start', (e,d) => { if(!e.active) sim.alphaTarget(0.3).restart(); d.fx=d.x; d.fy=d.y; })
+    .on('drag', (e,d) => { d.fx=e.x; d.fy=e.y; })
+    .on('end', (e,d) => { if(!e.active) sim.alphaTarget(0); d.fx=null; d.fy=null; }));
+const tooltip = d3.select('#tooltip');
+node.on('mouseover', (e, d) => {
+  tooltip.style('display', 'block')
+    .html('Node '+d.id+'<br>Size: '+d.size+'<br>Color: '+d.color.toFixed(4))
+    .style('left', (e.pageX+10)+'px').style('top', (e.pageY-10)+'px');
+}).on('mouseout', () => tooltip.style('display', 'none'));
+let selected = new Set();
+node.on('click', (e, d) => {
+  if (e.shiftKey) { selected.has(d.id) ? selected.delete(d.id) : selected.add(d.id); }
+  else { selected.clear(); selected.add(d.id); }
+  updateSelection();
+});
+function updateSelection() {
+  node.classed('selected', d => selected.has(d.id));
+  d3.select('#sel-info').text(selected.size > 0 ? selected.size + ' selected' : '');
+}
+function resetSelection() { selected.clear(); updateSelection(); d3.select('#members').style('display','none'); }
+function showMembers() {
+  let allm = [];
+  graphData.nodes.forEach(n => { if(selected.has(n.id)) allm.push(...n.members); });
+  allm = [...new Set(allm)].sort((a,b)=>a-b);
+  const ta = d3.select('#members').style('display','block');
+  ta.text(allm.join('\n'));
+}
+sim.on('tick', () => {
+  link.attr('x1',d=>d.source.x).attr('y1',d=>d.source.y)
+      .attr('x2',d=>d.target.x).attr('y2',d=>d.target.y);
+  node.attr('cx',d=>d.x).attr('cy',d=>d.y);
+});
+</script></body></html>

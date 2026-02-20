@@ -1,0 +1,226 @@
+;;; lens.lsh -- Filter functions (lenses) for the Mapper algorithm
+;;;
+;;; A lens is a function f: X -> R^k that projects the data into
+;;; a low-dimensional space for the cover construction.
+
+(libload "libidx/idx-double")
+(libload "libidx/idx-int")
+(libload "metrics")
+
+#? *** Mapper: Lens Functions
+;; Lens functions project data from R^d to R^k (typically k=1 or k=2).
+;; The output is used to define the overlapping cover in the Mapper pipeline.
+
+;; ============================================================
+;; Projection lenses
+;; ============================================================
+
+#? (mapper-lens-column <data> <col>)
+;; Use a single column of the data as a 1D lens.
+;; Returns an Nx1 matrix.
+
+(de mapper-lens-column (data col)
+  ((-idx2- (-double-)) data)
+  ((-int-) col)
+  (let* ((n (idx-dim data 0))
+         (out (double-matrix n 1)) )
+    ((-int-) n)
+    (for (i 0 (1- n))
+      ((-int-) i)
+      (out i 0 (data i col)) )
+    out ) )
+
+
+#? (mapper-lens-columns <data> <col1> <col2>)
+;; Use two columns of the data as a 2D lens.
+;; Returns an Nx2 matrix.
+
+(de mapper-lens-columns (data col1 col2)
+  ((-idx2- (-double-)) data)
+  ((-int-) col1 col2)
+  (let* ((n (idx-dim data 0))
+         (out (double-matrix n 2)) )
+    ((-int-) n)
+    (for (i 0 (1- n))
+      ((-int-) i)
+      (out i 0 (data i col1))
+      (out i 1 (data i col2)) )
+    out ) )
+
+
+#? (mapper-lens-sum <data>)
+;; Sum of all columns as a 1D lens (KeplerMapper default).
+;; Returns an Nx1 matrix.
+
+(de mapper-lens-sum (data)
+  ((-idx2- (-double-)) data)
+  (let* ((n (idx-dim data 0))
+         (d (idx-dim data 1))
+         (out (double-matrix n 1)) )
+    ((-int-) n d)
+    (for (i 0 (1- n))
+      ((-int-) i)
+      (let ((s 0.0))
+        ((-double-) s)
+        (for (j 0 (1- d))
+          ((-int-) j)
+          (incr s (data i j)) )
+        (out i 0 s) ) )
+    out ) )
+
+
+;; ============================================================
+;; Geometry-based lenses
+;; ============================================================
+
+#? (mapper-lens-l2norm <data>)
+;; L2 norm of each row as a 1D lens.
+;; Returns an Nx1 matrix.
+
+(de mapper-lens-l2norm (data)
+  ((-idx2- (-double-)) data)
+  (let* ((n (idx-dim data 0))
+         (d (idx-dim data 1))
+         (out (double-matrix n 1)) )
+    ((-int-) n d)
+    (for (i 0 (1- n))
+      ((-int-) i)
+      (let ((s 0.0))
+        ((-double-) s)
+        (for (j 0 (1- d))
+          ((-int-) j)
+          (let ((v (data i j)))
+            ((-double-) v)
+            (incr s (* v v)) ) )
+        (out i 0 (sqrt s)) ) )
+    out ) )
+
+
+#? (mapper-lens-eccentricity <data> <metric>)
+;; Mean distance from each point to all other points.
+;; Uses the distance matrix internally.
+;; <data> is NxD, <metric> is a metric name string.
+;; Returns an Nx1 matrix.
+;;.PP
+;; This is a global geometry lens: points in the "center" of the
+;; data cloud have low eccentricity; outliers have high eccentricity.
+
+(de mapper-lens-eccentricity (data metric)
+  (let* ((n (idx-dim data 0))
+         (dm (mapper-distance-matrix data metric))
+         (out (double-matrix n 1)) )
+    ((-int-) n)
+    (for (i 0 (1- n))
+      ((-int-) i)
+      (let ((s 0.0))
+        ((-double-) s)
+        (for (j 0 (1- n))
+          ((-int-) j)
+          (when (<> i j)
+            (incr s (mapper-dm-ref dm i j)) ) )
+        (out i 0 (/ s (- n 1))) ) )
+    out ) )
+
+
+#? (mapper-lens-linf-centrality <data> <metric>)
+;; L-infinity eccentricity: maximum distance from each point to
+;; all other points.
+;; <data> is NxD, <metric> is a metric name string.
+;; Returns an Nx1 matrix.
+;;.PP
+;; Points in the interior of the data cloud have low values;
+;; outliers and extremal points have high values.
+;;.SEE (mapper-lens-eccentricity <data> <metric>)
+
+(de mapper-lens-linf-centrality (data metric)
+  (let* ((n (idx-dim data 0))
+         (dm (mapper-distance-matrix data metric))
+         (out (double-matrix n 1)) )
+    (for (i 0 (1- n))
+      (let ((mx 0.0))
+        (for (j 0 (1- n))
+          (when (<> i j)
+            (let ((d (mapper-dm-ref dm i j)))
+              (when (> d mx) (setq mx d)) ) ) )
+        (out i 0 mx) ) )
+    out ) )
+
+
+;; ============================================================
+;; PCA lens (via LAPACK SVD)
+;; ============================================================
+
+#? (mapper-lens-pca <data> <k>)
+;; Project data onto its first <k> principal components.
+;; Uses LAPACK dgesvd for the SVD computation.
+;; <data> is an NxD matrix, <k> is 1 or 2.
+;; Returns an Nxk matrix.
+;;.PP
+;; The data is mean-centered before computing the SVD.
+;; The projection is onto the first k left singular vectors
+;; scaled by their singular values.
+
+(de mapper-lens-pca (data k)
+  ((-idx2- (-double-)) data)
+  ((-int-) k)
+  (let* ((n (idx-dim data 0))
+         (d (idx-dim data 1))
+         ;; Mean-center the data (copy)
+         (X (double-matrix n d))
+         (means (double-matrix d)) )
+    ((-int-) n d)
+    ;; Compute means
+    (for (j 0 (1- d))
+      ((-int-) j)
+      (let ((s 0.0))
+        ((-double-) s)
+        (for (i 0 (1- n))
+          ((-int-) i)
+          (incr s (data i j)) )
+        (means j (/ s n)) ) )
+    ;; Center
+    (for (i 0 (1- n))
+      ((-int-) i)
+      (for (j 0 (1- d))
+        ((-int-) j)
+        (X i j (- (data i j) (means j))) ) )
+    ;; Compute covariance matrix X^T * X
+    ;; Eigenvectors of cov are the principal directions
+    ;; TODO: proper eigendecomposition via LAPACK dsyev
+    ;; For now, project onto the axes of maximum variance.
+    (let* ((cov (double-matrix d d))
+           (out (double-matrix n k)) )
+      ;; Compute X^T * X
+      (for (i 0 (1- d))
+        ((-int-) i)
+        (for (j 0 (1- d))
+          ((-int-) j)
+          (let ((s 0.0))
+            ((-double-) s)
+            (for (p 0 (1- n))
+              ((-int-) p)
+              (incr s (* (X p i) (X p j))) )
+            (cov i j s) ) ) )
+      ;; Find the k dimensions with largest variance (diagonal of cov)
+      (let ((var-idx (int-matrix d)))
+        (for (i 0 (1- d))
+          ((-int-) i)
+          (var-idx i i) )
+        ;; Bubble sort by variance (descending) - d is typically small
+        (for (i 0 (- d 2))
+          ((-int-) i)
+          (for (j (+ i 1) (1- d))
+            ((-int-) j)
+            (when (> (cov (var-idx j) (var-idx j))
+                     (cov (var-idx i) (var-idx i)))
+              (let ((tmp (var-idx i)))
+                ((-int-) tmp)
+                (var-idx i (var-idx j))
+                (var-idx j tmp) ) ) ) )
+        ;; Project onto top-k variance dimensions
+        (for (i 0 (1- n))
+          ((-int-) i)
+          (for (c 0 (1- k))
+            ((-int-) c)
+            (out i c (X i (var-idx c))) ) ) )
+      out ) ) )

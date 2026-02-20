@@ -1,0 +1,185 @@
+;;; graph.lsh -- Mapper graph data structure and nerve computation
+
+(libload "mapper-config")
+(libload "cluster")
+(libload "libidx/idx-double")
+(libload "libidx/idx-int")
+
+#? *** Mapper: Graph and Nerve
+
+#? * MapperGraph
+;; The output of the Mapper algorithm.
+;; Contains nodes (clusters), edges (shared-point connections),
+;; and metadata for coloring and analysis.
+;;.PP
+;; Each node stores the indices of the original data points it contains.
+;; Each edge connects two nodes that share at least <min-intersection>
+;; data points.
+;;.PP
+;; Fields:
+;;.IP
+;; <nodes> -- list of idx1-of-int, each containing sorted member indices.
+;;.IP
+;; <node-bins> -- list of ints, the cover bin index for each node.
+;;.IP
+;; <edges> -- idx2 of ints (E x 2), source and target node indices.
+;;.IP
+;; <edge-weights> -- idx1 of ints, shared-point count per edge.
+;;.IP
+;; <node-sizes> -- idx1 of ints, number of points per node.
+;;.IP
+;; <node-colors> -- idx1 of doubles, coloring value per node.
+
+(defclass MapperGraph object
+  nodes
+  node-bins
+  edges
+  edge-weights
+  node-sizes
+  node-colors )
+
+#? (==> <MapperGraph> num-nodes)
+;; Return the number of nodes in the graph.
+(defmethod MapperGraph num-nodes ()
+  (length nodes) )
+
+#? (==> <MapperGraph> num-edges)
+;; Return the number of edges in the graph.
+(defmethod MapperGraph num-edges ()
+  (if edges (idx-dim edges 0) 0) )
+
+
+#? (mapper-build-nerve <node-list> <node-bin-list> <min-intersection>)
+;; Construct the nerve (graph) from clustered nodes.
+;; <node-list> is a list of idx1-of-int (sorted member indices per node).
+;; <node-bin-list> is a list of ints (cover bin index per node).
+;; <min-intersection> is the minimum shared-point count for an edge.
+;; Returns a MapperGraph object.
+;;.PP
+;; Only checks node pairs from different cover bins (nodes from the
+;; same bin cannot share points since they are separate clusters).
+;; Uses sorted-array merge intersection for O(A+B) per pair.
+
+(de mapper-build-nerve (node-list node-bin-list min-intersection)
+  ((-int-) min-intersection)
+  (let* ((nnodes (length node-list))
+         (graph (new MapperGraph))
+         (edge-src ())
+         (edge-tgt ())
+         (edge-wt  ()) )
+    ;; Check all pairs from different bins
+    (let ((i 0))
+      (each ((ni node-list) (bi node-bin-list))
+        (let ((j 0))
+          (each ((nj node-list) (bj node-bin-list))
+            (when (and (> j i) (<> bi bj))
+              (let ((c (mapper-isect-count ni nj)))
+                (when (>= c min-intersection)
+                  (setq edge-src (nconc1 edge-src i))
+                  (setq edge-tgt (nconc1 edge-tgt j))
+                  (setq edge-wt  (nconc1 edge-wt  c)) ) ) )
+            (incr j) ) )
+        (incr i) ) )
+    ;; Build edge arrays
+    (let ((ne (length edge-src)))
+      (when (> ne 0)
+        (let ((earr (int-matrix ne 2))
+              (warr (int-matrix ne))
+              (k 0) )
+          ((-int-) k)
+          (each ((s edge-src) (t edge-tgt) (w edge-wt))
+            (earr k 0 s)
+            (earr k 1 t)
+            (warr k w)
+            (incr k) )
+          (setq :graph:edges earr)
+          (setq :graph:edge-weights warr) ) ) )
+    ;; Build node arrays
+    (setq :graph:nodes node-list)
+    (setq :graph:node-bins node-bin-list)
+    (let ((szarr (int-matrix nnodes))
+          (k 0) )
+      ((-int-) k)
+      (each ((n node-list))
+        (szarr k (idx-dim n 0))
+        (incr k) )
+      (setq :graph:node-sizes szarr) )
+    graph ) )
+
+
+#? (==> <MapperGraph> color-by-mean <data> <col>)
+;; Set node colors to the mean of column <col> of <data>
+;; over the points in each node.
+;; <data> is the original NxD data matrix.
+;; <col> is the column index to average.
+
+(defmethod MapperGraph color-by-mean (data col)
+  ((-idx2- (-double-)) data)
+  ((-int-) col)
+  (let* ((nn (length nodes))
+         (colors (double-matrix nn))
+         (k 0) )
+    ((-int-) k nn)
+    (each ((members nodes))
+      (let ((sum 0.0)
+            (cnt (idx-dim members 0)) )
+        ((-double-) sum)
+        ((-int-) cnt)
+        (for (i 0 (1- cnt))
+          ((-int-) i)
+          (incr sum (data (members i) col)) )
+        (colors k (if (> cnt 0) (/ sum cnt) 0)) )
+      (incr k) )
+    (setq node-colors colors) ) )
+
+
+#? (==> <MapperGraph> color-by-variable <values>)
+;; Set node colors to the mean of <values> over points in each node.
+;; <values> is an idx1 of doubles (one per original data point).
+
+(defmethod MapperGraph color-by-variable (values)
+  ((-idx1- (-double-)) values)
+  (let* ((nn (length nodes))
+         (colors (double-matrix nn))
+         (k 0) )
+    ((-int-) k nn)
+    (each ((members nodes))
+      (let ((sum 0.0)
+            (cnt (idx-dim members 0)) )
+        ((-double-) sum)
+        ((-int-) cnt)
+        (for (i 0 (1- cnt))
+          ((-int-) i)
+          (incr sum (values (members i))) )
+        (colors k (if (> cnt 0) (/ sum cnt) 0)) )
+      (incr k) )
+    (setq node-colors colors) ) )
+
+
+#? (==> <MapperGraph> summary)
+;; Print a summary of the graph.
+
+(defmethod MapperGraph summary ()
+  (printf "MapperGraph: %d nodes, %d edges\n"
+          (==> this num-nodes) (==> this num-edges))
+  (when node-sizes
+    (let ((mn 1000000) (mx 0) (s 0))
+      ((-int-) mn mx s)
+      (for (i 0 (1- (idx-dim node-sizes 0)))
+        ((-int-) i)
+        (let ((v (node-sizes i)))
+          ((-int-) v)
+          (incr s v)
+          (when (< v mn) (setq mn v))
+          (when (> v mx) (setq mx v)) ) )
+      (printf "  Node sizes: min=%d max=%d total=%d\n" mn mx s) ) )
+  (when edge-weights
+    (let ((mn 1000000) (mx 0))
+      ((-int-) mn mx)
+      (for (i 0 (1- (idx-dim edge-weights 0)))
+        ((-int-) i)
+        (let ((v (edge-weights i)))
+          ((-int-) v)
+          (when (< v mn) (setq mn v))
+          (when (> v mx) (setq mx v)) ) )
+      (printf "  Edge weights: min=%d max=%d\n" mn mx) ) ) )

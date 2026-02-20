@@ -1,0 +1,149 @@
+;;; cover.lsh -- Overlapping cover for the Mapper algorithm
+;;;
+;;; Implements the KeplerMapper cover scheme: evenly-spaced hypercubes
+;;; with configurable overlap.  Supports 1D and 2D lens spaces.
+
+(libload "libidx/idx-double")
+(libload "libidx/idx-int")
+
+#? *** Mapper: Cover
+
+#? (mapper-cover-fit <lens> <n-cubes> <perc-overlap>)
+;; Fit a cover to the lens values.
+;; <lens> is an Nxk matrix (k=1 or k=2) of filter values.
+;; <n-cubes> is an idx1 of ints (one per dimension) giving the number
+;; of cubes along each dimension.
+;; <perc-overlap> is an idx1 of doubles (one per dimension) giving the
+;; fractional overlap (0..1) between adjacent cubes.
+;; Returns a list (centers radii) where:
+;;   centers is an Mxk matrix of hypercube center coordinates,
+;;   radii is an idx1 of k doubles (radius per dimension).
+;;.PP
+;; The radius formula (from KeplerMapper) is:
+;;   radius = range / (2 * n_cubes * (1 - perc_overlap))
+;; Centers are evenly spaced via linspace from min+inset to max-inset.
+;; For k=2, the grid is the Cartesian product of per-dimension centers.
+
+(de mapper-cover-fit (lens n-cubes perc-overlap)
+  ((-idx2- (-double-)) lens)
+  ((-idx1- (-int-)) n-cubes)
+  ((-idx1- (-double-)) perc-overlap)
+  (let* ((ndims (idx-dim lens 1))
+         (n     (idx-dim lens 0))
+         ;; Compute bounds, ranges, radii per dimension
+         (lo    (double-matrix ndims))
+         (hi    (double-matrix ndims))
+         (radii (double-matrix ndims)) )
+    ;; Find min/max per dimension
+    (for (d 0 (1- ndims))
+      (let ((mn 1e308) (mx -1e308))
+        ((-double-) mn mx)
+        (for (i 0 (1- n))
+          ((-int-) i)
+          (let ((v (lens i d)))
+            (when (< v mn) (setq mn v))
+            (when (> v mx) (setq mx v)) ) )
+        (lo d mn)
+        (hi d mx) ) )
+    ;; Compute radii: range / (2 * n_cubes * (1 - overlap))
+    ;; Add small epsilon to avoid points falling exactly on boundary
+    (for (d 0 (1- ndims))
+      (let* ((rng (- (hi d) (lo d)))
+             (nc  (n-cubes d))
+             (ov  (perc-overlap d))
+             (r   (/ (+ rng 1e-10) (* 2 nc (- 1.0 ov)))) )
+        ((-double-) rng ov r)
+        ((-int-) nc)
+        (radii d r) ) )
+    ;; Compute centers per dimension
+    (let ((centers-list ()))
+      (for (d 0 (1- ndims))
+        (let* ((nc (n-cubes d))
+               (r  (radii d))
+               (clo (+ (lo d) r))
+               (chi (- (hi d) r))
+               (ctrs (double-matrix nc)) )
+          ((-int-) nc)
+          ((-double-) r clo chi)
+          (if (= nc 1)
+            (ctrs 0 (* 0.5 (+ (lo d) (hi d))))
+            (for (k 0 (1- nc))
+              ((-int-) k)
+              (ctrs k (+ clo (* k (/ (- chi clo) (max 1 (- nc 1)))))) ) )
+          (setq centers-list (nconc1 centers-list ctrs)) ) )
+      ;; Build center grid: for 1D just reshape, for 2D Cartesian product
+      (let ((centers
+              (if (= ndims 1)
+                ;; 1D: reshape to Mx1
+                (let* ((c1 (car centers-list))
+                       (m  (idx-dim c1 0))
+                       (out (double-matrix m 1)) )
+                  (for (i 0 (1- m))
+                    ((-int-) i)
+                    (out i 0 (c1 i)) )
+                  out )
+                ;; 2D: Cartesian product
+                (let* ((c1 (car centers-list))
+                       (c2 (cadr centers-list))
+                       (n1 (idx-dim c1 0))
+                       (n2 (idx-dim c2 0))
+                       (m  (* n1 n2))
+                       (out (double-matrix m 2)) )
+                  ((-int-) n1 n2 m)
+                  (let ((idx 0))
+                    ((-int-) idx)
+                    (for (i 0 (1- n1))
+                      ((-int-) i)
+                      (for (j 0 (1- n2))
+                        ((-int-) j)
+                        (out idx 0 (c1 i))
+                        (out idx 1 (c2 j))
+                        (incr idx) ) ) )
+                  out ) ) ) )
+        (list centers radii) ) ) ) )
+
+
+#? (mapper-cover-transform <lens> <centers> <radii>)
+;; Assign data points to cover elements (hypercubes).
+;; <lens> is an Nxk matrix of filter values.
+;; <centers> is an Mxk matrix of hypercube centers.
+;; <radii> is an idx1 of k doubles.
+;; Returns a list of M idx1-of-int arrays, each containing the
+;; indices of points that fall within that hypercube.
+;; Points may appear in multiple hypercubes (due to overlap).
+
+(de mapper-cover-transform (lens centers radii)
+  ((-idx2- (-double-)) lens centers)
+  ((-idx1- (-double-)) radii)
+  (let* ((n     (idx-dim lens 0))
+         (m     (idx-dim centers 0))
+         (ndims (idx-dim lens 1))
+         (result ()) )
+    ;; For each hypercube, find points inside
+    (for (h 0 (1- m))
+      ((-int-) h)
+      ;; Collect matching indices
+      (let ((members ()))
+        (for (i 0 (1- n))
+          ((-int-) i)
+          (let ((inside t))
+            (for (d 0 (1- ndims))
+              ((-int-) d)
+              (when inside
+                (let ((v (lens i d))
+                      (c (centers h d))
+                      (r (radii d)) )
+                  ((-double-) v c r)
+                  (when (or (< v (- c r)) (> v (+ c r)))
+                    (setq inside ()) ) ) ) )
+            (when inside
+              (setq members (nconc1 members i)) ) ) )
+        ;; Convert list to sorted idx1
+        (let ((arr (int-matrix (length members)))
+              (k 0) )
+          ((-int-) k)
+          (each ((m members))
+            (arr k m)
+            (incr k) )
+          (setq result (nconc1 result arr)) ) ) )
+    result ) )

@@ -1,0 +1,13 @@
+;;; mapper-config.lsh -- Compile C acceleration code for the mapper package
+;;;
+;;; This file compiles mapper-c.c and loads the resulting object file.
+;;; It must be loaded before any other mapper .lsh file.
+
+(libload "libc/make")
+
+(let ((dir (dirname file-being-loaded)))
+  (let ((lm (new lushmake)))
+    (==> lm setflags (concat " -I" dir " -O2"))
+    (==> lm rule "mapper-c.o" '("mapper-c.c" "mapper-c.h"))
+    (==> lm make)
+    (==> lm load) ) )

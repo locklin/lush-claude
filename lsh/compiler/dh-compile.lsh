@@ -959,7 +959,7 @@
 ;;.IP <$OBJ>
 ;;  The pathname of the object file.
 (defvar dhc-make-command
-  "$CC $DEFS $LUSHFLAGS $INCS -c $SRC -o $OBJ" )
+  "$CC $DEFS $LUSHFLAGS -fPIC $INCS -c $SRC -o $OBJ" )
 
 
 #? dhc-make-overrides
@@ -1206,30 +1206,54 @@
       (dhc-make-o-maybe cfname ofname)
       ;; mark compiled sources (see module.hook in sysenv.sn)
       (each ((symb fsymblist))
-        (when (consp symb) 
+        (when (consp symb)
           (setq symb (car symb)) )
         (when (symbolp symb)
           (putp (eval `:,symb) 'precious t) ) )
-      ;; load
-      (mod-load ofname)
-      (let ((m (mod-search ofname)))
-        (when (not m)
-          (error 'dhc-make-all "Module could not be loaded!" ()) )
+      ;; link .o files into .so for dlopen-based loading
+      (let ((sofname (regex-subst "\\.o$" ".so" ofname))
+            (link-objs (list ofname))
+            (link-libs ()) )
+        ;; Collect library object files
         (when (<> liblist 't)
           (each ((lib (flatten liblist)))
-            (mod-load lib) ) 
-          (when (not (module-executable-p m))
-            (each ((lib dhc-make-essential-libs))
-              (mod-load lib) ) )
-          (when (not (module-executable-p m))
-	    (printf "\nDynamically loaded module could not be made executable.\n")
-	    (let ((mu (mod-undefined)))
-	      (when mu 
-		(printf "The following symbols are used but not defined:\n ")
-		(printf "%s" (car mu))
-		(each ((x (cdr mu))) (printf ", %s" x)) (printf "\n")))
-            (error 'dhc-make-all "Module has undefined references." ()) ) ) )
-      ofname ) ) )
+            (when (stringp lib)
+              (cond
+               ((regex-match ".*\\.o$" lib)
+                (setq link-objs (nconc1 link-objs lib)) )
+               ((regex-match ".*\\.a$" lib)
+                (setq link-libs (nconc1 link-libs lib)) )
+               ((regex-match ".*\\.so" lib)
+                (setq link-libs (nconc1 link-libs lib)) )
+               (t (setq link-libs (nconc1 link-libs lib))) ) ) ) )
+        ;; Link into .so if the .o is newer or .so doesn't exist
+        (when (dhc-make-rebuild-p sofname (cons ofname link-objs))
+          (let ((cmd (concat (or (getconf "CC") "gcc")
+                             " -shared -o " sofname)))
+            (each ((o link-objs)) (setq cmd (concat cmd " " o)))
+            (each ((l link-libs)) (setq cmd (concat cmd " " l)))
+            (setq cmd (concat cmd " -lm -ldl"))
+            (printf "%s\n" cmd)
+            (when (<> 0 (sys cmd))
+              (error 'dhc-make-all "Linking shared library failed" sofname) ) ) )
+        ;; load
+        (mod-load sofname)
+        (let ((m (mod-search sofname)))
+          (when (not m)
+            (error 'dhc-make-all "Module could not be loaded!" ()) )
+          (when (<> liblist 't)
+            (when (not (module-executable-p m))
+              (each ((lib dhc-make-essential-libs))
+                (mod-load lib) ) )
+            (when (not (module-executable-p m))
+	      (printf "\nDynamically loaded module could not be made executable.\n")
+	      (let ((mu (mod-undefined)))
+	        (when mu
+		  (printf "The following symbols are used but not defined:\n ")
+		  (printf "%s" (car mu))
+		  (each ((x (cdr mu))) (printf ", %s" x)) (printf "\n")))
+              (error 'dhc-make-all "Module has undefined references." ()) ) ) )
+        sofname ) ) ) )
 
 
 ;; #? (dhc-make <fname> <f1> [<f2> ...[<fn>]])

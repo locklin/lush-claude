@@ -1,0 +1,166 @@
+;;; visualize.lsh -- D3 v7 visualization for MapperGraph
+;;;
+;;; Generates a self-contained HTML file with an interactive
+;;; force-directed graph visualization.
+
+(libload "graph")
+
+#? *** Mapper: Visualization
+
+#? (==> <MapperGraph> visualize <filename> <title>)
+;; Write a self-contained HTML file with a D3 v7 force-directed
+;; graph visualization.
+;; <filename> is the output path (e.g. "/tmp/mapper.html").
+;; <title> is a string displayed as the page title.
+;;.PP
+;; Features:
+;;.IP
+;; Force-directed layout with zoom and pan.
+;;.IP
+;; Node radius proportional to cluster size.
+;;.IP
+;; Node color from a continuous colormap based on node-colors.
+;;.IP
+;; Hover tooltip showing node ID, size, and color value.
+;;.IP
+;; Click to select node and highlight its neighbors.
+;;.IP
+;; Lasso selection for picking subsets.
+;;.IP
+;; Export selected node members to text area.
+;;.PP
+;; Requires a web browser to view.  D3 v7 is loaded from CDN.
+
+(defmethod MapperGraph visualize (filename title)
+  (let ((nn (==> this num-nodes))
+        (ne (==> this num-edges)) )
+    (writing filename
+      ;; HTML header
+      (printf "<!DOCTYPE html>\n<html><head>\n")
+      (printf "<meta charset=\"utf-8\">\n")
+      (printf "<title>%s</title>\n" title)
+      (printf "<script src=\"https://d3js.org/d3.v7.min.js\"></script>\n")
+      (printf "<style>\n")
+      (printf "body { margin: 0; font-family: monospace; background: #1a1a2e; color: #eee; }\n")
+      (printf "#controls { position: absolute; top: 10px; left: 10px; z-index: 10; }\n")
+      (printf "#controls button { margin: 2px; padding: 4px 8px; }\n")
+      (printf "#info { position: absolute; bottom: 10px; left: 10px; z-index: 10;\n")
+      (printf "  background: rgba(0,0,0,0.7); padding: 8px; border-radius: 4px; }\n")
+      (printf "#members { position: absolute; top: 10px; right: 10px; z-index: 10;\n")
+      (printf "  width: 200px; height: 300px; display: none; }\n")
+      (printf "svg { width: 100vw; height: 100vh; }\n")
+      (printf ".link { stroke: #556; stroke-opacity: 0.6; }\n")
+      (printf ".node { stroke: #fff; stroke-width: 1px; cursor: pointer; }\n")
+      (printf ".node.selected { stroke: #ff0; stroke-width: 3px; }\n")
+      (printf ".tooltip { position: absolute; background: rgba(0,0,0,0.8);\n")
+      (printf "  color: #fff; padding: 6px; border-radius: 4px; font-size: 12px;\n")
+      (printf "  pointer-events: none; }\n")
+      (printf "</style></head><body>\n")
+      (printf "<div id=\"controls\">\n")
+      (printf "  <button onclick=\"resetSelection()\">Clear Selection</button>\n")
+      (printf "  <button onclick=\"showMembers()\">Show Members</button>\n")
+      (printf "  <span id=\"sel-info\"></span>\n")
+      (printf "</div>\n")
+      (printf "<div id=\"info\">%s &mdash; %d nodes, %d edges</div>\n"
+               title nn ne)
+      (printf "<textarea id=\"members\" readonly></textarea>\n")
+      (printf "<div class=\"tooltip\" id=\"tooltip\"></div>\n")
+      (printf "<svg></svg>\n")
+
+      ;; Embed graph data as JSON
+      (printf "<script>\nconst graphData = ")
+      (==> this write-json)
+      (printf ";\n")
+
+      ;; D3 visualization code
+      (printf "const width = window.innerWidth, height = window.innerHeight;\n")
+      (printf "const svg = d3.select('svg').attr('width', width).attr('height', height);\n")
+      (printf "const g = svg.append('g');\n")
+      (printf "svg.call(d3.zoom().on('zoom', e => g.attr('transform', e.transform)));\n")
+      (printf "const colorScale = d3.scaleSequential(d3.interpolateViridis)\n")
+      (printf "  .domain(d3.extent(graphData.nodes, d => d.color));\n")
+      (printf "const sizeScale = d3.scaleSqrt()\n")
+      (printf "  .domain(d3.extent(graphData.nodes, d => d.size))\n")
+      (printf "  .range([3, 20]);\n")
+      (printf "const sim = d3.forceSimulation(graphData.nodes)\n")
+      (printf "  .force('link', d3.forceLink(graphData.edges).id(d => d.id).distance(40))\n")
+      (printf "  .force('charge', d3.forceManyBody().strength(-50))\n")
+      (printf "  .force('center', d3.forceCenter(width/2, height/2));\n")
+      (printf "const link = g.selectAll('.link').data(graphData.edges).join('line')\n")
+      (printf "  .attr('class', 'link')\n")
+      (printf "  .attr('stroke-width', d => Math.max(1, d.weight));\n")
+      (printf "const node = g.selectAll('.node').data(graphData.nodes).join('circle')\n")
+      (printf "  .attr('class', 'node')\n")
+      (printf "  .attr('r', d => sizeScale(d.size))\n")
+      (printf "  .attr('fill', d => colorScale(d.color))\n")
+      (printf "  .call(d3.drag()\n")
+      (printf "    .on('start', (e,d) => { if(!e.active) sim.alphaTarget(0.3).restart(); d.fx=d.x; d.fy=d.y; })\n")
+      (printf "    .on('drag', (e,d) => { d.fx=e.x; d.fy=e.y; })\n")
+      (printf "    .on('end', (e,d) => { if(!e.active) sim.alphaTarget(0); d.fx=null; d.fy=null; }));\n")
+      (printf "const tooltip = d3.select('#tooltip');\n")
+      (printf "node.on('mouseover', (e, d) => {\n")
+      (printf "  tooltip.style('display', 'block')\n")
+      (printf "    .html('Node '+d.id+'<br>Size: '+d.size+'<br>Color: '+d.color.toFixed(4))\n")
+      (printf "    .style('left', (e.pageX+10)+'px').style('top', (e.pageY-10)+'px');\n")
+      (printf "}).on('mouseout', () => tooltip.style('display', 'none'));\n")
+      (printf "let selected = new Set();\n")
+      (printf "node.on('click', (e, d) => {\n")
+      (printf "  if (e.shiftKey) { selected.has(d.id) ? selected.delete(d.id) : selected.add(d.id); }\n")
+      (printf "  else { selected.clear(); selected.add(d.id); }\n")
+      (printf "  updateSelection();\n")
+      (printf "});\n")
+      (printf "function updateSelection() {\n")
+      (printf "  node.classed('selected', d => selected.has(d.id));\n")
+      (printf "  d3.select('#sel-info').text(selected.size > 0 ? selected.size + ' selected' : '');\n")
+      (printf "}\n")
+      (printf "function resetSelection() { selected.clear(); updateSelection(); d3.select('#members').style('display','none'); }\n")
+      (printf "function showMembers() {\n")
+      (printf "  let allm = [];\n")
+      (printf "  graphData.nodes.forEach(n => { if(selected.has(n.id)) allm.push(...n.members); });\n")
+      (printf "  allm = [...new Set(allm)].sort((a,b)=>a-b);\n")
+      (printf "  const ta = d3.select('#members').style('display','block');\n")
+      (printf "  ta.text(allm.join('\\n'));\n")
+      (printf "}\n")
+      (printf "sim.on('tick', () => {\n")
+      (printf "  link.attr('x1',d=>d.source.x).attr('y1',d=>d.source.y)\n")
+      (printf "      .attr('x2',d=>d.target.x).attr('y2',d=>d.target.y);\n")
+      (printf "  node.attr('cx',d=>d.x).attr('cy',d=>d.y);\n")
+      (printf "});\n")
+      (printf "</script></body></html>\n") )
+    (printf "Wrote %s\n" filename) ) )
+
+
+;; ============================================================
+;; JSON writer
+;; ============================================================
+
+#? (==> <MapperGraph> write-json)
+;; Write the graph data as JSON to the current output.
+;; Format: {nodes: [{id, size, color, members: [...]}, ...],
+;;          edges: [{source, target, weight}, ...],
+;;          metadata: {...}}
+
+(defmethod MapperGraph write-json ()
+  (let ((nn (==> this num-nodes))
+        (ne (==> this num-edges)) )
+    (printf "{\"nodes\":[")
+    ;; Nodes
+    (let ((k 0))
+      (each ((members nodes))
+        (when (> k 0) (printf ","))
+        (printf "{\"id\":%d,\"size\":%d,\"color\":%g,\"members\":["
+                 k (idx-dim members 0)
+                 (if node-colors (node-colors k) 0.0))
+        (for (i 0 (1- (idx-dim members 0)))
+          (when (> i 0) (printf ","))
+          (printf "%d" (members i)) )
+        (printf "]}")
+        (incr k) ) )
+    ;; Edges
+    (printf "],\"edges\":[")
+    (when edges
+      (for (i 0 (1- ne))
+        (when (> i 0) (printf ","))
+        (printf "{\"source\":%d,\"target\":%d,\"weight\":%d}"
+                 (edges i 0) (edges i 1) (edge-weights i)) ) )
+    (printf "],\"metadata\":{\"n_nodes\":%d,\"n_edges\":%d}}" nn ne) ) )

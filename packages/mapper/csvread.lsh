@@ -1,0 +1,100 @@
+;;; csvread.lsh -- TSV/CSV file reader for the mapper package
+;;;
+;;; Reads tab-separated data files (optionally gzipped) using C
+;;; acceleration via strtod/getline for fast parsing of large datasets.
+;;;
+;;; NOTE: int-matrix creation is done in interpreted wrappers, not in
+;;; compiled functions (same pattern as cluster.lsh to avoid DHC bugs).
+
+(libload "mapper-config")
+(libload "libidx/idx-double")
+(libload "libidx/idx-int")
+
+#? *** Mapper: TSV/CSV File Reader
+
+;; ============================================================
+;; Compiled inner functions (receive pre-allocated matrices)
+;; ============================================================
+
+(de _tsv-dims-inner (filename skip-first nr nc)
+  ((-str-) filename)
+  ((-int-) skip-first)
+  ((-idx1- (-int-)) nr nc)
+  (let ((rc 0))
+    ((-int-) rc)
+    #{{
+       int nrows = 0, ncols = 0;
+       $rc = mapper_tsv_dims($filename->data, $skip_first, &nrows, &ncols);
+       if ($rc == 0) {
+         IDX_PTR($nr, int)[0] = nrows;
+         IDX_PTR($nc, int)[0] = ncols;
+       }
+    }#}
+    rc ) )
+
+
+(de _tsv-read-inner (filename skip-first data)
+  ((-str-) filename)
+  ((-int-) skip-first)
+  ((-idx2- (-double-)) data)
+  (let ((nrows (idx-dim data 0))
+        (ncols (idx-dim data 1))
+        (rc 0) )
+    ((-int-) nrows ncols rc)
+    #{{
+       if ($data->mod[1] != 1)
+         error(NIL, "data must be contiguous (mod[1]=1)", NIL);
+       $rc = mapper_tsv_read($filename->data, $skip_first,
+                             IDX_PTR($data, double), $nrows, $ncols);
+    }#}
+    rc ) )
+
+
+;; Compile inner functions
+(let ((dhc-make-lushflags
+       (concat dhc-make-lushflags " -I" (dirname file-being-loaded))))
+  (dhc-make-with-libs () t
+    #{ #include "mapper-c.h" #}
+    _tsv-dims-inner _tsv-read-inner ) )
+
+
+;; ============================================================
+;; Interpreted wrappers
+;; ============================================================
+
+#? (mapper-tsv-load <filename>)
+;; Load a tab-separated data file (optionally gzipped).
+;; The first row is treated as a header (column names).
+;; The first column is skipped (assumed to be row IDs).
+;; Returns a list (data column-names) where data is an NxD
+;; double-matrix and column-names is a list of strings.
+
+(de mapper-tsv-load (filename)
+  ;; Step 1: get dimensions
+  (let ((nr (int-matrix 1))
+        (nc (int-matrix 1)) )
+    (let ((rc (_tsv-dims-inner filename 1 nr nc)))
+      (when (< rc 0)
+        (error "mapper-tsv-load: cannot read file" filename) ) )
+    (let ((nrows (nr 0))
+          (ncols (nc 0)) )
+      ;; Step 2: allocate and read data
+      (let ((data (double-matrix nrows ncols)))
+        (let ((rc (_tsv-read-inner filename 1 data)))
+          (when (< rc 0)
+            (error "mapper-tsv-load: error reading data" filename) ) )
+        ;; Step 3: read header line for column names
+        (let ((colnames ())
+              (hdr ()) )
+          ;; Open file (handle .gz) and read first line
+          (let ((fp (if (regex-match ".*\\.gz" filename)
+                      (open-read (concat "|zcat '" filename "'"))
+                      (open-read filename) )))
+            (reading fp
+              (setq hdr (read-string "~\n")) ) )
+          ;; Strip trailing newline/CR from header before splitting
+          (setq hdr (regex-subst "[\r\n]+" "" hdr))
+          ;; Split header by tabs, skip first column name
+          (let ((fields (regex-split "\t" hdr () () t)))
+            (setq colnames (cdr fields)) )
+          (list data colnames) ) ) ) ) )

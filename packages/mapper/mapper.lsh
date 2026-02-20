@@ -1,0 +1,161 @@
+;;; mapper.lsh -- Mapper algorithm for Topological Data Analysis
+;;;
+;;; The Mapper algorithm (Singh, Memoli, Carlsson 2007) constructs
+;;; a graph that captures the topological shape of a dataset.
+;;;
+;;; Usage:
+;;;   (libload "mapper/mapper")
+;;;   (setq graph (mapper-run data lens n-cubes overlap
+;;;                           'metric "euclidean"
+;;;                           'clusterer "slink"
+;;;                           'eps 0.5
+;;;                           'min-pts 3
+;;;                           'min-intersection 1))
+;;;   (==> graph summary)
+;;;   (==> graph visualize "/tmp/mapper.html" "My Data")
+
+(libload "mapper-config")
+(libload "metrics")
+(libload "cluster")
+(libload "cover")
+(libload "graph")
+(libload "lens")
+(libload "visualize")
+
+#? *** Mapper: Topological Data Analysis
+;; The Mapper package implements the Mapper algorithm of Carlsson and Singh
+;; for topological data analysis.  Given a dataset, a filter function (lens),
+;; and a clustering algorithm, it produces a graph that reveals the shape
+;; of the data.
+
+;; ============================================================
+;; Helper: extract rows of data by index array
+;; ============================================================
+
+#? (mapper-select-rows <data> <indices>)
+;; Extract rows of <data> at the given <indices>.
+;; <data> is an NxD matrix, <indices> is an idx1 of ints.
+;; Returns a KxD matrix where K = length of indices.
+
+(de mapper-select-rows (data indices)
+  (let* ((k (idx-dim indices 0))
+         (d (idx-dim data 1))
+         (out (double-matrix k d)) )
+    (for (i 0 (1- k))
+      (let ((src-row (indices i)))
+        (for (j 0 (1- d))
+          (out i j (data src-row j)) ) ) )
+    out ) )
+
+
+;; ============================================================
+;; Main Mapper pipeline
+;; ============================================================
+
+#? (mapper-run <data> <lens> <n-cubes> <overlap> . <kwargs>)
+;; Run the Mapper algorithm.
+;;.IP
+;; <data> -- NxD matrix of original data points (idx2 of doubles).
+;;.IP
+;; <lens> -- Nxk matrix of filter values (k=1 or k=2).
+;;.IP
+;; <n-cubes> -- number of cover intervals per dimension (int).
+;;.IP
+;; <overlap> -- fractional overlap between adjacent intervals (0..1).
+;;.IP
+;; Keyword arguments in <kwargs> (use quoted symbols):
+;;.IP
+;;   'metric -- distance metric string (default "euclidean").
+;;.IP
+;;   'clusterer -- "slink" or "dbscan" (default "slink").
+;;.IP
+;;   'eps -- DBSCAN epsilon or SLINK distance threshold (default 0.5).
+;;.IP
+;;   'min-pts -- DBSCAN min_pts (default 3, ignored for slink).
+;;.IP
+;;   'min-intersection -- minimum shared points for an edge (default 1).
+;;.PP
+;; Returns a MapperGraph object.
+;;.SEE MapperGraph
+;;.SEE (mapper-cover-fit <lens> <n-cubes> <perc-overlap>)
+
+(de mapper-run (data lens n-cubes overlap . kwargs)
+  ;; Parse keyword arguments
+  (let ((metric "euclidean")
+        (clusterer "slink")
+        (eps 0.5)
+        (min-pts 3)
+        (min-intersection 1) )
+    (let ((kw kwargs))
+      (while kw
+        (selectq (car kw)
+          (metric          (setq metric (cadr kw)) (setq kw (cddr kw)))
+          (clusterer       (setq clusterer (cadr kw)) (setq kw (cddr kw)))
+          (eps             (setq eps (cadr kw)) (setq kw (cddr kw)))
+          (min-pts         (setq min-pts (cadr kw)) (setq kw (cddr kw)))
+          (min-intersection (setq min-intersection (cadr kw)) (setq kw (cddr kw)))
+          (t (error "mapper-run: unknown keyword" (car kw))) ) ) )
+
+    ;; Step 1: Fit cover to lens
+    (let* ((ndims (idx-dim lens 1))
+           (nc-arr (int-matrix ndims))
+           (ov-arr (double-matrix ndims)) )
+      (for (d 0 (1- ndims))
+        (nc-arr d n-cubes)
+        (ov-arr d overlap) )
+
+      (let* ((cover-result (mapper-cover-fit lens nc-arr ov-arr))
+             (centers (car cover-result))
+             (radii   (cadr cover-result)) )
+
+        ;; Step 2: Transform -- assign points to cover elements
+        (let* ((hypercubes (mapper-cover-transform lens centers radii))
+               (all-nodes ())
+               (all-bins  ()) )
+
+          ;; Step 3: Cluster each hypercube
+          (let ((bin-idx 0))
+            (each ((hc hypercubes))
+              (let ((hc-size (idx-dim hc 0)))
+                (when (>= hc-size 2)
+                  ;; Extract bin data
+                  (let ((bin-data (mapper-select-rows data hc)))
+                    ;; Cluster
+                    (let ((nlabels ())
+                          (nc 0) )
+                      (if (= clusterer "dbscan")
+                        ;; DBSCAN
+                        (let ((result (mapper-dbscan bin-data eps min-pts metric)))
+                          (setq nc (car result))
+                          (setq nlabels (cadr result)) )
+                        ;; SLINK with distance threshold
+                        (let* ((tree-result (mapper-slink bin-data metric))
+                               (ml (car tree-result))
+                               (mr (cadr tree-result))
+                               (md (caddr tree-result))
+                               (cut-result (mapper-cut-tree-dist hc-size ml mr md eps)) )
+                          (setq nc (car cut-result))
+                          (setq nlabels (cadr cut-result)) ) )
+                      ;; Create a node for each cluster (skip noise=-1)
+                      (for (c 0 (1- nc))
+                        ;; Collect members with this label
+                        (let ((members ()))
+                          (for (i 0 (1- hc-size))
+                            (when (= (nlabels i) c)
+                              ;; Map back to original data index
+                              (setq members (nconc1 members (hc i))) ) )
+                          (when (> (length members) 0)
+                            ;; Convert to sorted idx1
+                            (let ((arr (int-matrix (length members)))
+                                  (k 0) )
+                              (each ((m members))
+                                (arr k m)
+                                (incr k) )
+                              (setq all-nodes (nconc1 all-nodes arr))
+                              (setq all-bins  (nconc1 all-bins bin-idx)) ) ) ) ) ) ) )
+              (incr bin-idx) ) )
+
+          ;; Step 4: Build nerve (edges from shared points)
+          (let ((graph (mapper-build-nerve all-nodes all-bins min-intersection)))
+            graph ) ) ) ) ) ) )
+

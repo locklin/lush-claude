@@ -1,0 +1,244 @@
+;;; cluster.lsh -- Clustering algorithms for the mapper package
+;;;
+;;; SLINK single-linkage: Sibson (1973), O(N^2).
+;;; DBSCAN: Ester et al. (1996), O(N^2) brute-force or
+;;;         O(N log N) with KD-tree for Euclidean metric.
+;;;
+;;; NOTE: int-matrix creation is done in interpreted wrappers, not in
+;;; compiled functions.  The DHC compiler generates Midx_maclear(m, intg)
+;;; for int-matrix, which writes 8-byte values into 4-byte ST_I storage,
+;;; causing heap corruption.  Pre-creating matrices in interpreted code
+;;; avoids this bug.
+
+(libload "mapper-config")
+(libload "libidx/idx-double")
+(libload "libidx/idx-int")
+
+#? *** Mapper: Clustering Algorithms
+
+;; ============================================================
+;; Compiled inner functions (receive pre-allocated matrices)
+;; ============================================================
+
+(de _mapper-slink-inner (data metric ml mr md)
+  ((-idx2- (-double-)) data)
+  ((-str-) metric)
+  ((-idx1- (-int-)) ml mr)
+  ((-idx1- (-double-)) md)
+  (let ((n (idx-dim data 0))
+        (nc (idx-dim data 1))
+        (rc 0) )
+    ((-int-) n nc rc)
+    #{{
+       if ($data->mod[1] != 1)
+         error(NIL, "data must be contiguous (mod[1]=1)", NIL);
+       metric_fn_t mf = mapper_select_metric($metric->data);
+       if (!mf) error(NIL, "unknown metric", new_string($metric->data));
+       $rc = mapper_slink_data(IDX_PTR($data, double), $n, $nc, mf,
+                               IDX_PTR($ml, int), IDX_PTR($mr, int),
+                               IDX_PTR($md, double));
+    }#}
+    rc ) )
+
+
+(de _mapper-slink-dm-inner (dm n ml mr md)
+  ((-idx1- (-double-)) dm md)
+  ((-int-) n)
+  ((-idx1- (-int-)) ml mr)
+  (let ((rc 0))
+    ((-int-) rc)
+    #{{
+       $rc = mapper_slink(IDX_PTR($dm, double), $n,
+                          IDX_PTR($ml, int), IDX_PTR($mr, int),
+                          IDX_PTR($md, double));
+    }#}
+    rc ) )
+
+
+(de _mapper-cut-tree-inner (nelements ml mr md nclusters labels)
+  ((-int-) nelements nclusters)
+  ((-idx1- (-int-)) ml mr labels)
+  ((-idx1- (-double-)) md)
+  #{{
+     mapper_cut_tree($nelements,
+                     IDX_PTR($ml, int), IDX_PTR($mr, int),
+                     IDX_PTR($md, double),
+                     $nclusters, IDX_PTR($labels, int));
+  }#}
+  t )
+
+
+(de _mapper-cut-tree-dist-inner (nelements ml mr md threshold labels)
+  ((-int-) nelements)
+  ((-idx1- (-int-)) ml mr labels)
+  ((-idx1- (-double-)) md)
+  ((-double-) threshold)
+  (let ((nc 0))
+    ((-int-) nc)
+    #{{
+       $nc = mapper_cut_tree_dist($nelements,
+                                  IDX_PTR($ml, int), IDX_PTR($mr, int),
+                                  IDX_PTR($md, double),
+                                  $threshold, IDX_PTR($labels, int));
+    }#}
+    nc ) )
+
+
+(de _mapper-dbscan-inner (data eps min-pts metric labels)
+  ((-idx2- (-double-)) data)
+  ((-double-) eps)
+  ((-int-) min-pts)
+  ((-str-) metric)
+  ((-idx1- (-int-)) labels)
+  (let ((n (idx-dim data 0))
+        (nc (idx-dim data 1))
+        (ncl 0) )
+    ((-int-) n nc ncl)
+    #{{
+       if ($data->mod[1] != 1)
+         error(NIL, "data must be contiguous (mod[1]=1)", NIL);
+       const char *mname = $metric->data;
+       if (!strcmp(mname, "euclidean")) {
+         $ncl = mapper_dbscan_kdtree(IDX_PTR($data, double), $n, $nc,
+                                     $eps, $min_pts, IDX_PTR($labels, int));
+       } else {
+         metric_fn_t mf = mapper_select_metric(mname);
+         if (!mf) error(NIL, "unknown metric", new_string($metric->data));
+         $ncl = mapper_dbscan_data(IDX_PTR($data, double), $n, $nc, mf,
+                                   $eps, $min_pts, IDX_PTR($labels, int));
+       }
+    }#}
+    ncl ) )
+
+
+(de _mapper-dbscan-dm-inner (dm n eps min-pts labels)
+  ((-idx1- (-double-)) dm)
+  ((-int-) n min-pts)
+  ((-double-) eps)
+  ((-idx1- (-int-)) labels)
+  (let ((ncl 0))
+    ((-int-) ncl)
+    #{{
+       $ncl = mapper_dbscan(IDX_PTR($dm, double), $n, $eps, $min_pts,
+                            IDX_PTR($labels, int));
+    }#}
+    ncl ) )
+
+
+(de mapper-isect-count (a b)
+  ((-idx1- (-int-)) a b)
+  (let ((na (idx-dim a 0))
+        (nb (idx-dim b 0))
+        (c  0) )
+    ((-int-) na nb c)
+    #{{
+       $c = mapper_sorted_isect_count(IDX_PTR($a, int), $na,
+                                      IDX_PTR($b, int), $nb);
+    }#}
+    c ) )
+
+
+;; Compile inner functions
+(let ((dhc-make-lushflags
+       (concat dhc-make-lushflags " -I" (dirname file-being-loaded))))
+  (dhc-make-with-libs () t
+    #{ #include "mapper-c.h" #}
+    _mapper-slink-inner _mapper-slink-dm-inner
+    _mapper-cut-tree-inner _mapper-cut-tree-dist-inner
+    _mapper-dbscan-inner _mapper-dbscan-dm-inner
+    mapper-isect-count ) )
+
+
+;; ============================================================
+;; Interpreted wrappers (create int-matrices safely)
+;; ============================================================
+
+#? (mapper-slink <data> <metric>)
+;; Perform single-linkage hierarchical clustering on the rows of <data>.
+;; <data> is an NxD matrix (idx2 of doubles).
+;; <metric> is a string naming the distance metric.
+;; Returns a list of three idx1 arrays (merge-left merge-right merge-dist),
+;; each of length N-1.  Merges are sorted by increasing distance.
+;; Elements are numbered 0..N-1, merged clusters -1..-(N-1).
+;;.SEE (mapper-cut-tree <nelements> <merge-left> <merge-right> <merge-dist> <nclusters>)
+
+(de mapper-slink (data metric)
+  (let* ((nn (- (idx-dim data 0) 1))
+         (ml (int-matrix nn))
+         (mr (int-matrix nn))
+         (md (double-matrix nn))
+         (rc (_mapper-slink-inner data metric ml mr md)) )
+    (when (< rc 0) (error "slink: memory allocation failed"))
+    (list ml mr md) ) )
+
+
+#? (mapper-slink-dm <dm> <n>)
+;; Perform single-linkage clustering from a precomputed distance matrix.
+;; <dm> is a flat lower-triangle distance matrix (idx1 of doubles).
+;; <n> is the number of elements.
+;; Returns (merge-left merge-right merge-dist).
+
+(de mapper-slink-dm (dm n)
+  (let* ((nn (- n 1))
+         (ml (int-matrix nn))
+         (mr (int-matrix nn))
+         (md (double-matrix nn))
+         (rc (_mapper-slink-dm-inner dm n ml mr md)) )
+    (when (< rc 0) (error "slink: memory allocation failed"))
+    (list ml mr md) ) )
+
+
+#? (mapper-cut-tree <nelements> <merge-left> <merge-right> <merge-dist> <nclusters>)
+;; Cut a dendrogram into <nclusters> flat clusters.
+;; Returns an idx1 of int cluster labels (0-indexed).
+
+(de mapper-cut-tree (nelements ml mr md nclusters)
+  (let ((labels (int-matrix nelements)))
+    (_mapper-cut-tree-inner nelements ml mr md nclusters labels)
+    labels ) )
+
+
+#? (mapper-cut-tree-dist <nelements> <merge-left> <merge-right> <merge-dist> <threshold>)
+;; Cut a dendrogram at a distance threshold.
+;; Returns a list (nclusters labels).
+
+(de mapper-cut-tree-dist (nelements ml mr md threshold)
+  (let* ((labels (int-matrix nelements))
+         (nc (_mapper-cut-tree-dist-inner nelements ml mr md threshold labels)) )
+    (list nc labels) ) )
+
+
+#? (mapper-dbscan <data> <eps> <min-pts> <metric>)
+;; DBSCAN clustering on the rows of <data>.
+;; <data> is an NxD matrix (idx2 of doubles).
+;; <eps> is the neighborhood radius.
+;; <min-pts> is the minimum number of points to form a core point.
+;; <metric> is a string naming the distance metric.
+;; Returns a list (nclusters labels), where labels is an idx1 of ints.
+;; Noise points have label -1.
+;;.PP
+;; For Euclidean metric, a KD-tree is used for acceleration.
+;; For other metrics, brute-force O(N^2) is used.
+
+(de mapper-dbscan (data eps min-pts metric)
+  (let* ((labels (int-matrix (idx-dim data 0)))
+         (ncl (_mapper-dbscan-inner data eps min-pts metric labels)) )
+    (when (< ncl 0) (error "dbscan: memory allocation failed"))
+    (list ncl labels) ) )
+
+
+#? (mapper-dbscan-dm <dm> <n> <eps> <min-pts>)
+;; DBSCAN clustering from a precomputed distance matrix.
+;; <dm> is a flat lower-triangle distance matrix.
+;; Returns (nclusters labels).
+
+(de mapper-dbscan-dm (dm n eps min-pts)
+  (let* ((labels (int-matrix n))
+         (ncl (_mapper-dbscan-dm-inner dm n eps min-pts labels)) )
+    (when (< ncl 0) (error "dbscan: memory allocation failed"))
+    (list ncl labels) ) )
+
+#? (mapper-isect-count <a> <b>)
+;; Count shared elements between two sorted int arrays.
+;; Both <a> and <b> must be idx1 of ints, sorted ascending.
+;; Returns the number of elements in common.
