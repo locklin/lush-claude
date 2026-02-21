@@ -3,6 +3,11 @@
 
 'use strict';
 
+// Register cytoscape extensions
+if (typeof cytoscapeFcose !== 'undefined') {
+  cytoscape.use(cytoscapeFcose);
+}
+
 // ============================================================
 // State
 // ============================================================
