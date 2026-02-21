@@ -442,6 +442,7 @@ function updateSidePanel() {
     document.getElementById('info-clusterer').textContent = '--';
     document.getElementById('info-cubes').textContent = '--';
     document.getElementById('info-overlap').textContent = '--';
+    document.getElementById('info-topo-cols').textContent = '--';
     document.getElementById('sel-summary').textContent = '';
     document.getElementById('selection-info').style.display = 'none';
     return;
@@ -460,6 +461,37 @@ function updateSidePanel() {
     document.getElementById('info-clusterer').textContent = run.clusterer || '--';
     document.getElementById('info-cubes').textContent = run['n-cubes'] || '--';
     document.getElementById('info-overlap').textContent = run.overlap || '--';
+
+    // Display topology columns info
+    const topoColsEl = document.getElementById('info-topo-cols');
+    const colSelStr = run['column-selection'] || '';
+    if (colSelStr && colSelStr.startsWith('{')) {
+      try {
+        const cs = JSON.parse(colSelStr);
+        if (cs.mode === 'all' || (cs.cols && cs.cols.length === 0 && cs.mode !== 'auto_variance')) {
+          topoColsEl.textContent = 'All';
+        } else if (cs.mode === 'auto_variance') {
+          if (cs.cols && cs.cols.length > 0) {
+            const names = cs.cols.map(i => (state.colNames && state.colNames[i]) || ('col ' + i));
+            topoColsEl.textContent = cs.cols.length + ' cols (top variance): ' + (names.length <= 5 ? names.join(', ') : names.slice(0, 5).join(', ') + '...');
+          } else {
+            topoColsEl.textContent = 'Top ' + (cs.top_n || '?') + ' by variance';
+          }
+        } else if (cs.mode === 'manual' && cs.cols && cs.cols.length > 0) {
+          const names = cs.cols.map(i => (state.colNames && state.colNames[i]) || ('col ' + i));
+          topoColsEl.textContent = cs.cols.length + ' cols: ' + (names.length <= 5 ? names.join(', ') : names.slice(0, 5).join(', ') + '...');
+        } else {
+          topoColsEl.textContent = 'All';
+        }
+      } catch(e) {
+        topoColsEl.textContent = colSelStr;
+      }
+    } else if (colSelStr) {
+      // Old format: bare color_col number
+      topoColsEl.textContent = 'All (legacy)';
+    } else {
+      topoColsEl.textContent = 'All';
+    }
   }
 
   // Selection summary
@@ -638,22 +670,40 @@ function runLayout() {
   const layoutName = document.getElementById('layout-select').value;
 
   if (layoutName === 'cola') {
-    // Cola interactive force layout
-    const layout = state.cy.layout({
+    // Cola interactive force layout: first run a finite pass to get
+    // a good initial placement fitted to the viewport, then switch
+    // to infinite mode for interactive dragging.
+    const finiteLayout = state.cy.layout({
       name: 'cola',
-      infinite: true,
-      fit: false,
+      infinite: false,
+      fit: true,
+      padding: 30,
       animate: true,
       randomize: false,
-      maxSimulationTime: 0,  // run forever until stopped
+      maxSimulationTime: 4000,
       nodeSpacing: 20,
       edgeLength: 80,
-      convergenceThreshold: 0.001,
       handleDisconnected: true,
     });
-    activeColaLayout = layout;
-    layout.run();
-    setStatus('Cola layout running (drag nodes to interact)');
+    finiteLayout.one('layoutstop', function() {
+      // Now start infinite simulation for interactive dragging
+      const infiniteLayout = state.cy.layout({
+        name: 'cola',
+        infinite: true,
+        fit: false,
+        animate: true,
+        randomize: false,
+        maxSimulationTime: 0,
+        nodeSpacing: 20,
+        edgeLength: 80,
+        convergenceThreshold: 0.001,
+        handleDisconnected: true,
+      });
+      activeColaLayout = infiniteLayout;
+      infiniteLayout.run();
+      setStatus('Cola layout running (drag nodes to interact)');
+    });
+    finiteLayout.run();
     return;
   }
 
@@ -916,7 +966,9 @@ async function runComparison(state, membersA, membersB, title) {
     }
 
     // Run tests for each column
+    const selectedTest = document.getElementById('stat-test-select').value;
     const results = [];
+    let skippedCols = 0;
     for (let ci = 0; ci < columns.length; ci++) {
       const vals = columns[ci];
       const colName = state.colNames[ci] || `col_${ci}`;
@@ -925,25 +977,46 @@ async function runComparison(state, membersA, membersB, title) {
 
       if (valsA.length < 2 || valsB.length < 2) continue;
 
-      const numA = valsA.map(Number);
-      const numB = valsB.map(Number);
-      const anyNaN = numA.some(isNaN) || numB.some(isNaN);
+      const allVals = valsA.concat(valsB);
+      const numericCol = isNumericColumn(allVals);
+      const categoricalCol = isCategoricalColumn(allVals);
+
+      // Filter columns based on selected test
+      if (selectedTest === 'hypergeometric' && !categoricalCol) { skippedCols++; continue; }
+      if ((selectedTest === 'mann-whitney' || selectedTest === 'ks' || selectedTest === 'welch-t') && !numericCol) { skippedCols++; continue; }
+
+      const numA = numericCol ? valsA.map(Number) : [];
+      const numB = numericCol ? valsB.map(Number) : [];
 
       let result;
-      if (anyNaN || isCategorical(valsA.concat(valsB))) {
+      if (selectedTest === 'auto') {
+        // Auto: pick best test based on column type
+        if (!numericCol || (categoricalCol && !numericCol)) {
+          result = hypergeometricTest(valsA, valsB);
+          result.test = 'hyper';
+        } else {
+          const tRes = welchTTest(numA, numB);
+          const mwRes = mannWhitneyU(numA, numB);
+          if (tRes.p <= mwRes.p) {
+            result = tRes;
+            result.test = 'welch-t';
+          } else {
+            result = mwRes;
+            result.test = 'mann-whitney';
+          }
+        }
+      } else if (selectedTest === 'hypergeometric') {
         result = hypergeometricTest(valsA, valsB);
         result.test = 'hyper';
-      } else {
-        // Use both Welch t-test and Mann-Whitney, report more significant
-        const tRes = welchTTest(numA, numB);
-        const mwRes = mannWhitneyU(numA, numB);
-        if (tRes.p <= mwRes.p) {
-          result = tRes;
-          result.test = 'welch-t';
-        } else {
-          result = mwRes;
-          result.test = 'mann-whitney';
-        }
+      } else if (selectedTest === 'mann-whitney') {
+        result = mannWhitneyU(numA, numB);
+        result.test = 'mann-whitney';
+      } else if (selectedTest === 'ks') {
+        result = ksTest(numA, numB);
+        result.test = 'ks';
+      } else if (selectedTest === 'welch-t') {
+        result = welchTTest(numA, numB);
+        result.test = 'welch-t';
       }
 
       result.col = colName;
@@ -957,7 +1030,8 @@ async function runComparison(state, membersA, membersB, title) {
     compSortAsc = true;
 
     renderCompResults(title, membersA.length, membersB.length);
-    setStatus(`Comparison done: ${compResults.length} columns tested`);
+    const skipMsg = skippedCols > 0 ? ` (${skippedCols} columns skipped — wrong type for ${selectedTest})` : '';
+    setStatus(`Comparison done: ${compResults.length} columns tested${skipMsg}`);
   } catch(e) {
     setStatus('Error: ' + e.message);
     console.error(e);
@@ -1233,6 +1307,15 @@ async function showRunDialog(preselectedDatasetId) {
     datasetSelect.innerHTML = '<option value="">Error loading datasets</option>';
   }
 
+  // Wire up dataset change listener and load columns for initial selection
+  datasetSelect.onchange = onDatasetChange;
+  onDatasetChange();
+
+  // Reset column selection mode to "All"
+  const allRadio = document.querySelector('input[name="colsel-mode"][value="all"]');
+  if (allRadio) allRadio.checked = true;
+  onColSelModeChange();
+
   dialog.classList.add('visible');
 }
 
@@ -1246,11 +1329,82 @@ function onLensChange() {
     (lens === 'column') ? '' : 'none';
 }
 
+// Column selection mode change
+function onColSelModeChange() {
+  const mode = document.querySelector('input[name="colsel-mode"]:checked').value;
+  document.getElementById('colsel-manual-box').style.display = (mode === 'manual') ? '' : 'none';
+  document.getElementById('colsel-topn-box').style.display = (mode === 'auto_variance') ? '' : 'none';
+}
+
+// Fetch column names when dataset changes and populate checkboxes
+async function onDatasetChange() {
+  const datasetId = document.getElementById('run-dataset').value;
+  const container = document.getElementById('colsel-checkboxes');
+  container.innerHTML = '';
+  document.getElementById('colsel-count').textContent = '';
+  if (!datasetId) return;
+
+  try {
+    const info = await apiGet('/api/dataset/' + datasetId);
+    let colNames = info && info['col-names'];
+    if (typeof colNames === 'string') colNames = JSON.parse(colNames);
+    if (colNames && colNames.length > 0) {
+      populateColSelCheckboxes(colNames);
+    }
+  } catch(e) {
+    container.innerHTML = '<span style="color:#666;font-size:11px">Could not load columns</span>';
+  }
+}
+
+function populateColSelCheckboxes(names) {
+  const container = document.getElementById('colsel-checkboxes');
+  container.innerHTML = '';
+  names.forEach((name, i) => {
+    const lbl = document.createElement('label');
+    lbl.innerHTML = '<input type="checkbox" value="' + i + '" checked onchange="updateColSelCount()"> ' + escapeHtml(name);
+    container.appendChild(lbl);
+  });
+  updateColSelCount();
+}
+
+function colSelAll() {
+  document.querySelectorAll('#colsel-checkboxes input[type="checkbox"]').forEach(cb => cb.checked = true);
+  updateColSelCount();
+}
+
+function colSelNone() {
+  document.querySelectorAll('#colsel-checkboxes input[type="checkbox"]').forEach(cb => cb.checked = false);
+  updateColSelCount();
+}
+
+function updateColSelCount() {
+  const all = document.querySelectorAll('#colsel-checkboxes input[type="checkbox"]');
+  const checked = document.querySelectorAll('#colsel-checkboxes input[type="checkbox"]:checked');
+  document.getElementById('colsel-count').textContent = checked.length + '/' + all.length + ' selected';
+}
+
 async function startRun() {
   const datasetId = document.getElementById('run-dataset').value;
   if (!datasetId) {
     setStatus('No dataset selected');
     return;
+  }
+
+  // Build column_selection JSON
+  const colSelMode = document.querySelector('input[name="colsel-mode"]:checked').value;
+  const colorCol = parseInt(document.getElementById('run-colorcol').value) || 0;
+  let columnSelection;
+  if (colSelMode === 'manual') {
+    const checkedCols = [];
+    document.querySelectorAll('#colsel-checkboxes input[type="checkbox"]:checked').forEach(cb => {
+      checkedCols.push(parseInt(cb.value));
+    });
+    columnSelection = JSON.stringify({ mode: 'manual', cols: checkedCols, color_col: colorCol });
+  } else if (colSelMode === 'auto_variance') {
+    const topN = parseInt(document.getElementById('colsel-topn').value) || 10;
+    columnSelection = JSON.stringify({ mode: 'auto_variance', top_n: topN, cols: [], color_col: colorCol });
+  } else {
+    columnSelection = JSON.stringify({ mode: 'all', cols: [], color_col: colorCol });
   }
 
   const params = {
@@ -1264,7 +1418,7 @@ async function startRun() {
     min_pts: document.getElementById('run-minpts').value,
     min_intersection: document.getElementById('run-minintersect').value,
     lens_type: document.getElementById('run-lens').value,
-    color_col: document.getElementById('run-colorcol').value || '0',
+    column_selection: columnSelection,
   };
 
   setStatus('Starting mapper run...');

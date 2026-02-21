@@ -35,6 +35,7 @@
         <div class="info-row"><span class="info-label">Clusterer</span><span class="info-value" id="info-clusterer">--</span></div>
         <div class="info-row"><span class="info-label">Cubes</span><span class="info-value" id="info-cubes">--</span></div>
         <div class="info-row"><span class="info-label">Overlap</span><span class="info-value" id="info-overlap">--</span></div>
+        <div class="info-row"><span class="info-label">Topology Cols</span><span class="info-value" id="info-topo-cols">--</span></div>
       </div>
     </div>
 
@@ -53,6 +54,15 @@
       <div id="selected-details"></div>
       <div class="member-list" id="member-list"></div>
       <div class="controls-row" style="margin-top:6px">
+        <select id="stat-test-select" style="flex:1;min-width:0">
+          <option value="auto">Auto (best per column)</option>
+          <option value="hypergeometric">Hypergeometric</option>
+          <option value="mann-whitney">Mann-Whitney U</option>
+          <option value="ks">Kolmogorov-Smirnov</option>
+          <option value="welch-t">Welch's t-test</option>
+        </select>
+      </div>
+      <div class="controls-row" style="margin-top:4px">
         <button onclick="compareGroups()">Compare A vs B</button>
         <button onclick="compareVsRest()">A vs Rest</button>
       </div>
@@ -107,7 +117,10 @@
         <div class="help-group">
           <div class="help-title">Groups</div>
           <div class="help-item">Click <b>Group A</b>/<b>Group B</b> to set active group</div>
-          <div class="help-item"><b>Compare A vs B</b> runs statistical tests across all columns</div>
+          <div class="help-item">Select a test from the dropdown before comparing:</div>
+          <div class="help-item">&bull; <b>Hypergeometric</b> &mdash; text/integer columns</div>
+          <div class="help-item">&bull; <b>Mann-Whitney / KS / t-test</b> &mdash; numeric columns</div>
+          <div class="help-item"><b>Compare A vs B</b> runs the selected test across applicable columns</div>
           <div class="help-item"><b>A vs Rest</b> compares group A against all other points</div>
         </div>
         <div class="help-group">
@@ -178,7 +191,7 @@
     <div class="form-row">
       <div class="form-group">
         <label for="run-ncubes">N Cubes</label>
-        <input id="run-ncubes" type="number" value="10" min="2" max="100">
+        <input id="run-ncubes" type="number" value="8" min="2" max="100">
       </div>
       <div class="form-group">
         <label for="run-overlap">Overlap</label>
@@ -235,6 +248,26 @@
       <div class="form-group" id="col-select-group" style="display:none">
         <label for="run-colorcol">Column Index</label>
         <input id="run-colorcol" type="number" value="0" min="0">
+      </div>
+    </div>
+    <div class="form-group" style="margin-top:6px">
+      <label>Topology Columns</label>
+      <div class="colsel-mode-row">
+        <label><input type="radio" name="colsel-mode" value="all" checked onchange="onColSelModeChange()"> All columns</label>
+        <label><input type="radio" name="colsel-mode" value="manual" onchange="onColSelModeChange()"> Select columns</label>
+        <label><input type="radio" name="colsel-mode" value="auto_variance" onchange="onColSelModeChange()"> Top N by variance</label>
+      </div>
+      <div id="colsel-manual-box" style="display:none">
+        <div class="colsel-actions">
+          <button type="button" onclick="colSelAll()">Select All</button>
+          <button type="button" onclick="colSelNone()">Deselect All</button>
+          <span id="colsel-count" style="color:#888;font-size:11px;margin-left:6px"></span>
+        </div>
+        <div id="colsel-checkboxes"></div>
+      </div>
+      <div id="colsel-topn-box" style="display:none">
+        <input id="colsel-topn" type="number" value="10" min="1" style="width:80px">
+        <span style="color:#888;font-size:11px;margin-left:6px">columns with highest variance</span>
       </div>
     </div>
     <div class="modal-actions">

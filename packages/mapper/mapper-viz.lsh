@@ -76,10 +76,14 @@
              (info (mapper-db-get-run-info *viz-db* rid)) )
         (if info
           (progn
-            ;; Detect crashed worker: status is "running" but .failed file exists
+            ;; Detect crashed worker: status is "running" but .failed file or log errors exist
             (when (= (cdr (assoc "status" info)) "running")
-              (let ((fail-path (concat "/tmp/claude/mapper-worker-" (sprintf "%d" rid) ".failed")))
-                (when (filep fail-path)
+              (let ((fail-path (concat "/tmp/claude/mapper-worker-" (sprintf "%d" rid) ".failed"))
+                    (log-path (concat "/tmp/claude/mapper-worker-" (sprintf "%d" rid) ".log")) )
+                ;; Check .failed marker OR grep log for Lush error pattern "*** "
+                (when (or (filep fail-path)
+                          (and (filep log-path)
+                               (= 0 (sys (concat "grep -q '\\*\\*\\* ' " log-path " 2>/dev/null"))) ) )
                   (mapper-db-update-run-status *viz-db* rid "failed" "worker process crashed (see log)")
                   ;; Update the info alist in place for this response
                   (setq info (mapcar (lambda (pair)
@@ -236,6 +240,57 @@
       (printf "(libload \"mapper/mapper\")\n")
       (printf "(libload \"mapper/lens\")\n")
       (printf "\n")
+
+      ;; --- JSON field extraction helpers (minimal, no full parser) ---
+      (printf ";;; Minimal JSON field extractors for column_selection parsing\n")
+
+      ;; _wk-json-str: extract "key":"value" -> string value
+      (printf "(de _wk-json-str (json key)\n")
+      (printf "  (let ((pat (concat \"\\\"\" key \"\\\":\\\"\")))\n")
+      (printf "    (let ((pos (index pat json)))\n")
+      (printf "      (when pos\n")
+      (printf "        (let ((start (+ pos (len pat))))\n")
+      (printf "          (let ((endpos (index \"\\\"\" (mid json start))))\n")
+      (printf "            (when endpos\n")
+      (printf "              (left (mid json start) (1- endpos)) ) ) ) ) ) ) )\n\n")
+
+      ;; _wk-json-num: extract "key":number -> number
+      (printf "(de _wk-json-num (json key)\n")
+      (printf "  (let ((pat (concat \"\\\"\" key \"\\\":\")))\n")
+      (printf "    (let ((pos (index pat json)))\n")
+      (printf "      (when pos\n")
+      (printf "        (let ((start (+ pos (len pat))))\n")
+      (printf "          (let ((rest (mid json start)) (numstr \"\") (i 1) (done ()))\n")
+      (printf "            (while (and (not done) (<= i (len rest)))\n")
+      (printf "              (let ((ch (mid rest i 1)))\n")
+      (printf "                (if (or (= ch \".\") (= ch \"-\") (and (>= (asc ch) (asc \"0\")) (<= (asc ch) (asc \"9\"))))\n")
+      (printf "                  (progn (setq numstr (concat numstr ch)) (incr i))\n")
+      (printf "                  (setq done t) ) ) )\n")
+      (printf "            (when (> (len numstr) 0) (val numstr)) ) ) ) ) ) )\n\n")
+
+      ;; _wk-json-intlist: extract "key":[1,2,3] -> list of ints
+      (printf "(de _wk-json-intlist (json key)\n")
+      (printf "  (let ((pat (concat \"\\\"\" key \"\\\":[\" )))\n")
+      (printf "    (let ((pos (index pat json)))\n")
+      (printf "      (when pos\n")
+      (printf "        (let ((start (+ pos (len pat))))\n")
+      (printf "          (let ((endpos (index \"]\" (mid json start))))\n")
+      (printf "            (when endpos\n")
+      (printf "              (let ((arr-str (left (mid json start) (1- endpos))))\n")
+      (printf "                (let ((result ()) (s arr-str) (done2 ()))\n")
+      (printf "                  (when (> (len s) 0)\n")
+      (printf "                    (while (not done2)\n")
+      (printf "                      (let ((cpos (index \",\" s)))\n")
+      (printf "                        (if cpos\n")
+      (printf "                          (progn\n")
+      (printf "                            (setq result (nconc1 result (val (left s (1- cpos)))))\n")
+      (printf "                            (setq s (mid s (1+ cpos))) )\n")
+      (printf "                          (progn\n")
+      (printf "                            (setq result (nconc1 result (val s)))\n")
+      (printf "                            (setq done2 t) ) ) ) ) )\n")
+      (printf "                  result ) ) ) ) ) ) ) ) )\n\n")
+
+      ;; --- Main worker body ---
       (printf "(let ((db (mapper-db-open \"%s\")))\n" db-path)
       (printf "  (mapper-db-update-run-status db %d \"running\")\n" run-id)
       (printf "  (let ((info (mapper-db-get-run-info db %d)))\n" run-id)
@@ -251,41 +306,124 @@
       (printf "          (col-sel (cdr (assoc \"column-selection\" info))) )\n")
       (printf "      (let ((ds (mapper-db-load-dataset db did)))\n")
       (printf "        (let ((data (car ds)) (col-names (cadr ds)))\n")
-      ;; Helper: safely parse col-sel to int (may be nil, "", or "3")
-      (printf "          (let ((color-col (if (and col-sel (stringp col-sel) (> (len col-sel) 0)) (val col-sel)\n")
-      (printf "                             (if (numberp col-sel) col-sel 0))))\n")
-      (printf "            (let ((lens ()))\n")
-      (printf "              (cond\n")
-      (printf "               ((= lens-type \"l_inf_centrality\")\n")
-      (printf "                (setq lens (mapper-lens-linf-centrality data metric)) )\n")
-      (printf "               ((= lens-type \"eccentricity\")\n")
-      (printf "                (setq lens (mapper-lens-eccentricity data metric)) )\n")
-      (printf "               ((= lens-type \"pca\")\n")
-      (printf "                (setq lens (mapper-lens-pca data 1)) )\n")
-      (printf "               ((= lens-type \"sum\")\n")
-      (printf "                (setq lens (mapper-lens-sum data)) )\n")
-      (printf "               ((= lens-type \"mean\")\n")
-      (printf "                (setq lens (mapper-lens-mean data)) )\n")
-      (printf "               ((= lens-type \"variance\")\n")
-      (printf "                (setq lens (mapper-lens-variance data)) )\n")
-      (printf "               ((= lens-type \"kurtosis\")\n")
-      (printf "                (setq lens (mapper-lens-kurtosis data)) )\n")
-      (printf "               ((= lens-type \"l2norm\")\n")
-      (printf "                (setq lens (mapper-lens-l2norm data)) )\n")
-      (printf "               ((= lens-type \"column\")\n")
-      (printf "                (setq lens (mapper-lens-column data color-col)) )\n")
-      (printf "               (t\n")
-      (printf "                (setq lens (mapper-lens-linf-centrality data metric)) ) )\n")
-      (printf "              (let ((graph (mapper-run data lens n-cubes overlap\n")
-      (printf "                                       'metric metric\n")
-      (printf "                                       'clusterer clusterer\n")
-      (printf "                                       'eps eps\n")
-      (printf "                                       'min-pts min-pts\n")
-      (printf "                                       'min-intersection min-intersection)))\n")
-      (printf "                (when (and (> (idx-dim data 1) color-col) (>= color-col 0))\n")
-      (printf "                  (==> graph color-by-mean data color-col) )\n")
-      (printf "                (mapper-db-store-graph db %d graph data)\n" run-id)
-      (printf "                (printf \"Worker %d completed successfully.\\n\") ) ) ) ) ) ) )\n" run-id)
+      (printf "          (let ((n (idx-dim data 0)) (d (idx-dim data 1)))\n")
+
+      ;; Parse column_selection JSON or handle backward compat
+      (printf "            ;; Parse column-selection\n")
+      (printf "            (let ((cs-mode \"all\") (cs-cols ()) (color-col 0) (cs-topn 10))\n")
+      (printf "              (if (and col-sel (stringp col-sel) (> (len col-sel) 0))\n")
+      (printf "                (if (= (mid col-sel 1 1) \"{\")\n")
+      (printf "                  ;; JSON format\n")
+      (printf "                  (progn\n")
+      (printf "                    (let ((m (_wk-json-str col-sel \"mode\")))\n")
+      (printf "                      (when m (setq cs-mode m)) )\n")
+      (printf "                    (let ((cc (_wk-json-num col-sel \"color_col\")))\n")
+      (printf "                      (when cc (setq color-col (int cc))) )\n")
+      (printf "                    (let ((tn (_wk-json-num col-sel \"top_n\")))\n")
+      (printf "                      (when tn (setq cs-topn (int tn))) )\n")
+      (printf "                    (let ((cl (_wk-json-intlist col-sel \"cols\")))\n")
+      (printf "                      (when cl (setq cs-cols cl)) ) )\n")
+      (printf "                  ;; Old format: bare number -> color-col, use all columns\n")
+      (printf "                  (setq color-col (val col-sel)) )\n")
+      (printf "                ;; nil or empty -> defaults (all columns, color-col 0)\n")
+      (printf "                () )\n")
+
+      ;; Handle auto_variance mode: compute per-column variance and pick top N
+      (printf "              ;; Resolve auto_variance mode\n")
+      (printf "              (when (= cs-mode \"auto_variance\")\n")
+      (printf "                (printf \"Computing per-column variance for top-%d selection...\\n\" cs-topn)\n")
+      (printf "                (let ((variances (double-matrix d))\n")
+      (printf "                      (col-order (int-matrix d)) )\n")
+      (printf "                  ;; Compute variance per column\n")
+      (printf "                  (for (j 0 (1- d))\n")
+      (printf "                    (let ((sum 0) (sum2 0))\n")
+      (printf "                      (for (i 0 (1- n))\n")
+      (printf "                        (let ((v (data i j)))\n")
+      (printf "                          (setq sum (+ sum v))\n")
+      (printf "                          (setq sum2 (+ sum2 (* v v))) ) )\n")
+      (printf "                      (let ((mean (/ sum n)))\n")
+      (printf "                        (variances j (- (/ sum2 n) (* mean mean))) ) )\n")
+      (printf "                    (col-order j j) )\n")
+      (printf "                  ;; Bubble sort indices by variance descending\n")
+      (printf "                  (for (i 0 (- d 2))\n")
+      (printf "                    (for (j 0 (- d i 2))\n")
+      (printf "                      (when (< (variances (col-order j)) (variances (col-order (1+ j))))\n")
+      (printf "                        (let ((tmp (col-order j)))\n")
+      (printf "                          (col-order j (col-order (1+ j)))\n")
+      (printf "                          (col-order (1+ j) tmp) ) ) ) )\n")
+      (printf "                  ;; Take top N\n")
+      (printf "                  (let ((take (min cs-topn d)))\n")
+      (printf "                    (setq cs-cols ())\n")
+      (printf "                    (for (i 0 (1- take))\n")
+      (printf "                      (setq cs-cols (nconc1 cs-cols (col-order i))) )\n")
+      (printf "                    (printf \"Selected %%d columns by variance: %%l\\n\" take cs-cols) ) )\n")
+      ;; Store resolved cols back to DB
+      (printf "                ;; Store resolved column list back to DB\n")
+      (printf "                (let ((cols-str \"[\"))\n")
+      (printf "                  (let ((first t))\n")
+      (printf "                    (each ((c cs-cols))\n")
+      (printf "                      (if first (setq first ())\n")
+      (printf "                        (setq cols-str (concat cols-str \",\")) )\n")
+      (printf "                      (setq cols-str (concat cols-str (sprintf \"%%d\" c))) ) )\n")
+      (printf "                  (setq cols-str (concat cols-str \"]\"))\n")
+      (printf "                  (let ((new-sel (concat \"{\\\"mode\\\":\\\"auto_variance\\\",\\\"top_n\\\":\" (sprintf \"%%d\" cs-topn) \",\\\"cols\\\":\" cols-str \",\\\"color_col\\\":\" (sprintf \"%%d\" color-col) \"}\")))\n")
+      (printf "                    (sqlite-exec db \"UPDATE mapper_runs SET column_selection = ? WHERE id = ?\" new-sel %d) ) ) )\n" run-id)
+
+      ;; Build topo-data subset matrix
+      (printf "              ;; Build topology data subset\n")
+      (printf "              (let ((topo-data ()))\n")
+      (printf "                (if (and (not (= cs-mode \"all\")) cs-cols (> (length cs-cols) 0))\n")
+      (printf "                  ;; Subset columns\n")
+      (printf "                  (let ((k (length cs-cols)))\n")
+      (printf "                    (printf \"Building topology subset: %%d rows x %%d cols\\n\" n k)\n")
+      (printf "                    (setq topo-data (double-matrix n k))\n")
+      (printf "                    (let ((j 0))\n")
+      (printf "                      (each ((c cs-cols))\n")
+      (printf "                        (for (i 0 (1- n))\n")
+      (printf "                          (topo-data i j (data i c)) )\n")
+      (printf "                        (incr j) ) ) )\n")
+      (printf "                  ;; Use full data\n")
+      (printf "                  (setq topo-data data) )\n")
+
+      ;; Compute lens — use topo-data for most lens types, full data for "column"
+      (printf "                ;; Compute lens\n")
+      (printf "                (let ((lens ()))\n")
+      (printf "                  (cond\n")
+      (printf "                   ((= lens-type \"l_inf_centrality\")\n")
+      (printf "                    (setq lens (mapper-lens-linf-centrality topo-data metric)) )\n")
+      (printf "                   ((= lens-type \"eccentricity\")\n")
+      (printf "                    (setq lens (mapper-lens-eccentricity topo-data metric)) )\n")
+      (printf "                   ((= lens-type \"pca\")\n")
+      (printf "                    (setq lens (mapper-lens-pca topo-data 1)) )\n")
+      (printf "                   ((= lens-type \"sum\")\n")
+      (printf "                    (setq lens (mapper-lens-sum topo-data)) )\n")
+      (printf "                   ((= lens-type \"mean\")\n")
+      (printf "                    (setq lens (mapper-lens-mean topo-data)) )\n")
+      (printf "                   ((= lens-type \"variance\")\n")
+      (printf "                    (setq lens (mapper-lens-variance topo-data)) )\n")
+      (printf "                   ((= lens-type \"kurtosis\")\n")
+      (printf "                    (setq lens (mapper-lens-kurtosis topo-data)) )\n")
+      (printf "                   ((= lens-type \"l2norm\")\n")
+      (printf "                    (setq lens (mapper-lens-l2norm topo-data)) )\n")
+      (printf "                   ((= lens-type \"column\")\n")
+      ;; Column lens uses FULL data matrix with color_col
+      (printf "                    (setq lens (mapper-lens-column data color-col)) )\n")
+      (printf "                   (t\n")
+      (printf "                    (setq lens (mapper-lens-linf-centrality topo-data metric)) ) )\n")
+
+      ;; Run mapper on topo-data
+      (printf "                  (let ((graph (mapper-run topo-data lens n-cubes overlap\n")
+      (printf "                                           'metric metric\n")
+      (printf "                                           'clusterer clusterer\n")
+      (printf "                                           'eps eps\n")
+      (printf "                                           'min-pts min-pts\n")
+      (printf "                                           'min-intersection min-intersection)))\n")
+      ;; Color nodes using FULL data matrix
+      (printf "                    (when (and (> (idx-dim data 1) color-col) (>= color-col 0))\n")
+      (printf "                      (==> graph color-by-mean data color-col) )\n")
+      ;; Store graph with FULL data
+      (printf "                    (mapper-db-store-graph db %d graph data)\n" run-id)
+      (printf "                    (printf \"Worker %d completed successfully.\\n\") ) ) ) ) ) ) ) ) )\n" run-id)
       (printf "  (mapper-db-close db) )\n")
       (printf "(exit 0)\n") )
     worker-path ) )
@@ -305,16 +443,16 @@
               (min-pts (val (or (cdr (assoc "min_pts" form)) "3")))
               (min-intersection (val (or (cdr (assoc "min_intersection" form)) "1")))
               (lens-type (or (cdr (assoc "lens_type" form)) "l_inf_centrality"))
-              (color-col (or (cdr (assoc "color_col" form)) "0")) )
+              (col-sel (or (cdr (assoc "column_selection" form)) "{\"mode\":\"all\",\"cols\":[],\"color_col\":0}")) )
           ;; Validate dataset exists
           (let ((ds-info (mapper-db-get-dataset-info *viz-db* dataset-id)))
             (if (not ds-info)
               (list 400 "application/json" "{\"error\":\"dataset not found\"}")
-              ;; Create run record
+              ;; Create run record — column_selection stores JSON string
               (let ((rid (mapper-db-create-run *viz-db* dataset-id
                            n-cubes overlap metric clusterer
                            eps min-pts min-intersection
-                           lens-type "" color-col)))
+                           lens-type "" col-sel)))
                 ;; Update name
                 (sqlite-exec *viz-db*
                   "UPDATE mapper_runs SET name = ? WHERE id = ?" name rid)
@@ -324,11 +462,16 @@
                       (fail-path (concat "/tmp/claude/mapper-worker-" (sprintf "%d" rid) ".failed")) )
                     ;; Fork worker in background with a shell wrapper:
                     ;; On success, the Lush script's mapper-db-store-graph marks run completed.
-                    ;; On failure (non-zero exit), write a .failed marker file.
-                    ;; The GET /api/run/:id handler detects this and updates the DB.
+                    ;; On failure, write a .failed marker file.
+                    ;; Note: Lush exits with code 0 even on error, so we also
+                    ;; grep the log for "*** " to detect crashes.  Lush prepends
+                    ;; a BEL char (\a) to error lines, so we match "*** " anywhere.
+                    ;; The GET /api/run/:id handler detects the .failed file.
                     (sys (concat
                       "( " *viz-lush-bin* " " worker-path " > " log-path " 2>&1"
-                      " || echo failed > " fail-path " ) &"))
+                      " ; if grep -q '\\*\\*\\* ' " log-path
+                      " ; then echo failed > " fail-path
+                      " ; fi ) &"))
                     ;; Return run-id
                     (list 200 "application/json"
                       (concat "{\"run-id\":" (sprintf "%d" rid) "}") ) ) ) ) ) ) )

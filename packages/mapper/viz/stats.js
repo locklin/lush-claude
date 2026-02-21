@@ -160,6 +160,27 @@ function benjaminiHochberg(results) {
 // Column type detection
 // ============================================================
 
+function isNumericColumn(values) {
+  return values.every(v => !isNaN(Number(v)));
+}
+
+function isIntegerColumn(values) {
+  return values.every(v => {
+    const n = Number(v);
+    return !isNaN(n) && Number.isInteger(n);
+  });
+}
+
+function isCategoricalColumn(values) {
+  // Categorical: non-numeric text, or integers with limited distinct values
+  if (!isNumericColumn(values)) return true;
+  if (isIntegerColumn(values)) {
+    const distinct = new Set(values.map(Number));
+    return distinct.size <= 20;
+  }
+  return false;
+}
+
 function isCategorical(values) {
   const vals = new Set(values);
   return vals.size <= 20;

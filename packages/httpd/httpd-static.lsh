@@ -97,16 +97,26 @@
 ;; Usage with httpd-add-route:
 ;;   (httpd-add-route server "GET" "/static/(.*)"
 ;;                    (httpd-make-static-handler "/path/to/files"))
+;;
+;; Note: uses eval to bake <docroot> into the lambda as a literal,
+;; since Lush uses dynamic scoping and the parameter would be unbound
+;; when the handler is invoked later by the server.
 (de httpd-make-static-handler (docroot)
-  (lambda (req)
-    (let* ((path (alist-get "path" req))
-           ;; Strip leading slash
-           (relpath (if (= (left path 1) "/") (mid path 2) path))
-           (filepath (concat-fname docroot relpath)) )
-      ;; Security: prevent path traversal
-      (if (index ".." filepath)
-        (list 403 "text/plain" "Forbidden")
-        (let ((content (httpd-read-file-binary filepath)))
-          (if content
-            (list 200 (httpd-mime-type filepath) content)
-            (list 404 "text/plain" (concat "Not found: " path)) ) ) ) ) ) )
+  (eval
+    (list 'lambda '(req)
+      (list 'let (list (list '_static-docroot docroot))
+        '(let ((params (alist-get "params" req)))
+           (let ((relpath (if (and params (car params) (> (len (car params)) 0))
+                            (car params)
+                            "index.html")))
+             ;; Map "/" or "" to index.html
+             (when (or (= relpath "/") (= relpath ""))
+               (setq relpath "index.html") )
+             ;; Security: prevent path traversal
+             (if (index ".." relpath)
+               (list 403 "text/plain" "Forbidden")
+               (let ((filepath (concat _static-docroot "/" relpath)))
+                 (let ((content (httpd-read-file-binary filepath)))
+                   (if content
+                     (list 200 (httpd-mime-type filepath) content)
+                     (list 404 "text/plain" (concat "Not found: " relpath)) ) ) ) ) ) ) ) ) ) )

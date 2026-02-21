@@ -164,10 +164,16 @@ body {
   cursor: pointer;
   font-weight: bold;
   border-radius: 3px;
+  opacity: 0.4;
+  transition: opacity 0.15s, border-color 0.15s, box-shadow 0.15s;
 }
 .group-btn.group-a { background: #ff4444; color: #fff; }
 .group-btn.group-b { background: #4488ff; color: #fff; }
-.group-btn.active { border-color: #fff; }
+.group-btn.active {
+  opacity: 1;
+  border-color: #fff;
+  box-shadow: 0 0 8px rgba(255,255,255,0.5);
+}
 
 /* Bottom toolbar */
 #toolbar {
@@ -484,6 +490,74 @@ body {
   font-size: 10px;
   font-family: monospace;
   border: 1px solid #555;
+}
+
+/* Column selection UI in run dialog */
+.colsel-mode-row {
+  display: flex;
+  gap: 12px;
+  margin: 4px 0 6px 0;
+}
+.colsel-mode-row label {
+  font-size: 12px;
+  color: #ccc;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  text-transform: none;
+  letter-spacing: 0;
+}
+#colsel-manual-box {
+  margin-top: 4px;
+}
+.colsel-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 4px;
+}
+.colsel-actions button {
+  font-size: 11px;
+  padding: 2px 8px;
+  background: #222;
+  color: #ddd;
+  border: 1px solid #444;
+  border-radius: 3px;
+  cursor: pointer;
+}
+.colsel-actions button:hover { background: #333; }
+#colsel-checkboxes {
+  max-height: 180px;
+  overflow-y: auto;
+  background: #111;
+  border: 1px solid #333;
+  border-radius: 3px;
+  padding: 4px 6px;
+}
+#colsel-checkboxes label {
+  display: block;
+  font-size: 12px;
+  color: #ccc;
+  padding: 1px 0;
+  cursor: pointer;
+  text-transform: none;
+  letter-spacing: 0;
+}
+#colsel-checkboxes label:hover { background: #222; }
+#colsel-checkboxes input[type="checkbox"] { margin-right: 4px; }
+#colsel-topn-box {
+  margin-top: 4px;
+  display: flex;
+  align-items: center;
+}
+#colsel-topn-box input {
+  font-size: 13px;
+  padding: 4px 6px;
+  background: #222;
+  color: #ddd;
+  border: 1px solid #444;
+  border-radius: 3px;
 }
 
 /* Lasso overlay canvas */
