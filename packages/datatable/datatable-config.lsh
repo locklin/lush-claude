@@ -1,0 +1,13 @@
+;;; datatable-config.lsh -- Compile C acceleration code for the datatable package
+;;;
+;;; Compiles datatable-csv-c.c and loads the resulting object file.
+;;; Must be loaded before datatable-csv.lsh.
+
+(libload "libc/make")
+
+(let ((dir (dirname file-being-loaded)))
+  (let ((lm (new lushmake)))
+    (==> lm setflags (concat " -I" dir " -O2"))
+    (==> lm rule "datatable-csv-c.o" '("datatable-csv-c.c" "datatable-csv-c.h"))
+    (==> lm make)
+    (==> lm load) ) )

@@ -1,0 +1,159 @@
+;;; stringcol.lsh -- Dictionary-encoded string column for DataTable
+;;;
+;;; Stores string data efficiently using per-column string interning:
+;;;   - A string pool (htable: string->code, list: code->string)
+;;;   - An int-matrix of per-row codes
+;;;
+;;; At the Lush prompt, a StringColumn looks like a vector of strings.
+;;; Internally it stores only small integer codes, with a compact pool
+;;; of unique strings.  This gives ~12x memory savings for typical
+;;; datasets with repeated string values (inspired by Kerf1's HASH type).
+;;;
+;;; Usage:
+;;;   (setq sc (new StringColumn 100))  ;; initial capacity 100
+;;;   (==> sc append "AAPL")
+;;;   (==> sc append "GOOG")
+;;;   (==> sc append "AAPL")            ;; reuses existing code
+;;;   (==> sc get 0)                    ;; => "AAPL"
+;;;   (==> sc get 2)                    ;; => "AAPL"
+;;;   (==> sc num-unique)               ;; => 2
+
+#? *** StringColumn: Dictionary-Encoded String Column
+
+
+;; ============================================================
+;; StringColumn class
+;; ============================================================
+
+(defclass StringColumn object
+  ;; Forward map: string -> integer code (O(1) lookup)
+  str-to-code
+
+  ;; Reverse map: code -> string (list indexed by code)
+  code-to-str
+
+  ;; Per-row data: integer codes, one per row
+  codes
+
+  ;; Pool bookkeeping
+  pool-size          ;; number of unique strings in pool
+  num-rows           ;; logical row count
+  capacity           ;; allocated capacity of codes array
+)
+
+
+#? (new StringColumn <initial-capacity>)
+;; Create a new StringColumn with the given initial capacity.
+(defmethod StringColumn StringColumn (init-cap)
+  (setq str-to-code (htable 64))
+  (setq code-to-str ())
+  (setq codes (int-matrix (max 64 init-cap)))
+  (setq pool-size 0)
+  (setq num-rows 0)
+  (setq capacity (max 64 init-cap)) )
+
+
+#? (==> <sc> append <string>)
+;; Append a string value to the column. The string is interned in
+;; the column's pool if not already present.
+(defmethod StringColumn append (s)
+  (let ((code (str-to-code s)))
+    (when (not code)
+      ;; New string: add to pool
+      (setq code pool-size)
+      (str-to-code s code)
+      (setq code-to-str (nconc1 code-to-str s))
+      (setq pool-size (1+ pool-size)) )
+    ;; Grow codes array if needed
+    (when (>= num-rows capacity)
+      (let ((new-cap (* 2 capacity)))
+        (let ((new-codes (int-matrix new-cap)))
+          (for (i 0 (1- num-rows))
+            (new-codes i (codes i)) )
+          (setq codes new-codes)
+          (setq capacity new-cap) ) ) )
+    ;; Store code for this row
+    (codes num-rows code)
+    (setq num-rows (1+ num-rows)) ) )
+
+
+#? (==> <sc> get <index>)
+;; Get the string value at row <index>.
+;; Two-step lookup: row -> code -> string.
+(defmethod StringColumn get (i)
+  (when (and (>= i 0) (< i num-rows))
+    (nth (codes i) code-to-str) ) )
+
+
+#? (==> <sc> get-code <index>)
+;; Get the raw integer code at row <index> (for internal use).
+(defmethod StringColumn get-code (i)
+  (when (and (>= i 0) (< i num-rows))
+    (codes i) ) )
+
+
+#? (==> <sc> num-rows)
+;; Return the number of rows in this column.
+(defmethod StringColumn num-rows ()
+  num-rows )
+
+
+#? (==> <sc> num-unique)
+;; Return the number of unique strings in the pool.
+(defmethod StringColumn num-unique ()
+  pool-size )
+
+
+#? (==> <sc> get-codes)
+;; Return the underlying codes int-matrix (for direct access).
+(defmethod StringColumn get-codes ()
+  codes )
+
+
+#? (==> <sc> get-pool)
+;; Return the list of unique strings (index = code).
+(defmethod StringColumn get-pool ()
+  code-to-str )
+
+
+#? (==> <sc> rows-equal <i> <j>)
+;; Test if rows i and j have the same string value.
+;; O(1) integer comparison, no string compare needed.
+(defmethod StringColumn rows-equal (i j)
+  (= (codes i) (codes j)) )
+
+
+#? (==> <sc> where-eq <string>)
+;; Return a list of row indices where the value equals <string>.
+;; Uses code comparison (integer) rather than string comparison.
+(defmethod StringColumn where-eq (s)
+  (let ((target-code (str-to-code s)))
+    (when target-code
+      (let ((result ()))
+        (for (i 0 (1- num-rows))
+          (when (= (codes i) target-code)
+            (setq result (nconc1 result i)) ) )
+        result ) ) ) )
+
+
+#? (==> <sc> build-from-codes <code-array> <unique-strings>)
+;; Bulk-initialize the StringColumn from pre-computed codes and strings.
+;; <code-array> is an int-matrix of codes (one per row).
+;; <unique-strings> is a list of strings (index = code).
+;; This is used by the fast CSV reader which does dictionary encoding in C.
+(defmethod StringColumn build-from-codes (code-array unique-strings)
+  (let ((nr (idx-dim code-array 0))
+        (nu (length unique-strings)) )
+    ;; Set up pool
+    (setq str-to-code (htable (max 64 (* 2 nu))))
+    (setq code-to-str unique-strings)
+    (setq pool-size nu)
+    ;; Register each unique string in the htable
+    (let ((idx 0))
+      (each ((s unique-strings))
+        (str-to-code s idx)
+        (setq idx (1+ idx)) ) )
+    ;; Set up codes
+    (setq codes code-array)
+    (setq num-rows nr)
+    (setq capacity nr) ) )

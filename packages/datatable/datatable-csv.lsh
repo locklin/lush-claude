@@ -1,0 +1,257 @@
+;;; datatable-csv.lsh -- Fast CSV reader for Lush DataTable
+;;;
+;;; Reads CSV/TSV files into a DataTable with per-column type inference.
+;;; Uses C acceleration for scanning (dimensions, type detection) and
+;;; numeric parsing (strtod).  String columns are dictionary-encoded
+;;; via StringColumn.
+;;;
+;;; Inspired by kerf1's table reader and pandas' CSV parser.
+;;;
+;;; Usage:
+;;;   (libload "datatable/datatable-csv")
+;;;   (setq t (csv-read "/path/to/data.csv"))
+;;;   (==> t head 10)
+;;;   (==> t num-rows)
+
+(libload "datatable/datatable-config")
+(libload "datatable/datatable")
+(libload "libidx/idx-double")
+(libload "libidx/idx-int")
+
+#? *** Fast CSV/TSV Reader
+
+
+;; ============================================================
+;; Compiled Lush functions (C bridge via dhc-make)
+;; ============================================================
+
+;; internal: scan CSV file to get dimensions, types, and column names
+;; Returns 0 on success, -1 on error.
+;; col_types: 0=int, 1=double, 2=string
+;; name_buf: concatenated null-terminated column names
+;; name_offsets: start offset of each name in name_buf
+(de _csv-scan-inner (filename nrows-out ncols-out delim-out
+                     col-types max-cols name-buf name-buf-size name-offsets)
+  ((-str-) filename)
+  ((-idx1- (-int-)) nrows-out ncols-out delim-out col-types name-offsets)
+  ((-int-) max-cols name-buf-size)
+  ((-idx1- (-ubyte-)) name-buf)
+  (let ((rc 0))
+    ((-int-) rc)
+    #{{
+       $rc = dt_csv_scan($filename->data,
+                          IDX_PTR($nrows_out, int),
+                          IDX_PTR($ncols_out, int),
+                          (char *)IDX_PTR($delim_out, int),
+                          IDX_PTR($col_types, int), $max_cols,
+                          (char *)IDX_PTR($name_buf, unsigned char), $name_buf_size,
+                          IDX_PTR($name_offsets, int));
+    }#}
+    rc ) )
+
+
+;; internal: read numeric columns from CSV into a double matrix
+;; col-indices: int array of original column indices to read
+;; data: pre-allocated nrows x n-num-cols double matrix
+(de _csv-read-numeric-inner (filename delim col-indices n-num-cols data nrows)
+  ((-str-) filename)
+  ((-int-) delim n-num-cols nrows)
+  ((-idx1- (-int-)) col-indices)
+  ((-idx2- (-double-)) data)
+  (let ((rc 0))
+    ((-int-) rc)
+    #{{
+       if ($data->mod[1] != 1)
+         error(NIL, "data must be contiguous (mod[1]=1)", NIL);
+       $rc = dt_csv_read_numeric($filename->data,
+                                  (char)$delim,
+                                  IDX_PTR($col_indices, int), $n_num_cols,
+                                  IDX_PTR($data, double), $nrows);
+    }#}
+    rc ) )
+
+
+;; internal: read a string column with dictionary encoding
+;; codes-out: pre-allocated nrows int array, filled with codes
+;; unique-buf: pre-allocated ubyte buffer for unique strings
+;; unique-offsets: pre-allocated int array for offsets into unique-buf
+;; n-unique-out: single-element int array, returns number of unique strings
+(de _csv-read-string-inner (filename delim col-idx
+                            codes-out nrows
+                            unique-buf unique-buf-size
+                            unique-offsets max-unique
+                            n-unique-out)
+  ((-str-) filename)
+  ((-int-) delim col-idx nrows unique-buf-size max-unique)
+  ((-idx1- (-int-)) codes-out unique-offsets n-unique-out)
+  ((-idx1- (-ubyte-)) unique-buf)
+  (let ((rc 0))
+    ((-int-) rc)
+    #{{
+       $rc = dt_csv_read_string_col($filename->data,
+                                     (char)$delim, $col_idx,
+                                     IDX_PTR($codes_out, int), $nrows,
+                                     (char *)IDX_PTR($unique_buf, unsigned char),
+                                     $unique_buf_size,
+                                     IDX_PTR($unique_offsets, int),
+                                     $max_unique,
+                                     IDX_PTR($n_unique_out, int));
+    }#}
+    rc ) )
+
+
+;; Compile the bridge functions
+(let ((dhc-make-lushflags
+       (concat dhc-make-lushflags " -I" (dirname file-being-loaded))))
+  (dhc-make-with-libs () t
+    #{ #include "datatable-csv-c.h" #}
+    _csv-scan-inner _csv-read-numeric-inner _csv-read-string-inner ) )
+
+
+;; ============================================================
+;; Internal: extract null-terminated string from ubyte buffer
+;; ============================================================
+
+(de _csv-extract-string (buf offset)
+  (let ((s "")
+        (i offset)
+        (n (idx-dim buf 0)) )
+    (while (and (< i n) (> (buf i) 0))
+      (setq s (concat s (chr (buf i))))
+      (setq i (1+ i)) )
+    s ) )
+
+
+;; ============================================================
+;; Public API
+;; ============================================================
+
+#? (csv-read <filename>)
+;; Read a CSV or TSV file into a DataTable.
+;; Auto-detects delimiter (tab vs comma) and column types.
+;; Column types are inferred from the first 200 data rows:
+;;   - Integer: all values parse as integers
+;;   - Double: all values parse as floating-point numbers
+;;   - String: anything else (dictionary-encoded)
+;; Returns a DataTable object.
+;;
+;; Example:
+;;   (setq t (csv-read "data.csv"))
+;;   (==> t head 10)
+;;   (==> t num-rows)
+;;   (==> t get-column "price")
+(de csv-read (filename)
+  ;; Phase 1: Scan file
+  (let ((max-cols 65536)
+        (name-buf-size 524288) )  ;; 512K for column names
+    (let ((nrows-out     (int-matrix 1))
+          (ncols-out     (int-matrix 1))
+          (delim-out     (int-matrix 1))
+          (col-types     (int-matrix max-cols))
+          (name-buf      (ubyte-matrix name-buf-size))
+          (name-offsets  (int-matrix max-cols)) )
+      (let ((rc (_csv-scan-inner filename nrows-out ncols-out delim-out
+                                  col-types max-cols
+                                  name-buf name-buf-size name-offsets)))
+        (when (< rc 0)
+          (error "csv-read" "failed to scan CSV file" filename) ) )
+
+      (let ((nrows (nrows-out 0))
+            (ncols (ncols-out 0))
+            (delim (delim-out 0)) )
+        (printf "csv-read: %s -> %d rows x %d cols\n" filename nrows ncols)
+
+        ;; Extract column names from buffer
+        (let ((col-names ()))
+          (for (i 0 (1- ncols))
+            (setq col-names (nconc1 col-names
+                                     (_csv-extract-string name-buf (name-offsets i)))) )
+
+          ;; Classify columns and build type list
+          (let ((num-col-indices ())  ;; indices of numeric columns in original CSV
+                (str-col-indices ())  ;; indices of string columns
+                (type-list ())        ;; type per column in order
+                ;; Map from original column index to position in num-col-indices
+                (num-col-pos (int-matrix ncols)) )
+            (let ((ni 0))
+              (for (i 0 (1- ncols))
+                (let ((ct (col-types i)))
+                  (cond
+                   ((or (= ct 0) (= ct 1))  ;; int or double -> real
+                    (setq num-col-indices (nconc1 num-col-indices i))
+                    (setq type-list (nconc1 type-list 'real))
+                    (num-col-pos i ni)
+                    (setq ni (1+ ni)) )
+                   (t  ;; string
+                    (setq str-col-indices (nconc1 str-col-indices i))
+                    (setq type-list (nconc1 type-list 'string))
+                    (num-col-pos i -1) ) ) ) ) )
+
+            (let ((n-num (length num-col-indices))
+                  (n-str (length str-col-indices)) )
+
+              ;; Phase 2: Read numeric columns into one big matrix
+              (let ((num-data ()))
+                (when (> n-num 0)
+                  (let ((idx-arr (int-matrix n-num))
+                        (data    (double-matrix nrows n-num))
+                        (j 0) )
+                    ;; Fill index array
+                    (each ((ci num-col-indices))
+                      (idx-arr j ci)
+                      (setq j (1+ j)) )
+                    ;; Read all numeric data in one C call
+                    (let ((rc (_csv-read-numeric-inner filename delim
+                                                       idx-arr n-num data nrows)))
+                      (when (< rc 0)
+                        (error "csv-read" "failed to read numeric data" filename) ) )
+                    (setq num-data data) ) )
+
+                ;; Phase 2b: Read string columns (dictionary-encoded in C)
+                ;; Build a htable: col-index -> StringColumn
+                (let ((str-col-ht (htable 32)))
+                  (each ((ci str-col-indices))
+                    (let ((codes-out     (int-matrix nrows))
+                          (unique-buf    (ubyte-matrix 1048576))
+                          (unique-offs   (int-matrix 65536))
+                          (n-unique-out  (int-matrix 1)) )
+                      (let ((rc (_csv-read-string-inner filename delim ci
+                                                         codes-out nrows
+                                                         unique-buf 1048576
+                                                         unique-offs 65536
+                                                         n-unique-out)))
+                        (when (< rc 0)
+                          (error "csv-read" "failed to read string column"
+                                 (nth ci col-names)) ) )
+                      ;; Build StringColumn
+                      (let ((n-unique (n-unique-out 0))
+                            (strings ()) )
+                        (for (u 0 (1- n-unique))
+                          (setq strings
+                                (nconc1 strings
+                                         (_csv-extract-string unique-buf
+                                                               (unique-offs u)))) )
+                        (let ((sc (new StringColumn nrows)))
+                          (==> sc build-from-codes codes-out strings)
+                          (str-col-ht (sprintf "%d" ci) sc) ) ) ) )
+
+                  ;; Phase 3: Build the columns list in O(n) — one pass
+                  ;; Each column is either a view into num-data or a StringColumn
+                  (let ((column-list ()))
+                    (for (i 0 (1- ncols))
+                      (let ((ct (col-types i)))
+                        (if (or (= ct 0) (= ct 1))
+                          ;; Numeric: extract column from the big matrix
+                          (let ((col-data (double-matrix nrows))
+                                (j (num-col-pos i)) )
+                            (for (r 0 (1- nrows))
+                              (col-data r (num-data r j)) )
+                            (setq column-list (nconc1 column-list col-data)) )
+                          ;; String: get from htable
+                          (let ((sc (str-col-ht (sprintf "%d" i))))
+                            (setq column-list (nconc1 column-list sc)) ) ) ) )
+
+                    ;; Build DataTable in one shot (no O(n^2) list replacement)
+                    (printf "csv-read: types: %d real, %d string\n" n-num n-str)
+                    (datatable-from-columns col-names type-list
+                                             column-list nrows) ) ) ) ) ) ) ) ) ) ) )

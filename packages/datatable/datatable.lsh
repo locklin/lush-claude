@@ -1,0 +1,392 @@
+;;; datatable.lsh -- Columnar DataTable for Lush
+;;;
+;;; A table of typed columns inspired by Kerf1's table type and pandas
+;;; DataFrames.  Each column is independently typed: double (real),
+;;; integer, or dictionary-encoded string.  Pure columnar storage with
+;;; no row objects.
+;;;
+;;; This is the core type for the Lush columnar database.  Persistence
+;;; (mmap, striped files) is planned but not included here.
+;;;
+;;; Usage:
+;;;   (libload "datatable/datatable")
+;;;   (setq t (new DataTable))
+;;;   (==> t add-column "price" 'real)
+;;;   (==> t add-column "symbol" 'string)
+;;;   (==> t append-row (list 150.25 "AAPL"))
+;;;   (==> t print-table 5)
+
+(libload "datatable/stringcol")
+
+#? *** DataTable: Typed Columnar Table
+
+;; Column type symbols: 'real 'int 'string
+
+
+;; ============================================================
+;; Internal helpers
+;; ============================================================
+
+;; Replace element at index idx in a list, returning a new list
+(de _dt-list-replace (lst idx new-val)
+  (let ((result ()) (i 0))
+    (each ((el lst))
+      (if (= i idx)
+        (setq result (nconc1 result new-val))
+        (setq result (nconc1 result el)) )
+      (setq i (1+ i)) )
+    result ) )
+
+
+;; ============================================================
+;; DataTable class
+;; ============================================================
+
+(defclass DataTable object
+  ;; Column metadata
+  col-names-list       ;; list of column name strings, in order
+  col-names-ht         ;; htable: name -> column index (0-based)
+  col-types-list       ;; list of type symbols ('real 'int 'string)
+
+  ;; Column storage: list of objects
+  ;; Each element is either:
+  ;;   - an idx1 of (-double-) for 'real columns
+  ;;   - an idx1 of (-int-) for 'int columns
+  ;;   - a StringColumn object for 'string columns
+  columns
+
+  ;; Dimensions
+  n-rows               ;; logical row count
+  n-cols               ;; number of columns
+  capacity             ;; allocated capacity for numeric columns
+)
+
+
+#? (new DataTable)
+;; Create an empty DataTable.
+(defmethod DataTable DataTable ()
+  (setq col-names-list ())
+  (setq col-names-ht (htable 32))
+  (setq col-types-list ())
+  (setq columns ())
+  (setq n-rows 0)
+  (setq n-cols 0)
+  (setq capacity 64) )
+
+
+;; ============================================================
+;; Column management
+;; ============================================================
+
+#? (==> <dt> add-column <name> <type>)
+;; Add a column to the table.
+;; <name> is a string.
+;; <type> is one of: 'real (double), 'int (integer), 'string.
+;; The column is allocated with the current capacity.
+;; Cannot add columns after rows have been appended.
+(defmethod DataTable add-column (name type)
+  (when (> n-rows 0)
+    (error "DataTable" "cannot add columns after rows have been appended" name) )
+  (when (col-names-ht name)
+    (error "DataTable" "duplicate column name" name) )
+  (let ((col (cond
+               ((= type 'real)   (double-matrix capacity))
+               ((= type 'int)    (int-matrix capacity))
+               ((= type 'string) (new StringColumn capacity))
+               (t (error "DataTable" "unknown column type (use 'real, 'int, or 'string)" type)) )))
+    (setq col-names-list (nconc1 col-names-list name))
+    (setq col-types-list (nconc1 col-types-list type))
+    (col-names-ht name n-cols)
+    (setq columns (nconc1 columns col))
+    (setq n-cols (1+ n-cols)) ) )
+
+
+#? (==> <dt> get-column <name-or-index>)
+;; Get a column by name (string) or index (integer).
+;; Returns the idx1 for numeric columns, or StringColumn for string columns.
+(defmethod DataTable get-column (name-or-idx)
+  (let ((idx (if (stringp name-or-idx)
+               (col-names-ht name-or-idx)
+               name-or-idx )))
+    (when (not idx)
+      (error "DataTable" "column not found" name-or-idx) )
+    (when (or (< idx 0) (>= idx n-cols))
+      (error "DataTable" "column index out of range" idx) )
+    (nth idx columns) ) )
+
+
+#? (==> <dt> col-name <index>)
+;; Get the name of column at index.
+(defmethod DataTable col-name (idx)
+  (nth idx col-names-list) )
+
+
+#? (==> <dt> col-type <name-or-index>)
+;; Get the type symbol of a column.
+(defmethod DataTable col-type (name-or-idx)
+  (let ((idx (if (stringp name-or-idx)
+               (col-names-ht name-or-idx)
+               name-or-idx )))
+    (nth idx col-types-list) ) )
+
+
+#? (==> <dt> col-index <name>)
+;; Get the integer index for a column name.
+(defmethod DataTable col-index (name)
+  (col-names-ht name) )
+
+
+;; ============================================================
+;; Data access
+;; ============================================================
+
+#? (==> <dt> get <row> <col-name-or-index>)
+;; Get a single value at (row, column).
+(defmethod DataTable get (row col)
+  (let* ((idx (if (stringp col) (col-names-ht col) col))
+         (type (nth idx col-types-list))
+         (column (nth idx columns)) )
+    (if (= type 'string)
+      (==> column get row)
+      (column row) ) ) )
+
+
+#? (==> <dt> set <row> <col-name-or-index> <value>)
+;; Set a single value at (row, column).
+(defmethod DataTable set (row col value)
+  (let* ((idx (if (stringp col) (col-names-ht col) col))
+         (type (nth idx col-types-list))
+         (column (nth idx columns)) )
+    (when (or (< row 0) (>= row n-rows))
+      (error "DataTable" "row index out of range" row) )
+    (if (= type 'string)
+      (error "DataTable" "cannot set individual string column values" ())
+      (column row value) ) ) )
+
+
+;; ============================================================
+;; Row operations
+;; ============================================================
+
+#? (==> <dt> append-row <values>)
+;; Append a row of values. <values> is a list of n-cols values.
+;; Numeric columns grow via capacity doubling.
+(defmethod DataTable append-row (values)
+  (when (<> (length values) n-cols)
+    (error "DataTable" "wrong number of values" (length values)) )
+  ;; Grow numeric columns if needed
+  (when (>= n-rows capacity)
+    (let ((new-cap (* 2 capacity)))
+      (let ((ci 0))
+        (each ((col columns) (type col-types-list))
+          (when (or (= type 'real) (= type 'int))
+            ;; Allocate new array and copy
+            (let ((new-col (if (= type 'real)
+                             (double-matrix new-cap)
+                             (int-matrix new-cap) )))
+              (for (i 0 (1- n-rows))
+                (new-col i (col i)) )
+              ;; Replace in columns list
+              (setq columns (_dt-list-replace columns ci new-col)) ) )
+          (setq ci (1+ ci)) ) )
+      (setq capacity new-cap) ) )
+  ;; Write values
+  (let ((ci 0))
+    (each ((val values) (col columns) (type col-types-list))
+      (cond
+       ((= type 'string)
+        (==> col append (cond ((stringp val) val)
+                              ((not val) "")
+                              (t (sprintf "%g" val)) )) )
+       ((= type 'real)
+        (col n-rows (if val (to-double val) 0)) )
+       ((= type 'int)
+        (col n-rows (if val (to-int val) 0)) ) )
+      (setq ci (1+ ci)) ) )
+  (setq n-rows (1+ n-rows)) )
+
+
+;; ============================================================
+;; Dimensions
+;; ============================================================
+
+#? (==> <dt> num-rows)
+;; Return the number of rows.
+(defmethod DataTable num-rows ()
+  n-rows )
+
+#? (==> <dt> num-cols)
+;; Return the number of columns.
+(defmethod DataTable num-cols ()
+  n-cols )
+
+#? (==> <dt> col-names)
+;; Return the list of column names.
+(defmethod DataTable col-names ()
+  col-names-list )
+
+#? (==> <dt> col-types)
+;; Return the list of column type symbols.
+(defmethod DataTable col-types ()
+  col-types-list )
+
+
+;; ============================================================
+;; Bulk column set (for fast CSV reader)
+;; ============================================================
+
+#? (==> <dt> set-column-data <name-or-index> <data>)
+;; Replace a column's data with the given idx1 or StringColumn.
+;; Also updates n-rows to match the data size.
+;; Used by the CSV reader for bulk loading.
+(defmethod DataTable set-column-data (name-or-idx data)
+  (let ((idx (if (stringp name-or-idx)
+               (col-names-ht name-or-idx)
+               name-or-idx )))
+    (when (or (< idx 0) (>= idx n-cols))
+      (error "DataTable" "column index out of range" idx) )
+    ;; Replace in columns list
+    (setq columns (_dt-list-replace columns idx data))
+    ;; Update row count from data
+    (let ((type (nth idx col-types-list)))
+      (let ((nr (if (= type 'string)
+                  (==> data num-rows)
+                  (idx-dim data 0) )))
+        (when (> nr n-rows) (setq n-rows nr))
+        (when (and (<> type 'string) (> nr capacity))
+          (setq capacity nr) ) ) ) ) )
+
+
+;; ============================================================
+;; Pretty-printing
+;; ============================================================
+
+#? (==> <dt> print-table [<max-rows>])
+;; Pretty-print the table.  Shows up to max-rows rows (default 20).
+(defmethod DataTable print-table (&optional max-rows)
+  (when (not max-rows) (setq max-rows 20))
+  (let ((show-rows (min max-rows n-rows)))
+    ;; Compute column widths (one int per column)
+    (let ((widths (int-matrix n-cols)))
+      ;; Start with header widths
+      (let ((ci 0))
+        (each ((name col-names-list))
+          (widths ci (max 4 (len name)))
+          (setq ci (1+ ci)) ) )
+      ;; Sample data widths
+      (let ((ci 0))
+        (each ((col columns) (type col-types-list))
+          (let ((w (widths ci)))
+            (for (r 0 (1- (min show-rows n-rows)))
+              (let ((sv (cond
+                         ((= type 'string) (==> col get r))
+                         ((= type 'real) (sprintf "%.6g" (col r)))
+                         ((= type 'int)  (sprintf "%d" (col r))) )))
+                (when sv
+                  (setq w (max w (min 20 (len sv))))) ) )
+            (widths ci w) )
+          (setq ci (1+ ci)) ) )
+      ;; Print header
+      (let ((ci 0))
+        (each ((name col-names-list))
+          (let ((w (widths ci)))
+            (printf (sprintf "%%-%ds  " w) name) )
+          (setq ci (1+ ci)) ) )
+      (printf "\n")
+      ;; Print separator
+      (let ((ci 0))
+        (each ((name col-names-list))
+          (let ((w (widths ci)))
+            (for (i 1 w) (printf "-"))
+            (printf "  ") )
+          (setq ci (1+ ci)) ) )
+      (printf "\n")
+      ;; Print rows
+      (for (r 0 (1- show-rows))
+        (let ((ci 0))
+          (each ((col columns) (type col-types-list))
+            (let ((w (widths ci)))
+              (let ((sv (cond
+                         ((= type 'string) (==> col get r))
+                         ((= type 'real)
+                          (let ((v (col r)))
+                            (if (<> v v) "NaN" (sprintf "%.6g" v)) ) )
+                         ((= type 'int) (sprintf "%d" (col r))) )))
+                (when (not sv) (setq sv ""))
+                (when (> (len sv) 20) (setq sv (concat (left sv 17) "...")))
+                (printf (sprintf "%%-%ds  " w) sv) ) )
+            (setq ci (1+ ci)) ) )
+        (printf "\n") )
+      ;; Footer
+      (when (> n-rows show-rows)
+        (printf "... (%d rows total, showing %d)\n" n-rows show-rows) )
+      (printf "[DataTable: %d rows x %d cols]\n" n-rows n-cols) ) ) )
+
+
+;; ============================================================
+;; Selection / filtering (basic)
+;; ============================================================
+
+#? (==> <dt> select-columns <name-list>)
+;; Return a new DataTable with only the named columns.
+(defmethod DataTable select-columns (name-list)
+  (let ((result (new DataTable)))
+    ;; Add columns
+    (each ((name name-list))
+      (let ((idx (col-names-ht name))
+            (type (==> this col-type name)) )
+        (==> result add-column name type) ) )
+    ;; Copy data
+    (each ((name name-list))
+      (let* ((src-idx (col-names-ht name))
+             (type (nth src-idx col-types-list))
+             (src-col (nth src-idx columns)) )
+        (if (= type 'string)
+          ;; Copy StringColumn
+          (let ((dst-col (==> result get-column name)))
+            (for (r 0 (1- n-rows))
+              (==> dst-col append (==> src-col get r)) ) )
+          ;; Copy numeric column
+          (let ((dst-col (if (= type 'real)
+                           (double-matrix n-rows)
+                           (int-matrix n-rows) )))
+            (for (r 0 (1- n-rows))
+              (dst-col r (src-col r)) )
+            (==> result set-column-data name dst-col) ) ) ) )
+    result ) )
+
+
+#? (==> <dt> head [<n>])
+;; Print the first n rows (default 10).
+(defmethod DataTable head (&optional n)
+  (==> this print-table (or n 10)) )
+
+
+;; ============================================================
+;; Bulk construction (for CSV reader -- avoids O(n^2) list ops)
+;; ============================================================
+
+#? (datatable-from-columns <names> <types> <column-list> <nrows>)
+;; Create a DataTable directly from pre-built column data.
+;; <names> is a list of column name strings.
+;; <types> is a list of type symbols ('real 'int 'string).
+;; <column-list> is a list of idx1/StringColumn objects, one per column.
+;; <nrows> is the number of data rows.
+;; This avoids the O(n^2) cost of repeated set-column-data calls.
+(de datatable-from-columns (names types column-list nrows)
+  (let ((dt (new DataTable)))
+    ;; Set up metadata
+    (setq :dt:col-names-list names)
+    (setq :dt:col-types-list types)
+    (setq :dt:columns column-list)
+    (setq :dt:n-rows nrows)
+    (setq :dt:n-cols (length names))
+    (setq :dt:capacity nrows)
+    ;; Build name -> index htable
+    (let ((ht (htable (max 32 (* 2 (length names)))))
+          (i 0) )
+      (each ((name names))
+        (ht name i)
+        (setq i (1+ i)) )
+      (setq :dt:col-names-ht ht) )
+    dt ) )
