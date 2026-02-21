@@ -4,7 +4,15 @@
  * Uses getline() for line reading, strtod()/strtol() for number parsing.
  * Supports comma and tab delimiters (auto-detected from header).
  * Handles quoted fields, CR/LF line endings.
+ * Date/time columns are auto-detected and parsed as int64 nanoseconds.
  */
+
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE
+#endif
+#ifndef _XOPEN_SOURCE
+#define _XOPEN_SOURCE 700
+#endif
 
 #include "datatable-csv-c.h"
 #include <stdio.h>
@@ -13,6 +21,8 @@
 #include <ctype.h>
 #include <errno.h>
 #include <limits.h>
+#include <stdint.h>
+#include <time.h>
 
 /* ================================================================
  * Internal: File open/close (supports .gz via pipe)
@@ -169,6 +179,67 @@ static int _dt_detect_field_type(const char *field, int len) {
 }
 
 /* ================================================================
+ * Internal: Date format detection
+ * ================================================================ */
+
+#define DT_NUM_DATE_FMTS 10
+#define NANOS_PER_SEC_CSV 1000000000LL
+
+static const char *_dt_date_formats[DT_NUM_DATE_FMTS] = {
+    "%Y-%m-%dT%H:%M:%S",    /* 0: ISO 8601 full */
+    "%Y-%m-%d %H:%M:%S",    /* 1: ISO with space */
+    "%Y-%m-%dT%H:%M",       /* 2: ISO no seconds */
+    "%Y-%m-%d %H:%M",       /* 3: space, no seconds */
+    "%Y-%m-%d",              /* 4: date only */
+    "%Y/%m/%d %H:%M:%S",    /* 5: slash full */
+    "%Y/%m/%d",              /* 6: slash date only */
+    "%m/%d/%Y %H:%M:%S",    /* 7: US full */
+    "%m/%d/%Y",              /* 8: US date only */
+    "%d-%b-%Y"               /* 9: day-abbrev-year */
+};
+
+/* Try each date format on a field. Returns format index (0-9) on success,
+ * -1 on failure. Accepts trailing fractional seconds/timezone chars. */
+static int _dt_detect_date_format(const char *field, int len) {
+    char buf[128];
+    int blen = len < 127 ? len : 127;
+    memcpy(buf, field, blen);
+    buf[blen] = '\0';
+
+    /* Quick reject: must have at least one digit and one separator */
+    if (blen < 8) return -1;  /* shortest date: YYYY-M-D = 8 chars minimum */
+
+    struct tm tm;
+    for (int i = 0; i < DT_NUM_DATE_FMTS; i++) {
+        memset(&tm, 0, sizeof(tm));
+        const char *rest = strptime(buf, _dt_date_formats[i], &tm);
+        if (rest) {
+            /* Accept if rest is empty, or starts with '.', 'Z', '+', '-', or space */
+            if (*rest == '\0' || *rest == '.' || *rest == 'Z' ||
+                *rest == '+' || *rest == '-' || *rest == ' ')
+                return i;
+        }
+    }
+    return -1;
+}
+
+/* Type promotion rules for combining two field types.
+ * stamp+stamp=stamp, stamp+numeric=string, stamp+string=string,
+ * int+double=double, anything+string=string */
+static int _dt_promote_type(int existing, int new_type) {
+    if (existing == new_type) return existing;
+    /* stamp + anything non-stamp = string */
+    if (existing == DT_COL_STAMP || new_type == DT_COL_STAMP)
+        return DT_COL_STRING;
+    /* int + double = double */
+    if ((existing == DT_COL_INT && new_type == DT_COL_DOUBLE) ||
+        (existing == DT_COL_DOUBLE && new_type == DT_COL_INT))
+        return DT_COL_DOUBLE;
+    /* anything + string = string */
+    return DT_COL_STRING;
+}
+
+/* ================================================================
  * Phase 1: Scan CSV file
  * ================================================================ */
 
@@ -177,7 +248,8 @@ int dt_csv_scan(const char *filename,
                 char *out_delim,
                 int *col_types, int max_cols,
                 char *name_buf, int name_buf_size,
-                int *name_offsets) {
+                int *name_offsets,
+                int *date_fmt_indices) {
     int is_pipe = 0;
     FILE *fp = _dt_open(filename, &is_pipe);
     if (!fp) return -1;
@@ -229,7 +301,10 @@ int dt_csv_scan(const char *filename,
     /* Initialize type tracking */
     if (ncols <= 0) { free(line); _dt_close(fp, is_pipe); return -1; }
     int *type_seen = calloc((size_t)ncols, sizeof(int)); /* 0=no data, 1=has data */
-    for (int i = 0; i < ncols; i++) col_types[i] = DT_COL_INT; /* start optimistic */
+    for (int i = 0; i < ncols; i++) {
+        col_types[i] = DT_COL_INT; /* start optimistic */
+        date_fmt_indices[i] = -1;
+    }
 
     /* Allocate field arrays for data row parsing */
     int *fs = malloc(ncols * sizeof(int));
@@ -258,10 +333,23 @@ int dt_csv_scan(const char *filename,
             for (int j = 0; j < nf && j < ncols; j++) {
                 int ft = _dt_detect_field_type(line + fs[j], fl[j]);
                 if (ft < 0) continue; /* missing/empty, skip */
-                type_seen[j] = 1;
-                /* Type promotion: int -> double -> string */
-                if (ft > col_types[j])
+
+                /* If numeric detection returned STRING, try date detection */
+                if (ft == DT_COL_STRING) {
+                    int dfmt = _dt_detect_date_format(line + fs[j], fl[j]);
+                    if (dfmt >= 0) {
+                        ft = DT_COL_STAMP;
+                        if (date_fmt_indices[j] < 0)
+                            date_fmt_indices[j] = dfmt;
+                    }
+                }
+
+                if (!type_seen[j]) {
                     col_types[j] = ft;
+                    type_seen[j] = 1;
+                } else {
+                    col_types[j] = _dt_promote_type(col_types[j], ft);
+                }
             }
             sample_rows++;
         }
@@ -520,6 +608,113 @@ int dt_csv_read_string_col(const char *filename,
     *out_n_unique = next_code;
 
     free(htable);
+    free(line);
+    _dt_close(fp, is_pipe);
+    return 0;
+}
+
+/* ================================================================
+ * Phase 2c: Read a timestamp column
+ * ================================================================ */
+
+int dt_csv_read_stamp_col(const char *filename, char delim,
+                          int col_idx, int64_t *stamps, int nrows,
+                          const char *fmt) {
+    int is_pipe = 0;
+    FILE *fp = _dt_open(filename, &is_pipe);
+    if (!fp) return -1;
+
+    char *line = NULL;
+    size_t cap = 0;
+    ssize_t len;
+
+    /* Skip header */
+    len = getline(&line, &cap, fp);
+    if (len < 0) { free(line); _dt_close(fp, is_pipe); return -1; }
+
+    int row = 0;
+
+    while (row < nrows && (len = getline(&line, &cap, fp)) > 0) {
+        ssize_t slen = len;
+        while (slen > 0 && (line[slen-1] == '\n' || line[slen-1] == '\r'))
+            slen--;
+        if (slen == 0) continue;
+
+        /* Find the target column */
+        int col = 0;
+        char *p = line;
+        char *line_end = line + slen;
+        char *field_start = p;
+        int field_len = 0;
+
+        while (p <= line_end) {
+            field_start = p;
+
+            if (p < line_end && *p == '"') {
+                /* Quoted field */
+                p++;
+                field_start = p;
+                while (p < line_end) {
+                    if (*p == '"') {
+                        if (p + 1 < line_end && *(p+1) == '"') p += 2;
+                        else break;
+                    } else p++;
+                }
+                field_len = p - field_start;
+                if (p < line_end && *p == '"') p++;
+                if (p < line_end && *p == delim) p++;
+            } else {
+                while (p < line_end && *p != delim) p++;
+                field_len = p - field_start;
+                /* Strip whitespace */
+                while (field_len > 0 && (*field_start == ' ' || *field_start == '\t')) {
+                    field_start++; field_len--;
+                }
+                while (field_len > 0 && (field_start[field_len-1] == ' ' ||
+                       field_start[field_len-1] == '\t')) {
+                    field_len--;
+                }
+                if (p < line_end) p++;
+            }
+
+            if (col == col_idx) break;
+            col++;
+        }
+
+        if (col == col_idx && field_len > 0) {
+            /* Null-terminate the field */
+            char buf[128];
+            int blen = field_len < 127 ? field_len : 127;
+            memcpy(buf, field_start, blen);
+            buf[blen] = '\0';
+
+            struct tm tm;
+            memset(&tm, 0, sizeof(tm));
+            const char *rest = strptime(buf, fmt, &tm);
+            if (rest) {
+                time_t secs = timegm(&tm);
+                int64_t frac_nanos = 0;
+                /* Parse fractional seconds */
+                if (*rest == '.') {
+                    rest++;
+                    int64_t mult = 100000000LL;
+                    while (*rest >= '0' && *rest <= '9' && mult > 0) {
+                        frac_nanos += (*rest - '0') * mult;
+                        mult /= 10;
+                        rest++;
+                    }
+                }
+                stamps[row] = (int64_t)secs * NANOS_PER_SEC_CSV + frac_nanos;
+            } else {
+                stamps[row] = INT64_MIN; /* NaT sentinel */
+            }
+        } else {
+            stamps[row] = INT64_MIN; /* missing field */
+        }
+
+        row++;
+    }
+
     free(line);
     _dt_close(fp, is_pipe);
     return 0;

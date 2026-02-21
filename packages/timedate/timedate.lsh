@@ -1,0 +1,162 @@
+;;; timedate.lsh -- Nanosecond-precision UTC timestamps for Lush
+;;;
+;;; Timestamps are int64 nanoseconds since Unix epoch (1970-01-01T00:00:00Z),
+;;; stored in long-matrix (ST_I64).  Column type symbol: 'stamp.
+;;;
+;;; Usage:
+;;;   (libload "timedate/timedate")
+;;;   (timestamp-now)                              ;; current time as int64 nanos
+;;;   (timestamp-to-string (timestamp-now))         ;; formatted string
+;;;   (timestamp-parse "2024-01-15" "%Y-%m-%d")     ;; parse to nanos
+;;;   (timestamp-components (timestamp-now))         ;; (y m d H M S nano)
+
+(libload "timedate/timedate-config")
+
+#? *** TimeDate: Nanosecond-Precision UTC Timestamps
+
+
+;; ============================================================
+;; Compiled Lush functions (C bridge via dhc-make)
+;; ============================================================
+
+;; internal: get current UTC time as int64 nanoseconds
+(de _td-timestamp-now ()
+  ((-long-) 0)  ;; return type hint
+  (let ((result 0))
+    ((-long-) result)
+    #{{ $result = td_timestamp_now(); }#}
+    result ) )
+
+;; internal: parse date/time string to int64 nanoseconds
+(de _td-strptime-to-nanos (str fmt)
+  ((-str-) str fmt)
+  (let ((result 0))
+    ((-long-) result)
+    #{{ $result = td_strptime_to_nanos((const char *)$str->data,
+                                        (const char *)$fmt->data); }#}
+    result ) )
+
+;; internal: format nanoseconds to string in buffer
+;; Returns 0 on success, -1 on failure
+(de _td-nanos-to-string (nanos fmt buf)
+  ((-long-) nanos)
+  ((-str-) fmt)
+  ((-idx1- (-ubyte-)) buf)
+  (let ((rc 0))
+    ((-int-) rc)
+    #{{ $rc = td_nanos_to_strftime($nanos, (const char *)$fmt->data,
+                                    (char *)IDX_PTR($buf, unsigned char),
+                                    $buf->dim[0]); }#}
+    rc ) )
+
+;; internal: decompose nanoseconds to 7 components
+(de _td-components (nanos out)
+  ((-long-) nanos)
+  ((-idx1- (-int-)) out)
+  #{{ td_timestamp_components($nanos, IDX_PTR($out, int)); }#}
+  () )
+
+;; internal: build nanoseconds from 7 int args
+(de _td-make-timestamp (y m d hh mm ss nano)
+  ((-int-) y m d hh mm ss nano)
+  (let ((result 0))
+    ((-long-) result)
+    #{{ $result = td_make_timestamp($y, $m, $d, $hh, $mm, $ss, $nano); }#}
+    result ) )
+
+
+;; Compile the bridge functions
+(let ((dhc-make-lushflags
+       (concat dhc-make-lushflags " -I" (dirname file-being-loaded))))
+  (dhc-make-with-libs () t
+    #{ #include "timedate-c.h" #}
+    _td-timestamp-now _td-strptime-to-nanos _td-nanos-to-string
+    _td-components _td-make-timestamp ) )
+
+
+;; ============================================================
+;; Internal helper: extract null-terminated string from ubyte buf
+;; ============================================================
+
+(de _td-extract-string (buf)
+  (let ((s "")
+        (i 0)
+        (n (idx-dim buf 0)) )
+    (while (and (< i n) (> (buf i) 0))
+      (setq s (concat s (chr (buf i))))
+      (setq i (1+ i)) )
+    s ) )
+
+
+;; ============================================================
+;; Public API (interpreted)
+;; ============================================================
+
+#? (timestamp-now)
+;; Return the current UTC time as int64 nanoseconds since epoch.
+(de timestamp-now ()
+  (_td-timestamp-now) )
+
+
+#? (timestamp-from-date <y> <m> <d>)
+;; Build a timestamp for midnight UTC on the given date.
+;; y=year, m=month(1-12), d=day(1-31).
+(de timestamp-from-date (y m d)
+  (_td-make-timestamp y m d 0 0 0 0) )
+
+
+#? (timestamp-from-datetime <y> <m> <d> <H> <M> <S> [<nano>])
+;; Build a timestamp from date and time components.
+(de timestamp-from-datetime (y m d hh mm ss &optional nano)
+  (_td-make-timestamp y m d hh mm ss (if nano nano 0)) )
+
+
+#? (timestamp-parse <str> <fmt>)
+;; Parse a date/time string using strptime format.
+;; Returns int64 nanoseconds.  Signals error on parse failure.
+;; Handles trailing fractional seconds (.123456789) automatically.
+;;
+;; Common formats:
+;;   "%Y-%m-%d %H:%M:%S"   ISO datetime with space
+;;   "%Y-%m-%dT%H:%M:%S"   ISO datetime with T
+;;   "%Y-%m-%d"             ISO date only
+;;   "%m/%d/%Y"             US date
+(de timestamp-parse (str fmt)
+  (let ((result (_td-strptime-to-nanos str fmt)))
+    ;; INT64_MIN is the parse-failure sentinel
+    (when (= result -9223372036854775808)
+      (error "timestamp-parse" "failed to parse date/time string" str) )
+    result ) )
+
+
+#? (timestamp-to-string <nanos> [<fmt>])
+;; Format a nanosecond timestamp as a string.
+;; Default format: "%Y-%m-%d %H:%M:%S".
+(de timestamp-to-string (nanos &optional fmt)
+  (when (not fmt) (setq fmt "%Y-%m-%d %H:%M:%S"))
+  (let ((buf (ubyte-matrix 256)))
+    (let ((rc (_td-nanos-to-string nanos fmt buf)))
+      (when (< rc 0)
+        (error "timestamp-to-string" "failed to format timestamp" nanos) )
+      (_td-extract-string buf) ) ) )
+
+
+#? (timestamp-components <nanos>)
+;; Decompose a nanosecond timestamp into a list:
+;;   (year month day hour minute second nano-remainder)
+(de timestamp-components (nanos)
+  (let ((out (int-matrix 7)))
+    (_td-components nanos out)
+    (list (out 0) (out 1) (out 2) (out 3) (out 4) (out 5) (out 6)) ) )
+
+
+#? (timestamp-diff <a> <b>)
+;; Return the difference (a - b) in nanoseconds.
+(de timestamp-diff (a b)
+  (- a b) )
+
+
+#? (timestamp-add <nanos> <delta>)
+;; Add delta nanoseconds to a timestamp.
+(de timestamp-add (nanos delta)
+  (+ nanos delta) )

@@ -31,9 +31,10 @@
 ;; name_buf: concatenated null-terminated column names
 ;; name_offsets: start offset of each name in name_buf
 (de _csv-scan-inner (filename nrows-out ncols-out delim-out
-                     col-types max-cols name-buf name-buf-size name-offsets)
+                     col-types max-cols name-buf name-buf-size name-offsets
+                     date-fmt-indices)
   ((-str-) filename)
-  ((-idx1- (-int-)) nrows-out ncols-out delim-out col-types name-offsets)
+  ((-idx1- (-int-)) nrows-out ncols-out delim-out col-types name-offsets date-fmt-indices)
   ((-int-) max-cols name-buf-size)
   ((-idx1- (-ubyte-)) name-buf)
   (let ((rc 0))
@@ -45,7 +46,8 @@
                           (char *)IDX_PTR($delim_out, int),
                           IDX_PTR($col_types, int), $max_cols,
                           (char *)IDX_PTR($name_buf, unsigned char), $name_buf_size,
-                          IDX_PTR($name_offsets, int));
+                          IDX_PTR($name_offsets, int),
+                          IDX_PTR($date_fmt_indices, int));
     }#}
     rc ) )
 
@@ -100,12 +102,31 @@
     rc ) )
 
 
+;; internal: read a timestamp column from CSV into a long-matrix
+;; stamps-out: pre-allocated nrows long-matrix of int64 nanoseconds
+;; fmt-str: strptime format string for parsing
+(de _csv-read-stamp-inner (filename delim col-idx stamps-out nrows fmt-str)
+  ((-str-) filename fmt-str)
+  ((-int-) delim col-idx nrows)
+  ((-idx1- (-long-)) stamps-out)
+  (let ((rc 0))
+    ((-int-) rc)
+    #{{
+       $rc = dt_csv_read_stamp_col($filename->data,
+                                    (char)$delim, $col_idx,
+                                    IDX_PTR($stamps_out, int64_t), $nrows,
+                                    (const char *)$fmt_str->data);
+    }#}
+    rc ) )
+
+
 ;; Compile the bridge functions
 (let ((dhc-make-lushflags
        (concat dhc-make-lushflags " -I" (dirname file-being-loaded))))
   (dhc-make-with-libs () t
     #{ #include "datatable-csv-c.h" #}
-    _csv-scan-inner _csv-read-numeric-inner _csv-read-string-inner ) )
+    _csv-scan-inner _csv-read-numeric-inner _csv-read-string-inner
+    _csv-read-stamp-inner ) )
 
 
 ;; ============================================================
@@ -120,6 +141,24 @@
       (setq s (concat s (chr (buf i))))
       (setq i (1+ i)) )
     s ) )
+
+
+;; ============================================================
+;; Date format table (must match order in datatable-csv-c.c)
+;; ============================================================
+
+(defvar *csv-date-formats*
+  (list "%Y-%m-%dT%H:%M:%S"    ;; 0: ISO 8601 full
+        "%Y-%m-%d %H:%M:%S"    ;; 1: ISO with space
+        "%Y-%m-%dT%H:%M"       ;; 2: ISO no seconds
+        "%Y-%m-%d %H:%M"       ;; 3: space, no seconds
+        "%Y-%m-%d"              ;; 4: date only
+        "%Y/%m/%d %H:%M:%S"    ;; 5: slash full
+        "%Y/%m/%d"              ;; 6: slash date only
+        "%m/%d/%Y %H:%M:%S"    ;; 7: US full
+        "%m/%d/%Y"              ;; 8: US date only
+        "%d-%b-%Y"              ;; 9: day-abbrev-year
+        ) )
 
 
 ;; ============================================================
@@ -144,15 +183,17 @@
   ;; Phase 1: Scan file
   (let ((max-cols 65536)
         (name-buf-size 524288) )  ;; 512K for column names
-    (let ((nrows-out     (int-matrix 1))
-          (ncols-out     (int-matrix 1))
-          (delim-out     (int-matrix 1))
-          (col-types     (int-matrix max-cols))
-          (name-buf      (ubyte-matrix name-buf-size))
-          (name-offsets  (int-matrix max-cols)) )
+    (let ((nrows-out        (int-matrix 1))
+          (ncols-out        (int-matrix 1))
+          (delim-out        (int-matrix 1))
+          (col-types        (int-matrix max-cols))
+          (name-buf         (ubyte-matrix name-buf-size))
+          (name-offsets     (int-matrix max-cols))
+          (date-fmt-indices (int-matrix max-cols)) )
       (let ((rc (_csv-scan-inner filename nrows-out ncols-out delim-out
                                   col-types max-cols
-                                  name-buf name-buf-size name-offsets)))
+                                  name-buf name-buf-size name-offsets
+                                  date-fmt-indices)))
         (when (< rc 0)
           (error "csv-read" "failed to scan CSV file" filename) ) )
 
@@ -168,9 +209,11 @@
                                      (_csv-extract-string name-buf (name-offsets i)))) )
 
           ;; Classify columns and build type list
-          (let ((num-col-indices ())  ;; indices of numeric columns in original CSV
-                (str-col-indices ())  ;; indices of string columns
-                (type-list ())        ;; type per column in order
+          (let ((num-col-indices ())    ;; indices of numeric columns in original CSV
+                (str-col-indices ())    ;; indices of string columns
+                (stamp-col-indices ())  ;; indices of stamp columns
+                (stamp-col-fmts ())    ;; format strings for stamp columns
+                (type-list ())          ;; type per column in order
                 ;; Map from original column index to position in num-col-indices
                 (num-col-pos (int-matrix ncols)) )
             (let ((ni 0))
@@ -182,15 +225,26 @@
                     (setq type-list (nconc1 type-list 'real))
                     (num-col-pos i ni)
                     (setq ni (1+ ni)) )
+                   ((= ct 3)  ;; stamp
+                    (setq stamp-col-indices (nconc1 stamp-col-indices i))
+                    (let ((fmti (date-fmt-indices i)))
+                      (setq stamp-col-fmts
+                            (nconc1 stamp-col-fmts
+                                     (if (and (>= fmti 0) (< fmti (length *csv-date-formats*)))
+                                       (nth fmti *csv-date-formats*)
+                                       "%Y-%m-%d" ))) )
+                    (setq type-list (nconc1 type-list 'stamp))
+                    (num-col-pos i -1) )
                    (t  ;; string
                     (setq str-col-indices (nconc1 str-col-indices i))
                     (setq type-list (nconc1 type-list 'string))
                     (num-col-pos i -1) ) ) ) ) )
 
-            (let ((n-num (length num-col-indices))
-                  (n-str (length str-col-indices)) )
+            (let ((n-num   (length num-col-indices))
+                  (n-str   (length str-col-indices))
+                  (n-stamp (length stamp-col-indices)) )
 
-              ;; Phase 2: Read numeric columns into one big matrix
+              ;; Phase 2a: Read numeric columns into one big matrix
               (let ((num-data ()))
                 (when (> n-num 0)
                   (let ((idx-arr (int-matrix n-num))
@@ -235,23 +289,44 @@
                           (==> sc build-from-codes codes-out strings)
                           (str-col-ht (sprintf "%d" ci) sc) ) ) ) )
 
-                  ;; Phase 3: Build the columns list in O(n) — one pass
-                  ;; Each column is either a view into num-data or a StringColumn
-                  (let ((column-list ()))
-                    (for (i 0 (1- ncols))
-                      (let ((ct (col-types i)))
-                        (if (or (= ct 0) (= ct 1))
-                          ;; Numeric: extract column from the big matrix
-                          (let ((col-data (double-matrix nrows))
-                                (j (num-col-pos i)) )
-                            (for (r 0 (1- nrows))
-                              (col-data r (num-data r j)) )
-                            (setq column-list (nconc1 column-list col-data)) )
-                          ;; String: get from htable
-                          (let ((sc (str-col-ht (sprintf "%d" i))))
-                            (setq column-list (nconc1 column-list sc)) ) ) ) )
+                  ;; Phase 2c: Read stamp columns
+                  ;; Build a htable: col-index -> long-matrix of nanos
+                  (let ((stamp-col-ht (htable 32)))
+                    (let ((fi 0))
+                      (each ((ci stamp-col-indices) (fmt stamp-col-fmts))
+                        (let ((stamps-out (long-matrix nrows)))
+                          (let ((rc (_csv-read-stamp-inner filename delim ci
+                                                            stamps-out nrows fmt)))
+                            (when (< rc 0)
+                              (error "csv-read" "failed to read stamp column"
+                                     (nth ci col-names)) ) )
+                          (stamp-col-ht (sprintf "%d" ci) stamps-out) )
+                        (setq fi (1+ fi)) ) )
 
-                    ;; Build DataTable in one shot (no O(n^2) list replacement)
-                    (printf "csv-read: types: %d real, %d string\n" n-num n-str)
-                    (datatable-from-columns col-names type-list
-                                             column-list nrows) ) ) ) ) ) ) ) ) ) ) )
+                    ;; Phase 3: Build the columns list in O(n) — one pass
+                    ;; Each column is either numeric, string, or stamp
+                    (let ((column-list ()))
+                      (for (i 0 (1- ncols))
+                        (let ((ct (col-types i)))
+                          (cond
+                           ((or (= ct 0) (= ct 1))
+                            ;; Numeric: extract column from the big matrix
+                            (let ((col-data (double-matrix nrows))
+                                  (j (num-col-pos i)) )
+                              (for (r 0 (1- nrows))
+                                (col-data r (num-data r j)) )
+                              (setq column-list (nconc1 column-list col-data)) ) )
+                           ((= ct 3)
+                            ;; Stamp: get from stamp htable
+                            (let ((st (stamp-col-ht (sprintf "%d" i))))
+                              (setq column-list (nconc1 column-list st)) ) )
+                           (t
+                            ;; String: get from str htable
+                            (let ((sc (str-col-ht (sprintf "%d" i))))
+                              (setq column-list (nconc1 column-list sc)) ) ) ) ) )
+
+                      ;; Build DataTable in one shot (no O(n^2) list replacement)
+                      (printf "csv-read: types: %d real, %d stamp, %d string\n"
+                              n-num n-stamp n-str)
+                      (datatable-from-columns col-names type-list
+                                               column-list nrows) ) ) ) ) ) ) ) ) ) ) ) ) )

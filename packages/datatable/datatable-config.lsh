@@ -7,7 +7,7 @@
 
 (let ((dir (dirname file-being-loaded)))
   (let ((lm (new lushmake)))
-    (==> lm setflags (concat " -I" dir " -O2"))
+    (==> lm setflags (concat " -I" dir " -O2 -D_GNU_SOURCE -D_XOPEN_SOURCE=700"))
     (==> lm rule "datatable-csv-c.o" '("datatable-csv-c.c" "datatable-csv-c.h"))
     (==> lm make)
     (==> lm load) ) )

@@ -14,11 +14,13 @@
 #define DATATABLE_CSV_C_H
 
 #include <stdlib.h>
+#include <stdint.h>
 
 /* Column type codes */
 #define DT_COL_INT     0
 #define DT_COL_DOUBLE  1
 #define DT_COL_STRING  2
+#define DT_COL_STAMP   3
 
 /* Maximum columns supported */
 #define DT_MAX_COLS 65536
@@ -48,7 +50,8 @@ int dt_csv_scan(const char *filename,
                 char *out_delim,
                 int *col_types, int max_cols,
                 char *name_buf, int name_buf_size,
-                int *name_offsets);
+                int *name_offsets,
+                int *date_fmt_indices);
 
 /* ================================================================
  * Phase 2: Read numeric columns
@@ -83,5 +86,20 @@ int dt_csv_read_string_col(const char *filename,
                            char *unique_buf, int unique_buf_size,
                            int *unique_offsets, int max_unique,
                            int *out_n_unique);
+
+/* ================================================================
+ * Phase 2c: Read a timestamp column
+ * ================================================================
+ *
+ * Reads one column from the CSV, parsing each field as a timestamp
+ * using the given strptime format string.  Handles trailing fractional
+ * seconds after the decimal point.
+ * stamps[row] = int64 nanoseconds since epoch, or INT64_MIN on failure.
+ *
+ * Returns 0 on success, -1 on error.
+ */
+int dt_csv_read_stamp_col(const char *filename, char delim,
+                          int col_idx, int64_t *stamps, int nrows,
+                          const char *fmt);
 
 #endif /* DATATABLE_CSV_C_H */
