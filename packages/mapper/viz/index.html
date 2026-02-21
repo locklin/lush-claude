@@ -8,6 +8,8 @@
 <script src="/layout-base.js"></script>
 <script src="/cose-base.js"></script>
 <script src="/cytoscape-fcose.js"></script>
+<script src="/cola.min.js"></script>
+<script src="/cytoscape-cola.js"></script>
 <script src="/stats.js"></script>
 </head>
 <body>
@@ -80,12 +82,40 @@
       <div class="controls-row">
         <select id="layout-select" onchange="runLayout()">
           <option value="fcose">fCoSE (force-directed)</option>
+          <option value="cola">Cola (interactive)</option>
           <option value="cose">CoSE</option>
           <option value="circle">Circle</option>
           <option value="grid">Grid</option>
           <option value="concentric">Concentric</option>
         </select>
         <button onclick="runLayout()">Re-layout</button>
+      </div>
+    </div>
+
+    <div class="panel-section" id="help-panel">
+      <h3 class="help-toggle" onclick="toggleHelp()">Help <span id="help-arrow">&#9654;</span></h3>
+      <div id="help-content" style="display:none">
+        <div class="help-group">
+          <div class="help-title">Interaction</div>
+          <div class="help-item"><kbd>Click</kbd> Select node (assign to active group)</div>
+          <div class="help-item"><kbd>Shift+Click</kbd> Add/remove node from group</div>
+          <div class="help-item"><kbd>Right-drag</kbd> Lasso select nodes</div>
+          <div class="help-item"><kbd>Drag node</kbd> Move node (with Cola: dynamic force)</div>
+          <div class="help-item"><kbd>Scroll</kbd> Zoom in/out</div>
+          <div class="help-item"><kbd>Left-drag bg</kbd> Pan the view</div>
+        </div>
+        <div class="help-group">
+          <div class="help-title">Groups</div>
+          <div class="help-item">Click <b>Group A</b>/<b>Group B</b> to set active group</div>
+          <div class="help-item"><b>Compare A vs B</b> runs statistical tests across all columns</div>
+          <div class="help-item"><b>A vs Rest</b> compares group A against all other points</div>
+        </div>
+        <div class="help-group">
+          <div class="help-title">Layout</div>
+          <div class="help-item"><b>fCoSE</b> &mdash; one-shot force-directed layout</div>
+          <div class="help-item"><b>Cola (interactive)</b> &mdash; continuous force simulation; drag nodes and the graph responds dynamically</div>
+          <div class="help-item"><b>Re-layout</b> re-runs the current layout algorithm</div>
+        </div>
       </div>
     </div>
   </div>

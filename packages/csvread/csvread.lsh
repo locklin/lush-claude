@@ -1,0 +1,128 @@
+;;; csvread.lsh -- CSV/TSV parser for Lush
+;;;
+;;; Parses CSV and TSV text into numeric matrices with column names.
+;;; Auto-detects tab vs comma delimiter from the header line.
+;;;
+;;; Usage:
+;;;   (libload "csvread/csvread")
+;;;   (let ((result (csvread-parse "x,y,z\n1,2,3\n4,5,6")))
+;;;     (print (car result))    ;; 2x3 double-matrix
+;;;     (print (cadr result)))  ;; ("x" "y" "z")
+
+#? *** CSV/TSV Parser
+
+;; ============================================================
+;; Internal helpers
+;; ============================================================
+
+;; internal: split a string by a delimiter character, returns list of strings
+(de _csvread-split-line (s delim)
+  (let ((result ()) (current "") (i 0) (n (len s)))
+    (while (< i n)
+      (let ((ch (mid s (1+ i) 1)))
+        (if (= ch delim)
+          (progn
+            (setq result (nconc1 result current))
+            (setq current "")
+            (setq i (1+ i)) )
+          (progn
+            (setq current (concat current ch))
+            (setq i (1+ i)) ) ) ) )
+    ;; Add last field
+    (setq result (nconc1 result current))
+    result ) )
+
+;; internal: strip leading/trailing whitespace and quotes from a string
+(de _csvread-strip (s)
+  (let* ((n (len s)) (start 1) (end n))
+    ;; Strip leading whitespace
+    (while (and (<= start end)
+                (let ((ch (mid s start 1)))
+                  (or (= ch " ") (= ch "\t") (= ch "\r")) ))
+      (setq start (1+ start)) )
+    ;; Strip trailing whitespace
+    (while (and (>= end start)
+                (let ((ch (mid s end 1)))
+                  (or (= ch " ") (= ch "\t") (= ch "\r")) ))
+      (setq end (1- end)) )
+    ;; Strip matching quotes
+    (when (and (>= end start)
+               (= (mid s start 1) "\"")
+               (= (mid s end 1) "\""))
+      (setq start (1+ start))
+      (setq end (1- end)) )
+    (if (> start end) ""
+      (mid s start (1+ (- end start))) ) ) )
+
+;; internal: split body text into lines, handling \r\n
+(de _csvread-split-lines (body)
+  (let ((lines ()) (current "") (i 0) (n (len body)))
+    (while (< i n)
+      (let ((ch (mid body (1+ i) 1)))
+        (cond
+         ((= ch "\n")
+          (setq lines (nconc1 lines current))
+          (setq current "")
+          (setq i (1+ i)) )
+         ((= ch "\r")
+          ;; Skip \r, let \n handle the line break
+          (setq i (1+ i)) )
+         (t
+          (setq current (concat current ch))
+          (setq i (1+ i)) ) ) ) )
+    ;; Add last line if non-empty
+    (when (> (len current) 0)
+      (setq lines (nconc1 lines current)) )
+    lines ) )
+
+;; internal: detect delimiter from header line (tab or comma)
+(de _csvread-detect-delim (line)
+  (if (index "\t" line) "\t" ",") )
+
+
+;; ============================================================
+;; Public API
+;; ============================================================
+
+#? (csvread-parse <body>)
+;; Parse CSV/TSV text into (list <double-matrix> <col-names>).
+;; Auto-detects tab vs comma delimiter from the header line.
+;; The first line is treated as column names.
+;; Returns (data col-names) where data is an NxD double-matrix
+;; and col-names is a list of D strings, or () on parse failure.
+(de csvread-parse (body)
+  (let ((lines (_csvread-split-lines body)))
+    ;; Skip empty leading lines
+    (while (and lines (= (len (car lines)) 0))
+      (setq lines (cdr lines)) )
+    (when lines
+      ;; Detect delimiter from header
+      (let ((delim (_csvread-detect-delim (car lines))))
+        ;; First line: column names
+        (let ((raw-fields (_csvread-split-line (car lines) delim)))
+          (let ((header-fields ()))
+            ;; Strip each field
+            (each ((f raw-fields))
+              (setq header-fields (nconc1 header-fields (_csvread-strip f))) )
+            (let ((data-lines (cdr lines)))
+              ;; Filter out empty lines
+              (let ((non-empty ()))
+                (each ((line data-lines))
+                  (when (> (len line) 0)
+                    (setq non-empty (nconc1 non-empty line)) ) )
+                (setq data-lines non-empty) )
+              (let ((n-rows (length data-lines))
+                    (n-cols (length header-fields)) )
+                (when (and (> n-rows 0) (> n-cols 0))
+                  (let ((data (double-matrix n-rows n-cols))
+                        (row-idx 0) )
+                    (each ((line data-lines))
+                      (let ((fields (_csvread-split-line line delim))
+                            (col-idx 0) )
+                        (each ((field fields))
+                          (when (< col-idx n-cols)
+                            (let ((v (val (_csvread-strip field))))
+                              (data row-idx col-idx v) ) )
+                          (setq col-idx (1+ col-idx)) ) )
+                      (setq row-idx (1+ row-idx)) )
+                    (list data header-fields) ) ) ) ) ) ) ) ) ) )

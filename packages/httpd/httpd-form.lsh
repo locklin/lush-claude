@@ -1,0 +1,81 @@
+;;; httpd-form.lsh -- URL decoding and form parsing for Lush HTTP server
+;;;
+;;; Parses application/x-www-form-urlencoded bodies and query strings.
+;;;
+;;; Usage (loaded automatically via httpd.lsh):
+;;;   (httpd-parse-form "name=hello+world&count=42")
+;;;   ;; => (("name" . "hello world") ("count" . "42"))
+
+#? *** HTTPD: Form Parsing
+
+;; ============================================================
+;; URL decoding
+;; ============================================================
+
+#? (httpd-url-decode <s>)
+;; URL-decode a string (handles %XX hex escapes and + as space).
+(de httpd-url-decode (s)
+  (let ((out "") (i 0) (n (len s)))
+    (while (< i n)
+      (let ((ch (mid s (1+ i) 1)))
+        (cond
+         ((= ch "%")
+          (if (<= (+ i 3) n)
+            (let ((hex (mid s (+ i 2) 2)))
+              (setq out (concat out (chr (val (concat "0x" hex)))))
+              (setq i (+ i 3)) )
+            ;; Malformed %, emit literal and advance
+            (progn (setq out (concat out "%"))
+                   (setq i (1+ i)) ) ) )
+         ((= ch "+")
+          (setq out (concat out " "))
+          (setq i (1+ i)) )
+         (t
+          (setq out (concat out ch))
+          (setq i (1+ i)) ) ) ) )
+    out ) )
+
+
+;; ============================================================
+;; Form body parsing
+;; ============================================================
+
+#? (httpd-parse-form <body>)
+;; Parse a "key=value&key=value" form-encoded body into an alist.
+;; Values are URL-decoded. Returns a list of (key . value) pairs.
+(de httpd-parse-form (body)
+  (let ((result ()) (s body) (done ()))
+    (while (not done)
+      (let ((amp (index "&" s)))
+        (let ((pair (if amp (left s (1- amp)) s)))
+          (let ((eq (index "=" pair)))
+            (when eq
+              (let ((key (httpd-url-decode (left pair (1- eq))))
+                    (val (httpd-url-decode (mid pair (1+ eq)))) )
+                (setq result (nconc1 result (cons key val))) ) ) ) )
+        (if amp
+          (setq s (mid s (1+ amp)))
+          (setq done t) ) ) )
+    result ) )
+
+
+;; ============================================================
+;; Query string parameter extraction
+;; ============================================================
+
+#? (httpd-query-param <query> <name>)
+;; Extract a single parameter value from a query string by name.
+;; Returns the URL-decoded value, or () if not found.
+(de httpd-query-param (query name)
+  (when (and query (> (len query) 0))
+    (let ((search (concat name "="))
+          (result ()) )
+      (let ((pos (index search query)))
+        (when pos
+          (let ((rest (mid query (+ pos (len search)))))
+            ;; Read until & or end
+            (let ((amp (index "&" rest)))
+              (if amp
+                (setq result (httpd-url-decode (left rest (1- amp))))
+                (setq result (httpd-url-decode rest)) ) ) ) ) )
+      result ) ) )

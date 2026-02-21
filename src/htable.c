@@ -763,6 +763,19 @@ DX(xhtable_info)
 
 
 
+DX(xhtablep)
+{
+  ARG_NUMBER(1);
+  ARG_EVAL(1);
+  at *p = APOINTER(1);
+  if (EXTERNP(p, &htable_class)) {
+    LOCK(p);
+    return p;
+  } else
+    return NIL;
+}
+
+
 /* --- INITIALISATION SECTION --- */
 
 void init_htable(void)
@@ -770,6 +783,7 @@ void init_htable(void)
   class_define("HTABLE",&htable_class);
   dx_define("hashcode",xhashcode);
   dx_define("htable",xnew_htable);
+  dx_define("htablep",xhtablep);
   dx_define("htable-alist",xhtable_alist);
   dx_define("htable-keys", xhtable_keys);
   dx_define("htable-rehash", xhtable_rehash);

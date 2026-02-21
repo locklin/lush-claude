@@ -43,7 +43,9 @@
 ;;   t  -> "true"
 ;;   number with (= val (int val)) -> integer
 ;;   number -> float
+;;   string starting with [ or { -> raw passthrough (pre-encoded JSON)
 ;;   string -> quoted escaped string
+;;   alist (list of cons pairs with string keys) -> JSON object
 ;;   list -> JSON array
 ;;   htable -> JSON object
 (de json-encode (value)
@@ -55,11 +57,17 @@
       (sprintf "%d" (int value))
       (sprintf "%.10g" value) ) )
    ((stringp value)
-    (concat "\"" (json-escape value) "\"") )
+    ;; Pass through strings that look like pre-encoded JSON arrays/objects
+    (if (and (> (len value) 0)
+             (or (= (left value 1) "[") (= (left value 1) "{")))
+      value
+      (concat "\"" (json-escape value) "\"") ) )
    ((htablep value)
     (json-encode-htable value) )
    ((listp value)
-    (json-encode-list value) )
+    (if (_json-alist-p value)
+      (json-encode-alist value)
+      (json-encode-list value) ) )
    (t (concat "\"" (json-escape (sprintf "%l" value)) "\"")) ) )
 
 
@@ -73,6 +81,32 @@
         (setq out (concat out ",")) )
       (setq out (concat out (json-encode item))) )
     (concat out "]") ) )
+
+
+;; internal: check if a list looks like an alist (list of cons pairs
+;; where each car is a string key)
+(de _json-alist-p (lst)
+  (when (and (listp lst) (consp (car lst)))
+    (let ((is-alist t))
+      (each ((item lst))
+        (when (not (and (consp item) (stringp (car item))))
+          (setq is-alist ()) ) )
+      is-alist ) ) )
+
+
+#? (json-encode-alist <alist>)
+;; Encode an alist (list of (key . value) pairs with string keys)
+;; as a JSON object.
+(de json-encode-alist (al)
+  (let ((out "{")
+        (first t) )
+    (each ((pair al))
+      (if first (setq first ()) (setq out (concat out ",")))
+      (let ((key (car pair))
+            (val (cdr pair)) )
+        (setq out (concat out "\"" (json-escape key) "\":"
+                          (json-encode val))) ) )
+    (concat out "}") ) )
 
 
 ;; internal: encode an htable as a JSON object

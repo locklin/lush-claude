@@ -7,15 +7,20 @@
 if (typeof cytoscapeFcose !== 'undefined') {
   cytoscape.use(cytoscapeFcose);
 }
+if (typeof cytoscapeCola !== 'undefined') {
+  cytoscape.use(cytoscapeCola);
+}
 
 // ============================================================
 // State
 // ============================================================
 
 const openTabs = new Map();   // graphId -> { cy, data, runInfo, groupA, groupB, datasetInfo, colNames }
+const closedGraphIds = new Set();  // graphs the user has explicitly closed (prevents poller re-opening)
 let activeTabId = null;
 let activeGroup = 'A';
 let pollInterval = null;
+let activeColaLayout = null;   // track running cola layout for stop
 let compResults = [];          // current comparison results
 let compSortKey = 'p';
 let compSortAsc = true;
@@ -132,6 +137,11 @@ function switchTab(graphId) {
 }
 
 function closeTab(graphId) {
+  closedGraphIds.add(graphId);
+  // Tell server to mark graph inactive (fire-and-forget)
+  fetch(`/api/graph/${graphId}/display`, { method: 'POST', body: 'active=0',
+    headers: {'Content-Type':'application/x-www-form-urlencoded'} }).catch(()=>{});
+
   const state = openTabs.get(graphId);
   if (state) {
     if (state.cy) state.cy.destroy();
@@ -158,6 +168,7 @@ function closeTab(graphId) {
 // ============================================================
 
 async function openGraph(graphId) {
+  closedGraphIds.delete(graphId);  // clear closed state on explicit open
   if (openTabs.has(graphId)) {
     switchTab(graphId);
     return;
@@ -212,10 +223,32 @@ async function openGraph(graphId) {
       container: container,
       elements: elements,
       style: buildCyStyle(minColor, maxColor),
-      layout: { name: 'fcose', animate: true, animationDuration: 800 },
+      layout: { name: 'preset' },  // place nodes first, run layout after
       minZoom: 0.1,
       maxZoom: 10,
-      boxSelectionEnabled: true,
+      boxSelectionEnabled: false,
+      userPanningEnabled: true,
+      selectionType: 'additive',
+      autoungrabify: false,
+    });
+
+    // Run layout after cytoscape is fully ready
+    cy.ready(() => {
+      cy.layout({
+        name: 'fcose',
+        animate: 'end',
+        animationDuration: 1200,
+        animationEasing: 'ease-out',
+        randomize: true,
+        fit: true,
+        padding: 30,
+        idealEdgeLength: 80,
+        nodeRepulsion: 6000,
+        edgeElasticity: 0.45,
+        nestingFactor: 0.1,
+        gravity: 0.25,
+        numIter: 2500,
+      }).run();
     });
 
     // Store state
@@ -284,22 +317,31 @@ function buildCyStyle(minColor, maxColor) {
     {
       selector: 'node:selected',
       style: {
-        'border-width': 3,
+        'border-width': 4,
         'border-color': '#ffff00',
+        'overlay-color': '#ffff00',
+        'overlay-padding': 4,
+        'overlay-opacity': 0.2,
       }
     },
     {
       selector: 'node.groupA',
       style: {
-        'border-width': 3,
+        'border-width': 4,
         'border-color': '#ff4444',
+        'overlay-color': '#ff4444',
+        'overlay-padding': 3,
+        'overlay-opacity': 0.15,
       }
     },
     {
       selector: 'node.groupB',
       style: {
-        'border-width': 3,
+        'border-width': 4,
         'border-color': '#4488ff',
+        'overlay-color': '#4488ff',
+        'overlay-padding': 3,
+        'overlay-opacity': 0.15,
       }
     },
     {
@@ -374,25 +416,8 @@ function setupCyEvents(cy, graphId) {
     }
   });
 
-  // Box selection
-  cy.on('boxend', function() {
-    const selected = cy.nodes(':selected');
-    const state = openTabs.get(graphId);
-    if (!state) return;
-
-    const grp = activeGroup === 'A' ? state.groupA : state.groupB;
-    const other = activeGroup === 'A' ? state.groupB : state.groupA;
-
-    selected.forEach(node => {
-      const idx = node.data('nodeIdx');
-      grp.add(idx);
-      other.delete(idx);
-    });
-
-    cy.nodes().unselect();
-    updateGroupClasses(cy, state);
-    updateSidePanel();
-  });
+  // Right-click lasso selection
+  setupLasso(cy, graphId);
 }
 
 function updateGroupClasses(cy, state) {
@@ -494,6 +519,111 @@ function clearSelection() {
 }
 
 // ============================================================
+// Lasso selection (right-click drag)
+// ============================================================
+
+function setupLasso(cy, graphId) {
+  let lassoCanvas = null;
+  let lassoCtx = null;
+  let lassoPath = [];
+  let lassoing = false;
+
+  cy.on('cxttapstart', function(evt) {
+    // Start lasso on right-click drag on background or node
+    const container = cy.container();
+    lassoCanvas = document.createElement('canvas');
+    lassoCanvas.id = 'lasso-canvas';
+    lassoCanvas.width = container.offsetWidth;
+    lassoCanvas.height = container.offsetHeight;
+    lassoCanvas.style.position = 'absolute';
+    lassoCanvas.style.top = '0';
+    lassoCanvas.style.left = '0';
+    lassoCanvas.style.pointerEvents = 'none';
+    lassoCanvas.style.zIndex = '50';
+    container.appendChild(lassoCanvas);
+    lassoCtx = lassoCanvas.getContext('2d');
+    lassoPath = [];
+    lassoing = true;
+
+    const pos = evt.renderedPosition || evt.position;
+    if (pos) lassoPath.push({ x: pos.x, y: pos.y });
+  });
+
+  cy.on('cxtdrag', function(evt) {
+    if (!lassoing || !lassoCtx) return;
+    const pos = evt.renderedPosition || evt.position;
+    if (!pos) return;
+    lassoPath.push({ x: pos.x, y: pos.y });
+
+    // Draw lasso
+    lassoCtx.clearRect(0, 0, lassoCanvas.width, lassoCanvas.height);
+    lassoCtx.beginPath();
+    lassoCtx.moveTo(lassoPath[0].x, lassoPath[0].y);
+    for (let i = 1; i < lassoPath.length; i++) {
+      lassoCtx.lineTo(lassoPath[i].x, lassoPath[i].y);
+    }
+    lassoCtx.closePath();
+    lassoCtx.strokeStyle = 'rgba(255,255,0,0.8)';
+    lassoCtx.lineWidth = 2;
+    lassoCtx.stroke();
+    lassoCtx.fillStyle = 'rgba(255,255,0,0.1)';
+    lassoCtx.fill();
+  });
+
+  cy.on('cxttapend', function() {
+    if (!lassoing) return;
+    lassoing = false;
+
+    // Find nodes inside the lasso polygon using ray casting
+    if (lassoPath.length > 2) {
+      const state = openTabs.get(graphId);
+      if (state) {
+        const grp = activeGroup === 'A' ? state.groupA : state.groupB;
+        const other = activeGroup === 'A' ? state.groupB : state.groupA;
+        let count = 0;
+
+        cy.nodes().forEach(node => {
+          const rpos = node.renderedPosition();
+          if (pointInPolygon(rpos.x, rpos.y, lassoPath)) {
+            const idx = node.data('nodeIdx');
+            grp.add(idx);
+            other.delete(idx);
+            count++;
+          }
+        });
+
+        if (count > 0) {
+          updateGroupClasses(cy, state);
+          updateSidePanel();
+          setStatus(`Lasso selected ${count} nodes into Group ${activeGroup}`);
+        }
+      }
+    }
+
+    // Remove canvas overlay
+    if (lassoCanvas && lassoCanvas.parentNode) {
+      lassoCanvas.parentNode.removeChild(lassoCanvas);
+    }
+    lassoCanvas = null;
+    lassoCtx = null;
+    lassoPath = [];
+  });
+}
+
+// Ray casting point-in-polygon test
+function pointInPolygon(x, y, polygon) {
+  let inside = false;
+  for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
+    const xi = polygon[i].x, yi = polygon[i].y;
+    const xj = polygon[j].x, yj = polygon[j].y;
+    const intersect = ((yi > y) !== (yj > y)) &&
+      (x < (xj - xi) * (y - yi) / (yj - yi) + xi);
+    if (intersect) inside = !inside;
+  }
+  return inside;
+}
+
+// ============================================================
 // Layout
 // ============================================================
 
@@ -502,13 +632,56 @@ function runLayout() {
   const state = openTabs.get(activeTabId);
   if (!state) return;
 
+  // Stop any running cola layout
+  stopColaLayout();
+
   const layoutName = document.getElementById('layout-select').value;
-  state.cy.layout({
+
+  if (layoutName === 'cola') {
+    // Cola interactive force layout
+    const layout = state.cy.layout({
+      name: 'cola',
+      infinite: true,
+      fit: false,
+      animate: true,
+      randomize: false,
+      maxSimulationTime: 0,  // run forever until stopped
+      nodeSpacing: 20,
+      edgeLength: 80,
+      convergenceThreshold: 0.001,
+      handleDisconnected: true,
+    });
+    activeColaLayout = layout;
+    layout.run();
+    setStatus('Cola layout running (drag nodes to interact)');
+    return;
+  }
+
+  const opts = {
     name: layoutName,
-    animate: true,
-    animationDuration: 800,
-    randomize: layoutName === 'fcose',
-  }).run();
+    animate: 'end',
+    animationDuration: 1200,
+    animationEasing: 'ease-out',
+    fit: true,
+    padding: 30,
+  };
+  if (layoutName === 'fcose') {
+    opts.randomize = true;
+    opts.idealEdgeLength = 80;
+    opts.nodeRepulsion = 6000;
+    opts.edgeElasticity = 0.45;
+    opts.gravity = 0.25;
+    opts.numIter = 2500;
+  }
+  state.cy.layout(opts).run();
+}
+
+function stopColaLayout() {
+  if (activeColaLayout) {
+    activeColaLayout.stop();
+    activeColaLayout = null;
+    setStatus('Layout stopped');
+  }
 }
 
 // ============================================================
@@ -654,14 +827,15 @@ function hideGraphPicker() {
 async function pollForGraphs() {
   try {
     const graphs = await apiGet('/api/graphs');
-    // Auto-open any graph that's active and not yet open
+    // Auto-open any graph that's active and not yet open (skip user-closed graphs)
     for (const g of graphs) {
-      if (g.active === 1 && !openTabs.has(g.id)) {
+      if (g.active === 1 && !openTabs.has(g.id) && !closedGraphIds.has(g.id)) {
+        console.log('pollForGraphs: opening graph', g.id, g.name);
         await openGraph(g.id);
       }
     }
   } catch(e) {
-    // Silent failure on poll
+    console.error('pollForGraphs error:', e);
   }
 }
 
@@ -1126,8 +1300,9 @@ function startRunPolling(runId) {
         statusEl.textContent = '';
         statusEl.classList.remove('active');
         setStatus('Run #' + runId + ' completed');
+        console.log('Run', runId, 'completed, polling for new graphs...');
         // pollForGraphs will auto-open the new graph
-        pollForGraphs();
+        await pollForGraphs();
       } else if (info.status === 'failed') {
         clearInterval(pollId);
         activeRunPolls.delete(runId);
@@ -1142,6 +1317,22 @@ function startRunPolling(runId) {
   }, 2000);
 
   activeRunPolls.set(runId, pollId);
+}
+
+// ============================================================
+// Help panel toggle
+// ============================================================
+
+function toggleHelp() {
+  const content = document.getElementById('help-content');
+  const arrow = document.getElementById('help-arrow');
+  if (content.style.display === 'none') {
+    content.style.display = 'block';
+    arrow.classList.add('open');
+  } else {
+    content.style.display = 'none';
+    arrow.classList.remove('open');
+  }
 }
 
 // ============================================================

@@ -11,6 +11,7 @@
 ;;;   (httpd-serve server)   ;; blocks, handling one request at a time
 
 (libload "httpd-json")
+(libload "httpd-form")
 (libload "httpd-static")
 
 #? *** HTTPD: Minimal HTTP Server

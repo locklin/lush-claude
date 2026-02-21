@@ -10,6 +10,7 @@
 
 (libload "mapper/mapper-db")
 (libload "httpd/httpd")
+(libload "csvread/csvread")
 
 #? *** Mapper: Visualization Server
 
@@ -21,66 +22,6 @@
 
 ;; Capture the packages directory at load time (for worker libload paths)
 (defvar *viz-packages-dir* (concat (dirname file-being-loaded) "/.."))
-
-
-;; ============================================================
-;; JSON encoding for alists
-;; ============================================================
-
-;; internal: check if a list looks like an alist (list of cons pairs
-;; where each car is a string key)
-(de _viz-alist-p (lst)
-  (when (and (listp lst) (consp (car lst)))
-    (let ((is-alist t))
-      (each ((item lst))
-        (when (not (and (consp item) (stringp (car item))))
-          (setq is-alist ()) ) )
-      is-alist ) ) )
-
-
-;; internal: encode an alist as a JSON object
-(de _viz-json-alist (al)
-  (let ((out "{")
-        (first t) )
-    (each ((pair al))
-      (if first (setq first ()) (setq out (concat out ",")))
-      (let ((key (car pair))
-            (val (cdr pair)) )
-        (setq out (concat out "\"" (json-escape key) "\":"
-                          (_viz-json-value val))) ) )
-    (concat out "}") ) )
-
-
-;; internal: encode any value as JSON, with alist detection
-(de _viz-json-value (val)
-  (cond
-   ((= val ()) "null")
-   ((= val t) "true")
-   ((numberp val)
-    (if (= val (int val))
-      (sprintf "%d" (int val))
-      (sprintf "%.10g" val) ) )
-   ((stringp val)
-    ;; Check if string looks like a JSON array (members field)
-    ;; and pass it through raw
-    (if (and (> (len val) 0) (= (left val 1) "["))
-      val
-      (concat "\"" (json-escape val) "\"") ) )
-   ((_viz-alist-p val)
-    (_viz-json-alist val) )
-   ((listp val)
-    (_viz-json-list val) )
-   (t (concat "\"" (json-escape (sprintf "%l" val)) "\"")) ) )
-
-
-;; internal: encode a list as a JSON array
-(de _viz-json-list (lst)
-  (let ((out "[")
-        (first t) )
-    (each ((item lst))
-      (if first (setq first ()) (setq out (concat out ",")))
-      (setq out (concat out (_viz-json-value item))) )
-    (concat out "]") ) )
 
 
 ;; ============================================================
@@ -98,7 +39,7 @@
 ;; GET /api/graphs -- list all graphs
 (de _viz-api-graphs (req)
   (let ((graphs (mapper-db-list-graphs *viz-db*)))
-    (list 200 "application/json" (_viz-json-list graphs)) ) )
+    (list 200 "application/json" (json-encode graphs)) ) )
 
 
 ;; GET /api/graph/:id -- get full graph data
@@ -109,7 +50,7 @@
              (gid (val id-str))
              (gdata (mapper-db-get-graph *viz-db* gid)) )
         (if gdata
-          (list 200 "application/json" (_viz-json-value gdata))
+          (list 200 "application/json" (json-encode gdata))
           (list 404 "application/json" "{\"error\":\"graph not found\"}") ) ) ) ) )
 
 
@@ -121,11 +62,12 @@
              (did (val id-str))
              (info (mapper-db-get-dataset-info *viz-db* did)) )
         (if info
-          (list 200 "application/json" (_viz-json-value info))
+          (list 200 "application/json" (json-encode info))
           (list 404 "application/json" "{\"error\":\"dataset not found\"}") ) ) ) ) )
 
 
 ;; GET /api/run/:id -- get run info
+;; If status is "running" but a .failed marker exists, update to "failed".
 (de _viz-api-run (req)
   (let ((params (alist-get "params" req)))
     (when params
@@ -133,8 +75,29 @@
              (rid (val id-str))
              (info (mapper-db-get-run-info *viz-db* rid)) )
         (if info
-          (list 200 "application/json" (_viz-json-value info))
+          (progn
+            ;; Detect crashed worker: status is "running" but .failed file exists
+            (when (= (cdr (assoc "status" info)) "running")
+              (let ((fail-path (concat "/tmp/claude/mapper-worker-" (sprintf "%d" rid) ".failed")))
+                (when (filep fail-path)
+                  (mapper-db-update-run-status *viz-db* rid "failed" "worker process crashed (see log)")
+                  ;; Update the info alist in place for this response
+                  (setq info (mapcar (lambda (pair)
+                    (if (= (car pair) "status") (cons "status" "failed") pair)) info)) ) ) )
+            (list 200 "application/json" (json-encode info)) )
           (list 404 "application/json" "{\"error\":\"run not found\"}") ) ) ) ) )
+
+
+;; POST /api/graph/:id/display -- set graph active/inactive
+(de _viz-api-set-display (req)
+  (let ((params (alist-get "params" req))
+        (body (alist-get "body" req)) )
+    (when params
+      (let ((gid (val (car params))))
+        (let ((form (httpd-parse-form (or body ""))))
+          (let ((active (val (or (cdr (assoc "active" form)) "1"))))
+            (mapper-db-set-display *viz-db* gid active)
+            (list 200 "application/json" "{\"ok\":true}") ) ) ) ) ) )
 
 
 ;; GET /api/dataset/:id/columns?cols=0,1,2 -- get column data
@@ -169,50 +132,7 @@
             (let ((vals-only ()))
               (each ((pair data))
                 (setq vals-only (nconc1 vals-only (cdr pair))) )
-              (list 200 "application/json" (_viz-json-list vals-only)) ) ) ) ) ) ) )
-
-
-;; ============================================================
-;; Form-encoded body parser
-;; ============================================================
-
-;; internal: URL-decode a string (handles %XX and +)
-(de _viz-url-decode (s)
-  (let ((out "") (i 0) (n (len s)))
-    (while (< i n)
-      (let ((ch (mid s (1+ i) 1)))
-        (cond
-         ((= ch "%")
-          (if (<= (+ i 3) n)
-            (let ((hex (mid s (+ i 2) 2)))
-              (setq out (concat out (chr (val (concat "0x" hex)))))
-              (setq i (+ i 3)) )
-            ;; Malformed %, emit literal and advance
-            (progn (setq out (concat out "%"))
-                   (setq i (1+ i)) ) ) )
-         ((= ch "+")
-          (setq out (concat out " "))
-          (setq i (1+ i)) )
-         (t
-          (setq out (concat out ch))
-          (setq i (1+ i)) ) ) ) )
-    out ) )
-
-;; internal: parse "key=value&key=value" form body into alist
-(de _viz-parse-form (body)
-  (let ((result ()) (s body) (done ()))
-    (while (not done)
-      (let ((amp (index "&" s)))
-        (let ((pair (if amp (left s (1- amp)) s)))
-          (let ((eq (index "=" pair)))
-            (when eq
-              (let ((key (_viz-url-decode (left pair (1- eq))))
-                    (val (_viz-url-decode (mid pair (1+ eq)))) )
-                (setq result (nconc1 result (cons key val))) ) ) ) )
-        (if amp
-          (setq s (mid s (1+ amp)))
-          (setq done t) ) ) )
-    result ) )
+              (list 200 "application/json" (json-encode vals-only)) ) ) ) ) ) ) )
 
 
 ;; ============================================================
@@ -238,7 +158,7 @@
 (de _viz-api-save-label (req)
   (let ((body (alist-get "body" req)))
     (if (and body (> (len body) 0))
-      (let ((form (_viz-parse-form body)))
+      (let ((form (httpd-parse-form body)))
         (let ((graph-id (val (or (cdr (assoc "graph_id" form)) "0")))
               (name (or (cdr (assoc "name" form)) "unnamed"))
               (color (or (cdr (assoc "color" form)) "#ffffff"))
@@ -256,148 +176,23 @@
       (let* ((id-str (car params))
              (gid (val id-str))
              (labels (mapper-db-get-labels *viz-db* gid)) )
-        (list 200 "application/json" (_viz-json-list labels)) ) ) ) )
-
-
-;; ============================================================
-;; CSV parser
-;; ============================================================
-
-;; internal: split a string by a delimiter character, returns list of strings
-(de _viz-split-line (s delim)
-  (let ((result ()) (current "") (i 0) (n (len s)))
-    (while (< i n)
-      (let ((ch (mid s (1+ i) 1)))
-        (if (= ch delim)
-          (progn
-            (setq result (nconc1 result current))
-            (setq current "")
-            (setq i (1+ i)) )
-          (progn
-            (setq current (concat current ch))
-            (setq i (1+ i)) ) ) ) )
-    ;; Add last field
-    (setq result (nconc1 result current))
-    result ) )
-
-;; internal: strip leading/trailing whitespace and quotes from a string
-(de _viz-strip (s)
-  (let* ((n (len s)) (start 1) (end n))
-    ;; Strip leading whitespace
-    (while (and (<= start end)
-                (let ((ch (mid s start 1)))
-                  (or (= ch " ") (= ch "\t") (= ch "\r")) ))
-      (setq start (1+ start)) )
-    ;; Strip trailing whitespace
-    (while (and (>= end start)
-                (let ((ch (mid s end 1)))
-                  (or (= ch " ") (= ch "\t") (= ch "\r")) ))
-      (setq end (1- end)) )
-    ;; Strip matching quotes
-    (when (and (>= end start)
-               (= (mid s start 1) "\"")
-               (= (mid s end 1) "\""))
-      (setq start (1+ start))
-      (setq end (1- end)) )
-    (if (> start end) ""
-      (mid s start (1+ (- end start))) ) ) )
-
-;; internal: split body text into lines, handling \r\n
-(de _viz-split-lines (body)
-  (let ((lines ()) (current "") (i 0) (n (len body)))
-    (while (< i n)
-      (let ((ch (mid body (1+ i) 1)))
-        (cond
-         ((= ch "\n")
-          (setq lines (nconc1 lines current))
-          (setq current "")
-          (setq i (1+ i)) )
-         ((= ch "\r")
-          ;; Skip \r, let \n handle the line break
-          (setq i (1+ i)) )
-         (t
-          (setq current (concat current ch))
-          (setq i (1+ i)) ) ) ) )
-    ;; Add last line if non-empty
-    (when (> (len current) 0)
-      (setq lines (nconc1 lines current)) )
-    lines ) )
-
-;; internal: detect delimiter from header line (tab or comma)
-(de _viz-detect-delim (line)
-  (if (index "\t" line) "\t" ",") )
-
-;; internal: parse CSV/TSV text into (list data col-names)
-;; Returns (data col-names) where data is NxD double-matrix
-;; and col-names is a list of D strings.
-;; Auto-detects tab vs comma delimiter from the header line.
-(de _viz-parse-csv (body)
-  (let ((lines (_viz-split-lines body)))
-    ;; Skip empty leading lines
-    (while (and lines (= (len (car lines)) 0))
-      (setq lines (cdr lines)) )
-    (when lines
-      ;; Detect delimiter from header
-      (let ((delim (_viz-detect-delim (car lines))))
-        ;; First line: column names
-        (let ((raw-fields (_viz-split-line (car lines) delim)))
-          (let ((header-fields ()))
-            ;; Strip each field
-            (each ((f raw-fields))
-              (setq header-fields (nconc1 header-fields (_viz-strip f))) )
-            (let ((data-lines (cdr lines)))
-              ;; Filter out empty lines
-              (let ((non-empty ()))
-                (each ((line data-lines))
-                  (when (> (len line) 0)
-                    (setq non-empty (nconc1 non-empty line)) ) )
-                (setq data-lines non-empty) )
-              (let ((n-rows (length data-lines))
-                    (n-cols (length header-fields)) )
-                (when (and (> n-rows 0) (> n-cols 0))
-                  (let ((data (double-matrix n-rows n-cols))
-                        (row-idx 0) )
-                    (each ((line data-lines))
-                      (let ((fields (_viz-split-line line delim))
-                            (col-idx 0) )
-                        (each ((field fields))
-                          (when (< col-idx n-cols)
-                            (let ((v (val (_viz-strip field))))
-                              (data row-idx col-idx v) ) )
-                          (setq col-idx (1+ col-idx)) ) )
-                      (setq row-idx (1+ row-idx)) )
-                    (list data header-fields) ) ) ) ) ) ) ) ) ) )
+        (list 200 "application/json" (json-encode labels)) ) ) ) )
 
 
 ;; ============================================================
 ;; Dataset upload API
 ;; ============================================================
 
-;; internal: extract a query parameter value by name from query string
-(de _viz-query-param (query name)
-  (when (and query (> (len query) 0))
-    (let ((search (concat name "="))
-          (result ()) )
-      (let ((pos (index search query)))
-        (when pos
-          (let ((rest (mid query (+ pos (len search)))))
-            ;; Read until & or end
-            (let ((amp (index "&" rest)))
-              (if amp
-                (setq result (_viz-url-decode (left rest (1- amp))))
-                (setq result (_viz-url-decode rest)) ) ) ) ) )
-      result ) ) )
-
 ;; POST /api/dataset -- upload CSV data
 (de _viz-api-upload-dataset (req)
   (let ((body (alist-get "body" req))
         (query (alist-get "query" req)) )
     (if (and body (> (len body) 0))
-      (let ((parsed (_viz-parse-csv body)))
+      (let ((parsed (csvread-parse body)))
         (if parsed
           (let ((data (car parsed))
                 (col-names (cadr parsed))
-                (name (or (_viz-query-param query "name") "uploaded")) )
+                (name (or (httpd-query-param query "name") "uploaded")) )
             (let ((did (mapper-db-store-dataset *viz-db* data col-names name "uploaded")))
               (let ((nr (idx-dim data 0))
                     (nc (idx-dim data 1)) )
@@ -419,12 +214,12 @@
 ;; GET /api/datasets -- list all datasets
 (de _viz-api-datasets (req)
   (let ((datasets (mapper-db-list-datasets *viz-db*)))
-    (list 200 "application/json" (_viz-json-list datasets)) ) )
+    (list 200 "application/json" (json-encode datasets)) ) )
 
 ;; GET /api/runs -- list all runs
 (de _viz-api-runs (req)
   (let ((runs (mapper-db-list-runs *viz-db*)))
-    (list 200 "application/json" (_viz-json-list runs)) ) )
+    (list 200 "application/json" (json-encode runs)) ) )
 
 ;; internal: generate worker script and return its path
 (de _viz-generate-worker (db-path run-id)
@@ -499,7 +294,7 @@
 (de _viz-api-start-run (req)
   (let ((body (alist-get "body" req)))
     (if (and body (> (len body) 0))
-      (let ((form (_viz-parse-form body)))
+      (let ((form (httpd-parse-form body)))
         (let ((dataset-id (val (or (cdr (assoc "dataset_id" form)) "0")))
               (name (or (cdr (assoc "name" form)) "mapper run"))
               (n-cubes (val (or (cdr (assoc "n_cubes" form)) "10")))
@@ -525,16 +320,15 @@
                   "UPDATE mapper_runs SET name = ? WHERE id = ?" name rid)
                 ;; Generate worker script
                 (let ((worker-path (_viz-generate-worker *viz-db-path* rid))
-                      (log-path (concat "/tmp/claude/mapper-worker-" (sprintf "%d" rid) ".log")) )
+                      (log-path (concat "/tmp/claude/mapper-worker-" (sprintf "%d" rid) ".log"))
+                      (fail-path (concat "/tmp/claude/mapper-worker-" (sprintf "%d" rid) ".failed")) )
                     ;; Fork worker in background with a shell wrapper:
                     ;; On success, the Lush script's mapper-db-store-graph marks run completed.
-                    ;; On failure (non-zero exit), the wrapper marks run as failed via sqlite3.
+                    ;; On failure (non-zero exit), write a .failed marker file.
+                    ;; The GET /api/run/:id handler detects this and updates the DB.
                     (sys (concat
                       "( " *viz-lush-bin* " " worker-path " > " log-path " 2>&1"
-                      " || sqlite3 '" *viz-db-path* "'"
-                      " \"UPDATE mapper_runs SET status='failed',"
-                      " error_message='worker process crashed (see log)'"
-                      " WHERE id=" (sprintf "%d" rid) "\" ) &"))
+                      " || echo failed > " fail-path " ) &"))
                     ;; Return run-id
                     (list 200 "application/json"
                       (concat "{\"run-id\":" (sprintf "%d" rid) "}") ) ) ) ) ) ) )
@@ -542,32 +336,28 @@
 
 
 ;; ============================================================
-;; Static file handler
-;; ============================================================
-
-;; internal: serve a static file from the viz directory
-(de _viz-static-handler (req)
-  (let ((path (alist-get "path" req)))
-    ;; The catch-all route "/(.*)" captures everything after /
-    ;; For path "/", params will be ("") — map to index.html
-    (let ((params (alist-get "params" req)))
-      (when params
-        (let ((relpath (car params)))
-          (when (or (= relpath "") (= relpath "/"))
-            (setq relpath "index.html") )
-          ;; Security: reject paths with ..
-          (if (index ".." relpath)
-            (list 403 "text/plain" "Forbidden")
-            (let ((fpath (concat *viz-root* "/" relpath)))
-              (let ((content (httpd-read-file-binary fpath)))
-                (if content
-                  (list 200 (httpd-mime-type fpath) content)
-                  (list 404 "text/plain" (concat "File not found: " relpath)) ) ) ) ) ) ) ) ) )
-
-
-;; ============================================================
 ;; Server startup
 ;; ============================================================
+
+;; internal: set up the common routes for a visualization server
+(de _viz-setup-routes (server)
+  ;; API routes
+  (httpd-add-route server "GET" "/api/graphs" (lambda (req) (_viz-api-graphs req)))
+  (httpd-add-route server "GET" "/api/graph/([0-9]+)" (lambda (req) (_viz-api-graph req)))
+  (httpd-add-route server "GET" "/api/datasets" (lambda (req) (_viz-api-datasets req)))
+  (httpd-add-route server "GET" "/api/dataset/([0-9]+)" (lambda (req) (_viz-api-dataset req)))
+  (httpd-add-route server "GET" "/api/dataset/([0-9]+)/columns" (lambda (req) (_viz-api-dataset-cols req)))
+  (httpd-add-route server "GET" "/api/runs" (lambda (req) (_viz-api-runs req)))
+  (httpd-add-route server "GET" "/api/run/([0-9]+)" (lambda (req) (_viz-api-run req)))
+  (httpd-add-route server "GET" "/api/labels/([0-9]+)" (lambda (req) (_viz-api-get-labels req)))
+  (httpd-add-route server "POST" "/api/dataset" (lambda (req) (_viz-api-upload-dataset req)))
+  (httpd-add-route server "POST" "/api/run" (lambda (req) (_viz-api-start-run req)))
+  (httpd-add-route server "POST" "/api/label" (lambda (req) (_viz-api-save-label req)))
+  (httpd-add-route server "POST" "/api/graph/([0-9]+)/display" (lambda (req) (_viz-api-set-display req)))
+  ;; Static file routes (catch-all for /, *.html, *.js, *.css, etc.)
+  (httpd-add-route server "GET" "/(.*)" (httpd-make-static-handler *viz-root*))
+  server )
+
 
 #? (mapper-viz-start <db-path> [<port>])
 ;; Start the mapper visualization server.
@@ -589,22 +379,7 @@
 
     ;; Create the HTTP server
     (let ((server (httpd-new port)))
-
-      ;; API routes
-      (httpd-add-route server "GET" "/api/graphs" (lambda (req) (_viz-api-graphs req)))
-      (httpd-add-route server "GET" "/api/graph/([0-9]+)" (lambda (req) (_viz-api-graph req)))
-      (httpd-add-route server "GET" "/api/datasets" (lambda (req) (_viz-api-datasets req)))
-      (httpd-add-route server "GET" "/api/dataset/([0-9]+)" (lambda (req) (_viz-api-dataset req)))
-      (httpd-add-route server "GET" "/api/dataset/([0-9]+)/columns" (lambda (req) (_viz-api-dataset-cols req)))
-      (httpd-add-route server "GET" "/api/runs" (lambda (req) (_viz-api-runs req)))
-      (httpd-add-route server "GET" "/api/run/([0-9]+)" (lambda (req) (_viz-api-run req)))
-      (httpd-add-route server "GET" "/api/labels/([0-9]+)" (lambda (req) (_viz-api-get-labels req)))
-      (httpd-add-route server "POST" "/api/dataset" (lambda (req) (_viz-api-upload-dataset req)))
-      (httpd-add-route server "POST" "/api/run" (lambda (req) (_viz-api-start-run req)))
-      (httpd-add-route server "POST" "/api/label" (lambda (req) (_viz-api-save-label req)))
-
-      ;; Static file routes (catch-all for /, *.html, *.js, *.css, etc.)
-      (httpd-add-route server "GET" "/(.*)" (lambda (req) (_viz-static-handler req)))
+      (_viz-setup-routes server)
 
       ;; Try to open the browser
       (let ((url (sprintf "http://localhost:%d" port)))
@@ -629,18 +404,5 @@
 
     ;; Create the HTTP server
     (let ((server (httpd-new port)))
-      ;; API routes
-      (httpd-add-route server "GET" "/api/graphs" (lambda (req) (_viz-api-graphs req)))
-      (httpd-add-route server "GET" "/api/graph/([0-9]+)" (lambda (req) (_viz-api-graph req)))
-      (httpd-add-route server "GET" "/api/datasets" (lambda (req) (_viz-api-datasets req)))
-      (httpd-add-route server "GET" "/api/dataset/([0-9]+)" (lambda (req) (_viz-api-dataset req)))
-      (httpd-add-route server "GET" "/api/dataset/([0-9]+)/columns" (lambda (req) (_viz-api-dataset-cols req)))
-      (httpd-add-route server "GET" "/api/runs" (lambda (req) (_viz-api-runs req)))
-      (httpd-add-route server "GET" "/api/run/([0-9]+)" (lambda (req) (_viz-api-run req)))
-      (httpd-add-route server "GET" "/api/labels/([0-9]+)" (lambda (req) (_viz-api-get-labels req)))
-      (httpd-add-route server "POST" "/api/dataset" (lambda (req) (_viz-api-upload-dataset req)))
-      (httpd-add-route server "POST" "/api/run" (lambda (req) (_viz-api-start-run req)))
-      (httpd-add-route server "POST" "/api/label" (lambda (req) (_viz-api-save-label req)))
-      ;; Static file routes
-      (httpd-add-route server "GET" "/(.*)" (lambda (req) (_viz-static-handler req)))
+      (_viz-setup-routes server)
       server ) ) )

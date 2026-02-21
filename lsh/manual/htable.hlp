@@ -54,6 +54,25 @@ is deallocated (this is called "ephemerons" in the literature.)
 }
 
 
+#? (htablep <x>)
+
+{<p>
+Returns <x> if <x> is a hash table, or the empty list otherwise.
+This predicate can be used to test whether a lisp object is an
+instance of the HTABLE class.
+}
+{<p>
+Example:
+  {<br>}
+  {<code>
+? (htablep (htable))
+= ::HTABLE:6f3cac
+? (htablep '((a . 1)))
+= ()
+  {</code>}
+}
+
+
 #? (htable [<nelem> [<flag>]])
 
 {<p>
