@@ -21,9 +21,12 @@ let activeTabId = null;
 let activeGroup = 'A';
 let pollInterval = null;
 let activeColaLayout = null;   // track running cola layout for stop
-let compResults = [];          // current comparison results
+let compResults = [];          // current comparison results (all, unfiltered)
 let compSortKey = 'p';
 let compSortAsc = true;
+let compTitle = '';
+let compNA = 0;
+let compNB = 0;
 
 // ============================================================
 // API client
@@ -442,6 +445,7 @@ function updateSidePanel() {
     document.getElementById('info-clusterer').textContent = '--';
     document.getElementById('info-cubes').textContent = '--';
     document.getElementById('info-overlap').textContent = '--';
+    document.getElementById('info-lens').textContent = '--';
     document.getElementById('info-topo-cols').textContent = '--';
     document.getElementById('sel-summary').textContent = '';
     document.getElementById('selection-info').style.display = 'none';
@@ -462,31 +466,43 @@ function updateSidePanel() {
     document.getElementById('info-cubes').textContent = run['n-cubes'] || '--';
     document.getElementById('info-overlap').textContent = run.overlap || '--';
 
+    // Parse column-selection: may be a string or already-parsed object
+    const colSelRaw = run['column-selection'] || '';
+    let colSelObj = null;
+    if (typeof colSelRaw === 'object' && colSelRaw !== null) {
+      colSelObj = colSelRaw;
+    } else if (typeof colSelRaw === 'string' && colSelRaw.startsWith('{')) {
+      try { colSelObj = JSON.parse(colSelRaw); } catch(e) { /* ignore */ }
+    }
+
+    // Display lens info
+    const lensEl = document.getElementById('info-lens');
+    let lensDisplay = run['lens-type'] || '--';
+    if (colSelObj && colSelObj.lens_type_2 && colSelObj.lens_type_2 !== 'none') {
+      lensDisplay += ' + ' + colSelObj.lens_type_2 + ' (2D)';
+    }
+    lensEl.textContent = lensDisplay;
+
     // Display topology columns info
     const topoColsEl = document.getElementById('info-topo-cols');
-    const colSelStr = run['column-selection'] || '';
-    if (colSelStr && colSelStr.startsWith('{')) {
-      try {
-        const cs = JSON.parse(colSelStr);
-        if (cs.mode === 'all' || (cs.cols && cs.cols.length === 0 && cs.mode !== 'auto_variance')) {
-          topoColsEl.textContent = 'All';
-        } else if (cs.mode === 'auto_variance') {
-          if (cs.cols && cs.cols.length > 0) {
-            const names = cs.cols.map(i => (state.colNames && state.colNames[i]) || ('col ' + i));
-            topoColsEl.textContent = cs.cols.length + ' cols (top variance): ' + (names.length <= 5 ? names.join(', ') : names.slice(0, 5).join(', ') + '...');
-          } else {
-            topoColsEl.textContent = 'Top ' + (cs.top_n || '?') + ' by variance';
-          }
-        } else if (cs.mode === 'manual' && cs.cols && cs.cols.length > 0) {
+    if (colSelObj) {
+      const cs = colSelObj;
+      if (cs.mode === 'all' || (cs.cols && cs.cols.length === 0 && cs.mode !== 'auto_variance')) {
+        topoColsEl.textContent = 'All';
+      } else if (cs.mode === 'auto_variance') {
+        if (cs.cols && cs.cols.length > 0) {
           const names = cs.cols.map(i => (state.colNames && state.colNames[i]) || ('col ' + i));
-          topoColsEl.textContent = cs.cols.length + ' cols: ' + (names.length <= 5 ? names.join(', ') : names.slice(0, 5).join(', ') + '...');
+          topoColsEl.textContent = cs.cols.length + ' cols (top variance): ' + (names.length <= 5 ? names.join(', ') : names.slice(0, 5).join(', ') + '...');
         } else {
-          topoColsEl.textContent = 'All';
+          topoColsEl.textContent = 'Top ' + (cs.top_n || '?') + ' by variance';
         }
-      } catch(e) {
-        topoColsEl.textContent = colSelStr;
+      } else if (cs.mode === 'manual' && cs.cols && cs.cols.length > 0) {
+        const names = cs.cols.map(i => (state.colNames && state.colNames[i]) || ('col ' + i));
+        topoColsEl.textContent = cs.cols.length + ' cols: ' + (names.length <= 5 ? names.join(', ') : names.slice(0, 5).join(', ') + '...');
+      } else {
+        topoColsEl.textContent = 'All';
       }
-    } else if (colSelStr) {
+    } else if (colSelRaw) {
       // Old format: bare color_col number
       topoColsEl.textContent = 'All (legacy)';
     } else {
@@ -775,7 +791,6 @@ async function recolorByColumn(state, colIdx) {
     const did = state.runInfo && state.runInfo['dataset-id'];
     if (!did) { setStatus('No dataset'); return; }
     const colData = await apiGet(`/api/dataset/${did}/columns?cols=${colIdx}`);
-    // colData is { columns: [ { name, values: [...] } ] } or list of column arrays
     let values;
     if (Array.isArray(colData) && colData.length > 0) {
       values = colData[0];
@@ -785,16 +800,42 @@ async function recolorByColumn(state, colIdx) {
       setStatus('No column data'); return;
     }
 
-    // Compute mean value per node from its members
-    const nodeValues = state.data.nodes.map(n => {
-      const members = n.members || [];
-      if (members.length === 0) return 0;
-      let sum = 0;
-      for (const m of members) {
-        sum += (values[m] !== undefined ? Number(values[m]) : 0);
-      }
-      return sum / members.length;
-    });
+    // Detect if column is string/categorical (non-numeric values)
+    const isStringCol = values.some(v =>
+      v !== null && v !== undefined && typeof v === 'string' && isNaN(Number(v))
+    );
+
+    let nodeValues;
+    if (isStringCol) {
+      // String/categorical column: assign numeric indices to unique values
+      // and average those indices per node
+      const uniqueVals = [...new Set(values.filter(v => v !== null && v !== undefined))].sort();
+      const valMap = new Map();
+      uniqueVals.forEach((v, i) => valMap.set(String(v), i));
+
+      nodeValues = state.data.nodes.map(n => {
+        const members = n.members || [];
+        if (members.length === 0) return 0;
+        let sum = 0;
+        for (const m of members) {
+          const v = values[m];
+          sum += (valMap.has(String(v)) ? valMap.get(String(v)) : 0);
+        }
+        return sum / members.length;
+      });
+    } else {
+      // Numeric column: compute mean value per node
+      nodeValues = state.data.nodes.map(n => {
+        const members = n.members || [];
+        if (members.length === 0) return 0;
+        let sum = 0;
+        for (const m of members) {
+          const v = values[m];
+          sum += (v !== null && v !== undefined ? Number(v) : 0);
+        }
+        return sum / members.length;
+      });
+    }
 
     const minVal = Math.min(...nodeValues);
     const maxVal = Math.max(...nodeValues);
@@ -802,7 +843,9 @@ async function recolorByColumn(state, colIdx) {
     state.cy.nodes().forEach((node, i) => {
       node.style('background-color', colorForValue(nodeValues[i], minVal, maxVal));
     });
-    setStatus('Colored by ' + (state.colNames[colIdx] || `col ${colIdx}`));
+
+    const colName = state.colNames[colIdx] || `col ${colIdx}`;
+    setStatus('Colored by ' + colName + (isStringCol ? ' (categorical)' : ''));
   } catch(e) {
     setStatus('Error: ' + e.message);
   }
@@ -947,14 +990,13 @@ async function compareVsRest() {
 }
 
 async function runComparison(state, membersA, membersB, title) {
-  setStatus('Running comparison...');
+  setStatus('Fetching column data for comparison...');
   const did = state.runInfo && state.runInfo['dataset-id'];
   if (!did) { setStatus('No dataset linked'); return; }
 
   try {
-    // Fetch all columns
-    const colIndices = state.colNames.map((_, i) => i);
-    const colData = await apiGet(`/api/dataset/${did}/columns?cols=${colIndices.join(',')}`);
+    // Fetch all columns at once (no cols param = all columns)
+    const colData = await apiGet(`/api/dataset/${did}/columns`);
 
     let columns;
     if (Array.isArray(colData)) {
@@ -964,6 +1006,8 @@ async function runComparison(state, membersA, membersB, title) {
     } else {
       setStatus('Could not fetch column data'); return;
     }
+
+    setStatus('Computing statistical tests...');
 
     // Run tests for each column
     const selectedTest = document.getElementById('stat-test-select').value;
@@ -1039,16 +1083,30 @@ async function runComparison(state, membersA, membersB, title) {
 }
 
 function renderCompResults(title, nA, nB) {
+  // Store for re-render on filter change
+  if (title) compTitle = title;
+  if (nA) compNA = nA;
+  if (nB) compNB = nB;
+
   const panel = document.getElementById('comparison-panel');
   panel.style.display = 'block';
 
+  // Apply p-value filter
+  const filterVal = parseFloat(document.getElementById('comp-pval-filter').value);
+  const useQ = document.getElementById('comp-use-qval').checked;
+  let filtered = compResults;
+  if (!isNaN(filterVal) && filterVal > 0) {
+    filtered = compResults.filter(r => (useQ ? r.q : r.p) <= filterVal);
+  }
+
   document.getElementById('comparison-summary').textContent =
-    `${title}: ${nA} vs ${nB} points, ${compResults.length} columns`;
+    `${compTitle}: ${compNA} vs ${compNB} points, ${filtered.length}/${compResults.length} columns` +
+    (!isNaN(filterVal) && filterVal > 0 ? ` (${useQ ? 'q' : 'p'} \u2264 ${filterVal})` : '');
 
   const tbody = document.getElementById('comparison-body');
   tbody.innerHTML = '';
 
-  for (const r of compResults) {
+  for (const r of filtered) {
     const tr = document.createElement('tr');
     tr.className = 'clickable';
     if (r.q < 0.01) tr.classList.add('sig-high');
@@ -1065,6 +1123,40 @@ function renderCompResults(title, nA, nB) {
 
     tbody.appendChild(tr);
   }
+}
+
+function onCompFilterChange() {
+  if (compResults.length > 0) {
+    renderCompResults();
+  }
+}
+
+function exportCompCSV() {
+  if (compResults.length === 0) {
+    setStatus('No comparison results to export');
+    return;
+  }
+
+  const rows = [['column', 'column_index', 'p_value', 'q_value', 'diff', 'test']];
+  for (const r of compResults) {
+    rows.push([
+      '"' + (r.col || '').replace(/"/g, '""') + '"',
+      r.colIdx,
+      r.p,
+      r.q,
+      r.diff !== undefined ? r.diff : '',
+      r.test,
+    ]);
+  }
+
+  const csv = rows.map(r => r.join(',')).join('\n');
+  const blob = new Blob([csv], { type: 'text/csv' });
+  const link = document.createElement('a');
+  link.href = URL.createObjectURL(blob);
+  link.download = `comparison-${compTitle.replace(/\s+/g, '-')}.csv`;
+  link.click();
+  URL.revokeObjectURL(link.href);
+  setStatus('Comparison CSV exported (' + compResults.length + ' rows)');
 }
 
 function sortCompTable(key) {
@@ -1089,13 +1181,7 @@ function sortCompTable(key) {
     return compSortAsc ? va - vb : vb - va;
   });
 
-  renderCompResults(
-    document.getElementById('comparison-summary').textContent.split(':')[0],
-    0, 0
-  );
-  // Restore the summary line from the data
-  const panel = document.getElementById('comparison-summary');
-  // Keep existing text
+  renderCompResults();
 }
 
 // ============================================================
@@ -1276,6 +1362,62 @@ async function uploadDataset() {
 }
 
 // ============================================================
+// Load server file dialog
+// ============================================================
+
+function showLoadFileDialog() {
+  document.getElementById('load-file-path').value = '';
+  document.getElementById('load-file-name').value = '';
+  document.getElementById('load-file-status').textContent = '';
+  document.getElementById('load-file-dialog').classList.add('visible');
+}
+
+function hideLoadFileDialog() {
+  document.getElementById('load-file-dialog').classList.remove('visible');
+}
+
+async function loadServerFile() {
+  const filepath = document.getElementById('load-file-path').value.trim();
+  const name = document.getElementById('load-file-name').value.trim() || 'loaded';
+  const statusEl = document.getElementById('load-file-status');
+
+  if (!filepath) {
+    statusEl.textContent = 'Please enter a file path';
+    return;
+  }
+
+  statusEl.textContent = 'Loading... (large files may take a minute)';
+  statusEl.style.color = '#888';
+
+  try {
+    const resp = await fetch('/api/load-file', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: 'path=' + encodeURIComponent(filepath) + '&name=' + encodeURIComponent(name),
+    });
+
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({ error: resp.statusText }));
+      throw new Error(err.error || 'Load failed');
+    }
+
+    const result = await resp.json();
+    statusEl.textContent = 'Loaded: ' + result.name + ' (' + result['n-rows'] + ' rows, ' + result['n-cols'] + ' cols)';
+    statusEl.style.color = '#4a4';
+    setStatus('Dataset loaded: ' + result.name + ' (' + result['n-rows'] + 'x' + result['n-cols'] + ')');
+
+    // Close after short delay so user can see the result
+    setTimeout(() => {
+      hideLoadFileDialog();
+      showRunDialog(result.id);
+    }, 1500);
+  } catch(e) {
+    statusEl.textContent = 'Error: ' + e.message;
+    statusEl.style.color = '#e55';
+  }
+}
+
+// ============================================================
 // Run dialog
 // ============================================================
 
@@ -1311,9 +1453,11 @@ async function showRunDialog(preselectedDatasetId) {
   datasetSelect.onchange = onDatasetChange;
   onDatasetChange();
 
-  // Reset column selection mode to "All"
-  const allRadio = document.querySelector('input[name="colsel-mode"][value="all"]');
-  if (allRadio) allRadio.checked = true;
+  // Reset lens 2 to (None) and column selection mode to "Top N by variance"
+  document.getElementById('run-lens2').value = 'none';
+  onLens2Change();
+  const varRadio = document.querySelector('input[name="colsel-mode"][value="auto_variance"]');
+  if (varRadio) varRadio.checked = true;
   onColSelModeChange();
 
   dialog.classList.add('visible');
@@ -1323,10 +1467,16 @@ function hideRunDialog() {
   document.getElementById('run-dialog').classList.remove('visible');
 }
 
-function onLensChange() {
+function onLens1Change() {
   const lens = document.getElementById('run-lens').value;
-  document.getElementById('col-select-group').style.display =
+  document.getElementById('lens1-col-group').style.display =
     (lens === 'column') ? '' : 'none';
+}
+
+function onLens2Change() {
+  const lens2 = document.getElementById('run-lens2').value;
+  document.getElementById('lens2-col-group').style.display =
+    (lens2 === 'column') ? '' : 'none';
 }
 
 // Column selection mode change
@@ -1393,19 +1543,32 @@ async function startRun() {
   // Build column_selection JSON
   const colSelMode = document.querySelector('input[name="colsel-mode"]:checked').value;
   const colorCol = parseInt(document.getElementById('run-colorcol').value) || 0;
-  let columnSelection;
+  const lensType2 = document.getElementById('run-lens2').value;
+  const lens2Col = parseInt(document.getElementById('run-lens2-col').value) || 0;
+
+  let colSelObj;
   if (colSelMode === 'manual') {
     const checkedCols = [];
     document.querySelectorAll('#colsel-checkboxes input[type="checkbox"]:checked').forEach(cb => {
       checkedCols.push(parseInt(cb.value));
     });
-    columnSelection = JSON.stringify({ mode: 'manual', cols: checkedCols, color_col: colorCol });
+    colSelObj = { mode: 'manual', cols: checkedCols, color_col: colorCol };
   } else if (colSelMode === 'auto_variance') {
     const topN = parseInt(document.getElementById('colsel-topn').value) || 10;
-    columnSelection = JSON.stringify({ mode: 'auto_variance', top_n: topN, cols: [], color_col: colorCol });
+    colSelObj = { mode: 'auto_variance', top_n: topN, cols: [], color_col: colorCol };
   } else {
-    columnSelection = JSON.stringify({ mode: 'all', cols: [], color_col: colorCol });
+    colSelObj = { mode: 'all', cols: [], color_col: colorCol };
   }
+
+  // Add second lens info if selected
+  if (lensType2 && lensType2 !== 'none') {
+    colSelObj.lens_type_2 = lensType2;
+    if (lensType2 === 'column') {
+      colSelObj.lens2_col = lens2Col;
+    }
+  }
+
+  const columnSelection = JSON.stringify(colSelObj);
 
   const params = {
     dataset_id: datasetId,

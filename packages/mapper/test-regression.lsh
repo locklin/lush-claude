@@ -1,0 +1,122 @@
+;;; test-regression.lsh -- Regression test for mapper algorithm
+;;;
+;;; Runs mapper with the same parameters as demo-nki.lsh on the NKI
+;;; breast cancer dataset and verifies the output is identical.
+;;; This catches unintended changes to the core algorithm.
+;;;
+;;; Usage:
+;;;   echo '(load "packages/mapper/test-regression.lsh")' | ./bin/lush
+;;;
+;;; Expected output: 78 nodes, 44 edges (deterministic with slink)
+
+(libload "mapper/mapper")
+(libload "mapper/csvread")
+
+(printf "=== Mapper Regression Test ===\n\n")
+
+(let* ((datafile (concat (dirname file-being-loaded) "/NKI/NKI.csv.gz"))
+       (result (mapper-tsv-load datafile))
+       (data (car result))
+       (gene-names (cadr result))
+       (nrows (idx-dim data 0))
+       (ncols (idx-dim data 1)) )
+
+  (printf "Data: %dx%d\n" nrows ncols)
+
+  ;; Compute variance per column (exact same logic as demo-nki.lsh)
+  (let ((variances (double-matrix ncols)))
+    (for (j 0 (1- ncols))
+      (let ((sum 0.0))
+        (for (i 0 (1- nrows))
+          (incr sum (data i j)) )
+        (let ((mean (/ sum nrows))
+              (ssq 0.0) )
+          (for (i 0 (1- nrows))
+            (let ((d (- (data i j) mean)))
+              (incr ssq (* d d)) ) )
+          (variances j (/ ssq nrows)) ) ) )
+
+    ;; Sort by variance descending (selection sort, same as demo)
+    (let ((var-idx (int-matrix ncols)))
+      (for (i 0 (1- ncols))
+        (var-idx i i) )
+      (for (i 0 (- ncols 2))
+        (for (j (+ i 1) (1- ncols))
+          (when (> (variances (var-idx j)) (variances (var-idx i)))
+            (let ((tmp (var-idx i)))
+              (var-idx i (var-idx j))
+              (var-idx j tmp) ) ) ) )
+
+      ;; Skip clinical columns (variance > 1.0)
+      (let ((gene-start 0))
+        (while (and (< gene-start ncols)
+                    (> (variances (var-idx gene-start)) 1.0))
+          (incr gene-start) )
+
+      (printf "Skipped %d clinical columns (variance > 1.0)\n" gene-start)
+
+      ;; Select top 500 genes
+      (let ((ntop 500))
+        (let ((subdata (double-matrix nrows ntop)))
+          (for (i 0 (1- nrows))
+            (for (k 0 (1- ntop))
+              (subdata i k (data i (var-idx (+ gene-start k)))) ) )
+
+          (printf "Subdata: %dx%d\n" nrows ntop)
+
+          ;; Compute lens
+          (printf "Computing L-inf centrality lens (cosine)...\n")(flush)
+          (let ((lens (mapper-lens-linf-centrality subdata "cosine")))
+
+            ;; Run mapper with exact demo parameters
+            (printf "Running Mapper (15 cubes, 40%% overlap, cosine, slink, eps=0.5)...\n")(flush)
+            (let ((graph (mapper-run subdata lens 15 0.4
+                                     'metric "cosine"
+                                     'clusterer "slink"
+                                     'eps 0.5)))
+
+              (==> graph color-by-mean subdata 0)
+
+              (let ((nn (==> graph num-nodes))
+                    (ne (==> graph num-edges)) )
+
+                (printf "\n=== Results ===\n")
+                (printf "Nodes: %d\n" nn)
+                (printf "Edges: %d\n" ne)
+                (==> graph summary)
+
+                ;; ============================================================
+                ;; Regression checks — exact values
+                ;; ============================================================
+
+                (printf "\n=== Regression Checks ===\n")
+                (let ((pass 0) (fail 0))
+
+                  ;; Data dimensions
+                  (if (= nrows 272)
+                    (progn (printf "PASS: nrows = 272\n") (incr pass))
+                    (progn (printf "FAIL: nrows = %d (expected 272)\n" nrows) (incr fail)) )
+                  (if (= ncols 6362)
+                    (progn (printf "PASS: ncols = 6362\n") (incr pass))
+                    (progn (printf "FAIL: ncols = %d (expected 6362)\n" ncols) (incr fail)) )
+
+                  ;; Clinical column count
+                  (if (= gene-start 8)
+                    (progn (printf "PASS: skipped 8 clinical columns\n") (incr pass))
+                    (progn (printf "FAIL: skipped %d clinical columns (expected 8)\n" gene-start) (incr fail)) )
+
+                  ;; Exact graph shape (deterministic with slink clustering)
+                  (if (= nn 78)
+                    (progn (printf "PASS: num-nodes = 78\n") (incr pass))
+                    (progn (printf "FAIL: num-nodes = %d (expected 78)\n" nn) (incr fail)) )
+                  (if (= ne 44)
+                    (progn (printf "PASS: num-edges = 44\n") (incr pass))
+                    (progn (printf "FAIL: num-edges = %d (expected 44)\n" ne) (incr fail)) )
+
+                  (printf "\n%d passed, %d failed\n" pass fail)
+                  (if (= fail 0)
+                    (printf "\n*** ALL TESTS PASSED ***\n")
+                    (progn
+                      (printf "\n*** %d TEST(S) FAILED ***\n" fail)
+                      (printf "If you changed the mapper algorithm intentionally, update the\n")
+                      (printf "expected values in test-regression.lsh.\n") ) ) ) ) ) ) ) ) ) ) ) )

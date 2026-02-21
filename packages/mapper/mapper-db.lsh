@@ -416,6 +416,9 @@
 ;; Returns a list (data col-names) where data is an NxD double-matrix
 ;; and col-names is a list of D column name strings.
 ;; Returns () if the dataset is not found.
+;;
+;; Uses streaming SQLite step API to fill the matrix directly,
+;; avoiding materialization of millions of rows into a Lush list.
 (de mapper-db-load-dataset (db dataset-id)
   (let ((info (mapper-db-get-dataset-info db dataset-id)))
     (when info
@@ -423,15 +426,24 @@
             (nc (cdr (assoc "n-cols" info)))
             (col-json (cdr (assoc "col-names" info))) )
         (let ((data (double-matrix nr nc)))
-          ;; Fill matrix from all values
-          (let ((rows (sqlite-query db
-            "SELECT row_idx, col_idx, value FROM dataset_values WHERE dataset_id = ? ORDER BY row_idx, col_idx"
-            dataset-id)))
-            (each ((row rows))
-              (let ((ri (nth 0 row))
-                    (ci (nth 1 row))
-                    (v  (nth 2 row)) )
-                (data ri ci v) ) ) )
+          ;; Stream rows directly into matrix using low-level step API
+          (let ((stmt (_sqlite-prepare db
+                  "SELECT row_idx, col_idx, value FROM dataset_values WHERE dataset_id = ? ORDER BY row_idx, col_idx")))
+            (when (= stmt (gptr ()))
+              (error "mapper-db-load-dataset" (_sqlite-errmsg db)) )
+            (_sqlite-bind-int stmt 1 dataset-id)
+            (let ((rc (_sqlite-step stmt))
+                  (count 0) )
+              (while (= rc SQLITE_ROW)
+                (let ((ri (_sqlite-column-int stmt 0))
+                      (ci (_sqlite-column-int stmt 1))
+                      (v  (_sqlite-column-double stmt 2)) )
+                  (data ri ci v) )
+                (incr count)
+                (setq rc (_sqlite-step stmt)) )
+              (_sqlite-finalize stmt)
+              (when (and (<> rc SQLITE_DONE) (<> rc SQLITE_ROW))
+                (error "mapper-db-load-dataset" (_sqlite-errmsg db)) ) ) )
           ;; Parse col-names from JSON string
           ;; col-json is like ["x","y","z"] — simple parse
           (let ((col-names (_mapper-db-parse-json-string-list col-json)))

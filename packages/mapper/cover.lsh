@@ -139,9 +139,12 @@
             (when inside
               (setq members (nconc1 members i)) ) ) )
         ;; Convert list to sorted idx1
-        (let ((arr (int-matrix (length members)))
-              (k 0) )
-          ((-int-) k)
+        ;; Use max(1, len) to avoid 0-size int-matrix error on empty bins;
+        ;; mapper-run skips bins with hc-size < 2 so the placeholder is harmless.
+        (let* ((nmem (length members))
+               (arr (int-matrix (max 1 nmem)))
+               (k 0) )
+          ((-int-) k nmem)
           (each ((m members))
             (arr k m)
             (incr k) )

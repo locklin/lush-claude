@@ -1,0 +1,72 @@
+;;; load-nki-db.lsh -- Load full NKI dataset into a mapper project database
+;;;
+;;; Loads all 272 patients x 6,363 gene expression columns from
+;;; NKI.csv.gz into a SQLite database for use with the mapper
+;;; visualization server.  The NKI data is clean (no NULLs or NaNs).
+;;;
+;;; Usage:
+;;;   echo '(load "packages/mapper/load-nki-db.lsh")' | ./bin/lush
+;;;
+;;; Or with a custom database path:
+;;;   echo '(setq *nki-db-path* "/my/project.db") (load "packages/mapper/load-nki-db.lsh")' | ./bin/lush
+;;;
+;;; This creates (or opens) the database and stores the full NKI dataset.
+;;; Start the visualization server afterward with:
+;;;   (mapper-viz-start "/tmp/claude/nki-project.db")
+
+(libload "mapper/mapper-db")
+(libload "mapper/csvread")
+
+;; Allow override: set *nki-db-path* before loading this file.
+;; defvar only sets if not already defined.
+(defvar *nki-db-path* "/tmp/claude/nki-project.db")
+
+(let* ((datafile (concat (dirname file-being-loaded) "/NKI/NKI.csv.gz"))
+       (db-path *nki-db-path*) )
+
+  ;; Step 1: Load the NKI dataset via C-accelerated TSV reader
+  (printf "Loading NKI dataset from %s...\n" datafile)(flush)
+  (let* ((result (mapper-tsv-load datafile))
+         (data (car result))
+         (gene-names (cadr result))
+         (nrows (idx-dim data 0))
+         (ncols (idx-dim data 1)) )
+
+    (printf "Data dimensions: %d patients x %d genes\n" nrows ncols)
+    (printf "Total values to store: %d\n" (* nrows ncols))(flush)
+
+    ;; Step 2: Open/create the database
+    (printf "Opening database: %s\n" db-path)(flush)
+    (let ((db (mapper-db-open db-path)))
+
+      ;; Step 3: Optimize SQLite for bulk insert
+      (sqlite-exec db "PRAGMA synchronous=OFF")
+      (sqlite-exec db "PRAGMA journal_mode=MEMORY")
+      (sqlite-exec db "PRAGMA cache_size=-64000")
+
+      ;; Step 4: Store the full dataset
+      (printf "Storing %d x %d dataset (%.1f million values)...\n"
+              nrows ncols (/ (* nrows ncols) 1000000.0))(flush)
+      (let ((t0 (time))
+            (did (mapper-db-store-dataset db data gene-names
+                   "NKI-full" datafile)) )
+        (let ((elapsed (- (time) t0)))
+          (printf "Dataset stored: id=%d in %.1f seconds\n" did elapsed)
+          (printf "  Name:    NKI-full\n")
+          (printf "  Rows:    %d (patients)\n" nrows)
+          (printf "  Columns: %d (genes)\n" ncols)
+          (printf "  Values:  %d\n" (* nrows ncols)) ) )
+
+      ;; Step 5: Reset pragmas and close
+      (sqlite-exec db "PRAGMA synchronous=NORMAL")
+      (sqlite-exec db "PRAGMA journal_mode=WAL")
+      (mapper-db-close db)
+
+      (printf "\nDone.\n")
+      (printf "Database: %s\n" db-path)
+      (printf "\nStart the visualization server with:\n")
+      (printf "  (libload \"mapper/mapper-viz\")\n")
+      (printf "  (mapper-viz-start \"%s\")\n\n" db-path)
+      (printf "The NKI-full dataset will appear in the Run Mapper dialog.\n")
+      (printf "Use 'Top N by variance' column selection to pick the most\n")
+      (printf "informative genes for topology construction.\n") ) ) )

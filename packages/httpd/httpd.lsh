@@ -230,8 +230,9 @@
       (_httpd-write fout extra) )
     ;; Blank line separating headers from body
     (write8 fout 13) (write8 fout 10)
-    ;; Body
-    (_httpd-write fout body)
+    ;; Body — use write-string for bulk write (much faster than
+    ;; byte-by-byte write8 for large responses like column data)
+    (write-string fout body)
     (flush fout) ) )
 
 

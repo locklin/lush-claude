@@ -35,6 +35,7 @@
         <div class="info-row"><span class="info-label">Clusterer</span><span class="info-value" id="info-clusterer">--</span></div>
         <div class="info-row"><span class="info-label">Cubes</span><span class="info-value" id="info-cubes">--</span></div>
         <div class="info-row"><span class="info-label">Overlap</span><span class="info-value" id="info-overlap">--</span></div>
+        <div class="info-row"><span class="info-label">Lens</span><span class="info-value" id="info-lens">--</span></div>
         <div class="info-row"><span class="info-label">Topology Cols</span><span class="info-value" id="info-topo-cols">--</span></div>
       </div>
     </div>
@@ -71,6 +72,13 @@
     <div class="panel-section" id="comparison-panel" style="display:none">
       <h3>Comparison Results</h3>
       <div id="comparison-summary"></div>
+      <div class="comp-filter-row">
+        <label>p-value &le;</label>
+        <input type="number" id="comp-pval-filter" value="" min="0" max="1" step="0.01" placeholder="e.g. 0.05" onchange="onCompFilterChange()" oninput="onCompFilterChange()">
+        <label style="margin-left:6px">Use q</label>
+        <input type="checkbox" id="comp-use-qval" onchange="onCompFilterChange()" title="Filter by q-value (FDR-adjusted) instead of raw p-value">
+        <button onclick="exportCompCSV()" title="Download all results as CSV" style="margin-left:auto">Download CSV</button>
+      </div>
       <div id="comparison-table-wrap">
         <table id="comparison-table">
           <thead>
@@ -144,6 +152,7 @@
   <button onclick="exportPNG()" title="Export graph as PNG">PNG</button>
   <button onclick="exportCSV()" title="Export data as CSV">CSV</button>
   <button onclick="showUploadDialog()" title="Upload CSV dataset">Upload</button>
+  <button onclick="showLoadFileDialog()" title="Load a file from the server filesystem">Load File</button>
   <button onclick="showRunDialog()" title="Configure and run mapper">Run Mapper</button>
   <span class="run-status" id="run-status"></span>
   <span class="status" id="status-bar">Ready</span>
@@ -191,11 +200,11 @@
     <div class="form-row">
       <div class="form-group">
         <label for="run-ncubes">N Cubes</label>
-        <input id="run-ncubes" type="number" value="8" min="2" max="100">
+        <input id="run-ncubes" type="number" value="15" min="2" max="100">
       </div>
       <div class="form-group">
         <label for="run-overlap">Overlap</label>
-        <input id="run-overlap" type="number" value="0.5" min="0.01" max="0.99" step="0.05">
+        <input id="run-overlap" type="number" value="0.4" min="0.01" max="0.99" step="0.05">
       </div>
     </div>
     <div class="form-row">
@@ -205,7 +214,7 @@
           <option value="euclidean">Euclidean</option>
           <option value="manhattan">Manhattan</option>
           <option value="chebyshev">Chebyshev</option>
-          <option value="cosine">Cosine</option>
+          <option value="cosine" selected>Cosine</option>
         </select>
       </div>
       <div class="form-group">
@@ -232,8 +241,8 @@
     </div>
     <div class="form-row">
       <div class="form-group">
-        <label for="run-lens">Lens</label>
-        <select id="run-lens" onchange="onLensChange()">
+        <label for="run-lens">Lens 1</label>
+        <select id="run-lens" onchange="onLens1Change()">
           <option value="l_inf_centrality">L-inf Centrality</option>
           <option value="eccentricity">Eccentricity</option>
           <option value="pca">PCA (1st component)</option>
@@ -245,17 +254,38 @@
           <option value="column">Column</option>
         </select>
       </div>
-      <div class="form-group" id="col-select-group" style="display:none">
+      <div class="form-group" id="lens1-col-group" style="display:none">
         <label for="run-colorcol">Column Index</label>
         <input id="run-colorcol" type="number" value="0" min="0">
+      </div>
+    </div>
+    <div class="form-row">
+      <div class="form-group">
+        <label for="run-lens2">Lens 2 (optional, creates 2D lens)</label>
+        <select id="run-lens2" onchange="onLens2Change()">
+          <option value="none">(None)</option>
+          <option value="l_inf_centrality">L-inf Centrality</option>
+          <option value="eccentricity">Eccentricity</option>
+          <option value="pca">PCA (1st component)</option>
+          <option value="sum">Sum</option>
+          <option value="mean">Mean</option>
+          <option value="variance">Variance</option>
+          <option value="kurtosis">Kurtosis</option>
+          <option value="l2norm">L2 Norm</option>
+          <option value="column">Column</option>
+        </select>
+      </div>
+      <div class="form-group" id="lens2-col-group" style="display:none">
+        <label for="run-lens2-col">Column Index</label>
+        <input id="run-lens2-col" type="number" value="0" min="0">
       </div>
     </div>
     <div class="form-group" style="margin-top:6px">
       <label>Topology Columns</label>
       <div class="colsel-mode-row">
-        <label><input type="radio" name="colsel-mode" value="all" checked onchange="onColSelModeChange()"> All columns</label>
+        <label><input type="radio" name="colsel-mode" value="all" onchange="onColSelModeChange()"> All columns</label>
         <label><input type="radio" name="colsel-mode" value="manual" onchange="onColSelModeChange()"> Select columns</label>
-        <label><input type="radio" name="colsel-mode" value="auto_variance" onchange="onColSelModeChange()"> Top N by variance</label>
+        <label><input type="radio" name="colsel-mode" value="auto_variance" checked onchange="onColSelModeChange()"> Top N by variance</label>
       </div>
       <div id="colsel-manual-box" style="display:none">
         <div class="colsel-actions">
@@ -266,13 +296,33 @@
         <div id="colsel-checkboxes"></div>
       </div>
       <div id="colsel-topn-box" style="display:none">
-        <input id="colsel-topn" type="number" value="10" min="1" style="width:80px">
+        <input id="colsel-topn" type="number" value="500" min="1" style="width:80px">
         <span style="color:#888;font-size:11px;margin-left:6px">columns with highest variance</span>
       </div>
     </div>
     <div class="modal-actions">
       <button class="btn-primary" onclick="startRun()">Run Mapper</button>
       <button onclick="hideRunDialog()">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<div id="load-file-dialog" class="modal-overlay">
+  <div class="modal">
+    <h2>Load Server File</h2>
+    <p style="color:#888;font-size:11px;margin-top:0">Load a CSV/TSV file from the server filesystem. Supports .gz compressed files.</p>
+    <div class="form-group">
+      <label for="load-file-path">File Path</label>
+      <input type="text" id="load-file-path" placeholder="/path/to/data.csv.gz" style="width:100%">
+    </div>
+    <div class="form-group">
+      <label for="load-file-name">Dataset Name</label>
+      <input type="text" id="load-file-name" placeholder="my-dataset">
+    </div>
+    <div id="load-file-status" style="color:#888;font-size:11px;min-height:16px"></div>
+    <div class="modal-actions">
+      <button class="btn-primary" onclick="loadServerFile()">Load</button>
+      <button onclick="hideLoadFileDialog()">Cancel</button>
     </div>
   </div>
 </div>

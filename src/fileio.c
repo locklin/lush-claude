@@ -1634,6 +1634,32 @@ DX(xwrite8)
 }
 
 
+DX(xwrite_string)
+{
+  at *fdesc;
+  FILE *f;
+  at *str;
+
+  ARG_NUMBER(2);
+  ARG_EVAL(1);
+  ARG_EVAL(2);
+  fdesc = APOINTER(1);
+  str = APOINTER(2);
+
+  if (! (fdesc && (fdesc->flags&C_EXTERN) && (fdesc->Class==&file_W_class)))
+    error(NIL, "write file descriptor expected", fdesc);
+  if (! (str && str->flags & X_STRING))
+    error(NIL, "string expected", str);
+  f = fdesc->Object;
+  {
+    char *s = SADD(str->Object);
+    int n = strlen(s);
+    int written = fwrite(s, 1, n, f);
+    return NEW_NUMBER(written);
+  }
+}
+
+
 DX(xfsize)
 {
   at *p, *ans;
@@ -1719,5 +1745,6 @@ init_fileio(char *program_name)
   dy_define("reading-string", yreading_string);
   dx_define("read8", xread8);
   dx_define("write8", xwrite8);
+  dx_define("write-string", xwrite_string);
   dx_define("fsize", xfsize);
 }

@@ -34,6 +34,20 @@
 ;; internal: the database file path (set by mapper-viz-start, used by worker generation)
 (defvar *viz-db-path* "")
 
+;; Dataset cache: avoids re-loading the full matrix from SQLite for each
+;; column data request.  Holds (dataset-id data col-names) or ().
+(defvar *viz-dataset-cache* ())
+
+;; Return (data col-names) for a dataset, loading and caching if needed.
+(de _viz-get-cached-dataset (db dataset-id)
+  (if (and *viz-dataset-cache*
+           (= (car *viz-dataset-cache*) dataset-id))
+    (cdr *viz-dataset-cache*)
+    (let ((ds (mapper-db-load-dataset db dataset-id)))
+      (when ds
+        (setq *viz-dataset-cache* (cons dataset-id ds))
+        ds ) ) ) )
+
 
 
 ;; GET /api/graphs -- list all graphs
@@ -105,38 +119,72 @@
 
 
 ;; GET /api/dataset/:id/columns?cols=0,1,2 -- get column data
+;; If cols is omitted, returns all columns (for statistical comparison).
+;; Uses cached dataset matrix for speed — avoids per-column SQL queries.
 (de _viz-api-dataset-cols (req)
   (let ((params (alist-get "params" req))
         (query (alist-get "query" req)) )
     (when params
       (let* ((id-str (car params))
              (did (val id-str)) )
-        ;; Parse col indices from query string "cols=0,1,2"
-        ;; For now, return first 10 columns if no cols specified
-        (let ((col-indices (list 0)))
-          ;; Simple query parsing: find "cols=" and split by comma
-          (when (and query (> (len query) 0))
-            (let ((cpos (index "cols=" query)))
-              (when cpos
-                (let ((col-str (mid query (+ cpos 5))))
-                  ;; Parse comma-separated ints (simple approach)
-                  (setq col-indices ())
-                  (let ((s col-str) (done ()))
-                    (while (not done)
-                      (let ((cpos2 (index "," s)))
-                        (if cpos2
-                          (progn
-                            (setq col-indices (nconc1 col-indices (val (left s (1- cpos2)))))
-                            (setq s (mid s (1+ cpos2))) )
-                          (progn
-                            (setq col-indices (nconc1 col-indices (val s)))
-                            (setq done t) ) ) ) ) ) ) ) ) )
-          (let ((data (mapper-db-get-column-data *viz-db* did col-indices)))
-            ;; Strip column indices from result — return just the value lists
-            (let ((vals-only ()))
-              (each ((pair data))
-                (setq vals-only (nconc1 vals-only (cdr pair))) )
-              (list 200 "application/json" (json-encode vals-only)) ) ) ) ) ) ) )
+        ;; Get cached dataset (fast after first load)
+        (let ((ds (_viz-get-cached-dataset *viz-db* did)))
+          (if (not ds)
+            (list 404 "application/json" "{\"error\":\"dataset not found\"}")
+            (let ((data (car ds))
+                  (nr (idx-dim (car ds) 0))
+                  (nc (idx-dim (car ds) 1)) )
+              ;; Parse col indices from query string "cols=0,1,2"
+              (let ((col-indices ()))
+                (when (and query (> (len query) 0))
+                  (let ((cpos (index "cols=" query)))
+                    (when cpos
+                      (let ((col-str (mid query (+ cpos 5))))
+                        (let ((s col-str) (done ()))
+                          (while (not done)
+                            (let ((cpos2 (index "," s)))
+                              (if cpos2
+                                (progn
+                                  (setq col-indices (nconc1 col-indices (val (left s (1- cpos2)))))
+                                  (setq s (mid s (1+ cpos2))) )
+                                (progn
+                                  (setq col-indices (nconc1 col-indices (val s)))
+                                  (setq done t) ) ) ) ) ) ) ) ) )
+                ;; Write JSON to temp file (buffered I/O, much faster than
+                ;; building huge Lush strings via concat or list+json-encode)
+                (let ((tmpfile (concat "/tmp/claude/coldata-" id-str ".json"))
+                      (use-all (not col-indices)) )
+                  (writing tmpfile
+                    (printf "[")
+                    (if use-all
+                      ;; All columns
+                      (for (j 0 (1- nc))
+                        (when (> j 0) (printf ","))
+                        (printf "[")
+                        (for (i 0 (1- nr))
+                          (when (> i 0) (printf ","))
+                          (let ((v (data i j)))
+                            (if (<> v v)
+                              (printf "null")
+                              (printf "%.6g" v) ) ) )
+                        (printf "]") )
+                      ;; Specified columns only
+                      (let ((first-col t))
+                        (each ((ci col-indices))
+                          (if first-col (setq first-col ())
+                            (printf ",") )
+                          (printf "[")
+                          (for (i 0 (1- nr))
+                            (when (> i 0) (printf ","))
+                            (let ((v (data i ci)))
+                              (if (<> v v)
+                                (printf "null")
+                                (printf "%.6g" v) ) ) )
+                          (printf "]") ) ) )
+                    (printf "]") )
+                  ;; Read back the JSON file
+                  (let ((content (httpd-read-file-binary tmpfile)))
+                    (list 200 "application/json" content) ) ) ) ) ) ) ) ) ) )
 
 
 ;; ============================================================
@@ -208,6 +256,54 @@
                           ",\"col-names\":" (_mapper-db-json-string-list col-names)
                           "}") ) ) ) )
           (list 400 "application/json" "{\"error\":\"failed to parse CSV\"}") ) )
+      (list 400 "application/json" "{\"error\":\"empty body\"}") ) ) )
+
+
+;; POST /api/load-file -- load a local file into the database (server-side)
+;; Accepts form-encoded: path=<filepath>, name=<dataset-name>
+;; Supports .csv, .tsv, .txt (plain or .gz compressed)
+(de _viz-api-load-file (req)
+  (let ((body (alist-get "body" req)))
+    (if (and body (> (len body) 0))
+      (let ((form (httpd-parse-form body)))
+        (let ((filepath (cdr (assoc "path" form)))
+              (name (or (cdr (assoc "name" form)) "loaded")) )
+          (if (not (and filepath (> (len filepath) 0)))
+            (list 400 "application/json" "{\"error\":\"missing path parameter\"}")
+            (if (not (filep filepath))
+              (list 400 "application/json"
+                (concat "{\"error\":\"file not found: " (json-escape filepath) "\"}"))
+              ;; Load file: try TSV loader for .gz/.tsv/.txt, CSV parser otherwise
+              (let ((result ()))
+                (when (or (regex-match ".*\\.gz$" filepath)
+                          (regex-match ".*\\.tsv$" filepath)
+                          (regex-match ".*\\.txt$" filepath))
+                  (libload "mapper/csvread")
+                  (setq result (mapper-tsv-load filepath)) )
+                (when (not result)
+                  (let ((content ""))
+                    (let ((fp (open-read filepath)))
+                      (reading fp
+                        (let ((buf (read-string)))
+                          (setq content buf) ) ) )
+                    (setq result (csvread-parse content)) ) )
+                (if (not result)
+                  (list 400 "application/json" "{\"error\":\"failed to parse file\"}")
+                  (let ((data (car result))
+                        (col-names (cadr result)) )
+                    (sqlite-exec *viz-db* "PRAGMA synchronous=OFF")
+                    (sqlite-exec *viz-db* "PRAGMA cache_size=-64000")
+                    (let ((did (mapper-db-store-dataset *viz-db* data col-names name filepath)))
+                      (sqlite-exec *viz-db* "PRAGMA synchronous=NORMAL")
+                      (let ((nr (idx-dim data 0))
+                            (nc (idx-dim data 1)) )
+                        (list 200 "application/json"
+                          (concat "{\"id\":" (sprintf "%d" did)
+                                  ",\"name\":\"" (json-escape name) "\""
+                                  ",\"n-rows\":" (sprintf "%d" nr)
+                                  ",\"n-cols\":" (sprintf "%d" nc)
+                                  ",\"col-names\":" (_mapper-db-json-string-list col-names)
+                                  "}") ) ) ) ) ) ) ) ) ) )
       (list 400 "application/json" "{\"error\":\"empty body\"}") ) ) )
 
 
@@ -310,7 +406,8 @@
 
       ;; Parse column_selection JSON or handle backward compat
       (printf "            ;; Parse column-selection\n")
-      (printf "            (let ((cs-mode \"all\") (cs-cols ()) (color-col 0) (cs-topn 10))\n")
+      (printf "            (let ((cs-mode \"all\") (cs-cols ()) (color-col 0) (cs-topn 10)\n")
+      (printf "                  (lens-type-2 ()) (lens2-col 0) )\n")
       (printf "              (if (and col-sel (stringp col-sel) (> (len col-sel) 0))\n")
       (printf "                (if (= (mid col-sel 1 1) \"{\")\n")
       (printf "                  ;; JSON format\n")
@@ -322,7 +419,12 @@
       (printf "                    (let ((tn (_wk-json-num col-sel \"top_n\")))\n")
       (printf "                      (when tn (setq cs-topn (int tn))) )\n")
       (printf "                    (let ((cl (_wk-json-intlist col-sel \"cols\")))\n")
-      (printf "                      (when cl (setq cs-cols cl)) ) )\n")
+      (printf "                      (when cl (setq cs-cols cl)) )\n")
+      (printf "                    (let ((lt2 (_wk-json-str col-sel \"lens_type_2\")))\n")
+      (printf "                      (when (and lt2 (> (len lt2) 0) (not (= lt2 \"none\")))\n")
+      (printf "                        (setq lens-type-2 lt2) ) )\n")
+      (printf "                    (let ((lc2 (_wk-json-num col-sel \"lens2_col\")))\n")
+      (printf "                      (when lc2 (setq lens2-col (int lc2))) ) )\n")
       (printf "                  ;; Old format: bare number -> color-col, use all columns\n")
       (printf "                  (setq color-col (val col-sel)) )\n")
       (printf "                ;; nil or empty -> defaults (all columns, color-col 0)\n")
@@ -331,7 +433,7 @@
       ;; Handle auto_variance mode: compute per-column variance and pick top N
       (printf "              ;; Resolve auto_variance mode\n")
       (printf "              (when (= cs-mode \"auto_variance\")\n")
-      (printf "                (printf \"Computing per-column variance for top-%d selection...\\n\" cs-topn)\n")
+      (printf "                (printf \"Computing per-column variance for top-%%d selection...\\n\" cs-topn)\n")
       (printf "                (let ((variances (double-matrix d))\n")
       (printf "                      (col-order (int-matrix d)) )\n")
       (printf "                  ;; Compute variance per column\n")
@@ -351,12 +453,18 @@
       (printf "                        (let ((tmp (col-order j)))\n")
       (printf "                          (col-order j (col-order (1+ j)))\n")
       (printf "                          (col-order (1+ j) tmp) ) ) ) )\n")
-      (printf "                  ;; Take top N\n")
-      (printf "                  (let ((take (min cs-topn d)))\n")
-      (printf "                    (setq cs-cols ())\n")
-      (printf "                    (for (i 0 (1- take))\n")
-      (printf "                      (setq cs-cols (nconc1 cs-cols (col-order i))) )\n")
-      (printf "                    (printf \"Selected %%d columns by variance: %%l\\n\" take cs-cols) ) )\n")
+      (printf "                  ;; Skip metadata columns with variance > 1.0\n")
+      (printf "                  ;; (gene expression data is normalized; clinical columns have higher variance)\n")
+      (printf "                  (let ((start 0))\n")
+      (printf "                    (while (and (< start d) (> (variances (col-order start)) 1.0))\n")
+      (printf "                      (printf \"  Skipping high-variance column %%d (var=%%.1f)\\n\" (col-order start) (variances (col-order start)))\n")
+      (printf "                      (incr start) )\n")
+      (printf "                    ;; Take top N from remaining columns\n")
+      (printf "                    (let ((take (min cs-topn (- d start))))\n")
+      (printf "                      (setq cs-cols ())\n")
+      (printf "                      (for (i start (+ start take -1))\n")
+      (printf "                        (setq cs-cols (nconc1 cs-cols (col-order i))) )\n")
+      (printf "                      (printf \"Selected %%d columns by variance (skipped %%d metadata cols): %%l\\n\" take start cs-cols) ) ) )\n")
       ;; Store resolved cols back to DB
       (printf "                ;; Store resolved column list back to DB\n")
       (printf "                (let ((cols-str \"[\"))\n")
@@ -385,45 +493,64 @@
       (printf "                  ;; Use full data\n")
       (printf "                  (setq topo-data data) )\n")
 
-      ;; Compute lens — use topo-data for most lens types, full data for "column"
-      (printf "                ;; Compute lens\n")
-      (printf "                (let ((lens ()))\n")
+      ;; Helper function to compute a single lens by type name
+      ;; Uses topo-data for most types, full data for "column" type
+      (printf "                ;; Helper: compute a single 1D lens by type\n")
+      (printf "                (de _wk-compute-lens (ltype td fd metric-name ccol)\n")
       (printf "                  (cond\n")
-      (printf "                   ((= lens-type \"l_inf_centrality\")\n")
-      (printf "                    (setq lens (mapper-lens-linf-centrality topo-data metric)) )\n")
-      (printf "                   ((= lens-type \"eccentricity\")\n")
-      (printf "                    (setq lens (mapper-lens-eccentricity topo-data metric)) )\n")
-      (printf "                   ((= lens-type \"pca\")\n")
-      (printf "                    (setq lens (mapper-lens-pca topo-data 1)) )\n")
-      (printf "                   ((= lens-type \"sum\")\n")
-      (printf "                    (setq lens (mapper-lens-sum topo-data)) )\n")
-      (printf "                   ((= lens-type \"mean\")\n")
-      (printf "                    (setq lens (mapper-lens-mean topo-data)) )\n")
-      (printf "                   ((= lens-type \"variance\")\n")
-      (printf "                    (setq lens (mapper-lens-variance topo-data)) )\n")
-      (printf "                   ((= lens-type \"kurtosis\")\n")
-      (printf "                    (setq lens (mapper-lens-kurtosis topo-data)) )\n")
-      (printf "                   ((= lens-type \"l2norm\")\n")
-      (printf "                    (setq lens (mapper-lens-l2norm topo-data)) )\n")
-      (printf "                   ((= lens-type \"column\")\n")
-      ;; Column lens uses FULL data matrix with color_col
-      (printf "                    (setq lens (mapper-lens-column data color-col)) )\n")
+      (printf "                   ((= ltype \"l_inf_centrality\")\n")
+      (printf "                    (mapper-lens-linf-centrality td metric-name) )\n")
+      (printf "                   ((= ltype \"eccentricity\")\n")
+      (printf "                    (mapper-lens-eccentricity td metric-name) )\n")
+      (printf "                   ((= ltype \"pca\")\n")
+      (printf "                    (mapper-lens-pca td 1) )\n")
+      (printf "                   ((= ltype \"sum\")\n")
+      (printf "                    (mapper-lens-sum td) )\n")
+      (printf "                   ((= ltype \"mean\")\n")
+      (printf "                    (mapper-lens-mean td) )\n")
+      (printf "                   ((= ltype \"variance\")\n")
+      (printf "                    (mapper-lens-variance td) )\n")
+      (printf "                   ((= ltype \"kurtosis\")\n")
+      (printf "                    (mapper-lens-kurtosis td) )\n")
+      (printf "                   ((= ltype \"l2norm\")\n")
+      (printf "                    (mapper-lens-l2norm td) )\n")
+      (printf "                   ((= ltype \"column\")\n")
+      (printf "                    (mapper-lens-column fd ccol) )\n")
       (printf "                   (t\n")
-      (printf "                    (setq lens (mapper-lens-linf-centrality topo-data metric)) ) )\n")
+      (printf "                    (mapper-lens-linf-centrality td metric-name) ) ) )\n")
+
+      ;; Compute lens 1
+      (printf "                ;; Compute lens 1\n")
+      (printf "                (let ((lens1 (_wk-compute-lens lens-type topo-data data metric color-col)))\n")
+
+      ;; Compute lens 2 if specified, and combine into 2D
+      (printf "                  (let ((lens ()))\n")
+      (printf "                    (if lens-type-2\n")
+      (printf "                      ;; Dual lens: compute lens2 and combine into Nx2\n")
+      (printf "                      (let ((lens2 (_wk-compute-lens lens-type-2 topo-data data metric lens2-col)))\n")
+      (printf "                        (printf \"Computing 2D lens: %%s + %%s\\n\" lens-type lens-type-2)\n")
+      (printf "                        (let ((combined (double-matrix n 2)))\n")
+      (printf "                          (for (i 0 (1- n))\n")
+      (printf "                            (combined i 0 (lens1 i 0))\n")
+      (printf "                            (combined i 1 (lens2 i 0)) )\n")
+      (printf "                          (setq lens combined) ) )\n")
+      (printf "                      ;; Single lens\n")
+      (printf "                      (setq lens lens1) )\n")
 
       ;; Run mapper on topo-data
-      (printf "                  (let ((graph (mapper-run topo-data lens n-cubes overlap\n")
-      (printf "                                           'metric metric\n")
-      (printf "                                           'clusterer clusterer\n")
-      (printf "                                           'eps eps\n")
-      (printf "                                           'min-pts min-pts\n")
-      (printf "                                           'min-intersection min-intersection)))\n")
+      (printf "                    ;; Run mapper\n")
+      (printf "                    (let ((graph (mapper-run topo-data lens n-cubes overlap\n")
+      (printf "                                             'metric metric\n")
+      (printf "                                             'clusterer clusterer\n")
+      (printf "                                             'eps eps\n")
+      (printf "                                             'min-pts min-pts\n")
+      (printf "                                             'min-intersection min-intersection)))\n")
       ;; Color nodes using FULL data matrix
-      (printf "                    (when (and (> (idx-dim data 1) color-col) (>= color-col 0))\n")
-      (printf "                      (==> graph color-by-mean data color-col) )\n")
+      (printf "                      (when (and (> (idx-dim data 1) color-col) (>= color-col 0))\n")
+      (printf "                        (==> graph color-by-mean data color-col) )\n")
       ;; Store graph with FULL data
-      (printf "                    (mapper-db-store-graph db %d graph data)\n" run-id)
-      (printf "                    (printf \"Worker %d completed successfully.\\n\") ) ) ) ) ) ) ) ) )\n" run-id)
+      (printf "                      (mapper-db-store-graph db %d graph data)\n" run-id)
+      (printf "                      (printf \"Worker %d completed successfully.\\n\") ) ) ) ) ) ) ) ) ) )\n" run-id)
       (printf "  (mapper-db-close db) )\n")
       (printf "(exit 0)\n") )
     worker-path ) )
@@ -494,6 +621,7 @@
   (httpd-add-route server "GET" "/api/run/([0-9]+)" (lambda (req) (_viz-api-run req)))
   (httpd-add-route server "GET" "/api/labels/([0-9]+)" (lambda (req) (_viz-api-get-labels req)))
   (httpd-add-route server "POST" "/api/dataset" (lambda (req) (_viz-api-upload-dataset req)))
+  (httpd-add-route server "POST" "/api/load-file" (lambda (req) (_viz-api-load-file req)))
   (httpd-add-route server "POST" "/api/run" (lambda (req) (_viz-api-start-run req)))
   (httpd-add-route server "POST" "/api/label" (lambda (req) (_viz-api-save-label req)))
   (httpd-add-route server "POST" "/api/graph/([0-9]+)/display" (lambda (req) (_viz-api-set-display req)))
