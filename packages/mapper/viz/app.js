@@ -1083,7 +1083,7 @@ async function startRun() {
     clusterer: document.getElementById('run-clusterer').value,
     eps: document.getElementById('run-eps').value,
     min_pts: document.getElementById('run-minpts').value,
-    min_intersection: 1,
+    min_intersection: document.getElementById('run-minintersect').value,
     lens_type: document.getElementById('run-lens').value,
     color_col: document.getElementById('run-colorcol').value || '0',
   };
