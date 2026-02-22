@@ -1,0 +1,581 @@
+;;; columnardb.lsh -- Persistent columnar storage for DataTable
+;;;
+;;; Implements "splayed" (striped) persistence for DataTable objects,
+;;; inspired by Kerf1's disk tables and kdb+'s splayed tables.
+;;; Each column is stored as a separate binary file in a directory.
+;;;
+;;; Directory layout:
+;;;   tabledir/
+;;;     meta.lsh          ;; S-expression: schema, row count, sort info
+;;;     col-0.col         ;; Binary column file (native endian, mmappable)
+;;;     col-1.col         ;; ...
+;;;     col-2-codes.col   ;; String column: integer codes
+;;;     col-2-pool.lsh    ;; String column: unique string list
+;;;
+;;; Features:
+;;;   - Save DataTable to disk (columnardb-save)
+;;;   - Load DataTable from disk with mmap (columnardb-load)
+;;;   - Load DataTable from disk into memory (columnardb-load-mem)
+;;;   - Append rows to persisted table (columnardb-append)
+;;;   - Sorted column tracking (auto-detected on save)
+;;;   - Binary search on sorted columns for range queries
+;;;
+;;; Usage:
+;;;   (libload "columnardb/columnardb")
+;;;   (columnardb-save dt "/path/to/tabledir")
+;;;   (setq dt2 (columnardb-load "/path/to/tabledir"))
+;;;   (columnardb-append "/path/to/tabledir" new-dt)
+
+(libload "datatable/datatable")
+(libload "columnardb/columnardb-io")
+
+#? *** ColumnarDB: Persistent Columnar Storage
+
+
+;; ============================================================
+;; Internal helpers
+;; ============================================================
+
+;; Check if an idx1 of doubles is sorted (ascending, non-strict).
+;; Returns t if sorted, () if not.
+(de _cdb-is-sorted-double (col nrows)
+  (if (<= nrows 1) t
+    (let ((sorted t))
+      (for (i 1 (1- nrows))
+        (when (and sorted (< (col i) (col (1- i))))
+          (setq sorted ()) ) )
+      sorted ) ) )
+
+;; Check if an idx1 of ints is sorted (ascending, non-strict).
+(de _cdb-is-sorted-int (col nrows)
+  (if (<= nrows 1) t
+    (let ((sorted t))
+      (for (i 1 (1- nrows))
+        (when (and sorted (< (col i) (col (1- i))))
+          (setq sorted ()) ) )
+      sorted ) ) )
+
+;; Binary search: find leftmost index where col[i] >= target.
+;; Returns nrows if all values < target.
+(de _cdb-bsearch-left-double (col nrows target)
+  (let ((lo 0) (hi nrows))
+    (while (< lo hi)
+      (let ((mid (+ lo (div (- hi lo) 2))))
+        (if (< (col mid) target)
+          (setq lo (1+ mid))
+          (setq hi mid) ) ) )
+    lo ) )
+
+;; Binary search: find rightmost index where col[i] <= target.
+;; Returns the index of the last element <= target, or -1 if none.
+(de _cdb-bsearch-right-double (col nrows target)
+  (let ((lo 0) (hi nrows))
+    (while (< lo hi)
+      (let ((mid (+ lo (div (- hi lo) 2))))
+        (if (<= (col mid) target)
+          (setq lo (1+ mid))
+          (setq hi mid) ) ) )
+    (1- lo) ) )
+
+;; Make a directory if it doesn't exist
+(de _cdb-mkdir (path)
+  (when (not (filep path))
+    (sys (concat "mkdir -p '" path "'")) ) )
+
+;; Write an S-expression to a file
+(de _cdb-write-sexp (filename sexp)
+  (let ((f (open-write filename)))
+    (writing f (print sexp))
+    (writing f (printf "\n")) ) )
+
+;; Read an S-expression from a file
+(de _cdb-read-sexp (filename)
+  (let ((f (open-read filename)))
+    (reading f (read)) ) )
+
+
+;; ============================================================
+;; columnardb-save: Write DataTable to disk
+;; ============================================================
+
+#? (columnardb-save <dt> <path>)
+;; Save a DataTable to a directory in splayed format.
+;; Each column is written as a separate binary file.
+;; Metadata (schema, dimensions, sort info) is saved as an S-expression.
+;; Detects and records which columns are sorted.
+;;
+;; The column files use native byte order for direct mmap support.
+(de columnardb-save (dt path)
+  (_cdb-mkdir path)
+  (let ((names (==> dt col-names))
+        (types (==> dt col-types))
+        (nrows (==> dt num-rows))
+        (ncols (==> dt num-cols))
+        (sorted-cols ()) )
+
+    ;; Save each column
+    (let ((ci 0))
+      (each ((name names) (type types))
+        (when (> nrows 0)
+          (let ((col (==> dt get-column ci)))
+            (cond
+             ;; Real (double) column
+             ((= type 'real)
+              (let ((fname (concat path "/col-" (str ci) ".col"))
+                    (data (double-matrix nrows)) )
+                ;; Copy valid rows (column may have extra capacity)
+                (for (i 0 (1- nrows)) (data i (col i)))
+                (let ((rc (_cdb-write-doubles fname data nrows)))
+                  (when (< rc 0)
+                    (error "columnardb-save" "failed to write column" name) ) )
+                ;; Check if sorted
+                (when (_cdb-is-sorted-double data nrows)
+                  (setq sorted-cols (nconc1 sorted-cols ci)) ) ) )
+
+             ;; Integer column
+             ((= type 'int)
+              (let ((fname (concat path "/col-" (str ci) ".col"))
+                    (data (int-matrix nrows)) )
+                (for (i 0 (1- nrows)) (data i (col i)))
+                (let ((rc (_cdb-write-ints fname data nrows)))
+                  (when (< rc 0)
+                    (error "columnardb-save" "failed to write column" name) ) )
+                (when (_cdb-is-sorted-int data nrows)
+                  (setq sorted-cols (nconc1 sorted-cols ci)) ) ) )
+
+             ;; Stamp (double) column -- same binary format as real
+             ((= type 'stamp)
+              (let ((fname (concat path "/col-" (str ci) ".col"))
+                    (data (double-matrix nrows)) )
+                (for (i 0 (1- nrows)) (data i (col i)))
+                (let ((rc (_cdb-write-doubles fname data nrows)))
+                  (when (< rc 0)
+                    (error "columnardb-save" "failed to write column" name) ) )
+                ;; Check if sorted (stamps are often the sort key)
+                (when (_cdb-is-sorted-double data nrows)
+                  (setq sorted-cols (nconc1 sorted-cols ci)) ) ) )
+
+             ;; String column (dictionary-encoded)
+             ((= type 'string)
+              ;; Write codes as int column
+              (let ((codes-fname (concat path "/col-" (str ci) "-codes.col"))
+                    (pool-fname (concat path "/col-" (str ci) "-pool.lsh"))
+                    (codes (==> col get-codes))
+                    (pool (==> col get-pool)) )
+                ;; Write codes (only the valid rows)
+                (let ((data (int-matrix nrows)))
+                  (for (i 0 (1- nrows)) (data i (codes i)))
+                  (let ((rc (_cdb-write-ints codes-fname data nrows)))
+                    (when (< rc 0)
+                      (error "columnardb-save" "failed to write string codes" name) ) ) )
+                ;; Write string pool as S-expression
+                (_cdb-write-sexp pool-fname pool) ) )
+
+             (t (error "columnardb-save" "unknown column type" type)) ) ) )
+        (setq ci (1+ ci)) ) )
+
+    ;; Write metadata
+    (let ((meta (list
+                 (list 'version 1)
+                 (list 'nrows nrows)
+                 (list 'ncols ncols)
+                 (list 'names names)
+                 (list 'types types)
+                 (list 'sorted sorted-cols) )))
+      (_cdb-write-sexp (concat path "/meta.lsh") meta) )
+
+    (printf "columnardb-save: %s -> %d rows x %d cols" path nrows ncols)
+    (when sorted-cols
+      (printf " (sorted:")
+      (each ((ci sorted-cols))
+        (printf " %s" (nth ci names)) )
+      (printf ")") )
+    (printf "\n") ) )
+
+
+;; ============================================================
+;; columnardb-load-mem: Load DataTable into memory (no mmap)
+;; ============================================================
+
+#? (columnardb-load-mem <path>)
+;; Load a persisted DataTable from disk into memory.
+;; All column data is read into newly allocated arrays.
+;; This is the safe, always-works loading method.
+(de columnardb-load-mem (path)
+  (let ((meta (_cdb-read-sexp (concat path "/meta.lsh"))))
+    (let ((nrows  (cadr (assoc 'nrows meta)))
+          (ncols  (cadr (assoc 'ncols meta)))
+          (names  (cadr (assoc 'names meta)))
+          (types  (cadr (assoc 'types meta)))
+          (sorted (cadr (assoc 'sorted meta))) )
+
+      ;; Build columns
+      (let ((column-list ())
+            (ci 0) )
+        (each ((name names) (type types))
+          (if (= nrows 0)
+            ;; Empty table: create empty column objects
+            (cond
+             ((or (= type 'real) (= type 'stamp))
+              (setq column-list (nconc1 column-list (double-matrix 1))) )
+             ((= type 'int)
+              (setq column-list (nconc1 column-list (int-matrix 1))) )
+             ((= type 'string)
+              (setq column-list (nconc1 column-list (new StringColumn 1))) )
+             (t (error "columnardb-load-mem" "unknown column type" type)) )
+            ;; Non-empty: load from files
+            (cond
+             ;; Real or stamp column (both stored as doubles)
+             ((or (= type 'real) (= type 'stamp))
+              (let ((fname (concat path "/col-" (str ci) ".col"))
+                    (data (double-matrix nrows)) )
+                (let ((rc (_cdb-read-doubles fname data nrows)))
+                  (when (< rc 0)
+                    (error "columnardb-load-mem" "failed to read column" name) ) )
+                (setq column-list (nconc1 column-list data)) ) )
+
+             ;; Integer column
+             ((= type 'int)
+              (let ((fname (concat path "/col-" (str ci) ".col"))
+                    (data (int-matrix nrows)) )
+                (let ((rc (_cdb-read-ints fname data nrows)))
+                  (when (< rc 0)
+                    (error "columnardb-load-mem" "failed to read column" name) ) )
+                (setq column-list (nconc1 column-list data)) ) )
+
+             ;; String column
+             ((= type 'string)
+              (let ((codes-fname (concat path "/col-" (str ci) "-codes.col"))
+                    (pool-fname (concat path "/col-" (str ci) "-pool.lsh")) )
+                (let ((codes (int-matrix nrows))
+                      (pool (_cdb-read-sexp pool-fname)) )
+                  (let ((rc (_cdb-read-ints codes-fname codes nrows)))
+                    (when (< rc 0)
+                      (error "columnardb-load-mem" "failed to read string codes" name) ) )
+                  ;; Build StringColumn from codes and pool
+                  (let ((sc (new StringColumn nrows)))
+                    (==> sc build-from-codes codes pool)
+                    (setq column-list (nconc1 column-list sc)) ) ) ) )
+
+             (t (error "columnardb-load-mem" "unknown column type" type)) ) )
+          (setq ci (1+ ci)) )
+
+        ;; Assemble DataTable
+        (let ((dt (datatable-from-columns names types column-list nrows)))
+          (printf "columnardb-load-mem: %s -> %d rows x %d cols\n" path nrows ncols)
+          dt ) ) ) ) )
+
+
+;; ============================================================
+;; columnardb-load: Load DataTable with mmap (zero-copy)
+;; ============================================================
+
+#? (columnardb-load <path>)
+;; Load a persisted DataTable using mmap for column data.
+;; Column files are memory-mapped read-only -- data is paged in
+;; on demand by the OS, avoiding upfront I/O for large tables.
+;;
+;; The resulting DataTable is read-only (attempting to modify
+;; mmap'd columns will fail).  Use columnardb-load-mem if you
+;; need a mutable copy.
+(de columnardb-load (path)
+  (let ((meta (_cdb-read-sexp (concat path "/meta.lsh"))))
+    (let ((nrows  (cadr (assoc 'nrows meta)))
+          (ncols  (cadr (assoc 'ncols meta)))
+          (names  (cadr (assoc 'names meta)))
+          (types  (cadr (assoc 'types meta)))
+          (sorted (cadr (assoc 'sorted meta))) )
+
+      ;; Build columns via mmap
+      (let ((column-list ())
+            (ci 0) )
+        (each ((name names) (type types))
+          (if (= nrows 0)
+            ;; Empty table: create empty column objects
+            (cond
+             ((or (= type 'real) (= type 'stamp))
+              (setq column-list (nconc1 column-list (double-matrix 1))) )
+             ((= type 'int)
+              (setq column-list (nconc1 column-list (int-matrix 1))) )
+             ((= type 'string)
+              (setq column-list (nconc1 column-list (new StringColumn 1))) )
+             (t (error "columnardb-load" "unknown column type" type)) )
+            ;; Non-empty: mmap from files
+            (cond
+             ;; Real or stamp column -> mmap as double
+             ((or (= type 'real) (= type 'stamp))
+              (let ((fname (concat path "/col-" (str ci) ".col")))
+                (let ((stor (double-storage)))
+                  (storage-mmap stor fname *cdb-header-size*)
+                  (let ((col (new-index stor (list nrows))))
+                    (setq column-list (nconc1 column-list col)) ) ) ) )
+
+             ;; Integer column -> mmap as int
+             ((= type 'int)
+              (let ((fname (concat path "/col-" (str ci) ".col")))
+                (let ((stor (int-storage)))
+                  (storage-mmap stor fname *cdb-header-size*)
+                  (let ((col (new-index stor (list nrows))))
+                    (setq column-list (nconc1 column-list col)) ) ) ) )
+
+             ;; String column -> codes mmap'd, pool read into memory
+             ((= type 'string)
+              (let ((codes-fname (concat path "/col-" (str ci) "-codes.col"))
+                    (pool-fname (concat path "/col-" (str ci) "-pool.lsh")) )
+                (let ((pool (_cdb-read-sexp pool-fname)))
+                  (let ((stor (int-storage)))
+                    (storage-mmap stor codes-fname *cdb-header-size*)
+                    (let ((codes (new-index stor (list nrows))))
+                      ;; Build StringColumn
+                      (let ((sc (new StringColumn nrows)))
+                        (==> sc build-from-codes codes pool)
+                        (setq column-list (nconc1 column-list sc)) ) ) ) ) ) )
+
+             (t (error "columnardb-load" "unknown column type" type)) ) )
+          (setq ci (1+ ci)) )
+
+        ;; Assemble DataTable
+        (let ((dt (datatable-from-columns names types column-list nrows)))
+          (printf "columnardb-load: %s -> %d rows x %d cols [mmap]\n"
+                  path nrows ncols)
+          dt ) ) ) ) )
+
+
+;; ============================================================
+;; columnardb-append: Append rows to a persisted table
+;; ============================================================
+
+#? (columnardb-append <path> <dt>)
+;; Append rows from a DataTable to an existing persisted table.
+;; The schemas (column names, types) must match exactly.
+;; Updates column files in-place and rewrites metadata.
+;;
+;; For stamp columns, maintains sort order tracking: if the
+;; existing data was sorted and the new data's first value is
+;; >= the existing data's last value, the column stays sorted.
+(de columnardb-append (path dt)
+  ;; Read existing metadata
+  (let ((meta (_cdb-read-sexp (concat path "/meta.lsh"))))
+    (let ((old-nrows (cadr (assoc 'nrows meta)))
+          (old-ncols (cadr (assoc 'ncols meta)))
+          (old-names (cadr (assoc 'names meta)))
+          (old-types (cadr (assoc 'types meta)))
+          (old-sorted (cadr (assoc 'sorted meta))) )
+
+      ;; Validate schema match
+      (let ((new-names (==> dt col-names))
+            (new-types (==> dt col-types))
+            (new-nrows (==> dt num-rows))
+            (new-ncols (==> dt num-cols)) )
+
+        (when (<> old-ncols new-ncols)
+          (error "columnardb-append" "column count mismatch" (list old-ncols new-ncols)) )
+
+        ;; Check names and types match
+        (let ((ci 0))
+          (each ((oname old-names) (nname new-names) (otype old-types) (ntype new-types))
+            (when (not (= oname nname))
+              (error "columnardb-append" "column name mismatch" (list oname nname ci)) )
+            (when (not (= otype ntype))
+              (error "columnardb-append" "column type mismatch" (list otype ntype ci)) )
+            (setq ci (1+ ci)) ) )
+
+        (let ((total-rows (+ old-nrows new-nrows))
+              (new-sorted ()) )
+
+          ;; Append each column
+          (let ((ci 0))
+            (each ((name old-names) (type old-types))
+              (let ((col (==> dt get-column ci)))
+                (cond
+                 ;; Real or stamp column
+                 ((or (= type 'real) (= type 'stamp))
+                  (let ((fname (concat path "/col-" (str ci) ".col"))
+                        (data (double-matrix new-nrows)) )
+                    (for (i 0 (1- new-nrows)) (data i (col i)))
+                    (let ((rc (_cdb-append-doubles fname data new-nrows total-rows)))
+                      (when (< rc 0)
+                        (error "columnardb-append" "failed to append column" name) ) )
+                    ;; Check if this column stays sorted
+                    (when (member ci old-sorted)
+                      ;; Need to check: last old value <= first new value,
+                      ;; and new data is itself sorted
+                      (let ((still-sorted t))
+                        ;; Read the last old value
+                        (when (> old-nrows 0)
+                          (let ((last-buf (double-matrix 1)))
+                            ;; Read the last element of the old data
+                            ;; It's at byte offset: 24 + (old-nrows - 1) * 8
+                            ;; We'll just check: if new data starts >= we're ok
+                            ;; For simplicity, read the whole old column's last val
+                            (let ((old-data (double-matrix old-nrows)))
+                              (_cdb-read-doubles fname old-data old-nrows)
+                              ;; But wait, the file already has appended data now.
+                              ;; Read just old-nrows elements
+                              ;; Actually, _cdb-read-doubles reads from offset 24,
+                              ;; and reads nrows doubles. The old data is at the start.
+                              ;; We only need the last old value.
+                              ;; This is a bit wasteful; optimize later.
+                              (when (> (data 0) (old-data (1- old-nrows)))
+                                () )  ;; ok
+                              (when (< (data 0) (old-data (1- old-nrows)))
+                                (setq still-sorted ()) ) ) ) )
+                        ;; Also check new data is sorted
+                        (when (and still-sorted
+                                   (not (_cdb-is-sorted-double data new-nrows)))
+                          (setq still-sorted ()) )
+                        (when still-sorted
+                          (setq new-sorted (nconc1 new-sorted ci)) ) ) ) ) )
+
+                 ;; Integer column
+                 ((= type 'int)
+                  (let ((fname (concat path "/col-" (str ci) ".col"))
+                        (data (int-matrix new-nrows)) )
+                    (for (i 0 (1- new-nrows)) (data i (col i)))
+                    (let ((rc (_cdb-append-ints fname data new-nrows total-rows)))
+                      (when (< rc 0)
+                        (error "columnardb-append" "failed to append column" name) ) )
+                    ;; Check sort status
+                    (when (member ci old-sorted)
+                      (let ((still-sorted t))
+                        (when (and still-sorted
+                                   (not (_cdb-is-sorted-int data new-nrows)))
+                          (setq still-sorted ()) )
+                        (when still-sorted
+                          (setq new-sorted (nconc1 new-sorted ci)) ) ) ) ) )
+
+                 ;; String column: re-encode with existing pool, append codes
+                 ((= type 'string)
+                  (let ((codes-fname (concat path "/col-" (str ci) "-codes.col"))
+                        (pool-fname (concat path "/col-" (str ci) "-pool.lsh")) )
+                    ;; Read existing pool
+                    (let ((old-pool (_cdb-read-sexp pool-fname))
+                          (new-codes (int-matrix new-nrows))
+                          (pool-changed ()) )
+                      ;; Build lookup from old pool
+                      (let ((pool-ht (htable (max 64 (* 2 (length old-pool)))))
+                            (pool-list old-pool)
+                            (next-code (length old-pool)) )
+                        (let ((idx 0))
+                          (each ((s old-pool))
+                            (pool-ht s idx)
+                            (setq idx (1+ idx)) ) )
+                        ;; Encode new strings
+                        (for (i 0 (1- new-nrows))
+                          (let ((s (==> col get i)))
+                            (let ((code (pool-ht s)))
+                              (if code
+                                (new-codes i code)
+                                ;; New string: add to pool
+                                (progn
+                                  (pool-ht s next-code)
+                                  (setq pool-list (nconc1 pool-list s))
+                                  (new-codes i next-code)
+                                  (setq next-code (1+ next-code))
+                                  (setq pool-changed t) ) ) ) ) )
+                        ;; Append codes
+                        (let ((rc (_cdb-append-ints codes-fname new-codes new-nrows total-rows)))
+                          (when (< rc 0)
+                            (error "columnardb-append" "failed to append string codes" name) ) )
+                        ;; Update pool if needed
+                        (when pool-changed
+                          (_cdb-write-sexp pool-fname pool-list) ) ) ) ) )
+
+                 (t (error "columnardb-append" "unknown column type" type)) ) )
+              (setq ci (1+ ci)) ) )
+
+          ;; Update metadata
+          (let ((meta (list
+                       (list 'version 1)
+                       (list 'nrows total-rows)
+                       (list 'ncols old-ncols)
+                       (list 'names old-names)
+                       (list 'types old-types)
+                       (list 'sorted new-sorted) )))
+            (_cdb-write-sexp (concat path "/meta.lsh") meta) )
+
+          (printf "columnardb-append: %s -> %d + %d = %d rows\n"
+                  path old-nrows new-nrows total-rows) ) ) ) ) )
+
+
+;; ============================================================
+;; columnardb-meta: Read metadata without loading data
+;; ============================================================
+
+#? (columnardb-meta <path>)
+;; Read and return the metadata for a persisted table.
+;; Returns an alist with keys: version, nrows, ncols, names, types, sorted.
+(de columnardb-meta (path)
+  (_cdb-read-sexp (concat path "/meta.lsh")) )
+
+
+;; ============================================================
+;; Sort-aware range queries
+;; ============================================================
+
+#? (columnardb-range <dt> <col-name> <lo> <hi> <meta>)
+;; Query a DataTable for rows where <lo> <= col <= <hi>.
+;; If <meta> indicates the column is sorted, uses binary search (O(log n)).
+;; Otherwise falls back to linear scan (O(n)).
+;; Returns a list of row indices.
+;;
+;; This is optimized for the common pattern of querying by timedate range.
+(de columnardb-range (dt col-name lo hi meta)
+  (let* ((col-idx (==> dt col-index col-name))
+         (col (==> dt get-column col-idx))
+         (type (==> dt col-type col-idx))
+         (nrows (==> dt num-rows))
+         (sorted-cols (if meta (cadr (assoc 'sorted meta)) ())) )
+
+    (when (= type 'string)
+      (error "columnardb-range" "range queries not supported on string columns" col-name) )
+
+    (if (member col-idx sorted-cols)
+      ;; Fast path: binary search on sorted column
+      (let ((left (_cdb-bsearch-left-double col nrows lo))
+            (right (_cdb-bsearch-right-double col nrows hi)) )
+        (if (> left right)
+          ()  ;; empty result
+          ;; Build result list
+          (let ((result ()))
+            (for (i left right)
+              (setq result (nconc1 result i)) )
+            result ) ) )
+      ;; Slow path: linear scan
+      (let ((result ()))
+        (for (i 0 (1- nrows))
+          (let ((v (col i)))
+            (when (and (>= v lo) (<= v hi))
+              (setq result (nconc1 result i)) ) ) )
+        result ) ) ) )
+
+
+#? (columnardb-range-rows <dt> <col-name> <lo> <hi> <meta>)
+;; Like columnardb-range but returns a new DataTable with the matching rows.
+(de columnardb-range-rows (dt col-name lo hi meta)
+  (let ((indices (columnardb-range dt col-name lo hi meta)))
+    (==> dt select-rows indices) ) )
+
+
+;; ============================================================
+;; Convenience: check if a column is sorted
+;; ============================================================
+
+#? (columnardb-sorted? <meta> <col-name-or-index> [<names>])
+;; Check if a column is marked as sorted in the metadata.
+;; <col-name-or-index> can be an integer (column index) or a string (column name).
+;; If a string, <names> (the column name list) is needed to resolve it.
+(de columnardb-sorted? (meta col-name-or-index &optional names)
+  (let ((sorted-cols (cadr (assoc 'sorted meta)))
+        (idx (if (numberp col-name-or-index)
+               col-name-or-index
+               ;; Resolve name to index
+               (if names
+                 (let ((i 0) (found ()))
+                   (each ((n names))
+                     (when (and (not found) (= n col-name-or-index))
+                       (setq found i) )
+                     (setq i (1+ i)) )
+                   found )
+                 (error "columnardb-sorted?" "need names list to resolve column name" col-name-or-index) ) )) )
+    (when idx (member idx sorted-cols)) ) )

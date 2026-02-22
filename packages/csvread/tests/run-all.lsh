@@ -1,0 +1,163 @@
+;;; run-all.lsh -- Test harness for csvread package
+;;;
+;;; Run with:
+;;;   lush packages/csvread/tests/run-all.lsh
+
+;; Add packages path
+(let ((tests-dir (dirname file-being-loaded)))
+  (let ((pkg-dir (dirname (dirname tests-dir))))
+    (addpath pkg-dir) ) )
+
+;; Load test framework (reuse datatable's framework)
+(load (concat (dirname file-being-loaded) "/../../datatable/tests/framework.lsh"))
+
+;; Load csvread
+(libload "csvread/csvread")
+
+(printf "=== csvread Test Suite ===\n")
+
+;; ============================================================
+;; Basic CSV parsing
+;; ============================================================
+
+(test-suite "Basic CSV parsing"
+
+  ;; Simple numeric CSV
+  (let ((result (csvread-parse "x,y,z\n1,2,3\n4,5,6\n7,8,9")))
+    (test-check "csvread-parse returns non-nil" (not (not result)))
+    (let ((data (car result))
+          (names (cadr result)) )
+      (test-equal "row count" (idx-dim data 0) 3)
+      (test-equal "col count" (idx-dim data 1) 3)
+      (test-string-equal "col name 0" (car names) "x")
+      (test-string-equal "col name 1" (cadr names) "y")
+      (test-string-equal "col name 2" (caddr names) "z")
+      (test-approx "data[0,0]" (data 0 0) 1 0.001)
+      (test-approx "data[0,1]" (data 0 1) 2 0.001)
+      (test-approx "data[0,2]" (data 0 2) 3 0.001)
+      (test-approx "data[1,0]" (data 1 0) 4 0.001)
+      (test-approx "data[2,2]" (data 2 2) 9 0.001) ) )
+)
+
+
+;; ============================================================
+;; TSV (tab-delimited) parsing
+;; ============================================================
+
+(test-suite "TSV parsing"
+
+  (let ((result (csvread-parse "a\tb\n10\t20\n30\t40")))
+    (test-check "TSV parse returns non-nil" (not (not result)))
+    (let ((data (car result))
+          (names (cadr result)) )
+      (test-equal "TSV row count" (idx-dim data 0) 2)
+      (test-equal "TSV col count" (idx-dim data 1) 2)
+      (test-string-equal "TSV col name 0" (car names) "a")
+      (test-string-equal "TSV col name 1" (cadr names) "b")
+      (test-approx "TSV data[0,0]" (data 0 0) 10 0.001)
+      (test-approx "TSV data[1,1]" (data 1 1) 40 0.001) ) )
+)
+
+
+;; ============================================================
+;; Floating point data
+;; ============================================================
+
+(test-suite "Floating point data"
+
+  (let ((result (csvread-parse "val\n3.14\n2.718\n1.414")))
+    (test-check "float parse returns non-nil" (not (not result)))
+    (let ((data (car result)))
+      (test-equal "float row count" (idx-dim data 0) 3)
+      (test-approx "pi" (data 0 0) 3.14 0.001)
+      (test-approx "e" (data 1 0) 2.718 0.001)
+      (test-approx "sqrt2" (data 2 0) 1.414 0.001) ) )
+)
+
+
+;; ============================================================
+;; Whitespace and quote handling
+;; ============================================================
+
+(test-suite "Whitespace and quote handling"
+
+  ;; Whitespace around values
+  (let ((result (csvread-parse "x,y\n 1 , 2 \n 3 , 4 ")))
+    (test-check "whitespace parse returns non-nil" (not (not result)))
+    (let ((data (car result)))
+      (test-approx "trimmed[0,0]" (data 0 0) 1 0.001)
+      (test-approx "trimmed[0,1]" (data 0 1) 2 0.001)
+      (test-approx "trimmed[1,0]" (data 1 0) 3 0.001)
+      (test-approx "trimmed[1,1]" (data 1 1) 4 0.001) ) )
+
+  ;; Quoted column names
+  (let ((result (csvread-parse "\"x\",\"y\"\n1,2")))
+    (test-check "quoted headers parse" (not (not result)))
+    (let ((names (cadr result)))
+      (test-string-equal "quoted col name 0" (car names) "x")
+      (test-string-equal "quoted col name 1" (cadr names) "y") ) )
+)
+
+
+;; ============================================================
+;; Edge cases
+;; ============================================================
+
+(test-suite "Edge cases"
+
+  ;; Single column
+  (let ((result (csvread-parse "val\n42\n99")))
+    (test-check "single column parse" (not (not result)))
+    (let ((data (car result)))
+      (test-equal "single col count" (idx-dim data 1) 1)
+      (test-approx "single[0,0]" (data 0 0) 42 0.001)
+      (test-approx "single[1,0]" (data 1 0) 99 0.001) ) )
+
+  ;; Single row
+  (let ((result (csvread-parse "a,b,c\n7,8,9")))
+    (test-check "single row parse" (not (not result)))
+    (let ((data (car result)))
+      (test-equal "single row count" (idx-dim data 0) 1)
+      (test-approx "single row[0,2]" (data 0 2) 9 0.001) ) )
+
+  ;; CRLF line endings
+  (let ((result (csvread-parse "x,y\r\n1,2\r\n3,4\r\n")))
+    (test-check "CRLF parse" (not (not result)))
+    (let ((data (car result)))
+      (test-equal "CRLF row count" (idx-dim data 0) 2)
+      (test-approx "CRLF[0,0]" (data 0 0) 1 0.001)
+      (test-approx "CRLF[1,1]" (data 1 1) 4 0.001) ) )
+
+  ;; Negative numbers
+  (let ((result (csvread-parse "x\n-5\n-3.14\n0")))
+    (test-check "negative numbers parse" (not (not result)))
+    (let ((data (car result)))
+      (test-approx "negative int" (data 0 0) -5 0.001)
+      (test-approx "negative float" (data 1 0) -3.14 0.001)
+      (test-approx "zero" (data 2 0) 0 0.001) ) )
+
+  ;; Empty input returns nil
+  (let ((result (csvread-parse "")))
+    (test-check "empty input returns nil" (not result)) )
+)
+
+
+;; ============================================================
+;; Multi-column numeric
+;; ============================================================
+
+(test-suite "Multi-column numeric data"
+
+  (let ((result (csvread-parse "a,b,c,d\n1,2,3,4\n5,6,7,8\n9,10,11,12\n13,14,15,16")))
+    (test-check "4x4 parse" (not (not result)))
+    (let ((data (car result))
+          (names (cadr result)) )
+      (test-equal "4x4 rows" (idx-dim data 0) 4)
+      (test-equal "4x4 cols" (idx-dim data 1) 4)
+      (test-approx "4x4[3,3]" (data 3 3) 16 0.001)
+      (test-approx "4x4[2,1]" (data 2 1) 10 0.001) ) )
+)
+
+
+;; Summary
+(test-summary)

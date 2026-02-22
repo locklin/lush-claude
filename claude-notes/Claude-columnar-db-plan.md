@@ -745,3 +745,235 @@ Lush's existing capabilities.
 
 5. **Naming: DataTable, Table, or something else?** "Table" conflicts
    with common usage. "DataTable" is explicit. "Frame" (like R/pandas)?
+
+---
+
+## Part 9: ColumnarDB Implementation (COMPLETED)
+
+### Package: `packages/columnardb/`
+
+**Status:** Fully implemented and tested (101 tests, 0 failures).
+
+**Files:**
+```
+packages/columnardb/
+  columnardb.lsh          Main module: save, load, load-mem, append, range queries
+  columnardb-io.lsh       Compiled C bridge: native-endian binary I/O
+  C/columnardb_io.c       Auto-generated DH stubs
+  tests/run-all.lsh       101-test staged test suite
+```
+
+### Architecture Decisions
+
+#### 1. Native-Endian Binary Format (not IDX)
+
+**Problem discovered:** Lush's standard IDX file format stores data in
+big-endian (Sparc standard) byte order, with `fwrite-int`/`fwrite-real`
+byte-swapping on little-endian machines. The `storage-mmap` function
+maps files directly without byte-swapping.  This means `mmap-idx1-real`
+and friends produce garbage on x86/x86-64 because the mapped data is
+big-endian but the CPU reads it as little-endian.
+
+The `idx-map.lsh` code has a check for this but it's defeated by
+`fread-int` always byte-swapping (even when checking the magic number),
+so it incorrectly concludes the file is same-endian.
+
+**Solution:** A custom native-endian file format ("LCDB") with a 24-byte
+header followed by raw native-byte-order element data:
+
+```
+Bytes  0-3:  Magic "LCDB" (0x4C434442)
+Bytes  4-7:  Version (uint32 native) = 1
+Bytes  8-15: Element count (int64 native)
+Bytes 16-19: Type code (uint32 native): 1=double, 2=int32
+Bytes 20-23: Reserved (zeros)
+Bytes 24+:   Raw element data, native byte order
+```
+
+The 24-byte header is exactly 3 doubles wide, giving natural alignment
+for the data section.  `storage-mmap` with offset 24 maps the data
+directly into usable idx storage.
+
+**Tradeoff:** Files are not portable across architectures (little-endian
+files won't read correctly on big-endian machines and vice versa).  This
+is acceptable because:
+- The files live on the same machine they were created on
+- Kerf has the same constraint (its K0 format is always native endian)
+- Cross-architecture portability can be added later via an export/import
+  function that converts to IDX or another portable format
+
+The compiled C functions use `dhc-make` to generate native code at load
+time.  This is the first use of compiled I/O in the columnardb package;
+the datatable's CSV reader already established this pattern.
+
+#### 2. Splayed Directory Layout
+
+Each DataTable persists as a directory with one file per column:
+
+```
+tabledir/
+  meta.lsh              S-expression: schema, row count, sort info
+  col-0.col             Native binary for column 0
+  col-1.col             Native binary for column 1
+  col-2-codes.col       String column codes (int32 binary)
+  col-2-pool.lsh        String column pool (S-expression list)
+```
+
+**Why S-expression for metadata and string pools?**
+- Small files (metadata is a few hundred bytes, pools are a few KB)
+- Human-readable and editable
+- Lush's `read`/`print` handle arbitrary nested lists natively
+- No custom parser needed
+
+**Why binary for column data?**
+- Column data can be large (millions of rows × 8 bytes = tens of MB)
+- Must be mmappable for zero-copy access
+- Native binary is the only format that supports mmap
+
+**Column naming convention:** `col-N.col` using the column index (not
+name) to avoid filesystem special character issues in column names.
+Names are stored in `meta.lsh`.
+
+#### 3. mmap Loading (Zero-Copy)
+
+`columnardb-load` uses `storage-mmap` with offset 24 (skipping the LCDB
+header) to map column files directly.  The OS kernel handles paging:
+- Only accessed pages are loaded from disk
+- Pages can be evicted and re-loaded transparently
+- Multiple processes can share the same physical pages
+
+This matches Kerf's `MAP_SHARED` approach.  The loaded DataTable is
+effectively read-only (mmap'd storages have `STF_RDONLY` flag set).
+
+**Empty table handling:** 0-row tables don't write column files (you can't
+create a 0-element Lush storage).  Loading creates placeholder 1-element
+arrays that are never accessed.
+
+#### 4. Sorted Column Tracking
+
+On save, each numeric/stamp column is scanned to check if it's sorted
+(ascending, non-strict <=).  Sorted column indices are stored in the
+metadata under the `sorted` key.
+
+**Design choice: metadata-level tracking, not per-column attribute.**
+Unlike Kerf's `ATTR_SORTED` bit on the vector itself, we store sort info
+in the table metadata.  This is because:
+- Lush idx objects don't have user attribute slots
+- The metadata travels with the data (it's in the same directory)
+- Sort status can change on append (tracked across operations)
+
+**Sort preservation on append:** When appending, a previously-sorted
+column stays sorted if:
+1. The appended data is itself sorted
+2. The first value of the new data >= the last value of the old data
+
+This handles the common case of appending chronologically-ordered data
+to a time-series table.
+
+#### 5. Binary Search for Range Queries
+
+`columnardb-range` checks the metadata for sort status and uses binary
+search (O(log n)) on sorted columns vs. linear scan (O(n)) on unsorted.
+
+The binary search uses two helper functions:
+- `_cdb-bsearch-left-double`: finds leftmost index where value >= target
+- `_cdb-bsearch-right-double`: finds rightmost index where value <= target
+
+These are standard lower-bound/upper-bound binary searches.  The range
+`[lo, hi]` maps to indices `[left, right]` where all values in that
+index range satisfy `lo <= value <= hi`.
+
+**Typical query pattern (time-series + symbol filter):**
+```lisp
+(let ((meta (columnardb-meta path))
+      (dt (columnardb-load path)) )
+  ;; Step 1: binary search on sorted timestamp column -> O(log n)
+  (let ((indices (columnardb-range dt "time" start-time end-time meta)))
+    ;; Step 2: extract sub-table for the time range
+    (let ((sub (==> dt select-rows indices)))
+      ;; Step 3: filter by interned string (integer comparison) -> O(k)
+      (==> sub where '= "symbol" "AAPL") ) ) )
+```
+
+This gives O(log n + k) where k is the number of rows in the time range,
+compared to O(n) for a full table scan.
+
+#### 6. String Column Persistence
+
+String columns serialize as two files:
+- `col-N-codes.col`: integer codes in LCDB native binary format
+- `col-N-pool.lsh`: string pool as an S-expression list
+
+On load, the pool is read into memory (it's small — thousands of unique
+strings at most) and the codes are mmap'd.  A new StringColumn is
+reconstructed via `build-from-codes`.
+
+On append, the existing pool is read, new strings are checked against it,
+new unique strings are added if needed, and the pool file is rewritten.
+This maintains the Kerf-style "pool travels with the data" property.
+
+### Performance Characteristics
+
+| Operation | Complexity | Notes |
+|-----------|-----------|-------|
+| Save | O(n) per column | One pass to copy + write |
+| Load (mmap) | O(1) startup + O(k) for k accessed rows | Pages loaded on demand |
+| Load (memory) | O(n) per column | One pass to read |
+| Append | O(m) for m new rows | Plus O(p) for pool merge on string cols |
+| Range query (sorted) | O(log n + k) | Binary search + result construction |
+| Range query (unsorted) | O(n) | Linear scan |
+| String filter after range | O(k) | Integer comparison on dict codes |
+
+### Potential Future Improvements
+
+1. **Writable mmap (Stage 6b):** Add `storage_mmap_rw` to Lush's C
+   runtime using `PROT_READ|PROT_WRITE`.  This would allow in-place
+   modification of mapped columns, eliminating the save/reload cycle
+   for appends.
+
+2. **Compiled binary search:** The current binary search runs in
+   interpreted Lush.  A compiled (dhc-make) version would be faster
+   for very large tables.  Similarly, the sort-check loop could be
+   compiled.
+
+3. **Compression:** Add optional LZ4 or zstd compression for cold
+   columns.  Compressed columns would be decompressed on load (not
+   mmappable), but would save disk space.  Kerf uses delta-delta
+   encoding for timestamps which compresses very well.
+
+4. **Partitioned tables:** Split large tables by time range into
+   multiple directories (e.g., one per day/month).  This is Kerf's
+   PARTABLE concept.  Queries would scan only relevant partitions.
+
+5. **Column indexes:** Hash index on string columns for O(1) lookup
+   by value (vs. O(n) scan).  Kerf uses Robin Hood hashing.
+
+6. **ASOF joins:** Time-series join where the right table matches the
+   closest preceding timestamp.  Critical for financial data.  Kerf's
+   implementation exploits sorted order with a two-pointer chase.
+
+7. **Concurrent access:** Multiple readers can mmap the same files
+   safely (MAP_SHARED is designed for this).  A writer-lock protocol
+   (e.g., flock) would be needed for concurrent writes.
+
+### Test Coverage
+
+101 tests across 10 stages:
+
+| Stage | Tests | What |
+|-------|-------|------|
+| 1 | 15 | Basic save/load round-trip (mem + mmap) |
+| 2 | 10 | String column persistence |
+| 3 | 6 | Timestamp column persistence |
+| 4 | 5 | Sorted column detection |
+| 5 | 14 | Binary search range queries |
+| 6 | 12 | Append to persisted table |
+| 7 | 11 | Mixed types, 1000-row table |
+| 8 | 9 | Metadata integrity |
+| 9 | 11 | Edge cases (empty, single row, negative, wide) |
+| 10 | 8 | Timestamp range queries (primary use case) |
+
+All 101 tests pass.  No regressions in existing test suites:
+- 623 datatable package tests: all pass
+- 116 core interpreter tests: all pass
+- 52 csvread tests: all pass (new test harness)

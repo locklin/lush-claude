@@ -1,0 +1,244 @@
+;;; columnardb-io.lsh -- Native-endian binary I/O for columnar persistence
+;;;
+;;; Provides compiled functions for writing idx1 arrays as raw native-
+;;; endian binary files, and for memory-mapping them back.  Unlike the
+;;; standard IDX format (which is big-endian), these files use the
+;;; machine's native byte order so they can be mmap'd directly.
+;;;
+;;; File format: 24-byte header + raw element data
+;;;   Bytes  0-3:  Magic "LCDB" (0x4C434442)
+;;;   Bytes  4-7:  Version (uint32 native, currently 1)
+;;;   Bytes  8-15: Element count (int64 native)
+;;;   Bytes 16-19: Type code (uint32 native): 1=double, 2=int32
+;;;   Bytes 20-23: Reserved (zeros)
+;;;   Bytes 24+:   Raw element data in native byte order
+;;;
+;;; The 24-byte header means data starts at a nice alignment boundary.
+
+(libload "libc/stdio")
+
+#? *** ColumnarDB Native Binary I/O
+
+;; Header constants
+(defvar *cdb-magic* 0x4C434442)   ;; "LCDB" in hex
+(defvar *cdb-version* 1)
+(defvar *cdb-type-double* 1)
+(defvar *cdb-type-int32* 2)
+(defvar *cdb-header-size* 24)
+
+
+;; ============================================================
+;; Compiled I/O functions (native endian, mmappable)
+;; ============================================================
+
+;; Write an idx1 of doubles to a file as native-endian binary.
+;; Returns 0 on success, -1 on failure.
+(de _cdb-write-doubles (filename data nrows)
+  ((-str-) filename)
+  ((-idx1- (-double-)) data)
+  ((-int-) nrows)
+  (let ((rc 0))
+    ((-int-) rc)
+    #{
+    {
+      FILE *f = fopen((const char *)$filename->data, "wb");
+      if (!f) { $rc = -1; }
+      else {
+        /* Write 24-byte header */
+        uint32_t magic = 0x4C434442u;
+        uint32_t version = 1;
+        int64_t count = (int64_t)$nrows;
+        uint32_t typecode = 1; /* double */
+        uint32_t reserved = 0;
+        fwrite(&magic, 4, 1, f);
+        fwrite(&version, 4, 1, f);
+        fwrite(&count, 8, 1, f);
+        fwrite(&typecode, 4, 1, f);
+        fwrite(&reserved, 4, 1, f);
+        /* Write raw double data */
+        size_t written = fwrite(IDX_PTR($data, double), sizeof(double), $nrows, f);
+        if ((int)written != $nrows) $rc = -1;
+        fclose(f);
+      }
+    }
+    #}
+    rc ) )
+
+
+;; Write an idx1 of ints to a file as native-endian binary.
+;; Returns 0 on success, -1 on failure.
+(de _cdb-write-ints (filename data nrows)
+  ((-str-) filename)
+  ((-idx1- (-int-)) data)
+  ((-int-) nrows)
+  (let ((rc 0))
+    ((-int-) rc)
+    #{
+    {
+      FILE *f = fopen((const char *)$filename->data, "wb");
+      if (!f) { $rc = -1; }
+      else {
+        /* Write 24-byte header */
+        uint32_t magic = 0x4C434442u;
+        uint32_t version = 1;
+        int64_t count = (int64_t)$nrows;
+        uint32_t typecode = 2; /* int32 */
+        uint32_t reserved = 0;
+        fwrite(&magic, 4, 1, f);
+        fwrite(&version, 4, 1, f);
+        fwrite(&count, 8, 1, f);
+        fwrite(&typecode, 4, 1, f);
+        fwrite(&reserved, 4, 1, f);
+        /* Write raw int data */
+        size_t written = fwrite(IDX_PTR($data, int), sizeof(int), $nrows, f);
+        if ((int)written != $nrows) $rc = -1;
+        fclose(f);
+      }
+    }
+    #}
+    rc ) )
+
+
+;; Read the header of a .col file.  Returns element count, or -1 on error.
+;; Also writes the type code into type-out[0].
+(de _cdb-read-header (filename count-out type-out)
+  ((-str-) filename)
+  ((-idx1- (-double-)) count-out)
+  ((-idx1- (-int-)) type-out)
+  (let ((rc 0))
+    ((-int-) rc)
+    #{
+    {
+      FILE *f = fopen((const char *)$filename->data, "rb");
+      if (!f) { $rc = -1; }
+      else {
+        uint32_t magic, version, typecode, reserved;
+        int64_t count;
+        fread(&magic, 4, 1, f);
+        fread(&version, 4, 1, f);
+        fread(&count, 8, 1, f);
+        fread(&typecode, 4, 1, f);
+        fread(&reserved, 4, 1, f);
+        if (magic != 0x4C434442u || version != 1) {
+          $rc = -1;
+        } else {
+          IDX_PTR($count_out, double)[0] = (double)count;
+          IDX_PTR($type_out, int)[0] = (int)typecode;
+        }
+        fclose(f);
+      }
+    }
+    #}
+    rc ) )
+
+
+;; Read raw doubles from a .col file into a pre-allocated idx1.
+;; Seeks past the 24-byte header, reads nrows doubles.
+(de _cdb-read-doubles (filename data nrows)
+  ((-str-) filename)
+  ((-idx1- (-double-)) data)
+  ((-int-) nrows)
+  (let ((rc 0))
+    ((-int-) rc)
+    #{
+    {
+      FILE *f = fopen((const char *)$filename->data, "rb");
+      if (!f) { $rc = -1; }
+      else {
+        fseek(f, 24, SEEK_SET);
+        size_t got = fread(IDX_PTR($data, double), sizeof(double), $nrows, f);
+        if ((int)got != $nrows) $rc = -1;
+        fclose(f);
+      }
+    }
+    #}
+    rc ) )
+
+
+;; Read raw ints from a .col file into a pre-allocated idx1.
+(de _cdb-read-ints (filename data nrows)
+  ((-str-) filename)
+  ((-idx1- (-int-)) data)
+  ((-int-) nrows)
+  (let ((rc 0))
+    ((-int-) rc)
+    #{
+    {
+      FILE *f = fopen((const char *)$filename->data, "rb");
+      if (!f) { $rc = -1; }
+      else {
+        fseek(f, 24, SEEK_SET);
+        size_t got = fread(IDX_PTR($data, int), sizeof(int), $nrows, f);
+        if ((int)got != $nrows) $rc = -1;
+        fclose(f);
+      }
+    }
+    #}
+    rc ) )
+
+
+;; Append doubles to an existing .col file.
+;; Opens the file in "r+b" mode, updates the count in the header,
+;; then seeks to end and writes the new data.
+(de _cdb-append-doubles (filename data nrows new-total)
+  ((-str-) filename)
+  ((-idx1- (-double-)) data)
+  ((-int-) nrows new-total)
+  (let ((rc 0))
+    ((-int-) rc)
+    #{
+    {
+      FILE *f = fopen((const char *)$filename->data, "r+b");
+      if (!f) { $rc = -1; }
+      else {
+        /* Update count in header (bytes 8-15) */
+        int64_t count = (int64_t)$new_total;
+        fseek(f, 8, SEEK_SET);
+        fwrite(&count, 8, 1, f);
+        /* Seek to end and append data */
+        fseek(f, 0, SEEK_END);
+        size_t written = fwrite(IDX_PTR($data, double), sizeof(double), $nrows, f);
+        if ((int)written != $nrows) $rc = -1;
+        fclose(f);
+      }
+    }
+    #}
+    rc ) )
+
+
+;; Append ints to an existing .col file.
+(de _cdb-append-ints (filename data nrows new-total)
+  ((-str-) filename)
+  ((-idx1- (-int-)) data)
+  ((-int-) nrows new-total)
+  (let ((rc 0))
+    ((-int-) rc)
+    #{
+    {
+      FILE *f = fopen((const char *)$filename->data, "r+b");
+      if (!f) { $rc = -1; }
+      else {
+        /* Update count in header (bytes 8-15) */
+        int64_t count = (int64_t)$new_total;
+        fseek(f, 8, SEEK_SET);
+        fwrite(&count, 8, 1, f);
+        /* Seek to end and append data */
+        fseek(f, 0, SEEK_END);
+        size_t written = fwrite(IDX_PTR($data, int), sizeof(int), $nrows, f);
+        if ((int)written != $nrows) $rc = -1;
+        fclose(f);
+      }
+    }
+    #}
+    rc ) )
+
+
+;; Compile the bridge functions
+(dhc-make ()
+  #{
+  #include <stdio.h>
+  #include <stdint.h>
+  #}
+  _cdb-write-doubles _cdb-write-ints
+  _cdb-read-header _cdb-read-doubles _cdb-read-ints
+  _cdb-append-doubles _cdb-append-ints )

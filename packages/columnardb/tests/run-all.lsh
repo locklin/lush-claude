@@ -1,0 +1,531 @@
+;;; run-all.lsh -- Comprehensive test suite for columnardb package
+;;;
+;;; Tests are staged: each stage tests a specific feature and
+;;; builds on the previous stage.
+;;;
+;;; Run with:
+;;;   lush packages/columnardb/tests/run-all.lsh
+
+;; Add packages path
+(let ((tests-dir (dirname file-being-loaded)))
+  (let ((pkg-dir (dirname (dirname tests-dir))))
+    (addpath pkg-dir) ) )
+
+;; Load test framework
+(load (concat (dirname file-being-loaded) "/../../datatable/tests/framework.lsh"))
+
+;; Load columnardb (which loads datatable, timedate, etc.)
+(libload "columnardb/columnardb")
+
+(printf "=== ColumnarDB Test Suite ===\n")
+
+;; Test data directory
+(defvar *test-dir* "/tmp/claude/columnardb-tests")
+(sys (concat "rm -rf " *test-dir*))
+(sys (concat "mkdir -p " *test-dir*))
+
+
+;; ============================================================
+;; Stage 1: Basic save/load round-trip
+;; ============================================================
+
+(test-suite "Stage 1: Basic save/load round-trip"
+
+  ;; Create a simple table
+  (let ((dt (new DataTable)))
+    (==> dt add-column "x" 'real)
+    (==> dt add-column "y" 'int)
+    (==> dt append-row (list 1.5 10))
+    (==> dt append-row (list 2.5 20))
+    (==> dt append-row (list 3.5 30))
+
+    ;; Save
+    (let ((path (concat *test-dir* "/basic")))
+      (columnardb-save dt path)
+
+      ;; Verify files exist
+      (test-check "meta.lsh exists" (filep (concat path "/meta.lsh")))
+      (test-check "col-0.col exists" (filep (concat path "/col-0.col")))
+      (test-check "col-1.col exists" (filep (concat path "/col-1.col")))
+
+      ;; Load into memory
+      (let ((dt2 (columnardb-load-mem path)))
+        (test-equal "mem rows" (==> dt2 num-rows) 3)
+        (test-equal "mem cols" (==> dt2 num-cols) 2)
+        (test-approx "mem x[0]" (==> dt2 get 0 "x") 1.5 0.001)
+        (test-approx "mem x[2]" (==> dt2 get 2 "x") 3.5 0.001)
+        (test-equal "mem y[0]" (==> dt2 get 0 "y") 10)
+        (test-equal "mem y[2]" (==> dt2 get 2 "y") 30) )
+
+      ;; Load with mmap
+      (let ((dt3 (columnardb-load path)))
+        (test-equal "mmap rows" (==> dt3 num-rows) 3)
+        (test-equal "mmap cols" (==> dt3 num-cols) 2)
+        (test-approx "mmap x[0]" (==> dt3 get 0 "x") 1.5 0.001)
+        (test-approx "mmap x[2]" (==> dt3 get 2 "x") 3.5 0.001)
+        (test-equal "mmap y[0]" (==> dt3 get 0 "y") 10)
+        (test-equal "mmap y[2]" (==> dt3 get 2 "y") 30) ) ) )
+)
+
+
+;; ============================================================
+;; Stage 2: String columns (dictionary-encoded persistence)
+;; ============================================================
+
+(test-suite "Stage 2: String column persistence"
+
+  (let ((dt (new DataTable)))
+    (==> dt add-column "name" 'string)
+    (==> dt add-column "value" 'real)
+    (==> dt append-row (list "alpha" 1.0))
+    (==> dt append-row (list "beta"  2.0))
+    (==> dt append-row (list "alpha" 3.0))
+    (==> dt append-row (list "gamma" 4.0))
+    (==> dt append-row (list "beta"  5.0))
+
+    (let ((path (concat *test-dir* "/strings")))
+      (columnardb-save dt path)
+
+      ;; Verify string column files
+      (test-check "codes file exists" (filep (concat path "/col-0-codes.col")))
+      (test-check "pool file exists" (filep (concat path "/col-0-pool.lsh")))
+
+      ;; Load with mmap
+      (let ((dt2 (columnardb-load path)))
+        (test-equal "str rows" (==> dt2 num-rows) 5)
+        (test-string-equal "str[0]" (==> dt2 get 0 "name") "alpha")
+        (test-string-equal "str[1]" (==> dt2 get 1 "name") "beta")
+        (test-string-equal "str[2]" (==> dt2 get 2 "name") "alpha")
+        (test-string-equal "str[3]" (==> dt2 get 3 "name") "gamma")
+        (test-string-equal "str[4]" (==> dt2 get 4 "name") "beta")
+        (test-approx "val[0]" (==> dt2 get 0 "value") 1.0 0.001)
+        (test-approx "val[4]" (==> dt2 get 4 "value") 5.0 0.001) ) ) )
+)
+
+
+;; ============================================================
+;; Stage 3: Timestamp columns
+;; ============================================================
+
+(test-suite "Stage 3: Timestamp column persistence"
+
+  (let ((dt (new DataTable))
+        (t1 (timestamp-from-datetime 2024 1 15 10 30 0))
+        (t2 (timestamp-from-datetime 2024 1 15 11 0  0))
+        (t3 (timestamp-from-datetime 2024 1 15 11 30 0))
+        (t4 (timestamp-from-datetime 2024 1 15 12 0  0)) )
+    (==> dt add-column "time" 'stamp)
+    (==> dt add-column "price" 'real)
+    (==> dt append-row (list t1 100.0))
+    (==> dt append-row (list t2 101.5))
+    (==> dt append-row (list t3 99.8))
+    (==> dt append-row (list t4 102.3))
+
+    (let ((path (concat *test-dir* "/stamps")))
+      (columnardb-save dt path)
+
+      ;; Load and verify timestamps round-trip
+      (let ((dt2 (columnardb-load path)))
+        (test-equal "stamp rows" (==> dt2 num-rows) 4)
+        (test-approx "stamp[0]" (==> dt2 get 0 "time") t1 0.01)
+        (test-approx "stamp[1]" (==> dt2 get 1 "time") t2 0.01)
+        (test-approx "stamp[2]" (==> dt2 get 2 "time") t3 0.01)
+        (test-approx "stamp[3]" (==> dt2 get 3 "time") t4 0.01)
+
+        ;; Verify timestamps can be formatted
+        (let ((s (timestamp-to-string (==> dt2 get 0 "time"))))
+          (test-string-equal "stamp format" s "2024-01-15 10:30:00") ) ) ) )
+)
+
+
+;; ============================================================
+;; Stage 4: Sorted column detection
+;; ============================================================
+
+(test-suite "Stage 4: Sorted column detection"
+
+  ;; Sorted table (time ascending)
+  (let ((dt (new DataTable)))
+    (==> dt add-column "time" 'stamp)
+    (==> dt add-column "price" 'real)
+    (==> dt append-row (list 1000.0 10.0))
+    (==> dt append-row (list 2000.0 15.0))
+    (==> dt append-row (list 3000.0 12.0))
+    (==> dt append-row (list 4000.0 20.0))
+
+    (let ((path (concat *test-dir* "/sorted")))
+      (columnardb-save dt path)
+      (let ((meta (columnardb-meta path)))
+        (test-check "time is sorted" (columnardb-sorted? meta 0))
+        ;; price is NOT sorted (10, 15, 12, 20)
+        (test-check "price not sorted" (not (columnardb-sorted? meta 1))) ) ) )
+
+  ;; Unsorted table
+  (let ((dt (new DataTable)))
+    (==> dt add-column "x" 'real)
+    (==> dt append-row (list 5.0))
+    (==> dt append-row (list 2.0))
+    (==> dt append-row (list 8.0))
+
+    (let ((path (concat *test-dir* "/unsorted")))
+      (columnardb-save dt path)
+      (let ((meta (columnardb-meta path)))
+        (test-check "x not sorted" (not (columnardb-sorted? meta 0))) ) ) )
+
+  ;; Single-row table (always sorted)
+  (let ((dt (new DataTable)))
+    (==> dt add-column "x" 'real)
+    (==> dt append-row (list 42.0))
+
+    (let ((path (concat *test-dir* "/single")))
+      (columnardb-save dt path)
+      (let ((meta (columnardb-meta path)))
+        (test-check "single row is sorted" (columnardb-sorted? meta 0)) ) ) )
+
+  ;; Equal values (should be sorted)
+  (let ((dt (new DataTable)))
+    (==> dt add-column "x" 'real)
+    (==> dt append-row (list 5.0))
+    (==> dt append-row (list 5.0))
+    (==> dt append-row (list 5.0))
+
+    (let ((path (concat *test-dir* "/equal")))
+      (columnardb-save dt path)
+      (let ((meta (columnardb-meta path)))
+        (test-check "equal values are sorted" (columnardb-sorted? meta 0)) ) ) )
+)
+
+
+;; ============================================================
+;; Stage 5: Binary search range queries
+;; ============================================================
+
+(test-suite "Stage 5: Binary search range queries"
+
+  (let ((dt (new DataTable)))
+    (==> dt add-column "time" 'stamp)
+    (==> dt add-column "price" 'real)
+    (==> dt add-column "symbol" 'string)
+    ;; 10 rows with sorted time
+    (==> dt append-row (list 100.0 10.0 "A"))
+    (==> dt append-row (list 200.0 20.0 "B"))
+    (==> dt append-row (list 300.0 30.0 "A"))
+    (==> dt append-row (list 400.0 40.0 "C"))
+    (==> dt append-row (list 500.0 50.0 "B"))
+    (==> dt append-row (list 600.0 60.0 "A"))
+    (==> dt append-row (list 700.0 70.0 "C"))
+    (==> dt append-row (list 800.0 80.0 "B"))
+    (==> dt append-row (list 900.0 90.0 "A"))
+    (==> dt append-row (list 1000.0 100.0 "C"))
+
+    (let ((path (concat *test-dir* "/range")))
+      (columnardb-save dt path)
+      (let ((dt2 (columnardb-load path))
+            (meta (columnardb-meta path)) )
+
+        ;; Exact range: 300-700
+        (let ((r (columnardb-range dt2 "time" 300 700 meta)))
+          (test-equal "range 300-700 count" (length r) 5)
+          (test-equal "range 300-700 first" (car r) 2)
+          (test-equal "range 300-700 last" (nth 4 r) 6) )
+
+        ;; Range at boundaries
+        (let ((r (columnardb-range dt2 "time" 100 100 meta)))
+          (test-equal "exact match 100" (length r) 1)
+          (test-equal "exact match 100 idx" (car r) 0) )
+
+        (let ((r (columnardb-range dt2 "time" 1000 1000 meta)))
+          (test-equal "exact match 1000" (length r) 1)
+          (test-equal "exact match 1000 idx" (car r) 9) )
+
+        ;; Range outside data
+        (let ((r (columnardb-range dt2 "time" 1001 2000 meta)))
+          (test-equal "range beyond max" (length r) 0) )
+
+        (let ((r (columnardb-range dt2 "time" 0 99 meta)))
+          (test-equal "range below min" (length r) 0) )
+
+        ;; Full range
+        (let ((r (columnardb-range dt2 "time" 0 9999 meta)))
+          (test-equal "full range" (length r) 10) )
+
+        ;; Range between values (250-350)
+        (let ((r (columnardb-range dt2 "time" 250 350 meta)))
+          (test-equal "between range count" (length r) 1)
+          (test-equal "between range idx" (car r) 2) )
+
+        ;; Combine range with string filter
+        (let ((range-rows (columnardb-range dt2 "time" 200 800 meta)))
+          ;; Rows 1-7 should be in range
+          (let ((sub (==> dt2 select-rows range-rows)))
+            (test-equal "sub-table rows" (==> sub num-rows) 7)
+            ;; Now filter by symbol within the sub-table
+            (let ((a-rows (==> sub where '= "symbol" "A")))
+              (test-equal "A in range" (length a-rows) 2) ) ) ) ) ) )
+)
+
+
+;; ============================================================
+;; Stage 6: Append to persisted table
+;; ============================================================
+
+(test-suite "Stage 6: Append to persisted table"
+
+  ;; Create initial table
+  (let ((dt (new DataTable)))
+    (==> dt add-column "time" 'stamp)
+    (==> dt add-column "val" 'real)
+    (==> dt add-column "tag" 'string)
+    (==> dt append-row (list 100.0 1.0 "x"))
+    (==> dt append-row (list 200.0 2.0 "y"))
+    (==> dt append-row (list 300.0 3.0 "x"))
+
+    (let ((path (concat *test-dir* "/append")))
+      (columnardb-save dt path)
+
+      ;; Verify initial state
+      (let ((meta (columnardb-meta path)))
+        (test-equal "initial rows" (cadr (assoc 'nrows meta)) 3)
+        (test-check "initial time sorted" (columnardb-sorted? meta 0)) )
+
+      ;; Append more rows (sorted continuation)
+      (let ((dt2 (new DataTable)))
+        (==> dt2 add-column "time" 'stamp)
+        (==> dt2 add-column "val" 'real)
+        (==> dt2 add-column "tag" 'string)
+        (==> dt2 append-row (list 400.0 4.0 "z"))
+        (==> dt2 append-row (list 500.0 5.0 "x"))
+        (columnardb-append path dt2) )
+
+      ;; Verify after append
+      (let ((dt3 (columnardb-load path))
+            (meta (columnardb-meta path)) )
+        (test-equal "append rows" (==> dt3 num-rows) 5)
+        (test-equal "append nrows meta" (cadr (assoc 'nrows meta)) 5)
+
+        ;; Original rows preserved
+        (test-approx "append [0,val]" (==> dt3 get 0 "val") 1.0 0.001)
+        (test-string-equal "append [0,tag]" (==> dt3 get 0 "tag") "x")
+
+        ;; New rows present
+        (test-approx "append [3,time]" (==> dt3 get 3 "time") 400.0 0.001)
+        (test-approx "append [4,val]" (==> dt3 get 4 "val") 5.0 0.001)
+        (test-string-equal "append [3,tag]" (==> dt3 get 3 "tag") "z")
+
+        ;; Time column still sorted (400 > 300, continuation)
+        (test-check "append keeps time sorted" (columnardb-sorted? meta 0)) )
+
+      ;; Append with new string (pool should grow)
+      (let ((dt4 (new DataTable)))
+        (==> dt4 add-column "time" 'stamp)
+        (==> dt4 add-column "val" 'real)
+        (==> dt4 add-column "tag" 'string)
+        (==> dt4 append-row (list 600.0 6.0 "new-tag"))
+        (columnardb-append path dt4) )
+
+      (let ((dt5 (columnardb-load path)))
+        (test-equal "after 2nd append rows" (==> dt5 num-rows) 6)
+        (test-string-equal "new string" (==> dt5 get 5 "tag") "new-tag") ) ) )
+)
+
+
+;; ============================================================
+;; Stage 7: Mixed types and larger table
+;; ============================================================
+
+(test-suite "Stage 7: Mixed types and larger table"
+
+  ;; Build a 1000-row table
+  (let ((dt (new DataTable)))
+    (==> dt add-column "time" 'stamp)
+    (==> dt add-column "price" 'real)
+    (==> dt add-column "volume" 'int)
+    (==> dt add-column "symbol" 'string)
+
+    (let ((symbols (list "AAPL" "GOOG" "MSFT" "TSLA" "AMZN")))
+      (for (i 0 999)
+        (let ((sym (nth (mod i 5) symbols)))
+          (==> dt append-row (list (* i 1.0) (* i 0.5) i sym)) ) ) )
+
+    (let ((path (concat *test-dir* "/large")))
+      (columnardb-save dt path)
+
+      ;; Load and verify
+      (let ((dt2 (columnardb-load path)))
+        (test-equal "large rows" (==> dt2 num-rows) 1000)
+        (test-equal "large cols" (==> dt2 num-cols) 4)
+
+        ;; Spot-check values
+        (test-approx "large time[0]" (==> dt2 get 0 "time") 0 0.001)
+        (test-approx "large time[999]" (==> dt2 get 999 "time") 999.0 0.001)
+        (test-approx "large price[500]" (==> dt2 get 500 "price") 250.0 0.001)
+        (test-equal "large vol[100]" (==> dt2 get 100 "volume") 100)
+        (test-string-equal "large sym[0]" (==> dt2 get 0 "symbol") "AAPL")
+        (test-string-equal "large sym[1]" (==> dt2 get 1 "symbol") "GOOG")
+        (test-string-equal "large sym[4]" (==> dt2 get 4 "symbol") "AMZN")
+        (test-string-equal "large sym[5]" (==> dt2 get 5 "symbol") "AAPL") )
+
+      ;; Range query on sorted time column (binary search)
+      (let ((meta (columnardb-meta path)))
+        (test-check "large time sorted" (columnardb-sorted? meta 0))
+        ;; Range: 100 <= time <= 199 -> should be 100 rows (indices 100..199)
+        (let ((r (columnardb-range (columnardb-load path) "time" 100 199 meta)))
+          (test-equal "large range count" (length r) 100)
+          (test-equal "large range first" (car r) 100)
+          (test-equal "large range last" (nth 99 r) 199) ) ) ) )
+)
+
+
+;; ============================================================
+;; Stage 8: Metadata integrity
+;; ============================================================
+
+(test-suite "Stage 8: Metadata"
+
+  ;; Read metadata without loading data
+  (let ((meta (columnardb-meta (concat *test-dir* "/large"))))
+    (test-equal "meta nrows" (cadr (assoc 'nrows meta)) 1000)
+    (test-equal "meta ncols" (cadr (assoc 'ncols meta)) 4)
+    (test-equal "meta version" (cadr (assoc 'version meta)) 1)
+    (let ((names (cadr (assoc 'names meta))))
+      (test-string-equal "meta name[0]" (car names) "time")
+      (test-string-equal "meta name[3]" (nth 3 names) "symbol") )
+    (let ((types (cadr (assoc 'types meta))))
+      (test-equal "meta type[0]" (car types) 'stamp)
+      (test-equal "meta type[1]" (cadr types) 'real)
+      (test-equal "meta type[2]" (caddr types) 'int)
+      (test-equal "meta type[3]" (nth 3 types) 'string) ) )
+)
+
+
+;; ============================================================
+;; Stage 9: Edge cases
+;; ============================================================
+
+(test-suite "Stage 9: Edge cases"
+
+  ;; Empty table (0 rows, but has columns)
+  (let ((dt (new DataTable)))
+    (==> dt add-column "x" 'real)
+    (==> dt add-column "s" 'string)
+
+    (let ((path (concat *test-dir* "/empty")))
+      (columnardb-save dt path)
+      (let ((dt2 (columnardb-load-mem path)))
+        (test-equal "empty rows" (==> dt2 num-rows) 0)
+        (test-equal "empty cols" (==> dt2 num-cols) 2) ) ) )
+
+  ;; Single row
+  (let ((dt (new DataTable)))
+    (==> dt add-column "x" 'real)
+    (==> dt append-row (list 42.0))
+
+    (let ((path (concat *test-dir* "/single-row")))
+      (columnardb-save dt path)
+      (let ((dt2 (columnardb-load path)))
+        (test-equal "single row count" (==> dt2 num-rows) 1)
+        (test-approx "single row val" (==> dt2 get 0 "x") 42.0 0.001) )
+      ;; Range query on single row
+      (let ((meta (columnardb-meta path)))
+        (let ((r (columnardb-range (columnardb-load path) "x" 42.0 42.0 meta)))
+          (test-equal "single range" (length r) 1) ) ) ) )
+
+  ;; Negative values
+  (let ((dt (new DataTable)))
+    (==> dt add-column "x" 'real)
+    (==> dt append-row (list -100.5))
+    (==> dt append-row (list -50.0))
+    (==> dt append-row (list 0.0))
+    (==> dt append-row (list 50.0))
+
+    (let ((path (concat *test-dir* "/negative")))
+      (columnardb-save dt path)
+      (let ((dt2 (columnardb-load path)))
+        (test-approx "neg[0]" (==> dt2 get 0 "x") -100.5 0.001)
+        (test-approx "neg[2]" (==> dt2 get 2 "x") 0.0 0.001) )
+      ;; Range query with negative values
+      (let ((meta (columnardb-meta path)))
+        (let ((r (columnardb-range (columnardb-load path) "x" -60 10 meta)))
+          (test-equal "neg range count" (length r) 2) ) ) ) )
+
+  ;; Wide table (many columns)
+  (let ((dt (new DataTable)))
+    (for (i 0 19)
+      (==> dt add-column (sprintf "col%d" i) 'real) )
+    (let ((vals ()))
+      (for (i 0 19) (setq vals (nconc1 vals (* i 1.0))))
+      (==> dt append-row vals) )
+
+    (let ((path (concat *test-dir* "/wide")))
+      (columnardb-save dt path)
+      (let ((dt2 (columnardb-load path)))
+        (test-equal "wide cols" (==> dt2 num-cols) 20)
+        (test-approx "wide[0,col0]" (==> dt2 get 0 "col0") 0.0 0.001)
+        (test-approx "wide[0,col19]" (==> dt2 get 0 "col19") 19.0 0.001) ) ) )
+)
+
+
+;; ============================================================
+;; Stage 10: Timestamp range queries (the primary use case)
+;; ============================================================
+
+(test-suite "Stage 10: Timestamp range queries"
+
+  ;; Simulate a time-series database with interned symbols
+  (let ((dt (new DataTable))
+        (base-time (timestamp-from-datetime 2024 6 1 9 30 0)) )
+    (==> dt add-column "time" 'stamp)
+    (==> dt add-column "symbol" 'string)
+    (==> dt add-column "price" 'real)
+
+    ;; 100 rows: every 60 seconds, cycling through 5 symbols
+    (let ((symbols (list "AAPL" "GOOG" "MSFT" "TSLA" "AMZN")))
+      (for (i 0 99)
+        (let ((t (+ base-time (* i 60)))
+              (sym (nth (mod i 5) symbols))
+              (p (+ 100.0 (* i 0.1))) )
+          (==> dt append-row (list t sym p)) ) ) )
+
+    (let ((path (concat *test-dir* "/timeseries")))
+      (columnardb-save dt path)
+      (let ((dt2 (columnardb-load path))
+            (meta (columnardb-meta path)) )
+
+        ;; Time column should be sorted
+        (test-check "ts time sorted" (columnardb-sorted? meta 0))
+
+        ;; Query: first 10 minutes (600 seconds)
+        (let ((t-start base-time)
+              (t-end (+ base-time 599)) )
+          (let ((r (columnardb-range dt2 "time" t-start t-end meta)))
+            (test-equal "10min range" (length r) 10) ) )
+
+        ;; Query: second 10 minutes
+        (let ((t-start (+ base-time 600))
+              (t-end (+ base-time 1199)) )
+          (let ((r (columnardb-range dt2 "time" t-start t-end meta)))
+            (test-equal "2nd 10min range" (length r) 10) ) )
+
+        ;; Query: specific symbol within time range
+        ;; Range first 25 rows (25 minutes), filter for AAPL (every 5th row)
+        (let ((t-start base-time)
+              (t-end (+ base-time (* 24 60))) )
+          (let ((range-rows (columnardb-range dt2 "time" t-start t-end meta)))
+            (let ((sub (==> dt2 select-rows range-rows)))
+              (let ((aapl-rows (==> sub where '= "symbol" "AAPL")))
+                (test-equal "AAPL in 25min" (length aapl-rows) 5) ) ) ) )
+
+        ;; Query: full range
+        (let ((r (columnardb-range dt2 "time" 0 (+ base-time 999999) meta)))
+          (test-equal "full ts range" (length r) 100) ) ) ) )
+)
+
+
+;; ============================================================
+;; Summary
+;; ============================================================
+
+(test-summary)
+
+;; Cleanup
+(sys (concat "rm -rf " *test-dir*))
