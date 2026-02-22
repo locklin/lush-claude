@@ -1,0 +1,99 @@
+;;; test-curl.lsh -- Tests for the curl package
+;;;
+;;; Usage: lush test-curl.lsh
+;;; Or from lush REPL:  (libload "curl/tests/test-curl")
+
+(libload "curl/curl")
+
+(printf "\n=== curl package tests ===\n\n")
+
+;; ---- Test 1: HTTP GET ----
+(printf "Test 1: curl-get (httpbin.org/get)... ")
+(let ((result (curl-get "https://httpbin.org/get")))
+  (let ((status (car result))
+        (body (cadr result)) )
+    (if (= status 200)
+      (printf "PASS (status=%d, body-len=%d)\n" status (len body))
+      (printf "FAIL (status=%d)\n" status) ) ) )
+
+;; ---- Test 2: HTTP GET with headers ----
+(printf "Test 2: curl-get with custom headers... ")
+(let ((result (curl-get "https://httpbin.org/headers"
+                        '("X-Custom-Header: LushTest"
+                          "Accept: application/json") )))
+  (let ((status (car result))
+        (body (cadr result)) )
+    (if (= status 200)
+      (printf "PASS (status=%d)\n" status)
+      (printf "FAIL (status=%d)\n" status) ) ) )
+
+;; ---- Test 3: HTTP POST ----
+(printf "Test 3: curl-post (httpbin.org/post)... ")
+(let ((result (curl-post "https://httpbin.org/post"
+                         "{\"key\":\"value\"}" )))
+  (let ((status (car result))
+        (body (cadr result)) )
+    (if (= status 200)
+      (printf "PASS (status=%d, body-len=%d)\n" status (len body))
+      (printf "FAIL (status=%d)\n" status) ) ) )
+
+;; ---- Test 4: HTTP PUT via curl-request ----
+(printf "Test 4: curl-request PUT... ")
+(let ((result (curl-request "PUT" "https://httpbin.org/put"
+                            "{\"update\":true}"
+                            '("Content-Type: application/json") )))
+  (let ((status (car result))
+        (body (cadr result)) )
+    (if (= status 200)
+      (printf "PASS (status=%d)\n" status)
+      (printf "FAIL (status=%d)\n" status) ) ) )
+
+;; ---- Test 5: HTTP DELETE via curl-request ----
+(printf "Test 5: curl-request DELETE... ")
+(let ((result (curl-request "DELETE" "https://httpbin.org/delete")))
+  (let ((status (car result))
+        (body (cadr result)) )
+    (if (= status 200)
+      (printf "PASS (status=%d)\n" status)
+      (printf "FAIL (status=%d)\n" status) ) ) )
+
+;; ---- Test 6: WebSocket connect + send/recv ----
+;; Note: echo.websocket.org is unreliable; we test basic WS mechanics
+;; using Coinbase (connect, send, receive).
+(printf "Test 6: WebSocket basic connect/send/recv... ")
+(let ((ws (ws-connect "wss://ws-feed.exchange.coinbase.com")))
+  (if (= ws (gptr ()))
+    (printf "SKIP (cannot connect)\n")
+    (progn
+      ;; Send a subscribe message and verify we get a response
+      (ws-send ws (concat "{\"type\":\"subscribe\","
+                          "\"channels\":[{\"name\":\"status\"}]}"))
+      (let ((reply (ws-recv ws 5000)))
+        (if reply
+          (printf "PASS (got %d bytes)\n" (len reply))
+          (printf "FAIL (no reply)\n") ) )
+      (ws-close ws) ) ) )
+
+;; ---- Test 7: WebSocket Coinbase ticker ----
+(printf "Test 7: WebSocket Coinbase ticker (5 messages)... ")
+(let ((ws (ws-connect "wss://ws-feed.exchange.coinbase.com")))
+  (if (= ws (gptr ()))
+    (printf "SKIP (cannot connect)\n")
+    (progn
+      (ws-send ws (concat "{\"type\":\"subscribe\","
+                          "\"channels\":[{\"name\":\"ticker\","
+                          "\"product_ids\":[\"BTC-USD\"]}]}"))
+      (let ((count 0))
+        (repeat 5
+          (let ((msg (ws-recv ws 5000)))
+            (when msg
+              (setq count (+ count 1))
+              (printf "\n  [%d] %s" count
+                      (mid msg 1 (min (len msg) 120))) ) ) )
+        (printf "\n  received %d messages... " count)
+        (if (> count 0)
+          (printf "PASS\n")
+          (printf "FAIL\n") ) )
+      (ws-close ws) ) ) )
+
+(printf "\n=== tests complete ===\n\n")

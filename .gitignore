@@ -36,3 +36,6 @@ C/
 bin/x86_64-unknown-linux-gnu/
 test
 example
+packages/curl/curl-8.12.1/
+packages/curl/curl-8.12.1.tar.gz
+packages/curl/dist/

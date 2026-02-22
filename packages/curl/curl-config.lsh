@@ -1,0 +1,19 @@
+;;; curl-config.lsh -- Compile curl C wrapper into shared library
+;;;
+;;; This file compiles curl-c.c into a shared library linked against
+;;; the locally-built curl (with WebSocket support) in dist/.
+;;; It must be loaded before curl.lsh.
+
+(libload "libc/make")
+
+(let ((dir (dirname file-being-loaded)))
+  (let ((lm (new lushmake))
+        (cc (or (getconf "CC") "gcc")))
+    (==> lm setflags (concat " -I" dir "/dist/include -O2 -fPIC"))
+    (==> lm rule "curl-c.o" '("curl-c.c" "curl-c.h"))
+    (==> lm rule "curl-c.so" '("curl-c.o")
+         (concat cc " -shared -o $OBJ $SOURCES"
+                 " -L" dir "/dist/lib -lcurl -lssl -lcrypto -lpthread"
+                 " -Wl,-rpath," dir "/dist/lib"))
+    (==> lm make)
+    (==> lm load "curl-c.so") ) )

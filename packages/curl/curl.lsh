@@ -1,0 +1,318 @@
+;;; curl.lsh -- HTTP REST and WebSocket client for Lush
+;;;
+;;; Two layers:
+;;;   1. DHC-compiled thin wrappers (_curl-*) that bridge Lush types
+;;;      to the C functions in curl-c.c.
+;;;   2. Interpreted high-level API (curl-get, curl-post, curl-request,
+;;;      ws-connect, ws-send, ws-recv, ws-close, etc.) that handle
+;;;      string conversion, error checking, and convenience features.
+;;;
+;;; Constraint: (-long-) is broken, so we use (-gptr-) for opaque
+;;; handles, (-int-) / (-double-) / (-str-) for data.
+
+(libload "curl-config")
+
+;; ============================================================
+;; DHC-compiled wrappers (gptr <-> C)
+;; ============================================================
+
+(de _curl-global-init ()
+  #{ lush_curl_global_init(); #}
+  t )
+
+(de _curl-get (url headers timeout status-out len-out)
+  ((-str-) url headers)
+  ((-int-) timeout)
+  ((-idx1- (-int-)) status-out len-out)
+  (let ((resp (gptr ())))
+    ((-gptr-) resp)
+    #{ $resp = lush_curl_get($url->data, $headers->data,
+                             $timeout,
+                             IDX_PTR($status_out, int),
+                             IDX_PTR($len_out, int)); #}
+    resp ) )
+
+(de _curl-post (url body ctype headers timeout status-out len-out)
+  ((-str-) url body ctype headers)
+  ((-int-) timeout)
+  ((-idx1- (-int-)) status-out len-out)
+  (let ((resp (gptr ())))
+    ((-gptr-) resp)
+    #{ $resp = lush_curl_post($url->data, $body->data,
+                              $ctype->data, $headers->data,
+                              $timeout,
+                              IDX_PTR($status_out, int),
+                              IDX_PTR($len_out, int)); #}
+    resp ) )
+
+(de _curl-request (method url body headers timeout status-out len-out)
+  ((-str-) method url body headers)
+  ((-int-) timeout)
+  ((-idx1- (-int-)) status-out len-out)
+  (let ((resp (gptr ())))
+    ((-gptr-) resp)
+    #{ $resp = lush_curl_request($method->data, $url->data,
+                                 $body->data, $headers->data,
+                                 $timeout,
+                                 IDX_PTR($status_out, int),
+                                 IDX_PTR($len_out, int)); #}
+    resp ) )
+
+(de _curl-free-response (resp)
+  ((-gptr-) resp)
+  #{ lush_curl_free_response($resp); #}
+  () )
+
+(de _curl-ws-connect (url headers)
+  ((-str-) url headers)
+  (let ((h (gptr ())))
+    ((-gptr-) h)
+    #{ $h = lush_curl_ws_connect($url->data, $headers->data); #}
+    h ) )
+
+(de _curl-ws-send-text (h msg len)
+  ((-gptr-) h)
+  ((-str-) msg)
+  ((-int-) len)
+  (let ((rc 0))
+    ((-int-) rc)
+    #{ $rc = lush_curl_ws_send_text($h, $msg->data, $len); #}
+    rc ) )
+
+(de _curl-ws-send-binary (h data len)
+  ((-gptr-) h)
+  ((-idx1- (-ubyte-)) data)
+  ((-int-) len)
+  (let ((rc 0))
+    ((-int-) rc)
+    #{ $rc = lush_curl_ws_send_binary($h,
+              (const unsigned char *)IDX_PTR($data, unsigned char),
+              $len); #}
+    rc ) )
+
+(de _curl-ws-recv (h timeout-ms len-out flags-out)
+  ((-gptr-) h)
+  ((-int-) timeout-ms)
+  ((-idx1- (-int-)) len-out flags-out)
+  (let ((resp (gptr ())))
+    ((-gptr-) resp)
+    #{ $resp = lush_curl_ws_recv($h, $timeout_ms,
+                                 IDX_PTR($len_out, int),
+                                 IDX_PTR($flags_out, int)); #}
+    resp ) )
+
+(de _curl-ws-close (h)
+  ((-gptr-) h)
+  (let ((rc 0))
+    ((-int-) rc)
+    #{ $rc = lush_curl_ws_close($h); #}
+    rc ) )
+
+(de _curl-ws-poll (h timeout-ms)
+  ((-gptr-) h)
+  ((-int-) timeout-ms)
+  (let ((rc 0))
+    ((-int-) rc)
+    #{ $rc = lush_curl_ws_poll($h, $timeout_ms); #}
+    rc ) )
+
+;; DHC helper: copy gptr data to a Lush string and free the C buffer.
+;; Returns the copied string. If resp is NULL or len <= 0, returns "".
+(de _curl-gptr-to-string (resp len)
+  ((-gptr-) resp)
+  ((-int-) len)
+  (let ((s ""))
+    ((-str-) s)
+    #{ {
+         const char *src = (const char *)$resp;
+         if (src && $len > 0) {
+           Msrg_resize($s, $len + 1);
+           memcpy((char *)$s->data, src, $len);
+           ((char *)$s->data)[$len] = '\0';
+         }
+         lush_curl_free_response((char *)$resp);
+       } #}
+    s ) )
+
+
+;; Compile all DHC wrappers
+(let ((dhc-make-lushflags
+       (concat dhc-make-lushflags " -I" (dirname file-being-loaded)
+               " -I" (dirname file-being-loaded) "/dist/include")))
+  (dhc-make-with-libs () t
+    #{ #include "curl-c.h" #}
+    _curl-global-init
+    _curl-get _curl-post _curl-request _curl-free-response
+    _curl-ws-connect _curl-ws-send-text _curl-ws-send-binary
+    _curl-ws-recv _curl-ws-close _curl-ws-poll
+    _curl-gptr-to-string ) )
+
+;; Convert list of "Key: Value" strings to newline-delimited string
+(de _curl-format-headers (hdrs)
+  (if (or (not hdrs) (= hdrs ()))
+    ""
+    (let ((result ""))
+      (each ((h hdrs))
+        (setq result (concat result h "\n")) )
+      result ) ) )
+
+
+;; ============================================================
+;; Interpreted high-level API — REST
+;; ============================================================
+
+#? (curl-get <url> [<headers>] [<timeout>])
+;; Perform an HTTP GET request.
+;; <url>: request URL string
+;; <headers>: list of "Key: Value" strings, or () for none
+;; <timeout>: timeout in seconds (default 30)
+;; Returns: (list <status-code> <body-string>)
+(de curl-get (url &optional headers timeout)
+  (_curl-global-init)
+  (let ((hdr-str (_curl-format-headers headers))
+        (tmo (if timeout timeout 30))
+        (status-out (int-matrix 1))
+        (len-out (int-matrix 1)) )
+    (let ((resp (_curl-get url hdr-str tmo status-out len-out)))
+      (let ((body (_curl-gptr-to-string resp (len-out 0))))
+        (list (status-out 0) body) ) ) ) )
+
+
+#? (curl-post <url> <body> [<content-type>] [<headers>] [<timeout>])
+;; Perform an HTTP POST request.
+;; <body>: request body string
+;; <content-type>: MIME type (default "application/json")
+;; <headers>: list of "Key: Value" strings, or () for none
+;; <timeout>: timeout in seconds (default 30)
+;; Returns: (list <status-code> <body-string>)
+(de curl-post (url body &optional content-type headers timeout)
+  (_curl-global-init)
+  (let ((ct (if content-type content-type "application/json"))
+        (hdr-str (_curl-format-headers headers))
+        (tmo (if timeout timeout 30))
+        (status-out (int-matrix 1))
+        (len-out (int-matrix 1)) )
+    (let ((resp (_curl-post url body ct hdr-str tmo status-out len-out)))
+      (let ((body-str (_curl-gptr-to-string resp (len-out 0))))
+        (list (status-out 0) body-str) ) ) ) )
+
+
+#? (curl-request <method> <url> [<body>] [<headers>] [<timeout>])
+;; Perform an HTTP request with arbitrary method.
+;; <method>: "GET" "POST" "PUT" "DELETE" "PATCH"
+;; <body>: request body string, or "" for none
+;; <headers>: list of "Key: Value" strings, or () for none
+;; <timeout>: timeout in seconds (default 30)
+;; Returns: (list <status-code> <body-string>)
+(de curl-request (method url &optional body headers timeout)
+  (_curl-global-init)
+  (let ((b (if body body ""))
+        (hdr-str (_curl-format-headers headers))
+        (tmo (if timeout timeout 30))
+        (status-out (int-matrix 1))
+        (len-out (int-matrix 1)) )
+    (let ((resp (_curl-request method url b hdr-str tmo status-out len-out)))
+      (let ((body-str (_curl-gptr-to-string resp (len-out 0))))
+        (list (status-out 0) body-str) ) ) ) )
+
+
+;; ============================================================
+;; Interpreted high-level API — WebSocket
+;; ============================================================
+
+#? (ws-connect <url> [<headers>])
+;; Connect to a WebSocket server.
+;; <url>: WebSocket URL (ws:// or wss://)
+;; <headers>: list of "Key: Value" strings for custom headers
+;; Returns: opaque handle (gptr) for use with ws-send, ws-recv, etc.
+;; Signals error on connection failure.
+(de ws-connect (url &optional headers)
+  (_curl-global-init)
+  (let ((hdr-str (_curl-format-headers headers)))
+    (let ((h (_curl-ws-connect url hdr-str)))
+      (when (= h (gptr ()))
+        (error "ws-connect: failed to connect" url) )
+      h ) ) )
+
+
+#? (ws-send <handle> <message>)
+;; Send a text frame over a WebSocket connection.
+;; <handle>: WebSocket handle from ws-connect
+;; <message>: string to send
+;; Returns: number of bytes sent, or signals error on failure.
+(de ws-send (handle message)
+  (let ((rc (_curl-ws-send-text handle message (len message))))
+    (when (< rc 0)
+      (error "ws-send: send failed" rc) )
+    rc ) )
+
+
+#? (ws-send-binary <handle> <data>)
+;; Send a binary frame over a WebSocket connection.
+;; <handle>: WebSocket handle from ws-connect
+;; <data>: idx1 of ubyte to send
+;; Returns: number of bytes sent, or signals error on failure.
+(de ws-send-binary (handle data)
+  (let ((rc (_curl-ws-send-binary handle data (idx-dim data 0))))
+    (when (< rc 0)
+      (error "ws-send-binary: send failed" rc) )
+    rc ) )
+
+
+#? (ws-recv <handle> [<timeout-ms>])
+;; Receive a message from a WebSocket connection.
+;; <handle>: WebSocket handle from ws-connect
+;; <timeout-ms>: receive timeout in milliseconds (default 5000)
+;; Returns: string (text frame) or () on timeout/close.
+(de ws-recv (handle &optional timeout-ms)
+  (let ((tmo (if timeout-ms timeout-ms 5000))
+        (len-out (int-matrix 1))
+        (flags-out (int-matrix 1)) )
+    (let ((resp (_curl-ws-recv handle tmo len-out flags-out)))
+      (if (= resp (gptr ()))
+        ()
+        (_curl-gptr-to-string resp (len-out 0)) ) ) ) )
+
+
+#? (ws-poll <handle> [<timeout-ms>])
+;; Check if data is available on a WebSocket connection.
+;; <handle>: WebSocket handle from ws-connect
+;; <timeout-ms>: poll timeout in milliseconds (default 0)
+;; Returns: t if data available, () if timeout.
+(de ws-poll (handle &optional timeout-ms)
+  (let ((tmo (if timeout-ms timeout-ms 0)))
+    (let ((rc (_curl-ws-poll handle tmo)))
+      (if (> rc 0) t ()) ) ) )
+
+
+#? (ws-close <handle>)
+;; Close a WebSocket connection.
+;; Sends a close frame and cleans up the handle.
+(de ws-close (handle)
+  (_curl-ws-close handle)
+  () )
+
+
+#? (ws-stream <url> <callback> [<headers>])
+;; Connect to a WebSocket and call (callback message) for each frame.
+;; Returns when connection closes or callback returns 'stop.
+;; <url>: WebSocket URL
+;; <callback>: function called with each received message string
+;; <headers>: optional list of custom header strings
+(de ws-stream (url callback &optional headers)
+  (let ((ws (ws-connect url headers))
+        (running t) )
+    (while running
+      (let ((msg (ws-recv ws 5000)))
+        (if msg
+          (let ((result (callback msg)))
+            (when (= result 'stop)
+              (setq running ()) ) )
+          ;; Timeout with no data — check if still connected
+          ;; by trying a zero-timeout poll
+          (let ((alive (ws-poll ws 0)))
+            ;; If poll returns error (-1 mapped to ()), connection is dead
+            ;; We keep going on timeout (alive = ()) since that just means
+            ;; no data yet. Connection errors will surface on next recv.
+            ) ) ) )
+    (ws-close ws) ) )
