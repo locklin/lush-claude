@@ -924,35 +924,212 @@ This maintains the Kerf-style "pool travels with the data" property.
 | Range query (unsorted) | O(n) | Linear scan |
 | String filter after range | O(k) | Integer comparison on dict codes |
 
+### Known Issue: String Pool Memory Accumulation
+
+String column pools (the `str-to-code` htable and `code-to-str` list)
+are always read into heap memory, even for mmap-loaded tables.  The
+integer codes array is mmap'd, but the pool — which maps codes back
+to strings — is an S-expression file that gets parsed into Lush objects.
+
+For typical cardinalities this is negligible: 3,000 unique ticker
+symbols at ~10 bytes average = ~30KB for the pool.  But in a long
+session loading many tables with high-cardinality string columns (e.g.,
+millions of unique user IDs across dozens of tables), the pools would
+accumulate on the heap and never be paged out by the OS (since they're
+malloc'd, not mmap'd).
+
+**Potential remedies:**
+
+1. **Flat binary pool format:** Store pools as a concatenated null-
+   terminated string buffer + an int32 offset array, both in LCDB
+   native-endian format.  Both files could be mmap'd.  Reverse lookup
+   (code → string) becomes: read offset[code] from mmap'd array, read
+   string starting at that offset from mmap'd buffer.  Forward lookup
+   (string → code) still needs an in-memory htable, but this could be
+   built lazily on first write, since read-only tables only need
+   reverse lookup (for display/export — WHERE filtering compares codes).
+
+2. **Lazy pool loading:** Don't load the pool at all on initial mmap
+   load.  Most query operations (range on timestamp, filter by code)
+   never need string values — they work entirely on integer codes.
+   Only load the pool when `get` is called on a string column or when
+   `print-table` formats output.
+
+3. **Pool LRU eviction:** Track which pools have been accessed recently
+   and drop unreferenced ones (set pool slots to nil, rebuild from disk
+   on next access).  This requires reference counting or weak references
+   which Lush doesn't have natively, so it would need to be managed
+   manually at the session/query level.
+
+Remedy #1 is the most Kerf-like (everything mmap'd) but requires a new
+pool file format.  Remedy #2 is simpler and handles the common case
+(query by time range + code comparison, only format results at the end).
+
+### Design Question: Copy-on-Write vs. Separate Load Paths
+
+The current design has two load functions:
+- `columnardb-load` — mmap, read-only, OS manages paging
+- `columnardb-load-mem` — malloc, read-write, all in heap
+
+This is awkward.  The user has to decide upfront whether they'll need to
+mutate data.  A better model would be copy-on-write (COW): load
+everything mmap'd, and transparently copy individual columns to heap
+memory only when a write is attempted.
+
+**How Kerf does COW:**
+
+Kerf's K0 header has a reference count field `r`.  Objects that are
+sub-parts of an mmap'd file have `r = TENANT_REF_SIGNAL (-1)`.  The
+`CAN_WRITE(x)` macro checks: if `r == 1` (sole owner) or `IS_DISK(x)`
+(mapped file), writes go through directly.  For mapped files, writes
+go straight to the mmap (which is `MAP_SHARED`, so they persist).
+For shared in-memory objects (`r > 1`), `cow(x)` copies the object
+to a new malloc'd allocation with `r = 1`, making it privately writable.
+
+This works because Kerf owns the entire memory system: the pool
+allocator, the reference counting, the mmap region.  Everything is K0
+structs all the way down.
+
+**What we have in Lush:**
+
+Lush storages have a `flags` field with `STF_RDONLY` and `STS_MMAP` bits.
+The runtime function `(writablep <idx-or-storage>)` exposes this:
+
+```lisp
+(writablep col-mmap)  ;; => ()   (read-only, mmap'd)
+(writablep col-mem)   ;; => t    (writable, malloc'd)
+```
+
+When you try to write to a read-only storage, Lush raises an error:
+`"STORAGE is read only"`.  There's no try/catch mechanism to intercept
+this.
+
+**Proposed COW scheme for DataTable:**
+
+Since writes go through DataTable methods (`set`, `append-row`), we can
+check `writablep` *before* the write and copy on demand:
+
+```lisp
+(defmethod DataTable _ensure-writable (col-idx)
+  ;; If column col-idx is mmap'd (read-only), copy it to malloc'd storage.
+  ;; This is the COW trigger.
+  (let ((col (nth col-idx columns))
+        (type (nth col-idx col-types-list)) )
+    (when (not (writablep col))
+      ;; For string columns, codes might be mmap'd
+      (if (= type 'string)
+        ;; StringColumn: copy codes array, pool is already in memory
+        (let ((old-codes (==> col get-codes))
+              (new-codes (int-matrix (idx-dim old-codes 0))) )
+          (for (i 0 (1- (idx-dim old-codes 0)))
+            (new-codes i (old-codes i)) )
+          ;; Rebuild StringColumn with writable codes
+          (let ((sc (new StringColumn n-rows)))
+            (==> sc build-from-codes new-codes (==> col get-pool))
+            (setq columns (_dt-list-replace columns col-idx sc)) ) )
+        ;; Numeric/stamp: copy the idx1
+        (let ((new-col (if (= type 'int)
+                         (int-matrix n-rows)
+                         (double-matrix n-rows) )))
+          (for (i 0 (1- n-rows))
+            (new-col i (col i)) )
+          (setq columns (_dt-list-replace columns col-idx new-col)) ) ) ) ) )
+```
+
+Then `set` becomes:
+
+```lisp
+(defmethod DataTable set (row col value)
+  (let ((idx (if (stringp col) (col-names-ht col) col)))
+    (==> this _ensure-writable idx)
+    ...existing write logic... ))
+```
+
+And `append-row` calls `_ensure-writable` on every column it touches.
+
+**The "write-back and re-mmap" idea:**
+
+A more ambitious version: after COW-copying a column to memory and
+modifying it, the user (or the system) calls something like
+`(columnardb-flush dt path)` which:
+
+1. Writes dirty (malloc'd) columns back to their .col files
+2. Re-mmaps them as read-only
+3. Replaces the malloc'd idx with the mmap'd one
+
+This gets the modified data back to the efficient mmap'd state, frees
+the heap copy, and persists the changes.  The column is only "hot"
+(in heap memory) while mutations are happening.
+
+The lifecycle would be:
+```
+  mmap'd (cold, OS-paged) --> COW copy (hot, in heap)
+       ^                           |
+       |   flush: write + re-mmap  |
+       +---------------------------+
+```
+
+This is analogous to what a database buffer pool does, just at column
+granularity.
+
+**Tradeoffs:**
+
+- COW is transparent to the user (no need to choose load path upfront)
+- Per-column granularity means only touched columns go to heap
+- `append-row` needs to COW every column, which for a wide table means
+  copying all columns on first append — but this only happens once
+- The flush step could be automatic (on save) or manual
+- Without flush, modified data lives only in memory (lost on exit)
+- With flush, there's a brief window where the table is inconsistent
+  on disk (partially written columns) — needs an atomic-rename strategy
+
+**What Kerf avoids by owning the allocator:**
+
+Kerf's `MAP_SHARED | PROT_READ | PROT_WRITE` mapping means writes to
+mmap'd data go straight to disk via the page cache — no explicit
+copy or flush.  Growing a column requires `ftruncate` + `mremap` (or
+remap), but existing data is never copied.  This is the ideal, but it
+requires either:
+- Adding `PROT_WRITE` to Lush's `storage_mmap` (a small C change), or
+- A new `storage_mmap_rw` function
+
+With writable mmap, the COW scheme above becomes unnecessary for
+in-place modifications.  It would still be needed for growing columns
+(append), because mmap'd storages can't be realloc'd.
+
 ### Potential Future Improvements
 
-1. **Writable mmap (Stage 6b):** Add `storage_mmap_rw` to Lush's C
-   runtime using `PROT_READ|PROT_WRITE`.  This would allow in-place
-   modification of mapped columns, eliminating the save/reload cycle
-   for appends.
+1. **Copy-on-write at DataTable level:** As described above.  Check
+   `writablep` before writes, transparently copy mmap'd columns to
+   heap.  Eliminates the need for separate `columnardb-load-mem`.
 
-2. **Compiled binary search:** The current binary search runs in
+2. **Writable mmap (Stage 6b):** Add `PROT_READ|PROT_WRITE` to
+   `storage_mmap` (or a new `storage_mmap_rw`).  This would allow
+   in-place modification of mapped columns.  Combined with COW for
+   growth (append), this gives near-Kerf write behavior.
+
+3. **Compiled binary search:** The current binary search runs in
    interpreted Lush.  A compiled (dhc-make) version would be faster
    for very large tables.  Similarly, the sort-check loop could be
    compiled.
 
-3. **Compression:** Add optional LZ4 or zstd compression for cold
+4. **Compression:** Add optional LZ4 or zstd compression for cold
    columns.  Compressed columns would be decompressed on load (not
    mmappable), but would save disk space.  Kerf uses delta-delta
    encoding for timestamps which compresses very well.
 
-4. **Partitioned tables:** Split large tables by time range into
+5. **Partitioned tables:** Split large tables by time range into
    multiple directories (e.g., one per day/month).  This is Kerf's
    PARTABLE concept.  Queries would scan only relevant partitions.
 
-5. **Column indexes:** Hash index on string columns for O(1) lookup
+6. **Column indexes:** Hash index on string columns for O(1) lookup
    by value (vs. O(n) scan).  Kerf uses Robin Hood hashing.
 
-6. **ASOF joins:** Time-series join where the right table matches the
+7. **ASOF joins:** Time-series join where the right table matches the
    closest preceding timestamp.  Critical for financial data.  Kerf's
    implementation exploits sorted order with a two-pointer chase.
 
-7. **Concurrent access:** Multiple readers can mmap the same files
+8. **Concurrent access:** Multiple readers can mmap the same files
    safely (MAP_SHARED is designed for this).  A writer-lock protocol
    (e.g., flock) would be needed for concurrent writes.
 
