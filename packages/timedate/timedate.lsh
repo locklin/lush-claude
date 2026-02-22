@@ -1,77 +1,177 @@
-;;; timedate.lsh -- Nanosecond-precision UTC timestamps for Lush
+;;; timedate.lsh -- Second-precision UTC timestamps for Lush
 ;;;
-;;; Timestamps are int64 nanoseconds since Unix epoch (1970-01-01T00:00:00Z),
-;;; stored in long-matrix (ST_I64).  Column type symbol: 'stamp.
+;;; Timestamps are double-precision seconds since Unix epoch
+;;; (1970-01-01T00:00:00Z).  Column type symbol: 'stamp.
+;;; Stored as doubles, giving exact representation for whole seconds
+;;; and microsecond precision for fractional seconds through ~year 2255.
 ;;;
 ;;; Usage:
 ;;;   (libload "timedate/timedate")
-;;;   (timestamp-now)                              ;; current time as int64 nanos
+;;;   (timestamp-now)                              ;; current time as double seconds
 ;;;   (timestamp-to-string (timestamp-now))         ;; formatted string
-;;;   (timestamp-parse "2024-01-15" "%Y-%m-%d")     ;; parse to nanos
-;;;   (timestamp-components (timestamp-now))         ;; (y m d H M S nano)
+;;;   (timestamp-parse "2024-01-15" "%Y-%m-%d")     ;; parse to seconds
+;;;   (timestamp-components (timestamp-now))         ;; (y m d H M S)
 
 (libload "timedate/timedate-config")
 
-#? *** TimeDate: Nanosecond-Precision UTC Timestamps
+#? *** TimeDate: UTC Timestamps for Lush
 
 
 ;; ============================================================
 ;; Compiled Lush functions (C bridge via dhc-make)
 ;; ============================================================
 
-;; internal: get current UTC time as int64 nanoseconds
-(de _td-timestamp-now ()
-  ((-long-) 0)  ;; return type hint
-  (let ((result 0))
-    ((-long-) result)
-    #{{ $result = td_timestamp_now(); }#}
-    result ) )
+;; internal: get current UTC time as seconds since epoch
+(de _td-timestamp-now-out (out)
+  ((-idx1- (-double-)) out)
+  #{
+  {
+    struct timespec ts;
+    clock_gettime(CLOCK_REALTIME, &ts);
+    IDX_PTR($out, double)[0] = (double)ts.tv_sec + (double)ts.tv_nsec * 1e-9;
+  }
+  #}
+  () )
 
-;; internal: parse date/time string to int64 nanoseconds
-(de _td-strptime-to-nanos (str fmt)
+;; internal: parse date/time string to seconds since epoch
+(de _td-strptime-to-secs-out (str fmt out)
   ((-str-) str fmt)
-  (let ((result 0))
-    ((-long-) result)
-    #{{ $result = td_strptime_to_nanos((const char *)$str->data,
-                                        (const char *)$fmt->data); }#}
-    result ) )
+  ((-idx1- (-double-)) out)
+  #{
+  {
+    struct tm tm_val;
+    memset(&tm_val, 0, sizeof(struct tm));
+    const char *rest = strptime((const char *)$str->data,
+                                 (const char *)$fmt->data, &tm_val);
+    if (!rest) {
+      IDX_PTR($out, double)[0] = -1e30;
+    } else {
+      time_t secs = timegm(&tm_val);
+      double frac = 0.0;
+      /* Handle fractional seconds after strptime */
+      if (*rest == '.') {
+        rest++;
+        double place = 0.1;
+        while (*rest >= '0' && *rest <= '9') {
+          frac += (*rest - '0') * place;
+          place *= 0.1;
+          rest++;
+        }
+      }
+      IDX_PTR($out, double)[0] = (double)secs + frac;
+    }
+  }
+  #}
+  () )
 
-;; internal: format nanoseconds to string in buffer
+;; internal: format seconds to string in buffer
 ;; Returns 0 on success, -1 on failure
-(de _td-nanos-to-string (nanos fmt buf)
-  ((-long-) nanos)
+(de _td-secs-to-string (secs-arr fmt buf)
+  ((-idx1- (-double-)) secs-arr)
   ((-str-) fmt)
   ((-idx1- (-ubyte-)) buf)
   (let ((rc 0))
     ((-int-) rc)
-    #{{ $rc = td_nanos_to_strftime($nanos, (const char *)$fmt->data,
-                                    (char *)IDX_PTR($buf, unsigned char),
-                                    $buf->dim[0]); }#}
+    #{
+    {
+      double secs = IDX_PTR($secs_arr, double)[0];
+      time_t t = (time_t)secs;
+      struct tm tm_val;
+      if (!gmtime_r(&t, &tm_val)) {
+        $rc = -1;
+      } else {
+        size_t n = strftime((char *)IDX_PTR($buf, unsigned char),
+                             $buf->dim[0], (const char *)$fmt->data, &tm_val);
+        $rc = (n > 0) ? 0 : -1;
+      }
+    }
+    #}
     rc ) )
 
-;; internal: decompose nanoseconds to 7 components
-(de _td-components (nanos out)
-  ((-long-) nanos)
+;; internal: decompose seconds to 6 components (y m d H M S)
+(de _td-components (secs-arr out)
+  ((-idx1- (-double-)) secs-arr)
   ((-idx1- (-int-)) out)
-  #{{ td_timestamp_components($nanos, IDX_PTR($out, int)); }#}
+  #{
+  {
+    double secs = IDX_PTR($secs_arr, double)[0];
+    time_t t = (time_t)secs;
+    struct tm tm_val;
+    gmtime_r(&t, &tm_val);
+    int *o = IDX_PTR($out, int);
+    o[0] = tm_val.tm_year + 1900;
+    o[1] = tm_val.tm_mon + 1;
+    o[2] = tm_val.tm_mday;
+    o[3] = tm_val.tm_hour;
+    o[4] = tm_val.tm_min;
+    o[5] = tm_val.tm_sec;
+  }
+  #}
   () )
 
-;; internal: build nanoseconds from 7 int args
-(de _td-make-timestamp (y m d hh mm ss nano)
-  ((-int-) y m d hh mm ss nano)
-  (let ((result 0))
-    ((-long-) result)
-    #{{ $result = td_make_timestamp($y, $m, $d, $hh, $mm, $ss, $nano); }#}
-    result ) )
+;; internal: build seconds from 6 int args
+(de _td-make-timestamp-out (y m d hh mm ss out)
+  ((-int-) y m d hh mm ss)
+  ((-idx1- (-double-)) out)
+  #{
+  {
+    struct tm tm_val;
+    memset(&tm_val, 0, sizeof(struct tm));
+    tm_val.tm_year = $y - 1900;
+    tm_val.tm_mon  = $m - 1;
+    tm_val.tm_mday = $d;
+    tm_val.tm_hour = $hh;
+    tm_val.tm_min  = $mm;
+    tm_val.tm_sec  = $ss;
+    time_t secs = timegm(&tm_val);
+    IDX_PTR($out, double)[0] = (double)secs;
+  }
+  #}
+  () )
+
+;; internal: parse with specific format, used by CSV stamp reader
+;; Parses date/time string and writes seconds to stamps array at idx
+(de _td-parse-stamp-at (str fmt stamps-arr idx)
+  ((-str-) str fmt)
+  ((-idx1- (-double-)) stamps-arr)
+  ((-int-) idx)
+  #{
+  {
+    struct tm tm_val;
+    memset(&tm_val, 0, sizeof(struct tm));
+    const char *rest = strptime((const char *)$str->data,
+                                 (const char *)$fmt->data, &tm_val);
+    if (!rest) {
+      IDX_PTR($stamps_arr, double)[$idx] = -1e30;
+    } else {
+      time_t secs = timegm(&tm_val);
+      double frac = 0.0;
+      if (*rest == '.') {
+        rest++;
+        double place = 0.1;
+        while (*rest >= '0' && *rest <= '9') {
+          frac += (*rest - '0') * place;
+          place *= 0.1;
+          rest++;
+        }
+      }
+      IDX_PTR($stamps_arr, double)[$idx] = (double)secs + frac;
+    }
+  }
+  #}
+  () )
 
 
 ;; Compile the bridge functions
 (let ((dhc-make-lushflags
        (concat dhc-make-lushflags " -I" (dirname file-being-loaded))))
   (dhc-make-with-libs () t
-    #{ #include "timedate-c.h" #}
-    _td-timestamp-now _td-strptime-to-nanos _td-nanos-to-string
-    _td-components _td-make-timestamp ) )
+    #{
+    #include <time.h>
+    #include <string.h>
+    #}
+    _td-timestamp-now-out _td-strptime-to-secs-out _td-secs-to-string
+    _td-components _td-make-timestamp-out _td-parse-stamp-at ) )
 
 
 ;; ============================================================
@@ -93,28 +193,34 @@
 ;; ============================================================
 
 #? (timestamp-now)
-;; Return the current UTC time as int64 nanoseconds since epoch.
+;; Return the current UTC time as seconds since epoch.
 (de timestamp-now ()
-  (_td-timestamp-now) )
+  (let ((out (double-matrix 1)))
+    (_td-timestamp-now-out out)
+    (out 0) ) )
 
 
 #? (timestamp-from-date <y> <m> <d>)
 ;; Build a timestamp for midnight UTC on the given date.
 ;; y=year, m=month(1-12), d=day(1-31).
 (de timestamp-from-date (y m d)
-  (_td-make-timestamp y m d 0 0 0 0) )
+  (let ((out (double-matrix 1)))
+    (_td-make-timestamp-out y m d 0 0 0 out)
+    (out 0) ) )
 
 
-#? (timestamp-from-datetime <y> <m> <d> <H> <M> <S> [<nano>])
+#? (timestamp-from-datetime <y> <m> <d> <H> <M> <S>)
 ;; Build a timestamp from date and time components.
-(de timestamp-from-datetime (y m d hh mm ss &optional nano)
-  (_td-make-timestamp y m d hh mm ss (if nano nano 0)) )
+(de timestamp-from-datetime (y m d hh mm ss)
+  (let ((out (double-matrix 1)))
+    (_td-make-timestamp-out y m d hh mm ss out)
+    (out 0) ) )
 
 
 #? (timestamp-parse <str> <fmt>)
 ;; Parse a date/time string using strptime format.
-;; Returns int64 nanoseconds.  Signals error on parse failure.
-;; Handles trailing fractional seconds (.123456789) automatically.
+;; Returns seconds since epoch.  Signals error on parse failure.
+;; Handles trailing fractional seconds (.123) automatically.
 ;;
 ;; Common formats:
 ;;   "%Y-%m-%d %H:%M:%S"   ISO datetime with space
@@ -122,41 +228,46 @@
 ;;   "%Y-%m-%d"             ISO date only
 ;;   "%m/%d/%Y"             US date
 (de timestamp-parse (str fmt)
-  (let ((result (_td-strptime-to-nanos str fmt)))
-    ;; INT64_MIN is the parse-failure sentinel
-    (when (= result -9223372036854775808)
-      (error "timestamp-parse" "failed to parse date/time string" str) )
-    result ) )
+  (let ((out (double-matrix 1)))
+    (_td-strptime-to-secs-out str fmt out)
+    (let ((result (out 0)))
+      (when (< result -1e29)
+        (error "timestamp-parse" "failed to parse date/time string" str) )
+      result ) ) )
 
 
-#? (timestamp-to-string <nanos> [<fmt>])
-;; Format a nanosecond timestamp as a string.
+#? (timestamp-to-string <secs> [<fmt>])
+;; Format a timestamp (seconds since epoch) as a string.
 ;; Default format: "%Y-%m-%d %H:%M:%S".
-(de timestamp-to-string (nanos &optional fmt)
+(de timestamp-to-string (secs &optional fmt)
   (when (not fmt) (setq fmt "%Y-%m-%d %H:%M:%S"))
-  (let ((buf (ubyte-matrix 256)))
-    (let ((rc (_td-nanos-to-string nanos fmt buf)))
+  (let ((secs-arr (double-matrix 1))
+        (buf (ubyte-matrix 256)) )
+    (secs-arr 0 secs)
+    (let ((rc (_td-secs-to-string secs-arr fmt buf)))
       (when (< rc 0)
-        (error "timestamp-to-string" "failed to format timestamp" nanos) )
+        (error "timestamp-to-string" "failed to format timestamp" secs) )
       (_td-extract-string buf) ) ) )
 
 
-#? (timestamp-components <nanos>)
-;; Decompose a nanosecond timestamp into a list:
-;;   (year month day hour minute second nano-remainder)
-(de timestamp-components (nanos)
-  (let ((out (int-matrix 7)))
-    (_td-components nanos out)
-    (list (out 0) (out 1) (out 2) (out 3) (out 4) (out 5) (out 6)) ) )
+#? (timestamp-components <secs>)
+;; Decompose a timestamp into a list:
+;;   (year month day hour minute second)
+(de timestamp-components (secs)
+  (let ((secs-arr (double-matrix 1))
+        (out (int-matrix 6)) )
+    (secs-arr 0 secs)
+    (_td-components secs-arr out)
+    (list (out 0) (out 1) (out 2) (out 3) (out 4) (out 5)) ) )
 
 
 #? (timestamp-diff <a> <b>)
-;; Return the difference (a - b) in nanoseconds.
+;; Return the difference (a - b) in seconds.
 (de timestamp-diff (a b)
   (- a b) )
 
 
-#? (timestamp-add <nanos> <delta>)
-;; Add delta nanoseconds to a timestamp.
-(de timestamp-add (nanos delta)
-  (+ nanos delta) )
+#? (timestamp-add <secs> <delta>)
+;; Add delta seconds to a timestamp.
+(de timestamp-add (secs delta)
+  (+ secs delta) )

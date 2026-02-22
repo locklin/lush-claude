@@ -94,7 +94,7 @@
   (let ((col (cond
                ((= type 'real)   (double-matrix capacity))
                ((= type 'int)    (int-matrix capacity))
-               ((= type 'stamp)  (long-matrix capacity))
+               ((= type 'stamp)  (double-matrix capacity))
                ((= type 'string) (new StringColumn capacity))
                (t (error "DataTable" "unknown column type (use 'real, 'int, 'stamp, or 'string)" type)) )))
     (setq col-names-list (nconc1 col-names-list name))
@@ -186,7 +186,7 @@
             ;; Allocate new array and copy
             (let ((new-col (cond ((= type 'real)  (double-matrix new-cap))
                                  ((= type 'int)   (int-matrix new-cap))
-                                 ((= type 'stamp) (long-matrix new-cap)) )))
+                                 ((= type 'stamp) (double-matrix new-cap)) )))
               (for (i 0 (1- n-rows))
                 (new-col i (col i)) )
               ;; Replace in columns list
@@ -356,7 +356,7 @@
           ;; Copy numeric/stamp column
           (let ((dst-col (cond ((= type 'real)  (double-matrix n-rows))
                                ((= type 'int)   (int-matrix n-rows))
-                               ((= type 'stamp) (long-matrix n-rows)) )))
+                               ((= type 'stamp) (double-matrix n-rows)) )))
             (for (r 0 (1- n-rows))
               (dst-col r (src-col r)) )
             (==> result set-column-data name dst-col) ) ) ) )
@@ -372,25 +372,27 @@
     ;; Add columns with same schema
     (each ((name col-names-list) (type col-types-list))
       (==> result add-column name type) )
-    ;; Copy selected rows for each column
-    (let ((ci 0))
-      (each ((col columns) (type col-types-list))
-        (cond
-         ((= type 'string)
-          (let ((dst-col (==> result get-column ci)))
-            (each ((ri indices))
-              (==> dst-col append (==> col get ri)) ) ) )
-         (t
-          ;; Numeric or stamp column
-          (let ((dst-col (cond ((= type 'real)  (double-matrix nr))
-                               ((= type 'int)   (int-matrix nr))
-                               ((= type 'stamp) (long-matrix nr)) )))
-            (let ((di 0))
+    ;; If no rows selected, return empty table with schema
+    (when (> nr 0)
+      ;; Copy selected rows for each column
+      (let ((ci 0))
+        (each ((col columns) (type col-types-list))
+          (cond
+           ((= type 'string)
+            (let ((dst-col (==> result get-column ci)))
               (each ((ri indices))
-                (dst-col di (col ri))
-                (setq di (1+ di)) ) )
-            (==> result set-column-data ci dst-col) ) ) )
-        (setq ci (1+ ci)) ) )
+                (==> dst-col append (==> col get ri)) ) ) )
+           (t
+            ;; Numeric or stamp column
+            (let ((dst-col (cond ((= type 'real)  (double-matrix nr))
+                                 ((= type 'int)   (int-matrix nr))
+                                 ((= type 'stamp) (double-matrix nr)) )))
+              (let ((di 0))
+                (each ((ri indices))
+                  (dst-col di (col ri))
+                  (setq di (1+ di)) ) )
+              (==> result set-column-data ci dst-col) ) ) )
+          (setq ci (1+ ci)) ) ) )
     result ) )
 
 

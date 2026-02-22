@@ -1,0 +1,261 @@
+;;; test-httpd.lsh -- Tests for the httpd package
+;;;
+;;; Tests: JSON encoding, URL decoding, form parsing, MIME types,
+;;;        request line parsing, server creation, route matching.
+;;;
+;;; Note: actual socket/server tests are in the end-to-end suite.
+;;; These tests cover the pure-function components.
+
+;; ============================================================
+;; JSON encoding: primitives
+;; ============================================================
+
+(test-suite "json-encode primitives"
+  (test-string-equal "null" (json-encode ()) "null")
+  (test-string-equal "true" (json-encode t) "true")
+  (test-string-equal "integer" (json-encode 42) "42")
+  (test-string-equal "zero" (json-encode 0) "0")
+  (test-string-equal "negative int" (json-encode -7) "-7")
+  (test-string-equal "float" (json-encode 3.14) "3.14")
+  (test-string-equal "string" (json-encode "hello") "\"hello\"")
+  (test-string-equal "empty string" (json-encode "") "\"\"") )
+
+
+;; ============================================================
+;; JSON encoding: string escaping
+;; ============================================================
+
+(test-suite "json-escape"
+  (test-string-equal "no escape" (json-escape "hello") "hello")
+  (test-string-equal "backslash" (json-escape "a\\b") "a\\\\b")
+  (test-string-equal "quote" (json-escape "say \"hi\"") "say \\\"hi\\\"")
+  (test-string-equal "newline" (json-escape "a\nb") "a\\nb")
+  (test-string-equal "tab" (json-escape "a\tb") "a\\tb")
+  (test-string-equal "cr" (json-escape "a\rb") "a\\rb")
+  (test-string-equal "mixed escapes" (json-escape "a\"b\\c\nd") "a\\\"b\\\\c\\nd") )
+
+
+;; ============================================================
+;; JSON encoding: arrays
+;; ============================================================
+
+(test-suite "json-encode arrays"
+  ;; Simple list -> array
+  (test-string-equal "int array" (json-encode-list (list 1 2 3)) "[1,2,3]")
+  (test-string-equal "str array" (json-encode-list (list "a" "b")) "[\"a\",\"b\"]")
+  (test-string-equal "empty array" (json-encode-list ()) "[]")
+  (test-string-equal "mixed array" (json-encode-list (list 1 "two" ())) "[1,\"two\",null]")
+  ;; Nested arrays
+  (test-string-equal "nested" (json-encode-list (list (list 1 2) (list 3 4)))
+                     "[[1,2],[3,4]]") )
+
+
+;; ============================================================
+;; JSON encoding: objects (alist)
+;; ============================================================
+
+(test-suite "json-encode objects"
+  ;; Alist -> object
+  (let ((al (list (cons "name" "Alice") (cons "age" 30))))
+    (test-string-equal "alist obj" (json-encode al) "{\"name\":\"Alice\",\"age\":30}") )
+  ;; Empty alist
+  (test-string-equal "empty obj" (json-encode-alist ()) "{}")
+  ;; Nested
+  (let ((al (list (cons "user" (list (cons "id" 1) (cons "name" "Bob"))))))
+    (test-string-equal "nested obj" (json-encode al)
+                       "{\"user\":{\"id\":1,\"name\":\"Bob\"}}") ) )
+
+
+;; ============================================================
+;; JSON encoding: htable
+;; ============================================================
+
+(test-suite "json-encode htable"
+  (let ((ht (htable 4)))
+    (ht "key1" "val1")
+    (ht "key2" 42)
+    (let ((result (json-encode ht)))
+      ;; htable order is not guaranteed, so check both orderings
+      (test-check "htable has key1"
+                  (or (= result "{\"key1\":\"val1\",\"key2\":42}")
+                      (= result "{\"key2\":42,\"key1\":\"val1\"}"))) ) ) )
+
+
+;; ============================================================
+;; JSON convenience: json-object, json-array
+;; ============================================================
+
+(test-suite "json-object and json-array"
+  (test-string-equal "json-object" (json-object "x" 1 "y" 2) "{\"x\":1,\"y\":2}")
+  (test-string-equal "json-array" (json-array 10 20 30) "[10,20,30]")
+  (test-string-equal "json-object empty" (json-object) "{}")
+  (test-string-equal "json-array empty" (json-array) "[]")
+  ;; json-object with string values
+  (test-string-equal "obj strings" (json-object "name" "test" "status" "ok")
+                     "{\"name\":\"test\",\"status\":\"ok\"}")
+  ;; json-encode passthrough for pre-encoded JSON
+  (test-string-equal "passthrough array" (json-encode "[1,2,3]") "[1,2,3]")
+  (test-string-equal "passthrough obj" (json-encode "{\"a\":1}") "{\"a\":1}") )
+
+
+;; ============================================================
+;; URL decoding
+;; ============================================================
+
+(test-suite "httpd-url-decode"
+  (test-string-equal "plain" (httpd-url-decode "hello") "hello")
+  (test-string-equal "space from +" (httpd-url-decode "hello+world") "hello world")
+  (test-string-equal "hex %20" (httpd-url-decode "hello%20world") "hello world")
+  (test-string-equal "hex %2F" (httpd-url-decode "path%2Fto") "path/to")
+  (test-string-equal "hex %3D" (httpd-url-decode "a%3Db") "a=b")
+  (test-string-equal "hex %26" (httpd-url-decode "a%26b") "a&b")
+  (test-string-equal "mixed" (httpd-url-decode "a+b%20c") "a b c")
+  (test-string-equal "empty" (httpd-url-decode "") "") )
+
+
+;; ============================================================
+;; Form parsing
+;; ============================================================
+
+(test-suite "httpd-parse-form"
+  ;; Simple key=value pair
+  (let ((result (httpd-parse-form "name=Alice")))
+    (test-equal "single pair count" (length result) 1)
+    (test-string-equal "single key" (caar result) "name")
+    (test-string-equal "single val" (cdar result) "Alice") )
+  ;; Multiple pairs
+  (let ((result (httpd-parse-form "name=Alice&age=30&city=NYC")))
+    (test-equal "multi count" (length result) 3)
+    (test-string-equal "multi key0" (car (nth 0 result)) "name")
+    (test-string-equal "multi val0" (cdr (nth 0 result)) "Alice")
+    (test-string-equal "multi key1" (car (nth 1 result)) "age")
+    (test-string-equal "multi val1" (cdr (nth 1 result)) "30")
+    (test-string-equal "multi key2" (car (nth 2 result)) "city")
+    (test-string-equal "multi val2" (cdr (nth 2 result)) "NYC") )
+  ;; URL-encoded values
+  (let ((result (httpd-parse-form "msg=hello+world&path=a%2Fb")))
+    (test-string-equal "encoded val0" (cdr (nth 0 result)) "hello world")
+    (test-string-equal "encoded val1" (cdr (nth 1 result)) "a/b") )
+  ;; Empty body
+  (let ((result (httpd-parse-form "")))
+    (test-check "empty form" (null result)) ) )
+
+
+;; ============================================================
+;; Query parameter extraction
+;; ============================================================
+
+(test-suite "httpd-query-param"
+  (test-string-equal "first param" (httpd-query-param "a=1&b=2&c=3" "a") "1")
+  (test-string-equal "middle param" (httpd-query-param "a=1&b=2&c=3" "b") "2")
+  (test-string-equal "last param" (httpd-query-param "a=1&b=2&c=3" "c") "3")
+  (test-check "missing param" (not (httpd-query-param "a=1&b=2" "z")))
+  (test-check "empty query" (not (httpd-query-param "" "x")))
+  ;; URL-encoded value in query
+  (test-string-equal "encoded query" (httpd-query-param "file=a%2Fb.csv" "file") "a/b.csv") )
+
+
+;; ============================================================
+;; MIME type detection
+;; ============================================================
+
+(test-suite "httpd-mime-type"
+  (test-string-equal "html" (httpd-mime-type "index.html") "text/html; charset=utf-8")
+  (test-string-equal "css" (httpd-mime-type "styles.css") "text/css; charset=utf-8")
+  (test-string-equal "js" (httpd-mime-type "app.js") "application/javascript; charset=utf-8")
+  (test-string-equal "json" (httpd-mime-type "data.json") "application/json; charset=utf-8")
+  (test-string-equal "png" (httpd-mime-type "image.png") "image/png")
+  (test-string-equal "jpg" (httpd-mime-type "photo.jpg") "image/jpeg")
+  (test-string-equal "csv" (httpd-mime-type "data.csv") "text/csv; charset=utf-8")
+  (test-string-equal "svg" (httpd-mime-type "icon.svg") "image/svg+xml")
+  (test-string-equal "unknown" (httpd-mime-type "file.xyz") "application/octet-stream")
+  ;; Multiple dots
+  (test-string-equal "multi dot" (httpd-mime-type "archive.tar.gz") "application/octet-stream")
+  ;; No extension
+  (test-string-equal "no ext" (httpd-mime-type "Makefile") "application/octet-stream") )
+
+
+;; ============================================================
+;; Request line parsing
+;; ============================================================
+
+(test-suite "httpd request line parsing"
+  ;; Basic GET
+  (let ((parsed (_httpd-parse-request-line "GET / HTTP/1.0")))
+    (test-string-equal "get method" (car parsed) "GET")
+    (test-string-equal "get path" (cadr parsed) "/")
+    (test-string-equal "get query" (caddr parsed) "") )
+  ;; GET with path
+  (let ((parsed (_httpd-parse-request-line "GET /api/graphs HTTP/1.1")))
+    (test-string-equal "path method" (car parsed) "GET")
+    (test-string-equal "path path" (cadr parsed) "/api/graphs") )
+  ;; GET with query string
+  (let ((parsed (_httpd-parse-request-line "GET /search?q=test&page=1 HTTP/1.1")))
+    (test-string-equal "query method" (car parsed) "GET")
+    (test-string-equal "query path" (cadr parsed) "/search")
+    (test-string-equal "query str" (caddr parsed) "q=test&page=1") )
+  ;; POST
+  (let ((parsed (_httpd-parse-request-line "POST /api/data HTTP/1.0")))
+    (test-string-equal "post method" (car parsed) "POST")
+    (test-string-equal "post path" (cadr parsed) "/api/data") ) )
+
+
+;; ============================================================
+;; Server creation and routes
+;; ============================================================
+
+(test-suite "httpd-new and routes"
+  (let ((server (httpd-new 9999)))
+    (test-equal "port" (server "port") 9999)
+    (test-check "routes empty" (null (server "routes")))
+    (test-check "not running" (not (server "running")))
+    ;; Add a route
+    (httpd-add-route server "GET" "/test" (lambda (req) (list 200 "text/plain" "ok")))
+    (test-equal "one route" (length (server "routes")) 1)
+    ;; Add more routes
+    (httpd-add-route server "POST" "/data" (lambda (req) (list 201 "text/plain" "created")))
+    (httpd-add-route server "GET" "/item/([0-9]+)" (lambda (req) (list 200 "text/plain" "item")))
+    (test-equal "three routes" (length (server "routes")) 3) ) )
+
+
+;; ============================================================
+;; Route matching
+;; ============================================================
+
+(test-suite "httpd route matching"
+  (let ((routes (list
+          (list "GET" "/" (lambda (req) (list 200 "text/html" "home")))
+          (list "GET" "/api/items" (lambda (req) (list 200 "application/json" "[]")))
+          (list "GET" "/api/item/([0-9]+)" (lambda (req) (list 200 "application/json" "{}")))
+          (list "POST" "/api/item" (lambda (req) (list 201 "application/json" "{}"))) )))
+    ;; Root match
+    (let ((match (_httpd-match-route routes "GET" "/")))
+      (test-check "root matches" match) )
+    ;; Path match
+    (let ((match (_httpd-match-route routes "GET" "/api/items")))
+      (test-check "items matches" match) )
+    ;; Regex match with capture
+    (let ((match (_httpd-match-route routes "GET" "/api/item/42")))
+      (test-check "regex matches" match)
+      ;; params is the regex-extract result: list of captured groups
+      (let ((params (cadr match)))
+        (test-string-equal "capture group" (car params) "42") ) )
+    ;; Method mismatch
+    (let ((match (_httpd-match-route routes "POST" "/")))
+      (test-check "method mismatch" (not match)) )
+    ;; Path not found
+    (let ((match (_httpd-match-route routes "GET" "/nonexistent")))
+      (test-check "path not found" (not match)) ) ) )
+
+
+;; ============================================================
+;; HTTP reason phrases
+;; ============================================================
+
+(test-suite "httpd reason phrases"
+  (test-string-equal "200" (_httpd-reason 200) "OK")
+  (test-string-equal "201" (_httpd-reason 201) "Created")
+  (test-string-equal "404" (_httpd-reason 404) "Not Found")
+  (test-string-equal "500" (_httpd-reason 500) "Internal Server Error")
+  (test-string-equal "400" (_httpd-reason 400) "Bad Request")
+  (test-string-equal "403" (_httpd-reason 403) "Forbidden") )

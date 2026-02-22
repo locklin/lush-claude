@@ -400,10 +400,11 @@ static inline double _dm_get(const double *dm, int i, int j) {
 int mapper_dbscan(const double *dm, int nrows,
                   double eps, int min_pts, int *labels) {
     int *visited = calloc(nrows, sizeof(int));
+    int *queued = calloc(nrows, sizeof(int));
     int *stack = malloc(nrows * sizeof(int));
     int *neighbors = malloc(nrows * sizeof(int));
-    if (!visited || !stack || !neighbors) {
-        free(visited); free(stack); free(neighbors);
+    if (!visited || !queued || !stack || !neighbors) {
+        free(visited); free(queued); free(stack); free(neighbors);
         return -1;
     }
     for (int i = 0; i < nrows; i++) labels[i] = -1;
@@ -422,9 +423,14 @@ int mapper_dbscan(const double *dm, int nrows,
 
         /* Expand cluster */
         labels[i] = cluster_id;
+        queued[i] = 1;
         int sp = 0;
-        for (int k = 0; k < nn; k++)
-            if (neighbors[k] != i) stack[sp++] = neighbors[k];
+        for (int k = 0; k < nn; k++) {
+            if (neighbors[k] != i && !queued[neighbors[k]]) {
+                stack[sp++] = neighbors[k];
+                queued[neighbors[k]] = 1;
+            }
+        }
 
         while (sp > 0) {
             int q = stack[--sp];
@@ -439,16 +445,20 @@ int mapper_dbscan(const double *dm, int nrows,
                 if (_dm_get(dm, q, j) <= eps) nn2++;
 
             if (nn2 >= min_pts) {
-                /* Add unvisited neighbors to stack */
+                /* Add unvisited, unqueued neighbors to stack */
                 for (int j = 0; j < nrows; j++) {
-                    if (_dm_get(dm, q, j) <= eps && !visited[j])
+                    if (_dm_get(dm, q, j) <= eps && !visited[j] && !queued[j]) {
                         stack[sp++] = j;
+                        queued[j] = 1;
+                    }
                 }
             }
         }
         cluster_id++;
+        /* Reset queued for next cluster */
+        memset(queued, 0, nrows * sizeof(int));
     }
-    free(visited); free(stack); free(neighbors);
+    free(visited); free(queued); free(stack); free(neighbors);
     return cluster_id;
 }
 
@@ -610,10 +620,11 @@ int mapper_dbscan_kdtree(const double *data, int nrows, int ncols,
     if (!tree) return -1;
 
     int *visited = calloc(nrows, sizeof(int));
+    int *queued = calloc(nrows, sizeof(int));
     int *stack = malloc(nrows * sizeof(int));
     int *nbuf = malloc(nrows * sizeof(int));
-    if (!visited || !stack || !nbuf) {
-        free(visited); free(stack); free(nbuf);
+    if (!visited || !queued || !stack || !nbuf) {
+        free(visited); free(queued); free(stack); free(nbuf);
         mapper_kdtree_free(tree);
         return -1;
     }
@@ -628,9 +639,14 @@ int mapper_dbscan_kdtree(const double *data, int nrows, int ncols,
         if (nn < min_pts) continue;
 
         labels[i] = cluster_id;
+        queued[i] = 1;
         int sp = 0;
-        for (int k = 0; k < nn; k++)
-            if (nbuf[k] != i) stack[sp++] = nbuf[k];
+        for (int k = 0; k < nn; k++) {
+            if (nbuf[k] != i && !queued[nbuf[k]]) {
+                stack[sp++] = nbuf[k];
+                queued[nbuf[k]] = 1;
+            }
+        }
 
         while (sp > 0) {
             int q = stack[--sp];
@@ -641,14 +657,19 @@ int mapper_dbscan_kdtree(const double *data, int nrows, int ncols,
 
             int nn2 = mapper_kdtree_range(tree, q, eps, nbuf, nrows);
             if (nn2 >= min_pts) {
-                for (int k = 0; k < nn2; k++)
-                    if (!visited[nbuf[k]])
+                for (int k = 0; k < nn2; k++) {
+                    if (!visited[nbuf[k]] && !queued[nbuf[k]]) {
                         stack[sp++] = nbuf[k];
+                        queued[nbuf[k]] = 1;
+                    }
+                }
             }
         }
         cluster_id++;
+        /* Reset queued for next cluster */
+        memset(queued, 0, nrows * sizeof(int));
     }
-    free(visited); free(stack); free(nbuf);
+    free(visited); free(queued); free(stack); free(nbuf);
     mapper_kdtree_free(tree);
     return cluster_id;
 }

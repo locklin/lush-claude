@@ -1,0 +1,34 @@
+;;; run-all.lsh -- Run all tests: timedate, datatable, httpd, mapper, e2e
+;;;
+;;; Run with:
+;;;   TMPDIR=/tmp/claude lush lush-claude/packages/datatable/tests/run-all.lsh
+
+;; Add development packages path so our local versions override system ones
+;; The test file is at .../packages/datatable/tests/run-all.lsh
+;; We need .../packages/ on the search path
+(let ((tests-dir (dirname file-being-loaded)))
+  (let ((pkg-dir (dirname (dirname tests-dir))))
+    (addpath pkg-dir) ) )
+
+;; Load test framework
+(load (concat (dirname file-being-loaded) "/framework.lsh"))
+
+;; Load the packages
+(libload "datatable/datatable-csv")   ;; datatable + timedate
+(libload "httpd/httpd")               ;; web server
+(libload "mapper/mapper")             ;; mapper + metrics + cluster + graph + lens + stats
+
+(printf "=== Full Test Suite ===\n")
+(printf "Running all tests...\n")
+
+;; Load and run test suites (bottom-up order)
+(load (concat (dirname file-being-loaded) "/test-timedate.lsh"))
+(load (concat (dirname file-being-loaded) "/test-stringcol.lsh"))
+(load (concat (dirname file-being-loaded) "/test-datatable.lsh"))
+(load (concat (dirname file-being-loaded) "/test-csv.lsh"))
+(load (concat (dirname file-being-loaded) "/test-httpd.lsh"))
+(load (concat (dirname file-being-loaded) "/test-mapper.lsh"))
+(load (concat (dirname file-being-loaded) "/test-e2e.lsh"))
+
+;; Print summary
+(test-summary)

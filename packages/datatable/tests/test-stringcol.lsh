@@ -1,0 +1,170 @@
+;;; test-stringcol.lsh -- Tests for StringColumn class
+
+;; ============================================================
+;; Construction
+;; ============================================================
+
+(test-suite "StringColumn Construction"
+  (let ((sc (new StringColumn 100)))
+    (test-equal "initial num-rows" (==> sc num-rows) 0)
+    (test-equal "initial num-unique" (==> sc num-unique) 0) ) )
+
+
+;; ============================================================
+;; Append and Get
+;; ============================================================
+
+(test-suite "StringColumn Append and Get"
+  (let ((sc (new StringColumn 10)))
+    (==> sc append "AAPL")
+    (==> sc append "GOOG")
+    (==> sc append "AAPL")
+    (==> sc append "MSFT")
+    (test-equal "num-rows after 4" (==> sc num-rows) 4)
+    (test-equal "num-unique after 4" (==> sc num-unique) 3)
+    ;; Get values
+    (test-string-equal "get 0" (==> sc get 0) "AAPL")
+    (test-string-equal "get 1" (==> sc get 1) "GOOG")
+    (test-string-equal "get 2" (==> sc get 2) "AAPL")
+    (test-string-equal "get 3" (==> sc get 3) "MSFT") ) )
+
+
+;; ============================================================
+;; String Interning (Same Code for Same String)
+;; ============================================================
+
+(test-suite "StringColumn Interning"
+  (let ((sc (new StringColumn 10)))
+    (==> sc append "foo")
+    (==> sc append "bar")
+    (==> sc append "foo")
+    (==> sc append "baz")
+    (==> sc append "bar")
+    ;; rows 0 and 2 should have the same code
+    (test-equal "same code for 'foo'" (==> sc get-code 0) (==> sc get-code 2))
+    ;; rows 1 and 4 should have the same code
+    (test-equal "same code for 'bar'" (==> sc get-code 1) (==> sc get-code 4))
+    ;; different strings have different codes
+    (test-check "different codes" (<> (==> sc get-code 0) (==> sc get-code 1))) ) )
+
+
+;; ============================================================
+;; rows-equal
+;; ============================================================
+
+(test-suite "StringColumn rows-equal"
+  (let ((sc (new StringColumn 10)))
+    (==> sc append "alpha")
+    (==> sc append "beta")
+    (==> sc append "alpha")
+    (test-check "equal rows 0,2" (==> sc rows-equal 0 2))
+    (test-check "unequal rows 0,1" (not (==> sc rows-equal 0 1))) ) )
+
+
+;; ============================================================
+;; where-eq
+;; ============================================================
+
+(test-suite "StringColumn where-eq"
+  (let ((sc (new StringColumn 10)))
+    (==> sc append "red")
+    (==> sc append "blue")
+    (==> sc append "red")
+    (==> sc append "green")
+    (==> sc append "blue")
+    ;; where-eq "red" -> (0 2)
+    (let ((result (==> sc where-eq "red")))
+      (test-equal "where-eq red count" (length result) 2)
+      (test-equal "where-eq red [0]" (nth 0 result) 0)
+      (test-equal "where-eq red [1]" (nth 1 result) 2) )
+    ;; where-eq "blue" -> (1 4)
+    (let ((result (==> sc where-eq "blue")))
+      (test-equal "where-eq blue count" (length result) 2)
+      (test-equal "where-eq blue [0]" (nth 0 result) 1)
+      (test-equal "where-eq blue [1]" (nth 1 result) 4) )
+    ;; where-eq "green" -> (3)
+    (let ((result (==> sc where-eq "green")))
+      (test-equal "where-eq green count" (length result) 1)
+      (test-equal "where-eq green [0]" (nth 0 result) 3) )
+    ;; where-eq nonexistent -> nil
+    (let ((result (==> sc where-eq "purple")))
+      (test-check "where-eq nonexistent" (null result)) ) ) )
+
+
+;; ============================================================
+;; get-codes and get-pool
+;; ============================================================
+
+(test-suite "StringColumn get-codes and get-pool"
+  (let ((sc (new StringColumn 10)))
+    (==> sc append "x")
+    (==> sc append "y")
+    (==> sc append "x")
+    ;; get-pool returns list of unique strings
+    (let ((pool (==> sc get-pool)))
+      (test-equal "pool length" (length pool) 2)
+      (test-string-equal "pool[0]" (nth 0 pool) "x")
+      (test-string-equal "pool[1]" (nth 1 pool) "y") )
+    ;; get-codes returns int-matrix
+    (let ((codes (==> sc get-codes)))
+      (test-equal "codes[0]" (codes 0) 0)
+      (test-equal "codes[1]" (codes 1) 1)
+      (test-equal "codes[2]" (codes 2) 0) ) ) )
+
+
+;; ============================================================
+;; build-from-codes (bulk init)
+;; ============================================================
+
+(test-suite "StringColumn build-from-codes"
+  (let ((sc (new StringColumn 10))
+        (code-arr (int-matrix 5))
+        (strings (list "alpha" "beta" "gamma")) )
+    ;; Set up code array: alpha=0, beta=1, alpha=0, gamma=2, beta=1
+    (code-arr 0 0) (code-arr 1 1) (code-arr 2 0)
+    (code-arr 3 2) (code-arr 4 1)
+    (==> sc build-from-codes code-arr strings)
+    (test-equal "bulk num-rows" (==> sc num-rows) 5)
+    (test-equal "bulk num-unique" (==> sc num-unique) 3)
+    (test-string-equal "bulk get 0" (==> sc get 0) "alpha")
+    (test-string-equal "bulk get 1" (==> sc get 1) "beta")
+    (test-string-equal "bulk get 2" (==> sc get 2) "alpha")
+    (test-string-equal "bulk get 3" (==> sc get 3) "gamma")
+    (test-string-equal "bulk get 4" (==> sc get 4) "beta")
+    ;; where-eq should work after bulk init
+    (let ((result (==> sc where-eq "alpha")))
+      (test-equal "bulk where-eq count" (length result) 2) ) ) )
+
+
+;; ============================================================
+;; Capacity growth
+;; ============================================================
+
+(test-suite "StringColumn Growth"
+  ;; Start with minimum capacity, append many rows
+  (let ((sc (new StringColumn 1)))
+    (for (i 0 199)
+      (==> sc append (sprintf "val%d" (mod i 10))) )
+    (test-equal "growth num-rows" (==> sc num-rows) 200)
+    (test-equal "growth num-unique" (==> sc num-unique) 10)
+    (test-string-equal "growth get 0" (==> sc get 0) "val0")
+    (test-string-equal "growth get 99" (==> sc get 99) "val9")
+    (test-string-equal "growth get 199" (==> sc get 199) "val9") ) )
+
+
+;; ============================================================
+;; Empty string handling
+;; ============================================================
+
+(test-suite "StringColumn Empty Strings"
+  (let ((sc (new StringColumn 10)))
+    (==> sc append "")
+    (==> sc append "notempty")
+    (==> sc append "")
+    (test-equal "empty rows" (==> sc num-rows) 3)
+    (test-string-equal "get empty 0" (==> sc get 0) "")
+    (test-string-equal "get notempty" (==> sc get 1) "notempty")
+    (test-string-equal "get empty 2" (==> sc get 2) "")
+    (test-check "empty rows equal" (==> sc rows-equal 0 2))
+    ;; Empty string is its own unique entry
+    (test-equal "unique count with empty" (==> sc num-unique) 2) ) )

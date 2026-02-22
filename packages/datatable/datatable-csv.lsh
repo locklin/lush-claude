@@ -102,31 +102,12 @@
     rc ) )
 
 
-;; internal: read a timestamp column from CSV into a long-matrix
-;; stamps-out: pre-allocated nrows long-matrix of int64 nanoseconds
-;; fmt-str: strptime format string for parsing
-(de _csv-read-stamp-inner (filename delim col-idx stamps-out nrows fmt-str)
-  ((-str-) filename fmt-str)
-  ((-int-) delim col-idx nrows)
-  ((-idx1- (-long-)) stamps-out)
-  (let ((rc 0))
-    ((-int-) rc)
-    #{{
-       $rc = dt_csv_read_stamp_col($filename->data,
-                                    (char)$delim, $col_idx,
-                                    IDX_PTR($stamps_out, int64_t), $nrows,
-                                    (const char *)$fmt_str->data);
-    }#}
-    rc ) )
-
-
-;; Compile the bridge functions
+;; Compile the bridge functions (no stamp bridge — stamps parsed at Lush level)
 (let ((dhc-make-lushflags
        (concat dhc-make-lushflags " -I" (dirname file-being-loaded))))
   (dhc-make-with-libs () t
     #{ #include "datatable-csv-c.h" #}
-    _csv-scan-inner _csv-read-numeric-inner _csv-read-string-inner
-    _csv-read-stamp-inner ) )
+    _csv-scan-inner _csv-read-numeric-inner _csv-read-string-inner ) )
 
 
 ;; ============================================================
@@ -290,18 +271,44 @@
                           (str-col-ht (sprintf "%d" ci) sc) ) ) ) )
 
                   ;; Phase 2c: Read stamp columns
-                  ;; Build a htable: col-index -> long-matrix of nanos
+                  ;; Read as strings first, then parse with timedate
+                  ;; Build a htable: col-index -> double-matrix of seconds
                   (let ((stamp-col-ht (htable 32)))
-                    (let ((fi 0))
-                      (each ((ci stamp-col-indices) (fmt stamp-col-fmts))
-                        (let ((stamps-out (long-matrix nrows)))
-                          (let ((rc (_csv-read-stamp-inner filename delim ci
-                                                            stamps-out nrows fmt)))
-                            (when (< rc 0)
-                              (error "csv-read" "failed to read stamp column"
-                                     (nth ci col-names)) ) )
-                          (stamp-col-ht (sprintf "%d" ci) stamps-out) )
-                        (setq fi (1+ fi)) ) )
+                    (each ((ci stamp-col-indices) (fmt stamp-col-fmts))
+                      ;; Read the column as strings
+                      (let ((codes-out    (int-matrix nrows))
+                            (unique-buf   (ubyte-matrix 1048576))
+                            (unique-offs  (int-matrix 65536))
+                            (n-unique-out (int-matrix 1)) )
+                        (let ((rc (_csv-read-string-inner filename delim ci
+                                                           codes-out nrows
+                                                           unique-buf 1048576
+                                                           unique-offs 65536
+                                                           n-unique-out)))
+                          (when (< rc 0)
+                            (error "csv-read" "failed to read stamp column as string"
+                                   (nth ci col-names)) ) )
+                        ;; Extract unique strings
+                        (let ((n-unique (n-unique-out 0))
+                              (strings ()) )
+                          (for (u 0 (1- n-unique))
+                            (setq strings
+                                  (nconc1 strings
+                                           (_csv-extract-string unique-buf
+                                                                 (unique-offs u)))) )
+                          ;; Parse unique strings to seconds
+                          (let ((unique-secs (double-matrix n-unique)))
+                            (let ((ui 0))
+                              (each ((s strings))
+                                (let ((out (double-matrix 1)))
+                                  (_td-strptime-to-secs-out s fmt out)
+                                  (unique-secs ui (out 0)) )
+                                (setq ui (1+ ui)) ) )
+                            ;; Build stamps array by mapping codes to parsed seconds
+                            (let ((stamps-out (double-matrix nrows)))
+                              (for (r 0 (1- nrows))
+                                (stamps-out r (unique-secs (codes-out r))) )
+                              (stamp-col-ht (sprintf "%d" ci) stamps-out) ) ) ) ) )
 
                     ;; Phase 3: Build the columns list in O(n) — one pass
                     ;; Each column is either numeric, string, or stamp

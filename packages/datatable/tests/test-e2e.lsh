@@ -1,0 +1,173 @@
+;;; test-e2e.lsh -- End-to-end integration tests
+;;;
+;;; Tests the full pipeline: CSV -> DataTable -> filter -> Mapper -> graph.
+;;; Also tests: CSV with dates -> DataTable stamp filtering -> formatted output.
+
+;; ============================================================
+;; E2E: CSV -> DataTable -> filter -> select
+;; ============================================================
+
+(test-suite "E2E: CSV pipeline"
+  ;; Read a CSV, filter rows, select columns
+  (let ((dt (csv-read "/tmp/claude/test-basic.csv")))
+    ;; Filter: age > 28
+    (let ((older (==> dt where-rows '> "age" 28)))
+      (test-check "e2e older count>0" (> (==> older num-rows) 0))
+      ;; All remaining ages should be > 28
+      (let ((ok t))
+        (for (i 0 (1- (==> older num-rows)))
+          (when (<= (==> older get i "age") 28)
+            (setq ok ()) ) )
+        (test-check "e2e all ages>28" ok) ) )
+    ;; Select a subset of columns
+    (let ((sub (==> dt select-columns (list "name" "score"))))
+      (test-equal "e2e sub cols" (==> sub num-cols) 2)
+      (test-equal "e2e sub rows" (==> sub num-rows) (==> dt num-rows)) ) ) )
+
+
+;; ============================================================
+;; E2E: CSV dates -> timestamp filtering
+;; ============================================================
+
+(test-suite "E2E: date filtering pipeline"
+  ;; Read CSV with date column
+  (let ((dt (csv-read "/tmp/claude/test-dates.csv")))
+    ;; Verify date column was detected
+    (test-equal "e2e date type" (==> dt col-type "date") 'stamp)
+    ;; Filter: dates after 2024-03-01
+    (let ((cutoff (timestamp-from-date 2024 3 1)))
+      (let ((recent (==> dt where-rows '>= "date" cutoff)))
+        (test-check "e2e recent rows>0" (> (==> recent num-rows) 0))
+        ;; All dates should be >= cutoff
+        (let ((ok t))
+          (for (i 0 (1- (==> recent num-rows)))
+            (when (< (==> recent get i "date") cutoff)
+              (setq ok ()) ) )
+          (test-check "e2e all dates>=cutoff" ok) ) ) )
+    ;; Format a stamp value as string
+    (let ((ts (==> dt get 0 "date")))
+      (let ((str (timestamp-to-string ts "%Y-%m-%d")))
+        (test-check "e2e date format" (> (len str) 0)) ) ) ) )
+
+
+;; ============================================================
+;; E2E: Build DataTable programmatically -> Mapper
+;; ============================================================
+
+(test-suite "E2E: DataTable to Mapper"
+  ;; Build a small dataset as a DataTable
+  (let ((dt (new DataTable)))
+    (==> dt add-column "x" 'real)
+    (==> dt add-column "y" 'real)
+    (==> dt add-column "group" 'string)
+    ;; Two clusters: group A near (0,0), group B near (10,10)
+    (for (i 0 9)
+      (==> dt append-row (list (* 0.1 i) (* 0.1 i) "A")) )
+    (for (i 0 9)
+      (==> dt append-row (list (+ 10 (* 0.1 i)) (+ 10 (* 0.1 i)) "B")) )
+    (test-equal "e2e dt rows" (==> dt num-rows) 20)
+    ;; Extract numeric columns into a matrix for mapper
+    (let ((data (double-matrix 20 2)))
+      (for (i 0 19)
+        (data i 0 (==> dt get i "x"))
+        (data i 1 (==> dt get i "y")) )
+      ;; Run mapper
+      (let ((lens (mapper-lens-sum data)))
+        (let ((graph (mapper-run data lens 4 0.3
+                                 'metric "euclidean"
+                                 'clusterer "slink"
+                                 'eps 5.0)))
+          (test-check "e2e mapper nodes>0" (> (==> graph num-nodes) 0))
+          ;; Color by x coordinate
+          (==> graph color-by-mean data 0)
+          (test-check "e2e colors set" :graph:node-colors)
+          ;; Verify graph structure
+          (let ((nn (==> graph num-nodes))
+                (ne (==> graph num-edges)) )
+            (test-check "e2e nodes>1" (> nn 1))
+            (printf "    (e2e mapper: %d nodes, %d edges)\n" nn ne) ) ) ) ) ) )
+
+
+;; ============================================================
+;; E2E: CSV -> filter -> DataTable -> matrix -> distance matrix
+;; ============================================================
+
+(test-suite "E2E: CSV to distance matrix"
+  (let ((dt (csv-read "/tmp/claude/test-basic.csv")))
+    ;; Extract age and score into a matrix
+    (let ((n (==> dt num-rows))
+          (data (double-matrix (==> dt num-rows) 2)) )
+      (for (i 0 (1- n))
+        (data i 0 (==> dt get i "age"))
+        (data i 1 (==> dt get i "score")) )
+      ;; Compute distance matrix
+      (let ((dm (mapper-distance-matrix data "euclidean")))
+        ;; Should have n*(n-1)/2 entries
+        (test-equal "e2e dm size" (idx-dim dm 0) (/ (* n (1- n)) 2))
+        ;; All distances should be >= 0
+        (let ((ok t))
+          (for (i 0 (1- (idx-dim dm 0)))
+            (when (< (dm i) 0) (setq ok ())) )
+          (test-check "e2e all dist>=0" ok) )
+        ;; Self-distance = 0
+        (test-approx "e2e self dist" (mapper-dm-ref dm 0 0) 0.0 0.001) ) ) ) )
+
+
+;; ============================================================
+;; E2E: Timestamps in DataTable -> Mapper with time-based lens
+;; ============================================================
+
+(test-suite "E2E: timestamp lens pipeline"
+  ;; Build time-series data
+  (let ((dt (new DataTable)))
+    (==> dt add-column "ts" 'stamp)
+    (==> dt add-column "value" 'real)
+    ;; 30 days of data, value rises then falls
+    (for (i 0 29)
+      (let ((ts (timestamp-add (timestamp-from-date 2024 1 1) (* i 86400)))
+            (val (if (< i 15) (* 1.0 i) (* 1.0 (- 29 i)))) )
+        (==> dt append-row (list ts val)) ) )
+    (test-equal "e2e ts rows" (==> dt num-rows) 30)
+    ;; Extract to matrix: use day-offset as x, value as y
+    (let ((base (==> dt get 0 "ts"))
+          (data (double-matrix 30 2)) )
+      (for (i 0 29)
+        (data i 0 (/ (- (==> dt get i "ts") base) 86400))
+        (data i 1 (==> dt get i "value")) )
+      ;; Use day-offset as lens
+      (let ((lens (mapper-lens-column data 0)))
+        (let ((graph (mapper-run data lens 5 0.3
+                                 'metric "euclidean"
+                                 'clusterer "slink"
+                                 'eps 10.0)))
+          (test-check "e2e ts nodes" (> (==> graph num-nodes) 0))
+          ;; Color by value
+          (==> graph color-by-mean data 1)
+          (test-check "e2e ts colors" :graph:node-colors) ) ) ) ) )
+
+
+;; ============================================================
+;; E2E: JSON encode DataTable query results
+;; ============================================================
+
+(test-suite "E2E: DataTable to JSON"
+  (let ((dt (new DataTable)))
+    (==> dt add-column "name" 'string)
+    (==> dt add-column "score" 'real)
+    (==> dt append-row (list "Alice" 95.5))
+    (==> dt append-row (list "Bob" 87.0))
+    ;; Encode row as JSON object
+    (let ((row-json (json-object "name" (==> dt get 0 "name")
+                                 "score" (==> dt get 0 "score"))))
+      (test-string-equal "e2e json row" row-json
+                         "{\"name\":\"Alice\",\"score\":95.5}") )
+    ;; Encode full table as JSON array of objects
+    (let ((rows ()))
+      (for (i 0 (1- (==> dt num-rows)))
+        (setq rows (nconc1 rows
+          (list (cons "name" (==> dt get i "name"))
+                (cons "score" (==> dt get i "score"))))) )
+      (let ((json (json-encode-list rows)))
+        (test-check "e2e json array starts [" (= (left json 1) "["))
+        (test-check "e2e json array ends ]"
+                    (= (mid json (len json) 1) "]")) ) ) ) )

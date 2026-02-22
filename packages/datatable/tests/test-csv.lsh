@@ -1,0 +1,172 @@
+;;; test-csv.lsh -- Tests for the CSV reader (csv-read)
+;;;
+;;; Tests: reading numeric, string, integer, timestamp, and mixed CSV files.
+;;; Test CSV files are in /tmp/claude/test-*.csv
+
+;; ============================================================
+;; Basic CSV with mixed types (string, int-as-real, real)
+;; ============================================================
+
+(test-suite "CSV Read Basic"
+  (let ((dt (csv-read "/tmp/claude/test-basic.csv")))
+    (test-equal "basic num-rows" (==> dt num-rows) 5)
+    (test-equal "basic num-cols" (==> dt num-cols) 3)
+    ;; Column names
+    (let ((names (==> dt col-names)))
+      (test-string-equal "basic name[0]" (nth 0 names) "name")
+      (test-string-equal "basic name[1]" (nth 1 names) "age")
+      (test-string-equal "basic name[2]" (nth 2 names) "score") )
+    ;; name is string
+    (test-equal "basic name type" (==> dt col-type "name") 'string)
+    ;; age and score are real (CSV reader promotes int -> real for numeric cols)
+    (test-equal "basic age type" (==> dt col-type "age") 'real)
+    (test-equal "basic score type" (==> dt col-type "score") 'real)
+    ;; Spot check values
+    (test-string-equal "basic name[0]" (==> dt get 0 "name") "Alice")
+    (test-string-equal "basic name[4]" (==> dt get 4 "name") "Eve")
+    (test-approx "basic age[0]" (==> dt get 0 "age") 30.0 0.01)
+    (test-approx "basic age[1]" (==> dt get 1 "age") 25.0 0.01)
+    (test-approx "basic score[0]" (==> dt get 0 "score") 95.5 0.01)
+    (test-approx "basic score[3]" (==> dt get 3 "score") 78.9 0.01) ) )
+
+
+;; ============================================================
+;; Integer-only columns
+;; ============================================================
+
+(test-suite "CSV Read Integers"
+  (let ((dt (csv-read "/tmp/claude/test-ints.csv")))
+    (test-equal "ints num-rows" (==> dt num-rows) 5)
+    (test-equal "ints num-cols" (==> dt num-cols) 3)
+    ;; All columns should be real (CSV reader stores numeric as double)
+    (test-equal "ints id type" (==> dt col-type "id") 'real)
+    (test-equal "ints count type" (==> dt col-type "count") 'real)
+    ;; Values
+    (test-approx "ints id[0]" (==> dt get 0 "id") 1.0 0.01)
+    (test-approx "ints count[2]" (==> dt get 2 "count") 300.0 0.01)
+    (test-approx "ints flag[3]" (==> dt get 3 "flag") 1.0 0.01) ) )
+
+
+;; ============================================================
+;; String-only columns (dictionary encoding)
+;; ============================================================
+
+(test-suite "CSV Read Strings"
+  (let ((dt (csv-read "/tmp/claude/test-strings.csv")))
+    (test-equal "strings num-rows" (==> dt num-rows) 5)
+    (test-equal "strings num-cols" (==> dt num-cols) 3)
+    ;; All string
+    (test-equal "strings city type" (==> dt col-type "city") 'string)
+    (test-equal "strings state type" (==> dt col-type "state") 'string)
+    ;; zip might be string or real depending on leading zeros
+    ;; Values
+    (test-string-equal "strings city[0]" (==> dt get 0 "city") "New York")
+    (test-string-equal "strings city[2]" (==> dt get 2 "city") "Chicago")
+    (test-string-equal "strings state[0]" (==> dt get 0 "state") "NY")
+    (test-string-equal "strings state[1]" (==> dt get 1 "state") "CA")
+    ;; Dictionary encoding: repeated values should use same code
+    (let ((city-col (==> dt get-column "city")))
+      (test-check "city dict: NY=NY" (==> city-col rows-equal 0 3))
+      (test-check "city dict: LA=LA" (==> city-col rows-equal 1 4))
+      (test-check "city dict: NY<>LA" (not (==> city-col rows-equal 0 1))) ) ) )
+
+
+;; ============================================================
+;; Date columns (auto-detection)
+;; ============================================================
+
+(test-suite "CSV Read Dates"
+  (let ((dt (csv-read "/tmp/claude/test-dates.csv")))
+    (test-equal "dates num-rows" (==> dt num-rows) 4)
+    (test-equal "dates num-cols" (==> dt num-cols) 3)
+    ;; date should be detected as stamp
+    (test-equal "dates date type" (==> dt col-type "date") 'stamp)
+    ;; value should be real
+    (test-equal "dates value type" (==> dt col-type "value") 'real)
+    ;; label should be string
+    (test-equal "dates label type" (==> dt col-type "label") 'string)
+    ;; Check date values
+    (let ((expected-d1 (timestamp-from-date 2024 1 15))
+          (expected-d2 (timestamp-from-date 2024 2 20)) )
+      (test-equal "dates date[0]" (==> dt get 0 "date") expected-d1)
+      (test-equal "dates date[1]" (==> dt get 1 "date") expected-d2) )
+    ;; Check other values
+    (test-approx "dates value[0]" (==> dt get 0 "value") 1.5 0.01)
+    (test-string-equal "dates label[2]" (==> dt get 2 "label") "baz") ) )
+
+
+;; ============================================================
+;; ISO datetime with space
+;; ============================================================
+
+(test-suite "CSV Read ISO Datetime"
+  (let ((dt (csv-read "/tmp/claude/test-iso-datetime.csv")))
+    (test-equal "iso-dt num-rows" (==> dt num-rows) 3)
+    ;; timestamp column should be stamp
+    (test-equal "iso-dt ts type" (==> dt col-type "timestamp") 'stamp)
+    ;; reading should be real
+    (test-equal "iso-dt reading type" (==> dt col-type "reading") 'real)
+    ;; Check first timestamp: 2024-01-15 10:30:00
+    (let ((expected (timestamp-from-datetime 2024 1 15 10 30 0)))
+      (test-equal "iso-dt ts[0]" (==> dt get 0 "timestamp") expected) )
+    ;; Check numeric value
+    (test-approx "iso-dt reading[0]" (==> dt get 0 "reading") 42.5 0.01) ) )
+
+
+;; ============================================================
+;; TSV (tab-separated)
+;; ============================================================
+
+(test-suite "CSV Read TSV"
+  (let ((dt (csv-read "/tmp/claude/test-tsv.tsv")))
+    (test-equal "tsv num-rows" (==> dt num-rows) 3)
+    (test-equal "tsv num-cols" (==> dt num-cols) 3)
+    ;; Column names
+    (let ((names (==> dt col-names)))
+      (test-string-equal "tsv col[0]" (nth 0 names) "name")
+      (test-string-equal "tsv col[1]" (nth 1 names) "score")
+      (test-string-equal "tsv col[2]" (nth 2 names) "grade") )
+    ;; Types
+    (test-equal "tsv name type" (==> dt col-type "name") 'string)
+    (test-equal "tsv score type" (==> dt col-type "score") 'real)
+    (test-equal "tsv grade type" (==> dt col-type "grade") 'string)
+    ;; Values
+    (test-string-equal "tsv name[0]" (==> dt get 0 "name") "Alice")
+    (test-approx "tsv score[1]" (==> dt get 1 "score") 87.3 0.01)
+    (test-string-equal "tsv grade[2]" (==> dt get 2 "grade") "A") ) )
+
+
+;; ============================================================
+;; CSV + operations pipeline
+;; ============================================================
+
+(test-suite "CSV Read + Filter Pipeline"
+  (let ((dt (csv-read "/tmp/claude/test-basic.csv")))
+    ;; Filter where age > 30
+    (let ((older (==> dt where-rows '> "age" 30.0)))
+      (test-equal "older count" (==> older num-rows) 2)
+      ;; Carol (35) and Eve (32)
+      (test-string-equal "older[0]" (==> older get 0 "name") "Carol")
+      (test-string-equal "older[1]" (==> older get 1 "name") "Eve") )
+    ;; Select columns then check
+    (let ((sub (==> dt select-columns (list "name" "score"))))
+      (test-equal "sub cols" (==> sub num-cols) 2)
+      (test-approx "sub score[0]" (==> sub get 0 "score") 95.5 0.01)
+      (test-string-equal "sub name[2]" (==> sub get 2 "name") "Carol") ) ) )
+
+
+;; ============================================================
+;; CSV Read dates + filter by stamp
+;; ============================================================
+
+(test-suite "CSV Date Filter Pipeline"
+  (let ((dt (csv-read "/tmp/claude/test-dates.csv")))
+    ;; Filter dates after 2024-02-01
+    (let ((cutoff (timestamp-from-date 2024 2 1)))
+      (let ((recent (==> dt where-rows '> "date" cutoff)))
+        (test-equal "date filter count" (==> recent num-rows) 3)
+        ;; First should be 2024-02-20
+        (test-equal "date filter[0]"
+                    (==> recent get 0 "date") (timestamp-from-date 2024 2 20))
+        (test-string-equal "date filter label[0]"
+                           (==> recent get 0 "label") "bar") ) ) ) )

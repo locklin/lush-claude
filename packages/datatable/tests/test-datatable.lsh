@@ -1,0 +1,438 @@
+;;; test-datatable.lsh -- Tests for the DataTable class
+;;;
+;;; Tests: construction, add-column, append-row, get/set, dimensions,
+;;;        select-columns, select-rows, where, where-rows,
+;;;        datatable-from-columns, 'stamp column type
+
+;; ============================================================
+;; Construction
+;; ============================================================
+
+(test-suite "DataTable Construction"
+  (let ((dt (new DataTable)))
+    (test-equal "initial num-rows" (==> dt num-rows) 0)
+    (test-equal "initial num-cols" (==> dt num-cols) 0)
+    (test-check "initial col-names empty" (null (==> dt col-names)))
+    (test-check "initial col-types empty" (null (==> dt col-types))) ) )
+
+
+;; ============================================================
+;; add-column
+;; ============================================================
+
+(test-suite "DataTable add-column"
+  (let ((dt (new DataTable)))
+    (==> dt add-column "price" 'real)
+    (==> dt add-column "qty" 'int)
+    (==> dt add-column "sym" 'string)
+    (test-equal "num-cols after 3" (==> dt num-cols) 3)
+    ;; Column names
+    (let ((names (==> dt col-names)))
+      (test-string-equal "name[0]" (nth 0 names) "price")
+      (test-string-equal "name[1]" (nth 1 names) "qty")
+      (test-string-equal "name[2]" (nth 2 names) "sym") )
+    ;; Column types
+    (let ((types (==> dt col-types)))
+      (test-equal "type[0]" (nth 0 types) 'real)
+      (test-equal "type[1]" (nth 1 types) 'int)
+      (test-equal "type[2]" (nth 2 types) 'string) )
+    ;; col-index
+    (test-equal "col-index price" (==> dt col-index "price") 0)
+    (test-equal "col-index qty" (==> dt col-index "qty") 1)
+    (test-equal "col-index sym" (==> dt col-index "sym") 2)
+    ;; col-type by name
+    (test-equal "col-type by name" (==> dt col-type "price") 'real)
+    ;; col-type by index
+    (test-equal "col-type by idx" (==> dt col-type 1) 'int)
+    ;; col-name by index
+    (test-string-equal "col-name 0" (==> dt col-name 0) "price") ) )
+
+
+;; ============================================================
+;; add-column 'stamp type
+;; ============================================================
+
+(test-suite "DataTable stamp Column"
+  (let ((dt (new DataTable)))
+    (==> dt add-column "ts" 'stamp)
+    (test-equal "stamp type" (==> dt col-type "ts") 'stamp)
+    ;; Append a timestamp value
+    (==> dt append-row (list (timestamp-from-date 2024 1 15)))
+    (test-equal "stamp num-rows" (==> dt num-rows) 1)
+    ;; Get the value back
+    (let ((val (==> dt get 0 "ts")))
+      (test-equal "stamp get" val (timestamp-from-date 2024 1 15)) ) ) )
+
+
+;; ============================================================
+;; append-row and get
+;; ============================================================
+
+(test-suite "DataTable append-row and get"
+  (let ((dt (new DataTable)))
+    (==> dt add-column "price" 'real)
+    (==> dt add-column "qty" 'int)
+    (==> dt add-column "sym" 'string)
+    ;; Append rows
+    (==> dt append-row (list 150.25 100 "AAPL"))
+    (==> dt append-row (list 280.50 200 "GOOG"))
+    (==> dt append-row (list 50.75 50 "MSFT"))
+    (test-equal "num-rows after 3" (==> dt num-rows) 3)
+    ;; Get by column name
+    (test-approx "price row 0" (==> dt get 0 "price") 150.25 0.001)
+    (test-approx "price row 1" (==> dt get 1 "price") 280.50 0.001)
+    (test-equal "qty row 0" (==> dt get 0 "qty") 100)
+    (test-equal "qty row 1" (==> dt get 1 "qty") 200)
+    (test-string-equal "sym row 0" (==> dt get 0 "sym") "AAPL")
+    (test-string-equal "sym row 2" (==> dt get 2 "sym") "MSFT")
+    ;; Get by column index
+    (test-approx "price by idx" (==> dt get 0 0) 150.25 0.001)
+    (test-equal "qty by idx" (==> dt get 0 1) 100)
+    (test-string-equal "sym by idx" (==> dt get 0 2) "AAPL") ) )
+
+
+;; ============================================================
+;; set
+;; ============================================================
+
+(test-suite "DataTable set"
+  (let ((dt (new DataTable)))
+    (==> dt add-column "val" 'real)
+    (==> dt add-column "tag" 'string)
+    (==> dt append-row (list 1.0 "a"))
+    (==> dt append-row (list 2.0 "b"))
+    ;; Set numeric value
+    (==> dt set 0 "val" 99.9)
+    (test-approx "set real" (==> dt get 0 "val") 99.9 0.001)
+    ;; Set by index
+    (==> dt set 1 0 -5.0)
+    (test-approx "set by idx" (==> dt get 1 0) -5.0 0.001)
+    ;; Original value at row 0 "tag" unchanged
+    (test-string-equal "string unchanged" (==> dt get 0 "tag") "a") ) )
+
+
+;; ============================================================
+;; Capacity growth (append > 64 rows)
+;; ============================================================
+
+(test-suite "DataTable Capacity Growth"
+  (let ((dt (new DataTable)))
+    (==> dt add-column "idx" 'int)
+    (==> dt add-column "val" 'real)
+    (==> dt add-column "label" 'string)
+    ;; Append 200 rows (exceeds default capacity of 64)
+    (for (i 0 199)
+      (==> dt append-row (list i (* i 0.5) (sprintf "row%d" i))) )
+    (test-equal "200 rows" (==> dt num-rows) 200)
+    ;; Verify first and last rows
+    (test-equal "first idx" (==> dt get 0 "idx") 0)
+    (test-equal "last idx" (==> dt get 199 "idx") 199)
+    (test-approx "last val" (==> dt get 199 "val") 99.5 0.001)
+    (test-string-equal "last label" (==> dt get 199 "label") "row199") ) )
+
+
+;; ============================================================
+;; get-column
+;; ============================================================
+
+(test-suite "DataTable get-column"
+  (let ((dt (new DataTable)))
+    (==> dt add-column "val" 'real)
+    (==> dt add-column "name" 'string)
+    (==> dt append-row (list 1.0 "a"))
+    (==> dt append-row (list 2.0 "b"))
+    ;; Numeric column returns idx
+    (let ((col (==> dt get-column "val")))
+      (test-approx "col val[0]" (col 0) 1.0 0.001)
+      (test-approx "col val[1]" (col 1) 2.0 0.001) )
+    ;; String column returns StringColumn
+    (let ((col (==> dt get-column "name")))
+      (test-string-equal "col name[0]" (==> col get 0) "a")
+      (test-string-equal "col name[1]" (==> col get 1) "b") )
+    ;; Get by index
+    (let ((col (==> dt get-column 0)))
+      (test-approx "col by idx" (col 0) 1.0 0.001) ) ) )
+
+
+;; ============================================================
+;; select-columns
+;; ============================================================
+
+(test-suite "DataTable select-columns"
+  (let ((dt (new DataTable)))
+    (==> dt add-column "price" 'real)
+    (==> dt add-column "qty" 'int)
+    (==> dt add-column "sym" 'string)
+    (==> dt append-row (list 150.0 100 "AAPL"))
+    (==> dt append-row (list 280.0 200 "GOOG"))
+    ;; Select only price and sym
+    (let ((sub (==> dt select-columns (list "price" "sym"))))
+      (test-equal "sub num-cols" (==> sub num-cols) 2)
+      (test-equal "sub num-rows" (==> sub num-rows) 2)
+      (test-approx "sub price[0]" (==> sub get 0 "price") 150.0 0.001)
+      (test-string-equal "sub sym[1]" (==> sub get 1 "sym") "GOOG")
+      ;; Types preserved
+      (test-equal "sub price type" (==> sub col-type "price") 'real)
+      (test-equal "sub sym type" (==> sub col-type "sym") 'string) )
+    ;; Select single column
+    (let ((sub (==> dt select-columns (list "qty"))))
+      (test-equal "single col" (==> sub num-cols) 1)
+      (test-equal "single qty[0]" (==> sub get 0 "qty") 100) ) ) )
+
+
+;; ============================================================
+;; select-rows
+;; ============================================================
+
+(test-suite "DataTable select-rows"
+  (let ((dt (new DataTable)))
+    (==> dt add-column "val" 'real)
+    (==> dt add-column "label" 'string)
+    (==> dt append-row (list 10.0 "a"))
+    (==> dt append-row (list 20.0 "b"))
+    (==> dt append-row (list 30.0 "c"))
+    (==> dt append-row (list 40.0 "d"))
+    ;; Select rows 0 and 2
+    (let ((sub (==> dt select-rows (list 0 2))))
+      (test-equal "sub rows" (==> sub num-rows) 2)
+      (test-equal "sub cols" (==> sub num-cols) 2)
+      (test-approx "sub val[0]" (==> sub get 0 "val") 10.0 0.001)
+      (test-approx "sub val[1]" (==> sub get 1 "val") 30.0 0.001)
+      (test-string-equal "sub label[0]" (==> sub get 0 "label") "a")
+      (test-string-equal "sub label[1]" (==> sub get 1 "label") "c") )
+    ;; Select single row
+    (let ((sub (==> dt select-rows (list 3))))
+      (test-equal "single row" (==> sub num-rows) 1)
+      (test-approx "single val" (==> sub get 0 "val") 40.0 0.001)
+      (test-string-equal "single label" (==> sub get 0 "label") "d") )
+    ;; Empty selection
+    (let ((sub (==> dt select-rows ())))
+      (test-equal "empty select rows" (==> sub num-rows) 0)
+      (test-equal "empty select cols" (==> sub num-cols) 2) ) ) )
+
+
+;; ============================================================
+;; select-rows with stamp columns
+;; ============================================================
+
+(test-suite "DataTable select-rows with stamp"
+  (let ((dt (new DataTable)))
+    (==> dt add-column "ts" 'stamp)
+    (==> dt add-column "val" 'real)
+    (==> dt append-row (list (timestamp-from-date 2024 1 1) 1.0))
+    (==> dt append-row (list (timestamp-from-date 2024 1 2) 2.0))
+    (==> dt append-row (list (timestamp-from-date 2024 1 3) 3.0))
+    (let ((sub (==> dt select-rows (list 0 2))))
+      (test-equal "stamp sub rows" (==> sub num-rows) 2)
+      (test-equal "stamp sub[0]" (==> sub get 0 "ts") (timestamp-from-date 2024 1 1))
+      (test-equal "stamp sub[1]" (==> sub get 1 "ts") (timestamp-from-date 2024 1 3)) ) ) )
+
+
+;; ============================================================
+;; where (numeric)
+;; ============================================================
+
+(test-suite "DataTable where (numeric)"
+  (let ((dt (new DataTable)))
+    (==> dt add-column "val" 'real)
+    (==> dt add-column "label" 'string)
+    (==> dt append-row (list 10.0 "a"))
+    (==> dt append-row (list 20.0 "b"))
+    (==> dt append-row (list 30.0 "c"))
+    (==> dt append-row (list 20.0 "d"))
+    (==> dt append-row (list 40.0 "e"))
+    ;; Equality
+    (let ((result (==> dt where '= "val" 20.0)))
+      (test-equal "where = count" (length result) 2)
+      (test-equal "where = [0]" (nth 0 result) 1)
+      (test-equal "where = [1]" (nth 1 result) 3) )
+    ;; Greater than
+    (let ((result (==> dt where '> "val" 25.0)))
+      (test-equal "where > count" (length result) 2)
+      (test-equal "where > [0]" (nth 0 result) 2)
+      (test-equal "where > [1]" (nth 1 result) 4) )
+    ;; Less than
+    (let ((result (==> dt where '< "val" 15.0)))
+      (test-equal "where < count" (length result) 1)
+      (test-equal "where < [0]" (nth 0 result) 0) )
+    ;; Greater or equal
+    (let ((result (==> dt where '>= "val" 30.0)))
+      (test-equal "where >= count" (length result) 2) )
+    ;; Less or equal
+    (let ((result (==> dt where '<= "val" 10.0)))
+      (test-equal "where <= count" (length result) 1) )
+    ;; Not equal
+    (let ((result (==> dt where '<> "val" 20.0)))
+      (test-equal "where <> count" (length result) 3) ) ) )
+
+
+;; ============================================================
+;; where (string)
+;; ============================================================
+
+(test-suite "DataTable where (string)"
+  (let ((dt (new DataTable)))
+    (==> dt add-column "sym" 'string)
+    (==> dt add-column "price" 'real)
+    (==> dt append-row (list "AAPL" 150.0))
+    (==> dt append-row (list "GOOG" 280.0))
+    (==> dt append-row (list "AAPL" 151.0))
+    (==> dt append-row (list "MSFT" 300.0))
+    (==> dt append-row (list "GOOG" 282.0))
+    ;; String equality
+    (let ((result (==> dt where '= "sym" "AAPL")))
+      (test-equal "where str= count" (length result) 2)
+      (test-equal "where str= [0]" (nth 0 result) 0)
+      (test-equal "where str= [1]" (nth 1 result) 2) )
+    ;; String not-equal
+    (let ((result (==> dt where '<> "sym" "AAPL")))
+      (test-equal "where str<> count" (length result) 3) )
+    ;; No matches
+    (let ((result (==> dt where '= "sym" "TSLA")))
+      (test-check "where str= no match" (null result)) ) ) )
+
+
+;; ============================================================
+;; where (stamp)
+;; ============================================================
+
+(test-suite "DataTable where (stamp)"
+  (let ((dt (new DataTable)))
+    (==> dt add-column "ts" 'stamp)
+    (==> dt add-column "val" 'real)
+    (let ((d1 (timestamp-from-date 2024 1 1))
+          (d2 (timestamp-from-date 2024 6 15))
+          (d3 (timestamp-from-date 2024 12 31)) )
+      (==> dt append-row (list d1 1.0))
+      (==> dt append-row (list d2 2.0))
+      (==> dt append-row (list d3 3.0))
+      ;; Timestamps after June
+      (let ((cutoff (timestamp-from-date 2024 6 1)))
+        (let ((result (==> dt where '>= "ts" cutoff)))
+          (test-equal "stamp where >= count" (length result) 2)
+          (test-equal "stamp where >= [0]" (nth 0 result) 1)
+          (test-equal "stamp where >= [1]" (nth 1 result) 2) ) )
+      ;; Exact match
+      (let ((result (==> dt where '= "ts" d2)))
+        (test-equal "stamp where = count" (length result) 1)
+        (test-equal "stamp where = [0]" (nth 0 result) 1) ) ) ) )
+
+
+;; ============================================================
+;; where-rows
+;; ============================================================
+
+(test-suite "DataTable where-rows"
+  (let ((dt (new DataTable)))
+    (==> dt add-column "val" 'real)
+    (==> dt add-column "label" 'string)
+    (==> dt append-row (list 10.0 "a"))
+    (==> dt append-row (list 20.0 "b"))
+    (==> dt append-row (list 30.0 "c"))
+    (==> dt append-row (list 20.0 "d"))
+    ;; Filter val = 20
+    (let ((sub (==> dt where-rows '= "val" 20.0)))
+      (test-equal "where-rows rows" (==> sub num-rows) 2)
+      (test-equal "where-rows cols" (==> sub num-cols) 2)
+      (test-approx "where-rows val[0]" (==> sub get 0 "val") 20.0 0.001)
+      (test-approx "where-rows val[1]" (==> sub get 1 "val") 20.0 0.001)
+      (test-string-equal "where-rows label[0]" (==> sub get 0 "label") "b")
+      (test-string-equal "where-rows label[1]" (==> sub get 1 "label") "d") )
+    ;; Filter by string
+    (let ((sub (==> dt where-rows '= "label" "c")))
+      (test-equal "where-rows str rows" (==> sub num-rows) 1)
+      (test-approx "where-rows str val" (==> sub get 0 "val") 30.0 0.001) )
+    ;; Empty result
+    (let ((sub (==> dt where-rows '> "val" 100.0)))
+      (test-equal "where-rows empty" (==> sub num-rows) 0) ) ) )
+
+
+;; ============================================================
+;; datatable-from-columns
+;; ============================================================
+
+(test-suite "datatable-from-columns"
+  ;; Build columns directly
+  (let ((col-real (double-matrix 3))
+        (col-int (int-matrix 3))
+        (sc (new StringColumn 3)) )
+    (col-real 0 1.5) (col-real 1 2.5) (col-real 2 3.5)
+    (col-int 0 10) (col-int 1 20) (col-int 2 30)
+    (==> sc append "aa") (==> sc append "bb") (==> sc append "cc")
+    (let ((dt (datatable-from-columns
+                (list "val" "count" "tag")
+                (list 'real 'int 'string)
+                (list col-real col-int sc)
+                3 )))
+      (test-equal "from-cols num-rows" (==> dt num-rows) 3)
+      (test-equal "from-cols num-cols" (==> dt num-cols) 3)
+      (test-approx "from-cols val[0]" (==> dt get 0 "val") 1.5 0.001)
+      (test-equal "from-cols count[2]" (==> dt get 2 "count") 30)
+      (test-string-equal "from-cols tag[1]" (==> dt get 1 "tag") "bb")
+      ;; Types correct
+      (test-equal "from-cols type val" (==> dt col-type "val") 'real)
+      (test-equal "from-cols type count" (==> dt col-type "count") 'int)
+      (test-equal "from-cols type tag" (==> dt col-type "tag") 'string) ) ) )
+
+
+;; ============================================================
+;; datatable-from-columns with stamp
+;; ============================================================
+
+(test-suite "datatable-from-columns with stamp"
+  (let ((col-stamp (double-matrix 2))
+        (col-val (double-matrix 2)) )
+    (col-stamp 0 (timestamp-from-date 2024 1 1))
+    (col-stamp 1 (timestamp-from-date 2024 12 31))
+    (col-val 0 100.0) (col-val 1 200.0)
+    (let ((dt (datatable-from-columns
+                (list "date" "amount")
+                (list 'stamp 'real)
+                (list col-stamp col-val)
+                2 )))
+      (test-equal "from-cols stamp type" (==> dt col-type "date") 'stamp)
+      (test-equal "from-cols stamp val"
+                  (==> dt get 0 "date") (timestamp-from-date 2024 1 1))
+      (test-approx "from-cols real val" (==> dt get 1 "amount") 200.0 0.001) ) ) )
+
+
+;; ============================================================
+;; select-columns preserves stamp type
+;; ============================================================
+
+(test-suite "select-columns with stamp"
+  (let ((dt (new DataTable)))
+    (==> dt add-column "ts" 'stamp)
+    (==> dt add-column "val" 'real)
+    (==> dt add-column "label" 'string)
+    (==> dt append-row (list (timestamp-from-date 2024 1 1) 1.0 "x"))
+    (==> dt append-row (list (timestamp-from-date 2024 6 15) 2.0 "y"))
+    (let ((sub (==> dt select-columns (list "ts" "label"))))
+      (test-equal "sel-col stamp type" (==> sub col-type "ts") 'stamp)
+      (test-equal "sel-col stamp val"
+                  (==> sub get 0 "ts") (timestamp-from-date 2024 1 1))
+      (test-string-equal "sel-col label" (==> sub get 1 "label") "y") ) ) )
+
+
+;; ============================================================
+;; Mixed operations pipeline
+;; ============================================================
+
+(test-suite "DataTable Pipeline"
+  (let ((dt (new DataTable)))
+    (==> dt add-column "region" 'string)
+    (==> dt add-column "sales" 'real)
+    (==> dt add-column "units" 'int)
+    (==> dt append-row (list "East" 100.0 10))
+    (==> dt append-row (list "West" 200.0 20))
+    (==> dt append-row (list "East" 150.0 15))
+    (==> dt append-row (list "West" 50.0 5))
+    (==> dt append-row (list "East" 300.0 30))
+    ;; Filter East, then select columns
+    (let* ((east (==> dt where-rows '= "region" "East"))
+           (result (==> east select-columns (list "sales" "units"))) )
+      (test-equal "pipeline rows" (==> result num-rows) 3)
+      (test-equal "pipeline cols" (==> result num-cols) 2)
+      (test-approx "pipeline sales[0]" (==> result get 0 "sales") 100.0 0.001)
+      (test-approx "pipeline sales[2]" (==> result get 2 "sales") 300.0 0.001)
+      (test-equal "pipeline units[1]" (==> result get 1 "units") 15) ) ) )
