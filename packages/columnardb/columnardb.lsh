@@ -29,6 +29,7 @@
 (libload "datatable/datatable")
 (libload "columnardb/columnardb-io")
 (libload "libidx/idx-sort")
+(libload "libc/files")
 
 #? *** ColumnarDB: Persistent Columnar Storage
 
@@ -161,7 +162,22 @@
                         ;; Write raw string data (no header)
                         (let ((rc (_cdb-write-bytes pool-str-fname str-data total-bytes)))
                           (when (< rc 0)
-                            (error "columnardb-save" "failed to write pool strings" name) ) ) ) ) ) ) ) )
+                            (error "columnardb-save" "failed to write pool strings" name) ) ) ) ) ) )
+                ;; Build and write CSR index for string column
+                (when (> nrows 0)
+                  (when (not (==> col has-index))
+                    (==> col build-index) )
+                  (when (==> col has-index)
+                    (let ((idx-off-fname (concat path "/col-" (str ci) "-idx-offsets.col"))
+                          (idx-row-fname (concat path "/col-" (str ci) "-idx-rows.col"))
+                          (ioff (==> col get-idx-offsets))
+                          (irow (==> col get-idx-rows)) )
+                      (let ((rc (_cdb-write-ints idx-off-fname ioff (idx-dim ioff 0))))
+                        (when (< rc 0)
+                          (error "columnardb-save" "failed to write index offsets" name) ) )
+                      (let ((rc (_cdb-write-ints idx-row-fname irow (idx-dim irow 0))))
+                        (when (< rc 0)
+                          (error "columnardb-save" "failed to write index rows" name) ) ) ) ) ) ) )
 
              (t (error "columnardb-save" "unknown column type" type)) ) ) )
         (setq ci (1+ ci)) ) )
@@ -247,6 +263,21 @@
                   ;; Build StringColumn from codes and pool
                   (let ((sc (new StringColumn nrows)))
                     (==> sc build-from-codes codes pool)
+                    ;; Load CSR index if files exist
+                    (let ((idx-off-fname (concat path "/col-" (str ci) "-idx-offsets.col"))
+                          (idx-row-fname (concat path "/col-" (str ci) "-idx-rows.col")) )
+                      (when (and (filep idx-off-fname) (filep idx-row-fname))
+                        (let ((cnt-out (double-matrix 1))
+                              (typ-out (int-matrix 1)) )
+                          (_cdb-read-header idx-off-fname cnt-out typ-out)
+                          (let ((noff (int (cnt-out 0))))
+                            (let ((off-data (int-matrix noff)))
+                              (_cdb-read-ints idx-off-fname off-data noff)
+                              (_cdb-read-header idx-row-fname cnt-out typ-out)
+                              (let ((nidxr (int (cnt-out 0))))
+                                (let ((row-data (int-matrix nidxr)))
+                                  (_cdb-read-ints idx-row-fname row-data nidxr)
+                                  (==> sc build-from-index-mmap off-data row-data) ) ) ) ) ) ) )
                     (setq column-list (nconc1 column-list sc)) ) ) ) )
 
              (t (error "columnardb-load-mem" "unknown column type" type)) ) )
@@ -337,6 +368,23 @@
                                          codes offsets-idx data-idx nstrings pool-fname) ) ) ) ) ) )
                         ;; Fallback: lazy text pool
                         (==> sc build-from-codes-lazy codes pool-fname) )
+                      ;; Load CSR index if files exist
+                      (let ((idx-off-fname (concat path "/col-" (str ci) "-idx-offsets.col"))
+                            (idx-row-fname (concat path "/col-" (str ci) "-idx-rows.col")) )
+                        (when (and (filep idx-off-fname) (filep idx-row-fname))
+                          (let ((cnt-out (double-matrix 1))
+                                (typ-out (int-matrix 1)) )
+                            (_cdb-read-header idx-off-fname cnt-out typ-out)
+                            (let ((noff (int (cnt-out 0))))
+                              (_cdb-read-header idx-row-fname cnt-out typ-out)
+                              (let ((nidxr (int (cnt-out 0))))
+                                (let ((off-s (int-storage)))
+                                  (storage-mmap off-s idx-off-fname *cdb-header-size*)
+                                  (let ((off-idx (new-index off-s (list noff))))
+                                    (let ((row-s (int-storage)))
+                                      (storage-mmap row-s idx-row-fname *cdb-header-size*)
+                                      (let ((row-idx (new-index row-s (list nidxr))))
+                                        (==> sc build-from-index-mmap off-idx row-idx) ) ) ) ) ) ) ) ) )
                       (setq column-list (nconc1 column-list sc)) ) ) ) ) )
 
              (t (error "columnardb-load" "unknown column type" type)) ) )
@@ -424,6 +472,23 @@
                                          codes offsets-idx data-idx nstrings pool-fname) ) ) ) ) ) )
                         ;; Fallback: lazy text pool
                         (==> sc build-from-codes-lazy codes pool-fname) )
+                      ;; Load CSR index if files exist
+                      (let ((idx-off-fname (concat path "/col-" (str ci) "-idx-offsets.col"))
+                            (idx-row-fname (concat path "/col-" (str ci) "-idx-rows.col")) )
+                        (when (and (filep idx-off-fname) (filep idx-row-fname))
+                          (let ((cnt-out (double-matrix 1))
+                                (typ-out (int-matrix 1)) )
+                            (_cdb-read-header idx-off-fname cnt-out typ-out)
+                            (let ((noff (int (cnt-out 0))))
+                              (_cdb-read-header idx-row-fname cnt-out typ-out)
+                              (let ((nidxr (int (cnt-out 0))))
+                                (let ((off-s (int-storage)))
+                                  (storage-mmap-rw off-s idx-off-fname *cdb-header-size*)
+                                  (let ((off-idx (new-index off-s (list noff))))
+                                    (let ((row-s (int-storage)))
+                                      (storage-mmap-rw row-s idx-row-fname *cdb-header-size*)
+                                      (let ((row-idx (new-index row-s (list nidxr))))
+                                        (==> sc build-from-index-mmap off-idx row-idx) ) ) ) ) ) ) ) ) )
                       (setq column-list (nconc1 column-list sc)) ) ) ) ) )
 
              (t (error "columnardb-load-rw" "unknown column type" type)) ) )
@@ -537,6 +602,13 @@
                       (sys (concat "rm -f '" pool-idx-fname "'")) )
                     (when (filep pool-str-fname)
                       (sys (concat "rm -f '" pool-str-fname "'")) )
+                    ;; Remove stale CSR index files
+                    (let ((idx-off-fname (concat path "/col-" (str ci) "-idx-offsets.col"))
+                          (idx-row-fname (concat path "/col-" (str ci) "-idx-rows.col")) )
+                      (when (filep idx-off-fname)
+                        (sys (concat "rm -f '" idx-off-fname "'")) )
+                      (when (filep idx-row-fname)
+                        (sys (concat "rm -f '" idx-row-fname "'")) ) )
                     ;; Read existing pool
                     (let ((old-pool (_cdb-read-sexp pool-fname))
                           (new-codes (int-matrix new-nrows))
@@ -669,5 +741,93 @@
                    found )
                  (error "columnardb-sorted?" "need names list to resolve column name" col-name-or-index) ) )) )
     (when idx (member idx sorted-cols)) ) )
+
+;; ============================================================
+;; Write Lock Protocol (flock-based advisory locking)
+;; ============================================================
+
+#? *** ColumnarDB: Advisory File Locking
+
+(defclass columnardb-lock object
+  fd lock-path lock-type)
+
+(defmethod columnardb-lock columnardb-lock (fdes path ltype)
+  (setq fd fdes)
+  (setq lock-path path)
+  (setq lock-type ltype) )
+
+;; GC safety net: release lock if object is collected
+(defmethod columnardb-lock -destructor ()
+  (when (and fd (>= fd 0))
+    (_cdb-flock fd @LOCK_UN)
+    (fd-close fd)
+    (setq fd ()) ) )
+
+
+;; Internal: ensure the lock file exists for a table directory.
+(de _cdb-ensure-lock-file (path)
+  (_cdb-mkdir path)
+  (let ((lock-file (concat path "/.lock")))
+    (when (not (filep lock-file))
+      (sys (concat "touch '" lock-file "'")) )
+    lock-file ) )
+
+
+#? (columnardb-lock-shared <path>)
+;; Acquire a shared (read) lock on a table directory.
+;; Blocks until the lock is available.
+;; Returns a columnardb-lock object.
+(de columnardb-lock-shared (path)
+  (let ((lock-file (_cdb-ensure-lock-file path)))
+    (let ((fdes (fd-open lock-file @O_RDWR)))
+      (when (< fdes 0)
+        (error "columnardb-lock-shared" "failed to open lock file" lock-file) )
+      (let ((rc (_cdb-flock fdes @LOCK_SH)))
+        (when (< rc 0)
+          (fd-close fdes)
+          (error "columnardb-lock-shared" "failed to acquire shared lock" lock-file) ) )
+      (new columnardb-lock fdes lock-file @LOCK_SH) ) ) )
+
+
+#? (columnardb-lock-exclusive <path>)
+;; Acquire an exclusive (write) lock on a table directory.
+;; Blocks until the lock is available.
+;; Returns a columnardb-lock object.
+(de columnardb-lock-exclusive (path)
+  (let ((lock-file (_cdb-ensure-lock-file path)))
+    (let ((fdes (fd-open lock-file @O_RDWR)))
+      (when (< fdes 0)
+        (error "columnardb-lock-exclusive" "failed to open lock file" lock-file) )
+      (let ((rc (_cdb-flock fdes @LOCK_EX)))
+        (when (< rc 0)
+          (fd-close fdes)
+          (error "columnardb-lock-exclusive" "failed to acquire exclusive lock" lock-file) ) )
+      (new columnardb-lock fdes lock-file @LOCK_EX) ) ) )
+
+
+#? (columnardb-lock-try-exclusive <path>)
+;; Try to acquire an exclusive lock without blocking.
+;; Returns a columnardb-lock object on success, or () if the lock is held.
+(de columnardb-lock-try-exclusive (path)
+  (let ((lock-file (_cdb-ensure-lock-file path)))
+    (let ((fdes (fd-open lock-file @O_RDWR)))
+      (when (< fdes 0)
+        (error "columnardb-lock-try-exclusive" "failed to open lock file" lock-file) )
+      (let ((rc (_cdb-flock fdes (+ @LOCK_EX @LOCK_NB))))
+        (if (< rc 0)
+          (progn (fd-close fdes) ())
+          (new columnardb-lock fdes lock-file @LOCK_EX) ) ) ) ) )
+
+
+#? (columnardb-unlock <lock>)
+;; Release a lock acquired by columnardb-lock-shared or columnardb-lock-exclusive.
+(de columnardb-unlock (lock)
+  (when lock
+    (let ((fdes :lock:fd))
+      (when (and fdes (>= fdes 0))
+        (_cdb-flock fdes @LOCK_UN)
+        (fd-close fdes)
+        (setq :lock:fd ()) ) ) ) )
+
 
 (libload "columnardb/columnardb-partition")

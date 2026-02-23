@@ -233,6 +233,21 @@
     rc ) )
 
 
+;; Advisory file locking via flock(2).
+;; operation: LOCK_SH, LOCK_EX, LOCK_UN, or LOCK_EX|LOCK_NB etc.
+;; Returns 0 on success, -1 on failure (e.g. LOCK_NB and lock held).
+(de _cdb-flock (fd operation)
+  ((-int-) fd operation)
+  (let ((rc 0))
+    ((-int-) rc)
+    #{
+    {
+      $rc = flock($fd, $operation);
+    }
+    #}
+    rc ) )
+
+
 ;; Write raw bytes to a file (no header).
 ;; Used for binary string pool data (packed null-terminated strings).
 ;; Returns 0 on success, -1 on failure.
@@ -261,8 +276,10 @@
   #{
   #include <stdio.h>
   #include <stdint.h>
+  #include <sys/file.h>
   #}
   _cdb-write-doubles _cdb-write-ints
   _cdb-read-header _cdb-read-doubles _cdb-read-ints
   _cdb-append-doubles _cdb-append-ints
-  _cdb-write-bytes )
+  _cdb-write-bytes
+  _cdb-flock )

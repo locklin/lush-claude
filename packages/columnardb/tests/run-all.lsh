@@ -1114,6 +1114,286 @@
 
 
 ;; ============================================================
+;; Stage 17: Write lock protocol (flock-based advisory locking)
+;; ============================================================
+
+(test-suite "Stage 17: Write lock protocol"
+
+  ;; Basic exclusive lock acquire/release
+  (let ((path (concat *test-dir* "/lock-basic")))
+    (sys (concat "mkdir -p " path))
+
+    (let ((lock (columnardb-lock-exclusive path)))
+      (test-check "exclusive lock acquired" lock)
+      (columnardb-unlock lock) )
+
+    ;; Shared lock acquire/release
+    (let ((lock (columnardb-lock-shared path)))
+      (test-check "shared lock acquired" lock)
+      (columnardb-unlock lock) )
+
+    ;; Try-exclusive succeeds when no lock held
+    (let ((lock (columnardb-lock-try-exclusive path)))
+      (test-check "try-exclusive succeeds" lock)
+      (columnardb-unlock lock) )
+
+    ;; Lock file is created
+    (test-check "lock file exists" (filep (concat path "/.lock"))) )
+
+  ;; Multiple shared locks can coexist
+  (let ((path (concat *test-dir* "/lock-shared")))
+    (sys (concat "mkdir -p " path))
+    (let ((lock1 (columnardb-lock-shared path)))
+      (let ((lock2 (columnardb-lock-shared path)))
+        (test-check "two shared locks" (and lock1 lock2))
+        (columnardb-unlock lock2) )
+      (columnardb-unlock lock1) ) )
+
+  ;; Try-exclusive fails when exclusive lock held
+  (let ((path (concat *test-dir* "/lock-try")))
+    (sys (concat "mkdir -p " path))
+    (let ((lock1 (columnardb-lock-exclusive path)))
+      (let ((lock2 (columnardb-lock-try-exclusive path)))
+        (test-check "try-exclusive fails when locked" (null lock2)) )
+      (columnardb-unlock lock1) )
+    ;; After release, try-exclusive succeeds
+    (let ((lock (columnardb-lock-try-exclusive path)))
+      (test-check "try-exclusive after release" lock)
+      (columnardb-unlock lock) ) )
+
+  ;; Try-exclusive fails when shared lock held
+  (let ((path (concat *test-dir* "/lock-try-sh")))
+    (sys (concat "mkdir -p " path))
+    (let ((lock1 (columnardb-lock-shared path)))
+      (let ((lock2 (columnardb-lock-try-exclusive path)))
+        (test-check "try-exclusive fails with shared" (null lock2)) )
+      (columnardb-unlock lock1) ) )
+
+  ;; Lock with real table operations
+  (let ((path (concat *test-dir* "/lock-table")))
+    ;; Create a table
+    (let ((dt (new DataTable)))
+      (==> dt add-column "x" 'real)
+      (==> dt append-row (list 1.0))
+      (==> dt append-row (list 2.0))
+
+      ;; Write with exclusive lock
+      (let ((lock (columnardb-lock-exclusive path)))
+        (columnardb-save dt path)
+        (columnardb-unlock lock) ) )
+
+    ;; Read with shared lock
+    (let ((lock (columnardb-lock-shared path)))
+      (let ((dt2 (columnardb-load path)))
+        (test-equal "locked read rows" (==> dt2 num-rows) 2)
+        (test-approx "locked read[0]" (==> dt2 get 0 "x") 1.0 0.001) )
+      (columnardb-unlock lock) )
+
+    ;; Append with exclusive lock
+    (let ((lock (columnardb-lock-exclusive path)))
+      (let ((dt3 (new DataTable)))
+        (==> dt3 add-column "x" 'real)
+        (==> dt3 append-row (list 3.0))
+        (columnardb-append path dt3) )
+      (columnardb-unlock lock) )
+
+    ;; Verify append worked
+    (let ((dt4 (columnardb-load path)))
+      (test-equal "locked append rows" (==> dt4 num-rows) 3)
+      (test-approx "locked append[2]" (==> dt4 get 2 "x") 3.0 0.001) ) )
+
+  ;; Unlock is idempotent (no error on double unlock)
+  (let ((path (concat *test-dir* "/lock-idem")))
+    (sys (concat "mkdir -p " path))
+    (let ((lock (columnardb-lock-exclusive path)))
+      (columnardb-unlock lock)
+      (columnardb-unlock lock)
+      (test-check "double unlock ok" t) ) )
+)
+
+
+;; ============================================================
+;; Stage 18: Column indexes (CSR inverted index on string columns)
+;; ============================================================
+
+(test-suite "Stage 18: Column indexes"
+
+  ;; --- In-memory index build and lookup ---
+  (let ((sc (new StringColumn 100)))
+    (==> sc append "AAPL")
+    (==> sc append "GOOG")
+    (==> sc append "AAPL")
+    (==> sc append "MSFT")
+    (==> sc append "GOOG")
+    (==> sc append "AAPL")
+
+    ;; No index initially
+    (test-check "no index initially" (not (==> sc has-index)))
+
+    ;; Build index
+    (==> sc build-index)
+    (test-check "has index after build" (==> sc has-index))
+
+    ;; where-eq uses index (same results as linear scan)
+    (let ((aapl-rows (==> sc where-eq "AAPL")))
+      (test-equal "idx AAPL count" (length aapl-rows) 3)
+      (test-equal "idx AAPL[0]" (car aapl-rows) 0)
+      (test-equal "idx AAPL[1]" (cadr aapl-rows) 2)
+      (test-equal "idx AAPL[2]" (caddr aapl-rows) 5) )
+
+    (let ((goog-rows (==> sc where-eq "GOOG")))
+      (test-equal "idx GOOG count" (length goog-rows) 2)
+      (test-equal "idx GOOG[0]" (car goog-rows) 1)
+      (test-equal "idx GOOG[1]" (cadr goog-rows) 4) )
+
+    (let ((msft-rows (==> sc where-eq "MSFT")))
+      (test-equal "idx MSFT count" (length msft-rows) 1)
+      (test-equal "idx MSFT[0]" (car msft-rows) 3) )
+
+    ;; where-eq for non-existent string returns ()
+    (let ((xyz-rows (==> sc where-eq "XYZ")))
+      (test-check "idx non-existent" (null xyz-rows)) )
+
+    ;; Append invalidates index
+    (==> sc append "TSLA")
+    (test-check "append invalidates index" (not (==> sc has-index)))
+
+    ;; Rebuild index includes new row
+    (==> sc build-index)
+    (test-check "rebuild has index" (==> sc has-index))
+    (let ((tsla-rows (==> sc where-eq "TSLA")))
+      (test-equal "idx TSLA after rebuild" (length tsla-rows) 1)
+      (test-equal "idx TSLA[0]" (car tsla-rows) 6) )
+
+    ;; Drop index
+    (==> sc drop-index)
+    (test-check "dropped index" (not (==> sc has-index)))
+
+    ;; where-eq still works (falls back to linear scan)
+    (let ((aapl-rows (==> sc where-eq "AAPL")))
+      (test-equal "linear AAPL count" (length aapl-rows) 3) ) )
+
+  ;; --- Index persistence: save and load ---
+  (let ((dt (new DataTable)))
+    (==> dt add-column "symbol" 'string)
+    (==> dt add-column "price" 'real)
+    (let ((symbols (list "AAPL" "GOOG" "MSFT" "TSLA" "AMZN")))
+      (for (i 0 99)
+        (let ((sym (nth (mod i 5) symbols)))
+          (==> dt append-row (list sym (* i 1.0))) ) ) )
+
+    (let ((path (concat *test-dir* "/index-persist")))
+      (columnardb-save dt path)
+
+      ;; Index files should be created
+      (test-check "idx-offsets.col exists"
+                  (filep (concat path "/col-0-idx-offsets.col")))
+      (test-check "idx-rows.col exists"
+                  (filep (concat path "/col-0-idx-rows.col")))
+
+      ;; Load with mmap and verify index is present
+      (let ((dt2 (columnardb-load path)))
+        (let ((sc (==> dt2 get-column 0)))
+          (test-check "loaded index present" (==> sc has-index))
+
+          ;; Index lookup works on loaded table
+          (let ((aapl-rows (==> sc where-eq "AAPL")))
+            (test-equal "persist AAPL count" (length aapl-rows) 20) )
+          (let ((goog-rows (==> sc where-eq "GOOG")))
+            (test-equal "persist GOOG count" (length goog-rows) 20) )
+          (let ((amzn-rows (==> sc where-eq "AMZN")))
+            (test-equal "persist AMZN count" (length amzn-rows) 20) ) ) )
+
+      ;; Load with load-mem and verify index
+      (let ((dt2 (columnardb-load-mem path)))
+        (let ((sc (==> dt2 get-column 0)))
+          (test-check "mem loaded index present" (==> sc has-index))
+          (let ((tsla-rows (==> sc where-eq "TSLA")))
+            (test-equal "mem persist TSLA count" (length tsla-rows) 20) ) ) )
+
+      ;; Load with load-rw and verify index
+      (let ((dt2 (columnardb-load-rw path)))
+        (let ((sc (==> dt2 get-column 0)))
+          (test-check "rw loaded index present" (==> sc has-index))
+          (let ((msft-rows (==> sc where-eq "MSFT")))
+            (test-equal "rw persist MSFT count" (length msft-rows) 20) ) ) )
+
+      ;; Append invalidates index files on disk
+      (let ((dt3 (new DataTable)))
+        (==> dt3 add-column "symbol" 'string)
+        (==> dt3 add-column "price" 'real)
+        (==> dt3 append-row (list "NVDA" 999.0))
+        (columnardb-append path dt3) )
+
+      ;; Index files should be removed after append
+      (test-check "idx-offsets removed after append"
+                  (not (filep (concat path "/col-0-idx-offsets.col"))))
+      (test-check "idx-rows removed after append"
+                  (not (filep (concat path "/col-0-idx-rows.col"))))
+
+      ;; Re-save regenerates index
+      (let ((dt4 (columnardb-load-mem path)))
+        (columnardb-save dt4 path)
+        (test-check "idx-offsets regenerated"
+                    (filep (concat path "/col-0-idx-offsets.col")))
+        (test-check "idx-rows regenerated"
+                    (filep (concat path "/col-0-idx-rows.col")))
+        ;; Load and verify new data with index
+        (let ((dt5 (columnardb-load path)))
+          (let ((sc (==> dt5 get-column 0)))
+            (test-check "regenerated index present" (==> sc has-index))
+            ;; NVDA should now be in the index
+            (let ((nvda-rows (==> sc where-eq "NVDA")))
+              (test-equal "NVDA in regenerated index" (length nvda-rows) 1) )
+            ;; Original data intact
+            (let ((aapl-rows (==> sc where-eq "AAPL")))
+              (test-equal "AAPL after regen" (length aapl-rows) 20) ) ) ) ) ) )
+
+  ;; --- Backward compatibility: table without index files ---
+  (let ((dt (new DataTable)))
+    (==> dt add-column "s" 'string)
+    (==> dt add-column "v" 'int)
+    (==> dt append-row (list "a" 1))
+    (==> dt append-row (list "b" 2))
+    (==> dt append-row (list "a" 3))
+
+    (let ((path (concat *test-dir* "/index-compat")))
+      (columnardb-save dt path)
+      ;; Manually remove index files to simulate old format
+      (sys (concat "rm -f '" path "/col-0-idx-offsets.col'"))
+      (sys (concat "rm -f '" path "/col-0-idx-rows.col'"))
+
+      ;; Load should still work (no index, linear scan)
+      (let ((dt2 (columnardb-load path)))
+        (let ((sc (==> dt2 get-column 0)))
+          (test-check "compat no index" (not (==> sc has-index)))
+          (let ((a-rows (==> sc where-eq "a")))
+            (test-equal "compat where-eq a" (length a-rows) 2) ) ) ) ) )
+
+  ;; --- Index with DataTable where query ---
+  (let ((dt (new DataTable)))
+    (==> dt add-column "time" 'stamp)
+    (==> dt add-column "symbol" 'string)
+    (==> dt add-column "price" 'real)
+    (let ((symbols (list "AAPL" "GOOG" "MSFT")))
+      (for (i 0 29)
+        (==> dt append-row
+             (list (* i 100.0) (nth (mod i 3) symbols) (* i 1.5)) ) ) )
+
+    (let ((path (concat *test-dir* "/index-where")))
+      (columnardb-save dt path)
+      (let ((dt2 (columnardb-load path)))
+        ;; where query on loaded table with index
+        (let ((aapl-rows (==> dt2 where '= "symbol" "AAPL")))
+          (test-equal "dt where AAPL" (length aapl-rows) 10) )
+        (let ((goog-rows (==> dt2 where '= "symbol" "GOOG")))
+          (test-equal "dt where GOOG" (length goog-rows) 10) )
+        (let ((msft-rows (==> dt2 where '= "symbol" "MSFT")))
+          (test-equal "dt where MSFT" (length msft-rows) 10) ) ) ) )
+)
+
+
+;; ============================================================
 ;; Summary
 ;; ============================================================
 

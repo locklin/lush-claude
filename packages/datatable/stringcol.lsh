@@ -47,6 +47,11 @@
   pool-offsets       ;; idx1 of int (mmap'd offsets into pool-data), or ()
   pool-data          ;; idx1 of ubyte (mmap'd packed strings), or ()
   pool-num-strings   ;; int, count of unique strings in binary pool
+
+  ;; CSR inverted index for O(1) where-eq (Feature 6)
+  idx-offsets        ;; idx1 of int (CSR offsets by code), or ()
+  idx-rows           ;; idx1 of int (row indices grouped by code), or ()
+  idx-valid          ;; boolean: t if index is current, () if stale
 )
 
 
@@ -62,7 +67,10 @@
   (setq pool-fname ())
   (setq pool-offsets ())
   (setq pool-data ())
-  (setq pool-num-strings 0) )
+  (setq pool-num-strings 0)
+  (setq idx-offsets ())
+  (setq idx-rows ())
+  (setq idx-valid ()) )
 
 
 #? (==> <sc> append <string>)
@@ -87,7 +95,9 @@
           (setq capacity new-cap) ) ) )
     ;; Store code for this row
     (codes num-rows code)
-    (setq num-rows (1+ num-rows)) ) )
+    (setq num-rows (1+ num-rows))
+    ;; Invalidate index (new row not reflected)
+    (setq idx-valid ()) ) )
 
 
 #? (==> <sc> get <index>)
@@ -145,16 +155,20 @@
 
 #? (==> <sc> where-eq <string>)
 ;; Return a list of row indices where the value equals <string>.
-;; Uses code comparison (integer) rather than string comparison.
+;; If a CSR index is available, uses O(1) lookup; otherwise linear scan.
 (defmethod StringColumn where-eq (s)
   (==> this _load-pool)
   (let ((target-code (str-to-code s)))
     (when target-code
-      (let ((result ()))
-        (for (i 0 (1- num-rows))
-          (when (= (codes i) target-code)
-            (setq result (nconc1 result i)) ) )
-        result ) ) ) )
+      (if (==> this has-index)
+        ;; Fast path: CSR index lookup
+        (==> this _index-lookup target-code)
+        ;; Slow path: linear scan
+        (let ((result ()))
+          (for (i 0 (1- num-rows))
+            (when (= (codes i) target-code)
+              (setq result (nconc1 result i)) ) )
+          result ) ) ) ) )
 
 
 #? (==> <sc> build-from-codes <code-array> <unique-strings>)
@@ -264,3 +278,83 @@
       (setq bytes (nconc1 bytes (pool-data pos)))
       (setq pos (1+ pos)) )
     (implode-bytes bytes) ) )
+
+
+;; ============================================================
+;; CSR Inverted Index (Feature 6)
+;; ============================================================
+
+#? (==> <sc> has-index)
+;; Return t if a valid CSR index is available.
+(defmethod StringColumn has-index ()
+  (and idx-offsets idx-rows idx-valid) )
+
+
+#? (==> <sc> build-index)
+;; Build the CSR inverted index from current codes.
+;; O(n) two-pass algorithm: count per code, prefix-sum, fill rows.
+(defmethod StringColumn build-index ()
+  (==> this _load-pool)
+  (when (> num-rows 0)
+    ;; Pass 1: count rows per code
+    (let ((counts (int-matrix (1+ pool-size))))
+      (for (i 0 (1- num-rows))
+        (let ((c (codes i)))
+          (counts c (1+ (counts c))) ) )
+      ;; Prefix sum -> offsets array (length pool-size + 1)
+      (let ((offsets (int-matrix (1+ pool-size)))
+            (rows-arr (int-matrix num-rows))
+            (pos (int-matrix pool-size)) )
+        (offsets 0 0)
+        (for (c 0 (1- pool-size))
+          (offsets (1+ c) (+ (offsets c) (counts c))) )
+        ;; Copy offsets into pos (write cursors)
+        (for (c 0 (1- pool-size))
+          (pos c (offsets c)) )
+        ;; Pass 2: fill rows array
+        (for (i 0 (1- num-rows))
+          (let ((c (codes i)))
+            (rows-arr (pos c) i)
+            (pos c (1+ (pos c))) ) )
+        (setq idx-offsets offsets)
+        (setq idx-rows rows-arr)
+        (setq idx-valid t) ) ) ) )
+
+
+#? (==> <sc> drop-index)
+;; Remove the CSR inverted index, freeing memory.
+(defmethod StringColumn drop-index ()
+  (setq idx-offsets ())
+  (setq idx-rows ())
+  (setq idx-valid ()) )
+
+
+;; Private: look up all row indices for a given code via the CSR index.
+;; Returns a list of row indices.
+(defmethod StringColumn _index-lookup (code)
+  (let ((start (idx-offsets code))
+        (end (idx-offsets (1+ code)))
+        (result ()) )
+    (for (i start (1- end))
+      (setq result (nconc1 result (idx-rows i))) )
+    result ) )
+
+
+#? (==> <sc> get-idx-offsets)
+;; Return the CSR offsets idx1 (for persistence).
+(defmethod StringColumn get-idx-offsets ()
+  idx-offsets )
+
+
+#? (==> <sc> get-idx-rows)
+;; Return the CSR rows idx1 (for persistence).
+(defmethod StringColumn get-idx-rows ()
+  idx-rows )
+
+
+#? (==> <sc> build-from-index-mmap <offsets-idx> <rows-idx>)
+;; Attach pre-built (mmap'd) CSR index arrays.
+(defmethod StringColumn build-from-index-mmap (offsets-idx rows-idx)
+  (setq idx-offsets offsets-idx)
+  (setq idx-rows rows-idx)
+  (setq idx-valid t) )
