@@ -522,6 +522,92 @@
 
 
 ;; ============================================================
+;; Stage 11: Copy-on-write for mmap'd tables
+;; ============================================================
+
+(test-suite "Stage 11: Copy-on-write for mmap'd tables"
+
+  ;; Build a table with real, int, stamp, and string columns
+  (let ((dt (new DataTable)))
+    (==> dt add-column "price" 'real)
+    (==> dt add-column "volume" 'int)
+    (==> dt add-column "time" 'stamp)
+    (==> dt add-column "symbol" 'string)
+    (==> dt append-row (list 100.0 1000 5000.0 "AAPL"))
+    (==> dt append-row (list 200.0 2000 6000.0 "GOOG"))
+    (==> dt append-row (list 300.0 3000 7000.0 "MSFT"))
+
+    (let ((path (concat *test-dir* "/cow")))
+      (columnardb-save dt path)
+
+      ;; --- COW set on real column ---
+      (let ((dt2 (columnardb-load path)))
+        (==> dt2 set 1 "price" 999.0)
+        (test-approx "COW real set" (==> dt2 get 1 "price") 999.0 0.001)
+        ;; Other rows untouched
+        (test-approx "COW real other[0]" (==> dt2 get 0 "price") 100.0 0.001)
+        (test-approx "COW real other[2]" (==> dt2 get 2 "price") 300.0 0.001) )
+
+      ;; --- COW set on int column ---
+      (let ((dt2 (columnardb-load path)))
+        (==> dt2 set 0 "volume" 42)
+        (test-equal "COW int set" (==> dt2 get 0 "volume") 42)
+        (test-equal "COW int other[1]" (==> dt2 get 1 "volume") 2000)
+        (test-equal "COW int other[2]" (==> dt2 get 2 "volume") 3000) )
+
+      ;; --- COW set on stamp column ---
+      (let ((dt2 (columnardb-load path)))
+        (==> dt2 set 2 "time" 9999.0)
+        (test-approx "COW stamp set" (==> dt2 get 2 "time") 9999.0 0.001)
+        (test-approx "COW stamp other[0]" (==> dt2 get 0 "time") 5000.0 0.001) )
+
+      ;; --- COW disk unchanged: reload and verify original data ---
+      (let ((dt3 (columnardb-load path)))
+        (test-approx "COW disk price[1]" (==> dt3 get 1 "price") 200.0 0.001)
+        (test-equal "COW disk volume[0]" (==> dt3 get 0 "volume") 1000)
+        (test-approx "COW disk time[2]" (==> dt3 get 2 "time") 7000.0 0.001)
+        (test-string-equal "COW disk symbol[0]" (==> dt3 get 0 "symbol") "AAPL") )
+
+      ;; --- COW multiple sets: first triggers copy, subsequent are cheap ---
+      (let ((dt2 (columnardb-load path)))
+        (==> dt2 set 0 "price" 111.0)
+        (==> dt2 set 1 "price" 222.0)
+        (==> dt2 set 2 "price" 333.0)
+        (test-approx "COW multi[0]" (==> dt2 get 0 "price") 111.0 0.001)
+        (test-approx "COW multi[1]" (==> dt2 get 1 "price") 222.0 0.001)
+        (test-approx "COW multi[2]" (==> dt2 get 2 "price") 333.0 0.001) )
+
+      ;; --- COW append-row: mmap'd table grows naturally ---
+      (let ((dt2 (columnardb-load path)))
+        (==> dt2 append-row (list 400.0 4000 8000.0 "TSLA"))
+        (test-equal "COW append rows" (==> dt2 num-rows) 4)
+        ;; Original data intact
+        (test-approx "COW append old[0]" (==> dt2 get 0 "price") 100.0 0.001)
+        (test-string-equal "COW append old sym[2]" (==> dt2 get 2 "symbol") "MSFT")
+        ;; New row present
+        (test-approx "COW append new price" (==> dt2 get 3 "price") 400.0 0.001)
+        (test-equal "COW append new vol" (==> dt2 get 3 "volume") 4000)
+        (test-string-equal "COW append new sym" (==> dt2 get 3 "symbol") "TSLA") )
+
+      ;; --- COW set then append: combined sequence ---
+      (let ((dt2 (columnardb-load path)))
+        (==> dt2 set 0 "price" 50.0)
+        (==> dt2 append-row (list 500.0 5000 9000.0 "AMZN"))
+        (test-equal "COW set+append rows" (==> dt2 num-rows) 4)
+        (test-approx "COW set+append modified" (==> dt2 get 0 "price") 50.0 0.001)
+        (test-approx "COW set+append appended" (==> dt2 get 3 "price") 500.0 0.001)
+        (test-string-equal "COW set+append new sym" (==> dt2 get 3 "symbol") "AMZN") )
+
+      ;; --- COW string columns intact after numeric set ---
+      (let ((dt2 (columnardb-load path)))
+        (==> dt2 set 1 "price" 777.0)
+        (test-string-equal "COW str intact[0]" (==> dt2 get 0 "symbol") "AAPL")
+        (test-string-equal "COW str intact[1]" (==> dt2 get 1 "symbol") "GOOG")
+        (test-string-equal "COW str intact[2]" (==> dt2 get 2 "symbol") "MSFT") ) ) )
+)
+
+
+;; ============================================================
 ;; Summary
 ;; ============================================================
 

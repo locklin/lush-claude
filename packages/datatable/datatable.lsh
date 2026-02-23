@@ -155,17 +155,45 @@
      (t (column row)) ) ) )
 
 
+;; Copy-on-write: ensure column at col-idx is writable (heap-allocated).
+;; If it's mmap'd read-only, replace it with a writable heap copy.
+(defmethod DataTable _ensure-writable (col-idx)
+  (let ((col (nth col-idx columns))
+        (type (nth col-idx col-types-list)) )
+    (cond
+     ((= type 'string)
+      (when (not (writablep (==> col get-codes)))
+        ;; StringColumn codes are mmap'd: rebuild with writable codes
+        (let* ((old-codes (==> col get-codes))
+               (nr (==> col num-rows))
+               (new-codes (int-matrix nr)) )
+          (for (i 0 (1- nr)) (new-codes i (old-codes i)))
+          (let ((sc (new StringColumn nr)))
+            (==> sc build-from-codes new-codes (==> col get-pool))
+            (setq columns (_dt-list-replace columns col-idx sc)) ) ) ) )
+     (t
+      (when (not (writablep col))
+        ;; Numeric/stamp column: copy to writable heap array
+        (let ((new-col (if (= type 'int)
+                         (int-matrix n-rows)
+                         (double-matrix n-rows) )))
+          (for (i 0 (1- n-rows)) (new-col i (col i)))
+          (setq columns (_dt-list-replace columns col-idx new-col)) ) ) ) ) ) )
+
+
 #? (==> <dt> set <row> <col-name-or-index> <value>)
 ;; Set a single value at (row, column).
 (defmethod DataTable set (row col value)
   (let* ((idx (if (stringp col) (col-names-ht col) col))
-         (type (nth idx col-types-list))
-         (column (nth idx columns)) )
+         (type (nth idx col-types-list)) )
     (when (or (< row 0) (>= row n-rows))
       (error "DataTable" "row index out of range" row) )
     (if (= type 'string)
       (error "DataTable" "cannot set individual string column values" ())
-      (column row value) ) ) )
+      (progn
+        (==> this _ensure-writable idx)
+        (let ((column (nth idx columns)))
+          (column row value) ) ) ) ) )
 
 
 ;; ============================================================
