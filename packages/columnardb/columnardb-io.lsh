@@ -233,6 +233,29 @@
     rc ) )
 
 
+;; Write raw bytes to a file (no header).
+;; Used for binary string pool data (packed null-terminated strings).
+;; Returns 0 on success, -1 on failure.
+(de _cdb-write-bytes (filename data nbytes)
+  ((-str-) filename)
+  ((-idx1- (-ubyte-)) data)
+  ((-int-) nbytes)
+  (let ((rc 0))
+    ((-int-) rc)
+    #{
+    {
+      FILE *f = fopen((const char *)$filename->data, "wb");
+      if (!f) { $rc = -1; }
+      else {
+        size_t written = fwrite(IDX_PTR($data, unsigned char), sizeof(unsigned char), $nbytes, f);
+        if ((int)written != $nbytes) $rc = -1;
+        fclose(f);
+      }
+    }
+    #}
+    rc ) )
+
+
 ;; Compile the bridge functions
 (dhc-make ()
   #{
@@ -241,4 +264,5 @@
   #}
   _cdb-write-doubles _cdb-write-ints
   _cdb-read-header _cdb-read-doubles _cdb-read-ints
-  _cdb-append-doubles _cdb-append-ints )
+  _cdb-append-doubles _cdb-append-ints
+  _cdb-write-bytes )

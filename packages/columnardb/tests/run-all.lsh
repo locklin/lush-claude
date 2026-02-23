@@ -841,6 +841,279 @@
 
 
 ;; ============================================================
+;; Stage 15: Mmap'd string pools (binary pool format)
+;; ============================================================
+
+(test-suite "Stage 15: Mmap'd string pools"
+
+  ;; Build a table with string columns
+  (let ((dt (new DataTable)))
+    (==> dt add-column "name" 'string)
+    (==> dt add-column "value" 'real)
+    (==> dt append-row (list "alpha" 1.0))
+    (==> dt append-row (list "beta"  2.0))
+    (==> dt append-row (list "alpha" 3.0))
+    (==> dt append-row (list "gamma" 4.0))
+    (==> dt append-row (list "beta"  5.0))
+
+    (let ((path (concat *test-dir* "/binpool")))
+      (columnardb-save dt path)
+
+      ;; Binary pool files created alongside text pool
+      (test-check "pool-idx.col exists"
+                  (filep (concat path "/col-0-pool-idx.col")))
+      (test-check "pool-str.bin exists"
+                  (filep (concat path "/col-0-pool-str.bin")))
+      (test-check "pool.lsh still exists"
+                  (filep (concat path "/col-0-pool.lsh")))
+
+      ;; Load with mmap -> get reads strings correctly (mmap path)
+      (let ((dt2 (columnardb-load path)))
+        (test-equal "binpool mmap rows" (==> dt2 num-rows) 5)
+        (test-string-equal "binpool mmap[0]" (==> dt2 get 0 "name") "alpha")
+        (test-string-equal "binpool mmap[1]" (==> dt2 get 1 "name") "beta")
+        (test-string-equal "binpool mmap[2]" (==> dt2 get 2 "name") "alpha")
+        (test-string-equal "binpool mmap[3]" (==> dt2 get 3 "name") "gamma")
+        (test-string-equal "binpool mmap[4]" (==> dt2 get 4 "name") "beta")
+        (test-approx "binpool mmap val[0]" (==> dt2 get 0 "value") 1.0 0.001)
+        (test-approx "binpool mmap val[4]" (==> dt2 get 4 "value") 5.0 0.001) )
+
+      ;; where-eq triggers materialization, works correctly
+      (let ((dt2 (columnardb-load path)))
+        (let ((sc (==> dt2 get-column 0)))
+          (let ((alpha-rows (==> sc where-eq "alpha")))
+            (test-equal "binpool where-eq alpha count" (length alpha-rows) 2)
+            (test-equal "binpool where-eq alpha[0]" (car alpha-rows) 0)
+            (test-equal "binpool where-eq alpha[1]" (cadr alpha-rows) 2) )
+          ;; After materialization, get still works
+          (test-string-equal "binpool post-mat[3]" (==> sc get 3) "gamma") ) )
+
+      ;; Append to mmap-loaded column works
+      (let ((dt2 (columnardb-load path)))
+        (let ((sc (==> dt2 get-column 0)))
+          (==> sc append "delta")
+          (test-equal "binpool append rows" (==> sc num-rows) 6)
+          (test-string-equal "binpool append[5]" (==> sc get 5) "delta")
+          ;; Original strings still correct
+          (test-string-equal "binpool append[0]" (==> sc get 0) "alpha") ) )
+
+      ;; columnardb-load-mem still reads text pool (backward compat)
+      (let ((dt2 (columnardb-load-mem path)))
+        (test-equal "binpool mem rows" (==> dt2 num-rows) 5)
+        (test-string-equal "binpool mem[0]" (==> dt2 get 0 "name") "alpha")
+        (test-string-equal "binpool mem[3]" (==> dt2 get 3 "name") "gamma") )
+
+      ;; columnardb-load-rw uses binary pool
+      (let ((dt2 (columnardb-load-rw path)))
+        (test-equal "binpool rw rows" (==> dt2 num-rows) 5)
+        (test-string-equal "binpool rw[0]" (==> dt2 get 0 "name") "alpha")
+        (test-string-equal "binpool rw[1]" (==> dt2 get 1 "name") "beta")
+        (test-string-equal "binpool rw[3]" (==> dt2 get 3 "name") "gamma")
+        ;; Append works on rw-loaded table
+        (let ((sc (==> dt2 get-column 0)))
+          (==> sc append "epsilon")
+          (test-string-equal "binpool rw append" (==> sc get 5) "epsilon") ) ) ) )
+
+  ;; Large pool (150 unique strings) -> random access correct
+  (let ((dt (new DataTable)))
+    (==> dt add-column "key" 'string)
+    (==> dt add-column "val" 'int)
+    ;; Create 150 unique strings and 300 rows (each string appears twice)
+    (for (i 0 149)
+      (let ((s (sprintf "str-%03d" i)))
+        (==> dt append-row (list s i))
+        (==> dt append-row (list s (+ i 1000))) ) )
+
+    (let ((path (concat *test-dir* "/binpool-large")))
+      (columnardb-save dt path)
+
+      (let ((dt2 (columnardb-load path)))
+        (test-equal "large binpool rows" (==> dt2 num-rows) 300)
+        ;; Check first, middle, and last strings
+        (test-string-equal "large binpool[0]" (==> dt2 get 0 "key") "str-000")
+        (test-string-equal "large binpool[1]" (==> dt2 get 1 "key") "str-000")
+        (test-string-equal "large binpool[100]" (==> dt2 get 100 "key") "str-050")
+        (test-string-equal "large binpool[298]" (==> dt2 get 298 "key") "str-149")
+        (test-string-equal "large binpool[299]" (==> dt2 get 299 "key") "str-149")
+        ;; Check values
+        (test-equal "large binpool val[0]" (==> dt2 get 0 "val") 0)
+        (test-equal "large binpool val[1]" (==> dt2 get 1 "val") 1000)
+        (test-equal "large binpool val[298]" (==> dt2 get 298 "val") 149)
+        (test-equal "large binpool val[299]" (==> dt2 get 299 "val") 1149) ) ) )
+
+  ;; Empty string pool: table with 0-row string column
+  (let ((dt (new DataTable)))
+    (==> dt add-column "s" 'string)
+    (==> dt add-column "x" 'real)
+
+    (let ((path (concat *test-dir* "/binpool-empty")))
+      (columnardb-save dt path)
+      ;; No binary pool files for empty pool (guarded by when > nu 0)
+      (let ((dt2 (columnardb-load path)))
+        (test-equal "empty binpool rows" (==> dt2 num-rows) 0) ) ) )
+)
+
+
+;; ============================================================
+;; Stage 16: Partition-aware sorted insert
+;; ============================================================
+
+(test-suite "Stage 16: Partition-aware sorted insert"
+
+  ;; Build a 100-row sorted table, partition by 25
+  (let ((dt (new DataTable)))
+    (==> dt add-column "time" 'real)
+    (==> dt add-column "price" 'real)
+    (==> dt add-column "tag" 'string)
+    (let ((tags (list "A" "B" "C" "D" "E")))
+      (for (i 0 99)
+        (==> dt append-row (list (* i 1.0) (* i 0.5) (nth (mod i 5) tags))) ) )
+
+    (let ((path (concat *test-dir* "/sorted-insert")))
+      (columnardb-partition-save dt path "time" 25)
+
+      ;; Verify initial state
+      (let ((pmeta (columnardb-partition-meta path)))
+        (test-equal "si initial total" (cadr (assoc 'total-rows pmeta)) 100)
+        (test-equal "si initial nparts" (cadr (assoc 'nparts pmeta)) 4) )
+
+      ;; --- Insert rows into middle -> sort order maintained ---
+      (let ((dt2 (new DataTable)))
+        (==> dt2 add-column "time" 'real)
+        (==> dt2 add-column "price" 'real)
+        (==> dt2 add-column "tag" 'string)
+        ;; Insert at time=12.5 (falls in p-0: 0-24)
+        (==> dt2 append-row (list 12.5 99.0 "X"))
+        (columnardb-partition-sorted-insert path dt2) )
+
+      ;; Verify sort order maintained
+      (let ((result (columnardb-partition-range path "time" 11 14)))
+        (test-equal "si middle count" (==> result num-rows) 5)
+        ;; Should be 11, 12, 12.5, 13, 14
+        (test-approx "si middle[0]" (==> result get 0 "time") 11.0 0.001)
+        (test-approx "si middle[1]" (==> result get 1 "time") 12.0 0.001)
+        (test-approx "si middle[2]" (==> result get 2 "time") 12.5 0.001)
+        (test-approx "si middle[3]" (==> result get 3 "time") 13.0 0.001)
+        (test-approx "si middle[4]" (==> result get 4 "time") 14.0 0.001) )
+
+      (let ((pmeta (columnardb-partition-meta path)))
+        (test-equal "si after middle total" (cadr (assoc 'total-rows pmeta)) 101) )
+
+      ;; --- Insert spanning multiple partitions ---
+      (let ((dt2 (new DataTable)))
+        (==> dt2 add-column "time" 'real)
+        (==> dt2 add-column "price" 'real)
+        (==> dt2 add-column "tag" 'string)
+        ;; Insert into p-0 (time<25) and p-2 (time 50-74)
+        (==> dt2 append-row (list 5.5 88.0 "Y"))
+        (==> dt2 append-row (list 60.5 77.0 "Y"))
+        (columnardb-partition-sorted-insert path dt2) )
+
+      (let ((pmeta (columnardb-partition-meta path)))
+        (test-equal "si multi-part total" (cadr (assoc 'total-rows pmeta)) 103) )
+
+      ;; Check sort order in affected ranges
+      (let ((result (columnardb-partition-range path "time" 4 7)))
+        (test-equal "si multi check1 count" (==> result num-rows) 5)
+        ;; 4, 5, 5.5, 6, 7
+        (test-approx "si multi check1[0]" (==> result get 0 "time") 4.0 0.001)
+        (test-approx "si multi check1[1]" (==> result get 1 "time") 5.0 0.001)
+        (test-approx "si multi check1[2]" (==> result get 2 "time") 5.5 0.001)
+        (test-approx "si multi check1[3]" (==> result get 3 "time") 6.0 0.001)
+        (test-approx "si multi check1[4]" (==> result get 4 "time") 7.0 0.001) )
+
+      (let ((result (columnardb-partition-range path "time" 59 62)))
+        (test-equal "si multi check2 count" (==> result num-rows) 5)
+        ;; 59, 60, 60.5, 61, 62
+        (test-approx "si multi check2[0]" (==> result get 0 "time") 59.0 0.001)
+        (test-approx "si multi check2[1]" (==> result get 1 "time") 60.0 0.001)
+        (test-approx "si multi check2[2]" (==> result get 2 "time") 60.5 0.001)
+        (test-approx "si multi check2[3]" (==> result get 3 "time") 61.0 0.001)
+        (test-approx "si multi check2[4]" (==> result get 4 "time") 62.0 0.001) )
+
+      ;; --- Insert causing partition split (> max-rows overflow) ---
+      ;; p-0 currently has 27 rows (25 original + 2 inserts).
+      ;; Insert 5 more into p-0 range to push to 32 > 25
+      (let ((dt2 (new DataTable)))
+        (==> dt2 add-column "time" 'real)
+        (==> dt2 add-column "price" 'real)
+        (==> dt2 add-column "tag" 'string)
+        (for (i 0 4)
+          (==> dt2 append-row (list (+ 0.1 (* i 0.01)) 55.0 "Z")) )
+        (columnardb-partition-sorted-insert path dt2) )
+
+      (let ((pmeta (columnardb-partition-meta path)))
+        (test-equal "si split total" (cadr (assoc 'total-rows pmeta)) 108)
+        ;; Should have more partitions now (p-0 split into 2)
+        (test-check "si split nparts increased"
+                    (> (cadr (assoc 'nparts pmeta)) 4)) )
+
+      ;; Verify data integrity after split: full range still returns all rows
+      (let ((result (columnardb-partition-range path "time" -1 999)))
+        (test-equal "si split full count" (==> result num-rows) 108) )
+
+      ;; --- Insert before all partitions (prepend, expands p[0].lo) ---
+      (let ((dt2 (new DataTable)))
+        (==> dt2 add-column "time" 'real)
+        (==> dt2 add-column "price" 'real)
+        (==> dt2 add-column "tag" 'string)
+        (==> dt2 append-row (list -5.0 1.0 "PRE"))
+        (==> dt2 append-row (list -3.0 2.0 "PRE"))
+        (columnardb-partition-sorted-insert path dt2) )
+
+      (let ((pmeta (columnardb-partition-meta path)))
+        (test-equal "si prepend total" (cadr (assoc 'total-rows pmeta)) 110) )
+
+      ;; Verify prepended rows are accessible
+      (let ((result (columnardb-partition-range path "time" -6 -2)))
+        (test-equal "si prepend count" (==> result num-rows) 2)
+        (test-approx "si prepend[0]" (==> result get 0 "time") -5.0 0.001)
+        (test-approx "si prepend[1]" (==> result get 1 "time") -3.0 0.001)
+        (test-string-equal "si prepend tag" (==> result get 0 "tag") "PRE") )
+
+      ;; --- Insert after all partitions (creates new partitions) ---
+      (let ((dt2 (new DataTable)))
+        (==> dt2 add-column "time" 'real)
+        (==> dt2 add-column "price" 'real)
+        (==> dt2 add-column "tag" 'string)
+        (==> dt2 append-row (list 200.0 200.0 "POST"))
+        (==> dt2 append-row (list 300.0 300.0 "POST"))
+        (==> dt2 append-row (list 400.0 400.0 "POST"))
+        (columnardb-partition-sorted-insert path dt2) )
+
+      (let ((pmeta (columnardb-partition-meta path)))
+        (test-equal "si beyond total" (cadr (assoc 'total-rows pmeta)) 113) )
+
+      (let ((result (columnardb-partition-range path "time" 199 401)))
+        (test-equal "si beyond count" (==> result num-rows) 3)
+        (test-approx "si beyond[0]" (==> result get 0 "time") 200.0 0.001)
+        (test-approx "si beyond[2]" (==> result get 2 "time") 400.0 0.001)
+        (test-string-equal "si beyond tag" (==> result get 0 "tag") "POST") )
+
+      ;; --- Range query works after all inserts ---
+      (let ((result (columnardb-partition-range path "time" -10 500)))
+        (test-equal "si final total" (==> result num-rows) 113) )
+
+      ;; --- Single-partition insert without overflow ---
+      ;; Insert into p-1 (should still have room if not split)
+      (let ((dt2 (new DataTable)))
+        (==> dt2 add-column "time" 'real)
+        (==> dt2 add-column "price" 'real)
+        (==> dt2 add-column "tag" 'string)
+        (==> dt2 append-row (list 30.5 30.5 "S"))
+        (columnardb-partition-sorted-insert path dt2) )
+
+      (let ((result (columnardb-partition-range path "time" 29 32)))
+        ;; Should contain 29, 30, 30.5, 31, 32
+        (test-equal "si single-part count" (==> result num-rows) 5)
+        (test-approx "si single-part[2]" (==> result get 2 "time") 30.5 0.001) )
+
+      (let ((pmeta (columnardb-partition-meta path)))
+        (test-equal "si final grand total" (cadr (assoc 'total-rows pmeta)) 114) ) ) )
+)
+
+
+;; ============================================================
 ;; Summary
 ;; ============================================================
 

@@ -42,6 +42,11 @@
 
   ;; Lazy loading: path to pool file (deferred until first access)
   pool-fname
+
+  ;; Mmap'd binary pool (Feature 4)
+  pool-offsets       ;; idx1 of int (mmap'd offsets into pool-data), or ()
+  pool-data          ;; idx1 of ubyte (mmap'd packed strings), or ()
+  pool-num-strings   ;; int, count of unique strings in binary pool
 )
 
 
@@ -54,7 +59,10 @@
   (setq pool-size 0)
   (setq num-rows 0)
   (setq capacity (max 64 init-cap))
-  (setq pool-fname ()) )
+  (setq pool-fname ())
+  (setq pool-offsets ())
+  (setq pool-data ())
+  (setq pool-num-strings 0) )
 
 
 #? (==> <sc> append <string>)
@@ -86,9 +94,14 @@
 ;; Get the string value at row <index>.
 ;; Two-step lookup: row -> code -> string.
 (defmethod StringColumn get (i)
-  (==> this _load-pool)
   (when (and (>= i 0) (< i num-rows))
-    (nth (codes i) code-to-str) ) )
+    (if (and pool-offsets (null code-to-str))
+      ;; Mmap'd binary pool: extract string on demand (no full materialization)
+      (==> this _pool-get-mmap (codes i))
+      ;; Standard path: materialize pool if needed, then list lookup
+      (progn
+        (==> this _load-pool)
+        (nth (codes i) code-to-str) ) ) ) )
 
 
 #? (==> <sc> get-code <index>)
@@ -167,20 +180,39 @@
     (setq capacity nr) ) )
 
 
-;; Private: load pool from file if deferred (lazy loading)
+;; Private: load pool from file if deferred (lazy loading).
+;; Two materialization paths:
+;; 1. If pool-offsets is set: iterate all codes via _pool-get-mmap,
+;;    build code-to-str list + str-to-code htable.
+;; 2. Else if pool-fname is set: read S-expression text pool (original behavior).
 (defmethod StringColumn _load-pool ()
-  (when (and pool-fname (null code-to-str))
-    ;; Read pool file (S-expression list of strings)
-    (let ((pool (let ((f (open-read pool-fname)))
-                  (reading f (read)) )))
-      (let ((nu (length pool)))
+  (when (null code-to-str)
+    (cond
+     ;; Path 1: materialize from mmap'd binary pool
+     (pool-offsets
+      (let ((pool ())
+            (nu pool-num-strings) )
+        (for (i 0 (1- nu))
+          (setq pool (nconc1 pool (==> this _pool-get-mmap i))) )
         (setq code-to-str pool)
         (setq str-to-code (htable (max 64 (* 2 nu))))
         (setq pool-size nu)
         (let ((idx 0))
           (each ((s pool))
             (str-to-code s idx)
-            (setq idx (1+ idx)) ) ) ) ) ) )
+            (setq idx (1+ idx)) ) ) ) )
+     ;; Path 2: read S-expression text pool file
+     (pool-fname
+      (let ((pool (let ((f (open-read pool-fname)))
+                    (reading f (read)) )))
+        (let ((nu (length pool)))
+          (setq code-to-str pool)
+          (setq str-to-code (htable (max 64 (* 2 nu))))
+          (setq pool-size nu)
+          (let ((idx 0))
+            (each ((s pool))
+              (str-to-code s idx)
+              (setq idx (1+ idx)) ) ) ) ) ) ) ) )
 
 
 #? (==> <sc> build-from-codes-lazy <code-array> <pool-filename>)
@@ -196,3 +228,39 @@
     (setq code-to-str ())
     (setq str-to-code (htable 64))
     (setq pool-size 0) ) )
+
+
+#? (==> <sc> build-from-codes-mmap <code-array> <offsets-idx> <data-idx> <nstrings> <pfname>)
+;; Bulk-initialize with mmap'd binary pool.
+;; <code-array>: int idx1 of per-row codes (may be mmap'd)
+;; <offsets-idx>: int idx1 of byte offsets into data-idx (mmap'd)
+;; <data-idx>: ubyte idx1 of packed null-terminated strings (mmap'd)
+;; <nstrings>: number of unique strings in pool
+;; <pfname>: path to text pool file (for fallback materialization)
+(defmethod StringColumn build-from-codes-mmap (code-array offsets-idx data-idx nstrings pfname)
+  (let ((nr (idx-dim code-array 0)))
+    (setq codes code-array)
+    (setq num-rows nr)
+    (setq capacity nr)
+    (setq pool-offsets offsets-idx)
+    (setq pool-data data-idx)
+    (setq pool-num-strings nstrings)
+    (setq pool-fname pfname)
+    ;; Leave code-to-str as () -- strings are extracted on demand from mmap
+    (setq code-to-str ())
+    (setq str-to-code (htable 64))
+    (setq pool-size nstrings) ) )
+
+
+;; Private: extract a string from the mmap'd binary pool.
+;; Reads offset from pool-offsets[code], then scans pool-data
+;; from that offset until a null byte, and converts to string.
+(defmethod StringColumn _pool-get-mmap (code)
+  (let* ((offset (pool-offsets code))
+         (bytes ())
+         (pos offset) )
+    ;; Scan until null terminator
+    (while (<> 0 (pool-data pos))
+      (setq bytes (nconc1 bytes (pool-data pos)))
+      (setq pos (1+ pos)) )
+    (implode-bytes bytes) ) )

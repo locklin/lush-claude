@@ -120,6 +120,8 @@
               ;; Write codes as int column
               (let ((codes-fname (concat path "/col-" (str ci) "-codes.col"))
                     (pool-fname (concat path "/col-" (str ci) "-pool.lsh"))
+                    (pool-idx-fname (concat path "/col-" (str ci) "-pool-idx.col"))
+                    (pool-str-fname (concat path "/col-" (str ci) "-pool-str.bin"))
                     (codes (==> col get-codes))
                     (pool (==> col get-pool)) )
                 ;; Write codes (only the valid rows)
@@ -128,8 +130,38 @@
                   (let ((rc (_cdb-write-ints codes-fname data nrows)))
                     (when (< rc 0)
                       (error "columnardb-save" "failed to write string codes" name) ) ) )
-                ;; Write string pool as S-expression
-                (_cdb-write-sexp pool-fname pool) ) )
+                ;; Write string pool as S-expression (backward compat)
+                (_cdb-write-sexp pool-fname pool)
+                ;; Write binary pool files (mmap-friendly)
+                (let ((nu (length pool)))
+                  (when (> nu 0)
+                    ;; Build offsets array: offset[i] = byte position of string i
+                    (let ((offsets (int-matrix nu))
+                          (total-bytes 0) )
+                      (let ((idx 0))
+                        (each ((s pool))
+                          (offsets idx total-bytes)
+                          (setq total-bytes (+ total-bytes (len s) 1))
+                          (setq idx (1+ idx)) ) )
+                      ;; Build packed string data (null-terminated)
+                      (let ((str-data (ubyte-matrix total-bytes))
+                            (pos 0) )
+                        (each ((s pool))
+                          (let ((bytes (explode-bytes s)))
+                            (each ((b bytes))
+                              (str-data pos b)
+                              (setq pos (1+ pos)) ) )
+                          ;; null terminator
+                          (str-data pos 0)
+                          (setq pos (1+ pos)) )
+                        ;; Write offsets with LCDB header
+                        (let ((rc (_cdb-write-ints pool-idx-fname offsets nu)))
+                          (when (< rc 0)
+                            (error "columnardb-save" "failed to write pool offsets" name) ) )
+                        ;; Write raw string data (no header)
+                        (let ((rc (_cdb-write-bytes pool-str-fname str-data total-bytes)))
+                          (when (< rc 0)
+                            (error "columnardb-save" "failed to write pool strings" name) ) ) ) ) ) ) ) )
 
              (t (error "columnardb-save" "unknown column type" type)) ) ) )
         (setq ci (1+ ci)) ) )
@@ -278,16 +310,33 @@
                   (let ((col (new-index stor (list nrows))))
                     (setq column-list (nconc1 column-list col)) ) ) ) )
 
-             ;; String column -> codes mmap'd, pool lazy-loaded
+             ;; String column -> codes mmap'd, pool via binary mmap or lazy text
              ((= type 'string)
               (let ((codes-fname (concat path "/col-" (str ci) "-codes.col"))
-                    (pool-fname (concat path "/col-" (str ci) "-pool.lsh")) )
+                    (pool-fname (concat path "/col-" (str ci) "-pool.lsh"))
+                    (pool-idx-fname (concat path "/col-" (str ci) "-pool-idx.col"))
+                    (pool-str-fname (concat path "/col-" (str ci) "-pool-str.bin")) )
                 (let ((stor (int-storage)))
                   (storage-mmap stor codes-fname *cdb-header-size*)
                   (let ((codes (new-index stor (list nrows))))
-                    ;; Build StringColumn with lazy pool
                     (let ((sc (new StringColumn nrows)))
-                      (==> sc build-from-codes-lazy codes pool-fname)
+                      (if (and (filep pool-idx-fname) (filep pool-str-fname))
+                        ;; Binary pool exists: mmap offsets and string data
+                        (let ((count-out (double-matrix 1))
+                              (type-out (int-matrix 1)) )
+                          (_cdb-read-header pool-idx-fname count-out type-out)
+                          (let ((nstrings (int (count-out 0))))
+                            (let ((off-stor (int-storage)))
+                              (storage-mmap off-stor pool-idx-fname *cdb-header-size*)
+                              (let ((offsets-idx (new-index off-stor (list nstrings))))
+                                (let ((str-stor (ubyte-storage)))
+                                  (storage-mmap str-stor pool-str-fname 0)
+                                  (let ((data-idx (new-index str-stor
+                                          (list (storage-size str-stor)))))
+                                    (==> sc build-from-codes-mmap
+                                         codes offsets-idx data-idx nstrings pool-fname) ) ) ) ) ) )
+                        ;; Fallback: lazy text pool
+                        (==> sc build-from-codes-lazy codes pool-fname) )
                       (setq column-list (nconc1 column-list sc)) ) ) ) ) )
 
              (t (error "columnardb-load" "unknown column type" type)) ) )
@@ -348,16 +397,33 @@
                   (let ((col (new-index stor (list nrows))))
                     (setq column-list (nconc1 column-list col)) ) ) ) )
 
-             ;; String column -> codes mmap-rw'd, pool lazy
+             ;; String column -> codes mmap-rw'd, pool via binary mmap or lazy text
              ((= type 'string)
               (let ((codes-fname (concat path "/col-" (str ci) "-codes.col"))
-                    (pool-fname (concat path "/col-" (str ci) "-pool.lsh")) )
+                    (pool-fname (concat path "/col-" (str ci) "-pool.lsh"))
+                    (pool-idx-fname (concat path "/col-" (str ci) "-pool-idx.col"))
+                    (pool-str-fname (concat path "/col-" (str ci) "-pool-str.bin")) )
                 (let ((stor (int-storage)))
                   (storage-mmap-rw stor codes-fname *cdb-header-size*)
                   (let ((codes (new-index stor (list nrows))))
-                    ;; Build StringColumn with lazy pool
                     (let ((sc (new StringColumn nrows)))
-                      (==> sc build-from-codes-lazy codes pool-fname)
+                      (if (and (filep pool-idx-fname) (filep pool-str-fname))
+                        ;; Binary pool exists: mmap-rw offsets and string data
+                        (let ((count-out (double-matrix 1))
+                              (type-out (int-matrix 1)) )
+                          (_cdb-read-header pool-idx-fname count-out type-out)
+                          (let ((nstrings (int (count-out 0))))
+                            (let ((off-stor (int-storage)))
+                              (storage-mmap-rw off-stor pool-idx-fname *cdb-header-size*)
+                              (let ((offsets-idx (new-index off-stor (list nstrings))))
+                                (let ((str-stor (ubyte-storage)))
+                                  (storage-mmap-rw str-stor pool-str-fname 0)
+                                  (let ((data-idx (new-index str-stor
+                                          (list (storage-size str-stor)))))
+                                    (==> sc build-from-codes-mmap
+                                         codes offsets-idx data-idx nstrings pool-fname) ) ) ) ) ) )
+                        ;; Fallback: lazy text pool
+                        (==> sc build-from-codes-lazy codes pool-fname) )
                       (setq column-list (nconc1 column-list sc)) ) ) ) ) )
 
              (t (error "columnardb-load-rw" "unknown column type" type)) ) )
@@ -463,7 +529,14 @@
                  ;; String column: re-encode with existing pool, append codes
                  ((= type 'string)
                   (let ((codes-fname (concat path "/col-" (str ci) "-codes.col"))
-                        (pool-fname (concat path "/col-" (str ci) "-pool.lsh")) )
+                        (pool-fname (concat path "/col-" (str ci) "-pool.lsh"))
+                        (pool-idx-fname (concat path "/col-" (str ci) "-pool-idx.col"))
+                        (pool-str-fname (concat path "/col-" (str ci) "-pool-str.bin")) )
+                    ;; Remove stale binary pool files (they'll be regenerated on next save)
+                    (when (filep pool-idx-fname)
+                      (sys (concat "rm -f '" pool-idx-fname "'")) )
+                    (when (filep pool-str-fname)
+                      (sys (concat "rm -f '" pool-str-fname "'")) )
                     ;; Read existing pool
                     (let ((old-pool (_cdb-read-sexp pool-fname))
                           (new-codes (int-matrix new-nrows))

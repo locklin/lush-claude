@@ -88,6 +88,98 @@
             (datatable-from-columns names types column-list total-rows) ) ) ) ) ) )
 
 
+;; Merge two DataTables maintaining sort order on col-name.
+;; Concatenates, then sorts the combined result. O(n log n).
+(de _partition-merge-sorted (dt1 dt2 col-name)
+  (let ((combined (_partition-concat-tables (list dt1 dt2))))
+    (==> combined sort-by col-name) ) )
+
+
+;; Split a DataTable into chunks of at most max-rows rows.
+;; Returns a list of DataTables.
+(de _partition-split (dt max-rows)
+  (let* ((nrows (==> dt num-rows))
+         (nchunks (if (= nrows 0) 0
+                    (+ (div (1- nrows) max-rows) 1)))
+         (result ()) )
+    (for (c 0 (1- nchunks))
+      (let* ((start (* c max-rows))
+             (end (min (1- nrows) (1- (* (1+ c) max-rows))))
+             (indices ()) )
+        (for (i start end)
+          (setq indices (nconc1 indices i)) )
+        (setq result (nconc1 result (==> dt select-rows indices))) ) )
+    result ) )
+
+
+;; Group rows of new-dt into buckets by target partition.
+;; partitions: list of partition metadata alists (with 'lo, 'hi keys).
+;; col-name: the partition sort column name.
+;;
+;; Returns (list bucket-list beyond-dt) where:
+;;   bucket-list: list of (partition-index . row-indices) pairs
+;;   beyond-dt: DataTable of rows beyond all partitions (or () if none)
+(de _partition-group-by-range (new-dt partitions col-name)
+  (let* ((nrows (==> new-dt num-rows))
+         (col-idx (==> new-dt col-index col-name))
+         (col (==> new-dt get-column col-idx))
+         (nparts (length partitions))
+         ;; Build arrays of lo/hi boundaries
+         (lo-vals (double-matrix nparts))
+         (hi-vals (double-matrix nparts))
+         (buckets (htable 64))  ;; partition-index -> list of row indices
+         (beyond-rows ()) )
+
+    ;; Fill boundary arrays
+    (let ((pi 0))
+      (each ((p partitions))
+        (lo-vals pi (cadr (assoc 'lo p)))
+        (hi-vals pi (cadr (assoc 'hi p)))
+        (setq pi (1+ pi)) ) )
+
+    ;; Classify each row
+    (for (r 0 (1- nrows))
+      (let ((v (col r))
+            (assigned ()) )
+        ;; Check: before first partition?
+        (when (< v (lo-vals 0))
+          (let ((cur (buckets 0)))
+            (buckets 0 (nconc1 (if cur cur ()) r)) )
+          (setq assigned t) )
+        ;; Check each partition
+        (when (not assigned)
+          (let ((pi 0))
+            (while (and (< pi nparts) (not assigned))
+              (when (and (>= v (lo-vals pi)) (<= v (hi-vals pi)))
+                ;; Falls within partition pi
+                (let ((cur (buckets pi)))
+                  (buckets pi (nconc1 (if cur cur ()) r)) )
+                (setq assigned t) )
+              ;; Check gap between pi and pi+1
+              (when (and (not assigned) (< pi (1- nparts)))
+                (when (and (> v (hi-vals pi)) (< v (lo-vals (1+ pi))))
+                  ;; In gap: assign to partition pi
+                  (let ((cur (buckets pi)))
+                    (buckets pi (nconc1 (if cur cur ()) r)) )
+                  (setq assigned t) ) )
+              (setq pi (1+ pi)) ) ) )
+        ;; Beyond all partitions
+        (when (not assigned)
+          (setq beyond-rows (nconc1 beyond-rows r)) ) ) )
+
+    ;; Build bucket-list as list of (partition-index . row-indices) pairs
+    (let ((bucket-list ()))
+      (for (pi 0 (1- nparts))
+        (let ((rows (buckets pi)))
+          (when rows
+            (setq bucket-list (nconc1 bucket-list (cons pi rows))) ) ) )
+      ;; Build beyond-dt
+      (let ((beyond-dt (if beyond-rows
+                          (==> new-dt select-rows beyond-rows)
+                          () )))
+        (list bucket-list beyond-dt) ) ) ) )
+
+
 ;; ============================================================
 ;; columnardb-partition-save: Save table into partitions
 ;; ============================================================
@@ -295,3 +387,123 @@
 
       (printf "columnardb-partition-append: %s -> +%d rows = %d total (%d partitions)\n"
               path new-nrows new-total new-nparts) ) ) )
+
+
+;; ============================================================
+;; columnardb-partition-sorted-insert: Insert maintaining global sort order
+;; ============================================================
+
+#? (columnardb-partition-sorted-insert <path> <dt>)
+;; Insert rows from <dt> into a partitioned table, maintaining
+;; global sort order on the partition column.  Rows are routed to
+;; the correct partitions and merged in sorted order.  Partitions
+;; that overflow max-rows are split.
+;;
+;; Uses columnardb-load-mem for affected partitions (need mutable data).
+(de columnardb-partition-sorted-insert (path dt)
+  (let* ((pmeta (columnardb-partition-meta path))
+         (col-name (cadr (assoc 'col-name pmeta)))
+         (max-rows (cadr (assoc 'max-rows pmeta)))
+         (old-total (cadr (assoc 'total-rows pmeta)))
+         (old-nparts (cadr (assoc 'nparts pmeta)))
+         (old-partitions (cadr (assoc 'partitions pmeta)))
+         (new-nrows (==> dt num-rows)) )
+
+    ;; Step 1: Sort new data by partition column
+    (let ((sorted-dt (==> dt sort-by col-name)))
+
+      ;; Step 2: Group rows by target partition
+      (let* ((grouping (_partition-group-by-range sorted-dt old-partitions col-name))
+             (bucket-list (car grouping))
+             (beyond-dt (cadr grouping))
+             ;; Track next partition index for new partitions
+             (next-idx old-nparts)
+             ;; Build new partition list (will replace old)
+             (result-partitions ()) )
+
+        ;; Step 3: Process each existing partition
+        (let ((pi 0))
+          (each ((p old-partitions))
+            (let ((pdir (cadr (assoc 'dir p)))
+                  (p-nrows (cadr (assoc 'nrows p)))
+                  (bucket-rows ()) )
+              ;; Find if this partition has new rows
+              (each ((bkt bucket-list))
+                (when (= (car bkt) pi)
+                  (setq bucket-rows (cdr bkt)) ) )
+
+              (if (null bucket-rows)
+                ;; No new rows for this partition: keep as-is
+                (setq result-partitions (nconc1 result-partitions p))
+                ;; New rows: load, merge, possibly split
+                (let* ((sub-dt (==> sorted-dt select-rows bucket-rows))
+                       (existing-dt (columnardb-load-mem pdir))
+                       (merged (_partition-merge-sorted existing-dt sub-dt col-name))
+                       (merged-nrows (==> merged num-rows))
+                       (merged-col-idx (==> merged col-index col-name))
+                       (merged-col (==> merged get-column merged-col-idx)) )
+                  (if (<= merged-nrows max-rows)
+                    ;; Fits in one partition: save in place
+                    (progn
+                      (columnardb-save merged pdir)
+                      (setq result-partitions (nconc1 result-partitions
+                              (list (list 'index (cadr (assoc 'index p)))
+                                    (list 'lo (merged-col 0))
+                                    (list 'hi (merged-col (1- merged-nrows)))
+                                    (list 'nrows merged-nrows)
+                                    (list 'dir pdir) ))) )
+                    ;; Overflow: split into chunks
+                    (let ((chunks (_partition-split merged max-rows))
+                          (first-chunk t) )
+                      (each ((chunk chunks))
+                        (let* ((cnr (==> chunk num-rows))
+                               (ccol (==> chunk get-column
+                                       (==> chunk col-index col-name)))
+                               (cdir (if first-chunk pdir
+                                        (concat path "/p-" (str next-idx)))) )
+                          (columnardb-save chunk cdir)
+                          (setq result-partitions (nconc1 result-partitions
+                                  (list (list 'index (if first-chunk
+                                                       (cadr (assoc 'index p))
+                                                       next-idx))
+                                        (list 'lo (ccol 0))
+                                        (list 'hi (ccol (1- cnr)))
+                                        (list 'nrows cnr)
+                                        (list 'dir cdir) )))
+                          (when (not first-chunk)
+                            (setq next-idx (1+ next-idx)) )
+                          (setq first-chunk ()) ) ) ) ) ) ) )
+            (setq pi (1+ pi)) ) )
+
+        ;; Step 4: Create new partitions for "beyond" rows
+        (when (and beyond-dt (> (==> beyond-dt num-rows) 0))
+          (let* ((beyond-sorted (==> beyond-dt sort-by col-name))
+                 (chunks (_partition-split beyond-sorted max-rows)) )
+            (each ((chunk chunks))
+              (let* ((cnr (==> chunk num-rows))
+                     (ccol (==> chunk get-column
+                             (==> chunk col-index col-name)))
+                     (cdir (concat path "/p-" (str next-idx))) )
+                (columnardb-save chunk cdir)
+                (setq result-partitions (nconc1 result-partitions
+                        (list (list 'index next-idx)
+                              (list 'lo (ccol 0))
+                              (list 'hi (ccol (1- cnr)))
+                              (list 'nrows cnr)
+                              (list 'dir cdir) )))
+                (setq next-idx (1+ next-idx)) ) ) ) )
+
+        ;; Step 5: Rewrite partition metadata
+        (let ((new-total (+ old-total new-nrows))
+              (new-nparts (length result-partitions)) )
+          (let ((new-pmeta (list
+                            (list 'version 1)
+                            (list 'col-name col-name)
+                            (list 'max-rows max-rows)
+                            (list 'total-rows new-total)
+                            (list 'nparts new-nparts)
+                            (list 'partitions result-partitions) )))
+            (_cdb-write-sexp (concat path "/partition-meta.lsh") new-pmeta) )
+
+          (printf "columnardb-partition-sorted-insert: %s -> +%d rows = %d total (%d partitions)\n"
+                  path new-nrows new-total new-nparts) ) ) ) ) )
