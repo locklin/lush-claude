@@ -608,6 +608,239 @@
 
 
 ;; ============================================================
+;; Stage 12: Writable mmap (MAP_PRIVATE)
+;; ============================================================
+
+(test-suite "Stage 12: Writable mmap (MAP_PRIVATE)"
+
+  ;; Build a table with real, int, and string columns
+  (let ((dt (new DataTable)))
+    (==> dt add-column "price" 'real)
+    (==> dt add-column "volume" 'int)
+    (==> dt add-column "symbol" 'string)
+    (==> dt append-row (list 100.0 1000 "AAPL"))
+    (==> dt append-row (list 200.0 2000 "GOOG"))
+    (==> dt append-row (list 300.0 3000 "MSFT"))
+
+    (let ((path (concat *test-dir* "/mmap-rw")))
+      (columnardb-save dt path)
+
+      ;; Load with mmap-rw and verify reads
+      (let ((dt2 (columnardb-load-rw path)))
+        (test-equal "rw rows" (==> dt2 num-rows) 3)
+        (test-approx "rw real[0]" (==> dt2 get 0 "price") 100.0 0.001)
+        (test-approx "rw real[2]" (==> dt2 get 2 "price") 300.0 0.001)
+        (test-equal "rw int[0]" (==> dt2 get 0 "volume") 1000)
+        (test-equal "rw int[1]" (==> dt2 get 1 "volume") 2000)
+        (test-string-equal "rw str[0]" (==> dt2 get 0 "symbol") "AAPL")
+        (test-string-equal "rw str[2]" (==> dt2 get 2 "symbol") "MSFT") )
+
+      ;; Set on real column (direct write, no heap copy needed)
+      (let ((dt2 (columnardb-load-rw path)))
+        (==> dt2 set 1 "price" 999.0)
+        (test-approx "rw set real" (==> dt2 get 1 "price") 999.0 0.001)
+        (test-approx "rw set real other[0]" (==> dt2 get 0 "price") 100.0 0.001)
+        (test-approx "rw set real other[2]" (==> dt2 get 2 "price") 300.0 0.001) )
+
+      ;; Set on int column
+      (let ((dt2 (columnardb-load-rw path)))
+        (==> dt2 set 0 "volume" 42)
+        (test-equal "rw set int" (==> dt2 get 0 "volume") 42)
+        (test-equal "rw set int other[1]" (==> dt2 get 1 "volume") 2000) )
+
+      ;; Verify disk file unchanged after modification
+      (let ((dt3 (columnardb-load path)))
+        (test-approx "rw disk unchanged price[1]" (==> dt3 get 1 "price") 200.0 0.001)
+        (test-equal "rw disk unchanged vol[0]" (==> dt3 get 0 "volume") 1000)
+        (test-string-equal "rw disk unchanged sym[0]" (==> dt3 get 0 "symbol") "AAPL") )
+
+      ;; Append rows to rw-loaded table
+      (let ((dt2 (columnardb-load-rw path)))
+        (==> dt2 append-row (list 400.0 4000 "TSLA"))
+        (test-equal "rw append rows" (==> dt2 num-rows) 4)
+        (test-approx "rw append new price" (==> dt2 get 3 "price") 400.0 0.001)
+        (test-equal "rw append new vol" (==> dt2 get 3 "volume") 4000)
+        (test-string-equal "rw append new sym" (==> dt2 get 3 "symbol") "TSLA")
+        ;; Original rows intact
+        (test-approx "rw append old price[0]" (==> dt2 get 0 "price") 100.0 0.001) )
+
+      ;; Set on int column works directly (no COW copy)
+      (let ((dt2 (columnardb-load-rw path)))
+        (==> dt2 set 2 "volume" 9999)
+        (test-equal "rw direct int set" (==> dt2 get 2 "volume") 9999)
+        ;; Multiple sets on same column
+        (==> dt2 set 0 "volume" 1)
+        (==> dt2 set 1 "volume" 2)
+        (test-equal "rw multi int[0]" (==> dt2 get 0 "volume") 1)
+        (test-equal "rw multi int[1]" (==> dt2 get 1 "volume") 2)
+        (test-equal "rw multi int[2]" (==> dt2 get 2 "volume") 9999) ) ) )
+)
+
+
+;; ============================================================
+;; Stage 13: Lazy pool loading
+;; ============================================================
+
+(test-suite "Stage 13: Lazy pool loading"
+
+  ;; Build a table with string and numeric columns
+  (let ((dt (new DataTable)))
+    (==> dt add-column "time" 'stamp)
+    (==> dt add-column "price" 'real)
+    (==> dt add-column "symbol" 'string)
+    (==> dt append-row (list 100.0 10.0 "AAPL"))
+    (==> dt append-row (list 200.0 20.0 "GOOG"))
+    (==> dt append-row (list 300.0 30.0 "AAPL"))
+    (==> dt append-row (list 400.0 40.0 "MSFT"))
+    (==> dt append-row (list 500.0 50.0 "GOOG"))
+
+    (let ((path (concat *test-dir* "/lazy")))
+      (columnardb-save dt path)
+
+      ;; Load table, access only numeric columns (pool not loaded yet)
+      (let ((dt2 (columnardb-load path)))
+        ;; Numeric columns work without triggering pool load
+        (test-approx "lazy numeric time[0]" (==> dt2 get 0 "time") 100.0 0.001)
+        (test-approx "lazy numeric price[3]" (==> dt2 get 3 "price") 40.0 0.001)
+
+        ;; Access string column -> triggers lazy load
+        (test-string-equal "lazy str[0]" (==> dt2 get 0 "symbol") "AAPL")
+        (test-string-equal "lazy str[1]" (==> dt2 get 1 "symbol") "GOOG")
+        (test-string-equal "lazy str[3]" (==> dt2 get 3 "symbol") "MSFT")
+        (test-string-equal "lazy str[4]" (==> dt2 get 4 "symbol") "GOOG") )
+
+      ;; where-eq works after lazy load
+      (let ((dt2 (columnardb-load path)))
+        (let ((sc (==> dt2 get-column 2)))
+          (let ((aapl-rows (==> sc where-eq "AAPL")))
+            (test-equal "lazy where-eq AAPL count" (length aapl-rows) 2)
+            (test-equal "lazy where-eq AAPL[0]" (car aapl-rows) 0)
+            (test-equal "lazy where-eq AAPL[1]" (cadr aapl-rows) 2) )
+          (let ((goog-rows (==> sc where-eq "GOOG")))
+            (test-equal "lazy where-eq GOOG count" (length goog-rows) 2) ) ) )
+
+      ;; Append to lazy-loaded table works
+      (let ((dt2 (columnardb-load path)))
+        (let ((sc (==> dt2 get-column 2)))
+          ;; Append triggers pool load
+          (==> sc append "TSLA")
+          (test-equal "lazy append rows" (==> sc num-rows) 6)
+          (test-string-equal "lazy append[5]" (==> sc get 5) "TSLA")
+          ;; Original strings still correct
+          (test-string-equal "lazy append[0]" (==> sc get 0) "AAPL") ) )
+
+      ;; get-pool works after lazy load
+      (let ((dt2 (columnardb-load path)))
+        (let ((sc (==> dt2 get-column 2)))
+          (let ((pool (==> sc get-pool)))
+            (test-check "lazy pool loaded" pool)
+            (test-equal "lazy pool size" (length pool) 3) ) ) ) ) )
+)
+
+
+;; ============================================================
+;; Stage 14: Partitioned tables
+;; ============================================================
+
+(test-suite "Stage 14: Partitioned tables"
+
+  ;; Build a 100-row sorted table
+  (let ((dt (new DataTable)))
+    (==> dt add-column "time" 'real)
+    (==> dt add-column "price" 'real)
+    (==> dt add-column "tag" 'string)
+    (let ((tags (list "A" "B" "C" "D" "E")))
+      (for (i 0 99)
+        (==> dt append-row (list (* i 1.0) (* i 0.5) (nth (mod i 5) tags))) ) )
+
+    ;; Save into 4 partitions (25 rows each)
+    (let ((path (concat *test-dir* "/partitioned")))
+      (columnardb-partition-save dt path "time" 25)
+
+      ;; Verify directory structure
+      (test-check "partition-meta exists"
+                  (filep (concat path "/partition-meta.lsh")))
+      (test-check "p-0 exists" (filep (concat path "/p-0/meta.lsh")))
+      (test-check "p-1 exists" (filep (concat path "/p-1/meta.lsh")))
+      (test-check "p-2 exists" (filep (concat path "/p-2/meta.lsh")))
+      (test-check "p-3 exists" (filep (concat path "/p-3/meta.lsh")))
+
+      ;; Verify partition metadata
+      (let ((pmeta (columnardb-partition-meta path)))
+        (test-equal "part nparts" (cadr (assoc 'nparts pmeta)) 4)
+        (test-equal "part total-rows" (cadr (assoc 'total-rows pmeta)) 100)
+        (test-equal "part max-rows" (cadr (assoc 'max-rows pmeta)) 25) )
+
+      ;; Range query within single partition (p-0: rows 0-24, time 0-24)
+      (let ((result (columnardb-partition-range path "time" 5 15)))
+        (test-equal "part range single count" (==> result num-rows) 11)
+        (test-approx "part range single first" (==> result get 0 "time") 5.0 0.001)
+        (test-approx "part range single last"
+                     (==> result get (1- (==> result num-rows)) "time") 15.0 0.001) )
+
+      ;; Range spanning multiple partitions (p-1 and p-2: time 30-60)
+      (let ((result (columnardb-partition-range path "time" 30 60)))
+        (test-equal "part range multi count" (==> result num-rows) 31)
+        (test-approx "part range multi first" (==> result get 0 "time") 30.0 0.001)
+        (test-approx "part range multi last"
+                     (==> result get (1- (==> result num-rows)) "time") 60.0 0.001) )
+
+      ;; Range hitting no partitions (empty result)
+      (let ((result (columnardb-partition-range path "time" 200 300)))
+        (test-equal "part range empty" (==> result num-rows) 0) )
+
+      ;; Full range (all partitions)
+      (let ((result (columnardb-partition-range path "time" -1 999)))
+        (test-equal "part range full" (==> result num-rows) 100) )
+
+      ;; Partition boundary edge case: exactly at boundary (24-25)
+      (let ((result (columnardb-partition-range path "time" 24 25)))
+        (test-equal "part boundary count" (==> result num-rows) 2)
+        (test-approx "part boundary[0]" (==> result get 0 "time") 24.0 0.001)
+        (test-approx "part boundary[1]" (==> result get 1 "time") 25.0 0.001) )
+
+      ;; String columns preserved across partitions
+      (let ((result (columnardb-partition-range path "time" 0 4)))
+        (test-string-equal "part str[0]" (==> result get 0 "tag") "A")
+        (test-string-equal "part str[1]" (==> result get 1 "tag") "B")
+        (test-string-equal "part str[4]" (==> result get 4 "tag") "E") )
+
+      ;; Append to partitioned table
+      (let ((dt2 (new DataTable)))
+        (==> dt2 add-column "time" 'real)
+        (==> dt2 add-column "price" 'real)
+        (==> dt2 add-column "tag" 'string)
+        (for (i 100 104)
+          (==> dt2 append-row (list (* i 1.0) (* i 0.5) "X")) )
+        (columnardb-partition-append path dt2) )
+
+      ;; Verify appended data with range query
+      (let ((result (columnardb-partition-range path "time" 98 104)))
+        (test-equal "part append range count" (==> result num-rows) 7)
+        (test-approx "part append old" (==> result get 0 "time") 98.0 0.001)
+        (test-approx "part append new" (==> result get 6 "time") 104.0 0.001)
+        (test-string-equal "part append new tag" (==> result get 6 "tag") "X") )
+
+      ;; Verify total after append
+      (let ((pmeta (columnardb-partition-meta path)))
+        (test-equal "part append total" (cadr (assoc 'total-rows pmeta)) 105) ) ) )
+
+  ;; Single-partition edge case (all rows fit in one partition)
+  (let ((dt (new DataTable)))
+    (==> dt add-column "x" 'real)
+    (for (i 0 9)
+      (==> dt append-row (list (* i 1.0))) )
+
+    (let ((path (concat *test-dir* "/part-single")))
+      (columnardb-partition-save dt path "x" 100)
+      (let ((pmeta (columnardb-partition-meta path)))
+        (test-equal "single part nparts" (cadr (assoc 'nparts pmeta)) 1) )
+      (let ((result (columnardb-partition-range path "x" 3 7)))
+        (test-equal "single part range" (==> result num-rows) 5) ) ) )
+)
+
+
+;; ============================================================
 ;; Summary
 ;; ============================================================
 

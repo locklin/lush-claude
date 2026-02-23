@@ -1026,6 +1026,72 @@ DX(xstorage_mmap)
 }
 
 
+void
+storage_mmap_rw(at *atp, FILE *f, size_t offset)
+{
+  struct storage *st;
+  size_t len;
+  gptr addr;
+  gptr xtra;
+
+  ifn (storagep(atp))
+    error(NIL,"not a storage",atp);
+  st = atp->Object;
+#if HAVE_FSEEKO
+  if (fseeko(f,(off_t)0,SEEK_END)==-1)
+    test_file_error(NIL);
+#else
+  if (fseek(f,0,SEEK_END)==-1)
+    test_file_error(NIL);
+#endif
+#if HAVE_FTELLO
+  len = (size_t)ftello(f);
+#else
+  len = (size_t)ftell(f);
+#endif
+  rewind(f);
+  if (st->srg.type == ST_AT)
+    error(NIL,"cannot map an AT storage",atp);
+  ifn (st->srg.flags & STF_UNSIZED)
+    error(NIL,"An unsized storage is required",NIL);
+  xtra = 0;
+  addr = mmap(0,len,PROT_READ|PROT_WRITE,MAP_PRIVATE,fileno(f),0);
+  if (addr == (void*)-1L)
+    test_file_error(NIL);
+  st->srg.size = (len - offset) / storage_type_size[st->srg.type];
+  st->allinfo.sts_mmap.len  = len;
+  st->allinfo.sts_mmap.xtra = xtra;
+  st->allinfo.sts_mmap.addr = addr;
+  st->srg.data = (char*)(st->allinfo.sts_mmap.addr)+offset;
+  st->srg.flags = (short)(STS_MMAP & ~STF_UNSIZED);
+}
+
+DX(xstorage_mmap_rw)
+{
+  at *atp, *atf;
+  size_t offset = 0;
+
+  ALL_ARGS_EVAL;
+  if (arg_number==3)
+    offset = AINTEGER(3);
+  else
+    ARG_NUMBER(2);
+
+  atp = APOINTER(1);
+  atf = APOINTER(2);
+  if (EXTERNP(atf,&file_R_class)) {
+    LOCK(atf);
+  } else if (EXTERNP(atf,&string_class)) {
+    atf = OPEN_READ(SADD(atf->Object),NULL);
+  } else
+    error(NIL,"Neither a string, nor a file descriptor",atf);
+  storage_mmap_rw(atp, atf->Object, offset);
+  LOCK(atp);
+  UNLOCK(atf);
+  return atp;
+}
+
+
 #endif
 
 
@@ -1362,6 +1428,7 @@ void init_storage()
   dx_define("storage-realloc-nc",xstorage_realloc_nc);
 #ifdef HAVE_MMAP
   dx_define("storage-mmap",xstorage_mmap);
+  dx_define("storage-mmap-rw",xstorage_mmap_rw);
 #endif
   dx_define("storagep",xstoragep);
   dx_define("writablep",xwritablep);

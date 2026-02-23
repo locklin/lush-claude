@@ -1,0 +1,297 @@
+;;; columnardb-partition.lsh -- Partitioned tables for columnardb
+;;;
+;;; Splits large time-series tables by row count into sub-directories,
+;;; enabling partition pruning on range queries.
+;;;
+;;; Directory layout:
+;;;   tabledir/
+;;;     partition-meta.lsh     ;; partition scheme + list
+;;;     p-0/                   ;; standard columnardb dir
+;;;       meta.lsh, col-*.col
+;;;     p-1/
+;;;       ...
+;;;
+;;; Usage:
+;;;   (columnardb-partition-save dt "/path/to/dir" "time" 1000)
+;;;   (columnardb-partition-range "/path/to/dir" "time" lo hi)
+;;;   (columnardb-partition-append "/path/to/dir" new-dt)
+
+;;; Dependencies: loaded via columnardb.lsh (which libloads this file)
+;;; Requires: columnardb-save, columnardb-load, columnardb-append,
+;;;           columnardb-meta, columnardb-range-rows, _cdb-mkdir,
+;;;           _cdb-write-sexp, _cdb-read-sexp, DataTable, StringColumn
+
+#? *** ColumnarDB: Partitioned Tables
+
+
+;; ============================================================
+;; Internal helpers
+;; ============================================================
+
+;; Concatenate multiple DataTables with the same schema into one
+(de _partition-concat-tables (tables)
+  (when tables
+    (if (= (length tables) 1)
+      (car tables)
+      ;; Multiple tables: build a combined table
+      (let* ((first (car tables))
+             (names (==> first col-names))
+             (types (==> first col-types))
+             (ncols (==> first num-cols))
+             (total-rows 0) )
+        ;; Count total rows
+        (each ((t tables))
+          (setq total-rows (+ total-rows (==> t num-rows))) )
+        (if (= total-rows 0)
+          first
+          ;; Build combined columns
+          (let ((column-list ())
+                (ci 0) )
+            (each ((name names) (type types))
+              (cond
+               ;; Real or stamp column
+               ((or (= type 'real) (= type 'stamp))
+                (let ((combined (double-matrix total-rows))
+                      (offset 0) )
+                  (each ((t tables))
+                    (let ((col (==> t get-column ci))
+                          (nr (==> t num-rows)) )
+                      (for (i 0 (1- nr))
+                        (combined (+ offset i) (col i)) )
+                      (setq offset (+ offset nr)) ) )
+                  (setq column-list (nconc1 column-list combined)) ) )
+
+               ;; Integer column
+               ((= type 'int)
+                (let ((combined (int-matrix total-rows))
+                      (offset 0) )
+                  (each ((t tables))
+                    (let ((col (==> t get-column ci))
+                          (nr (==> t num-rows)) )
+                      (for (i 0 (1- nr))
+                        (combined (+ offset i) (col i)) )
+                      (setq offset (+ offset nr)) ) )
+                  (setq column-list (nconc1 column-list combined)) ) )
+
+               ;; String column
+               ((= type 'string)
+                (let ((sc (new StringColumn total-rows)))
+                  (each ((t tables))
+                    (let ((col (==> t get-column ci))
+                          (nr (==> t num-rows)) )
+                      (for (i 0 (1- nr))
+                        (==> sc append (==> col get i)) ) ) )
+                  (setq column-list (nconc1 column-list sc)) ) )
+
+               (t (error "_partition-concat-tables" "unknown type" type)) )
+              (setq ci (1+ ci)) )
+            (datatable-from-columns names types column-list total-rows) ) ) ) ) ) )
+
+
+;; ============================================================
+;; columnardb-partition-save: Save table into partitions
+;; ============================================================
+
+#? (columnardb-partition-save <dt> <path> <col-name> <max-rows>)
+;; Save a DataTable as a partitioned table.
+;; The table must be sorted by <col-name>.
+;; Splits into chunks of <max-rows> rows, each saved as a
+;; standard columnardb directory under p-N/ subdirectories.
+;; Records partition boundaries in partition-meta.lsh.
+(de columnardb-partition-save (dt path col-name max-rows)
+  (_cdb-mkdir path)
+  (let* ((nrows (==> dt num-rows))
+         (col-idx (==> dt col-index col-name))
+         (col (==> dt get-column col-idx))
+         (nparts (if (= nrows 0) 0
+                   (+ (div (1- nrows) max-rows) 1)))
+         (partitions ()) )
+
+    ;; Save each partition
+    (for (p 0 (1- nparts))
+      (let* ((start (* p max-rows))
+             (end (min (1- nrows) (1- (* (1+ p) max-rows))))
+             (prows (1+ (- end start)))
+             (pdir (concat path "/p-" (str p))) )
+        ;; Build row indices for this partition
+        (let ((indices ()))
+          (for (i start end)
+            (setq indices (nconc1 indices i)) )
+          (let ((sub (==> dt select-rows indices)))
+            (columnardb-save sub pdir) ) )
+        ;; Record partition boundaries (lo/hi values of partition column)
+        (let ((lo (col start))
+              (hi (col end)) )
+          (setq partitions (nconc1 partitions
+                  (list (list 'index p)
+                        (list 'lo lo)
+                        (list 'hi hi)
+                        (list 'nrows prows)
+                        (list 'dir pdir) ))) ) ) )
+
+    ;; Write partition metadata
+    (let ((pmeta (list
+                  (list 'version 1)
+                  (list 'col-name col-name)
+                  (list 'max-rows max-rows)
+                  (list 'total-rows nrows)
+                  (list 'nparts nparts)
+                  (list 'partitions partitions) )))
+      (_cdb-write-sexp (concat path "/partition-meta.lsh") pmeta) )
+
+    (printf "columnardb-partition-save: %s -> %d rows in %d partitions (by %s, max %d)\n"
+            path nrows nparts col-name max-rows) ) )
+
+
+;; ============================================================
+;; columnardb-partition-meta / columnardb-partition-load
+;; ============================================================
+
+#? (columnardb-partition-meta <path>)
+;; Read partition metadata from a partitioned table directory.
+(de columnardb-partition-meta (path)
+  (_cdb-read-sexp (concat path "/partition-meta.lsh")) )
+
+#? (columnardb-partition-load <path>)
+;; Alias for columnardb-partition-meta -- returns the metadata handle.
+(de columnardb-partition-load (path)
+  (columnardb-partition-meta path) )
+
+
+;; ============================================================
+;; columnardb-partition-range: Pruned range query
+;; ============================================================
+
+#? (columnardb-partition-range <path> <col-name> <lo> <hi>)
+;; Range query on a partitioned table with partition pruning.
+;; Reads partition metadata, finds partitions overlapping [lo, hi],
+;; loads only those partitions, applies binary search within each,
+;; and concatenates results.
+;; Returns a DataTable with matching rows.
+(de columnardb-partition-range (path col-name lo hi)
+  (let* ((pmeta (columnardb-partition-meta path))
+         (partitions (cadr (assoc 'partitions pmeta)))
+         (results ()) )
+
+    ;; Find overlapping partitions: p-hi >= lo AND p-lo <= hi
+    (each ((p partitions))
+      (let ((p-lo (cadr (assoc 'lo p)))
+            (p-hi (cadr (assoc 'hi p)))
+            (pdir (cadr (assoc 'dir p))) )
+        (when (and (>= p-hi lo) (<= p-lo hi))
+          ;; Load this partition and apply range query
+          (let* ((dt (columnardb-load pdir))
+                 (meta (columnardb-meta pdir))
+                 (sub (columnardb-range-rows dt col-name lo hi meta)) )
+            (when (> (==> sub num-rows) 0)
+              (setq results (nconc1 results sub)) ) ) ) ) )
+
+    ;; Concatenate results
+    (if results
+      (_partition-concat-tables results)
+      ;; Empty result: build an empty table with correct schema
+      (let* ((sample-meta (columnardb-meta (concat path "/p-0")))
+             (names (cadr (assoc 'names sample-meta)))
+             (types (cadr (assoc 'types sample-meta))) )
+        (let ((dt (new DataTable)))
+          (let ((ci 0))
+            (each ((name names) (type types))
+              (==> dt add-column name type)
+              (setq ci (1+ ci)) ) )
+          dt ) ) ) ) )
+
+
+;; ============================================================
+;; columnardb-partition-append: Append to partitioned table
+;; ============================================================
+
+#? (columnardb-partition-append <path> <dt>)
+;; Append rows to a partitioned table.
+;; Fills the last partition up to max-rows, then creates new partitions
+;; as needed. Updates partition-meta.lsh.
+(de columnardb-partition-append (path dt)
+  (let* ((pmeta (columnardb-partition-meta path))
+         (col-name (cadr (assoc 'col-name pmeta)))
+         (max-rows (cadr (assoc 'max-rows pmeta)))
+         (old-total (cadr (assoc 'total-rows pmeta)))
+         (old-nparts (cadr (assoc 'nparts pmeta)))
+         (old-partitions (cadr (assoc 'partitions pmeta)))
+         (new-nrows (==> dt num-rows))
+         (col-idx (==> dt col-index col-name))
+         (col (==> dt get-column col-idx))
+         (appended 0)
+         (new-partitions old-partitions) )
+
+    ;; Step 1: fill last partition if it has room
+    (when (and (> old-nparts 0) (> new-nrows 0))
+      (let* ((last-p (nth (1- old-nparts) old-partitions))
+             (last-nrows (cadr (assoc 'nrows last-p)))
+             (last-dir (cadr (assoc 'dir last-p)))
+             (room (- max-rows last-nrows)) )
+        (when (> room 0)
+          (let ((fill-count (min room new-nrows)))
+            ;; Build a sub-table of the first fill-count rows
+            (let ((indices ()))
+              (for (i 0 (1- fill-count))
+                (setq indices (nconc1 indices i)) )
+              (let ((sub (==> dt select-rows indices)))
+                (columnardb-append last-dir sub) ) )
+            ;; Update the last partition info
+            (let* ((new-last-nrows (+ last-nrows fill-count))
+                   (last-lo (cadr (assoc 'lo last-p)))
+                   (new-last-hi (col (1- fill-count)))
+                   (updated-last (list
+                                  (list 'index (cadr (assoc 'index last-p)))
+                                  (list 'lo last-lo)
+                                  (list 'hi new-last-hi)
+                                  (list 'nrows new-last-nrows)
+                                  (list 'dir last-dir) )) )
+              ;; Replace last partition in list
+              (let ((new-list ()))
+                (for (i 0 (- old-nparts 2))
+                  (setq new-list (nconc1 new-list (nth i old-partitions))) )
+                (setq new-list (nconc1 new-list updated-last))
+                (setq new-partitions new-list) ) )
+            (setq appended fill-count) ) ) ) )
+
+    ;; Step 2: create new partitions for remaining rows
+    (let ((remaining (- new-nrows appended))
+          (next-idx old-nparts) )
+      (while (> remaining 0)
+        (let* ((chunk-size (min max-rows remaining))
+               (start appended)
+               (end (1- (+ appended chunk-size)))
+               (pdir (concat path "/p-" (str next-idx))) )
+          ;; Build sub-table
+          (let ((indices ()))
+            (for (i start end)
+              (setq indices (nconc1 indices i)) )
+            (let ((sub (==> dt select-rows indices)))
+              (columnardb-save sub pdir) ) )
+          ;; Record partition
+          (let ((lo (col start))
+                (hi (col end)) )
+            (setq new-partitions (nconc1 new-partitions
+                    (list (list 'index next-idx)
+                          (list 'lo lo)
+                          (list 'hi hi)
+                          (list 'nrows chunk-size)
+                          (list 'dir pdir) ))) )
+          (setq appended (+ appended chunk-size))
+          (setq remaining (- remaining chunk-size))
+          (setq next-idx (1+ next-idx)) ) ) )
+
+    ;; Write updated partition metadata
+    (let ((new-total (+ old-total new-nrows))
+          (new-nparts (length new-partitions)) )
+      (let ((pmeta (list
+                    (list 'version 1)
+                    (list 'col-name col-name)
+                    (list 'max-rows max-rows)
+                    (list 'total-rows new-total)
+                    (list 'nparts new-nparts)
+                    (list 'partitions new-partitions) )))
+        (_cdb-write-sexp (concat path "/partition-meta.lsh") pmeta) )
+
+      (printf "columnardb-partition-append: %s -> +%d rows = %d total (%d partitions)\n"
+              path new-nrows new-total new-nparts) ) ) )

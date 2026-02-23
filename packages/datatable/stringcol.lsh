@@ -39,6 +39,9 @@
   pool-size          ;; number of unique strings in pool
   num-rows           ;; logical row count
   capacity           ;; allocated capacity of codes array
+
+  ;; Lazy loading: path to pool file (deferred until first access)
+  pool-fname
 )
 
 
@@ -50,13 +53,15 @@
   (setq codes (int-matrix (max 64 init-cap)))
   (setq pool-size 0)
   (setq num-rows 0)
-  (setq capacity (max 64 init-cap)) )
+  (setq capacity (max 64 init-cap))
+  (setq pool-fname ()) )
 
 
 #? (==> <sc> append <string>)
 ;; Append a string value to the column. The string is interned in
 ;; the column's pool if not already present.
 (defmethod StringColumn append (s)
+  (==> this _load-pool)
   (let ((code (str-to-code s)))
     (when (not code)
       ;; New string: add to pool
@@ -81,6 +86,7 @@
 ;; Get the string value at row <index>.
 ;; Two-step lookup: row -> code -> string.
 (defmethod StringColumn get (i)
+  (==> this _load-pool)
   (when (and (>= i 0) (< i num-rows))
     (nth (codes i) code-to-str) ) )
 
@@ -113,6 +119,7 @@
 #? (==> <sc> get-pool)
 ;; Return the list of unique strings (index = code).
 (defmethod StringColumn get-pool ()
+  (==> this _load-pool)
   code-to-str )
 
 
@@ -127,6 +134,7 @@
 ;; Return a list of row indices where the value equals <string>.
 ;; Uses code comparison (integer) rather than string comparison.
 (defmethod StringColumn where-eq (s)
+  (==> this _load-pool)
   (let ((target-code (str-to-code s)))
     (when target-code
       (let ((result ()))
@@ -157,3 +165,34 @@
     (setq codes code-array)
     (setq num-rows nr)
     (setq capacity nr) ) )
+
+
+;; Private: load pool from file if deferred (lazy loading)
+(defmethod StringColumn _load-pool ()
+  (when (and pool-fname (null code-to-str))
+    ;; Read pool file (S-expression list of strings)
+    (let ((pool (let ((f (open-read pool-fname)))
+                  (reading f (read)) )))
+      (let ((nu (length pool)))
+        (setq code-to-str pool)
+        (setq str-to-code (htable (max 64 (* 2 nu))))
+        (setq pool-size nu)
+        (let ((idx 0))
+          (each ((s pool))
+            (str-to-code s idx)
+            (setq idx (1+ idx)) ) ) ) ) ) )
+
+
+#? (==> <sc> build-from-codes-lazy <code-array> <pool-filename>)
+;; Bulk-initialize the StringColumn with codes but defer pool loading.
+;; The pool file will be read on first access to pool-dependent methods.
+(defmethod StringColumn build-from-codes-lazy (code-array pfname)
+  (let ((nr (idx-dim code-array 0)))
+    (setq codes code-array)
+    (setq num-rows nr)
+    (setq capacity nr)
+    (setq pool-fname pfname)
+    ;; Leave code-to-str as () and str-to-code as empty htable
+    (setq code-to-str ())
+    (setq str-to-code (htable 64))
+    (setq pool-size 0) ) )
