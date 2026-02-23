@@ -18,6 +18,7 @@
 
 (libload "datatable/stringcol")
 (libload "timedate/timedate")
+(libload "libidx/idx-sort")
 
 #? *** DataTable: Typed Columnar Table
 
@@ -394,6 +395,96 @@
               (==> result set-column-data ci dst-col) ) ) )
           (setq ci (1+ ci)) ) ) )
     result ) )
+
+
+#? (==> <dt> grade <col-name> [<descending>])
+;; Return a permutation idx1 of int that would sort the table by
+;; the given column.  Uses compiled C heapsort (idx-d1i1sortup/down
+;; for real/stamp, idx-i1i1sortup/down for int).
+;; String columns are not supported as sort keys.
+;; <descending> if non-nil sorts in descending order.
+(defmethod DataTable grade (col-name &optional descending)
+  (let* ((idx (col-names-ht col-name))
+         (type (nth idx col-types-list))
+         (col (nth idx columns)) )
+    (when (not idx)
+      (error "DataTable" "column not found" col-name) )
+    (when (= type 'string)
+      (error "DataTable" "cannot grade by string column" col-name) )
+    ;; Trivial case: 0 or 1 rows need no sorting
+    (if (<= n-rows 1)
+      (let ((perm (int-matrix (max 1 n-rows))))
+        (when (= n-rows 1) (perm 0 0))
+        perm )
+      ;; Build permutation vector 0..n-1
+      (let ((perm (int-matrix n-rows)))
+        (for (i 0 (1- n-rows))
+          (perm i i) )
+        ;; Copy the sort key (C sort is in-place; source may be mmap'd read-only)
+        (cond
+         ((or (= type 'real) (= type 'stamp))
+          (let ((key (double-matrix n-rows)))
+            (let ((src (narrow col 0 n-rows 0)))
+              (idx-copy src key) )
+            (if descending
+              (idx-d1i1sortdown key perm)
+              (idx-d1i1sortup key perm) ) ) )
+         ((= type 'int)
+          (let ((key (int-matrix n-rows)))
+            (let ((src (narrow col 0 n-rows 0)))
+              (idx-copy src key) )
+            (if descending
+              (idx-i1i1sortdown key perm)
+              (idx-i1i1sortup key perm) ) ) ) )
+        perm ) ) ) )
+
+
+#? (==> <dt> select-rows-idx <idx-perm>)
+;; Return a new DataTable with rows reordered according to the idx1
+;; of integer indices <idx-perm>.  Like select-rows but takes an idx1
+;; instead of a list, avoiding cons-cell overhead for large tables.
+(defmethod DataTable select-rows-idx (idx-perm)
+  (let ((nr (idx-dim idx-perm 0)))
+    (if (= nr 0)
+      ;; Empty result: return empty table with same schema
+      (let ((result (new DataTable)))
+        (each ((name col-names-list) (type col-types-list))
+          (==> result add-column name type) )
+        result )
+      ;; Non-empty: gather rows
+      (let ((new-names col-names-list)
+            (new-types col-types-list)
+            (new-cols ()) )
+        (each ((col columns) (type col-types-list))
+          (cond
+           ((= type 'string)
+            (let ((sc (new StringColumn (max 64 nr))))
+              (for (i 0 (1- nr))
+                (==> sc append (==> col get (idx-perm i))) )
+              (setq new-cols (nconc1 new-cols sc)) ) )
+           (t
+            ;; Numeric or stamp column
+            (let ((dst (cond ((= type 'real)  (double-matrix nr))
+                             ((= type 'int)   (int-matrix nr))
+                             ((= type 'stamp) (double-matrix nr)) )))
+              (for (i 0 (1- nr))
+                (dst i (col (idx-perm i))) )
+              (setq new-cols (nconc1 new-cols dst)) ) ) ) )
+        (datatable-from-columns new-names new-types new-cols nr) ) ) ) )
+
+
+#? (==> <dt> sort-by <col-name> [<descending>])
+;; Return a new DataTable sorted by the given column.
+;; <descending> if non-nil sorts in descending order.
+;; String columns cannot be used as sort keys.
+(defmethod DataTable sort-by (col-name &optional descending)
+  (if (= n-rows 0)
+    ;; Empty table: return empty table with same schema
+    (let ((result (new DataTable)))
+      (each ((name col-names-list) (type col-types-list))
+        (==> result add-column name type) )
+      result )
+    (==> this select-rows-idx (==> this grade col-name descending)) ) )
 
 
 #? (==> <dt> where <op> <col-name> <value>)

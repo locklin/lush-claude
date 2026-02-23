@@ -28,6 +28,7 @@
 
 (libload "datatable/datatable")
 (libload "columnardb/columnardb-io")
+(libload "libidx/idx-sort")
 
 #? *** ColumnarDB: Persistent Columnar Storage
 
@@ -35,47 +36,6 @@
 ;; ============================================================
 ;; Internal helpers
 ;; ============================================================
-
-;; Check if an idx1 of doubles is sorted (ascending, non-strict).
-;; Returns t if sorted, () if not.
-(de _cdb-is-sorted-double (col nrows)
-  (if (<= nrows 1) t
-    (let ((sorted t))
-      (for (i 1 (1- nrows))
-        (when (and sorted (< (col i) (col (1- i))))
-          (setq sorted ()) ) )
-      sorted ) ) )
-
-;; Check if an idx1 of ints is sorted (ascending, non-strict).
-(de _cdb-is-sorted-int (col nrows)
-  (if (<= nrows 1) t
-    (let ((sorted t))
-      (for (i 1 (1- nrows))
-        (when (and sorted (< (col i) (col (1- i))))
-          (setq sorted ()) ) )
-      sorted ) ) )
-
-;; Binary search: find leftmost index where col[i] >= target.
-;; Returns nrows if all values < target.
-(de _cdb-bsearch-left-double (col nrows target)
-  (let ((lo 0) (hi nrows))
-    (while (< lo hi)
-      (let ((mid (+ lo (div (- hi lo) 2))))
-        (if (< (col mid) target)
-          (setq lo (1+ mid))
-          (setq hi mid) ) ) )
-    lo ) )
-
-;; Binary search: find rightmost index where col[i] <= target.
-;; Returns the index of the last element <= target, or -1 if none.
-(de _cdb-bsearch-right-double (col nrows target)
-  (let ((lo 0) (hi nrows))
-    (while (< lo hi)
-      (let ((mid (+ lo (div (- hi lo) 2))))
-        (if (<= (col mid) target)
-          (setq lo (1+ mid))
-          (setq hi mid) ) ) )
-    (1- lo) ) )
 
 ;; Make a directory if it doesn't exist
 (de _cdb-mkdir (path)
@@ -128,8 +88,8 @@
                 (let ((rc (_cdb-write-doubles fname data nrows)))
                   (when (< rc 0)
                     (error "columnardb-save" "failed to write column" name) ) )
-                ;; Check if sorted
-                (when (_cdb-is-sorted-double data nrows)
+                ;; Check if sorted (compiled C)
+                (when (= 1 (idx-d1sortedp data))
                   (setq sorted-cols (nconc1 sorted-cols ci)) ) ) )
 
              ;; Integer column
@@ -140,7 +100,7 @@
                 (let ((rc (_cdb-write-ints fname data nrows)))
                   (when (< rc 0)
                     (error "columnardb-save" "failed to write column" name) ) )
-                (when (_cdb-is-sorted-int data nrows)
+                (when (= 1 (idx-i1sortedp data))
                   (setq sorted-cols (nconc1 sorted-cols ci)) ) ) )
 
              ;; Stamp (double) column -- same binary format as real
@@ -151,8 +111,8 @@
                 (let ((rc (_cdb-write-doubles fname data nrows)))
                   (when (< rc 0)
                     (error "columnardb-save" "failed to write column" name) ) )
-                ;; Check if sorted (stamps are often the sort key)
-                (when (_cdb-is-sorted-double data nrows)
+                ;; Check if sorted (stamps are often the sort key, compiled C)
+                (when (= 1 (idx-d1sortedp data))
                   (setq sorted-cols (nconc1 sorted-cols ci)) ) ) )
 
              ;; String column (dictionary-encoded)
@@ -403,26 +363,13 @@
                       (let ((still-sorted t))
                         ;; Read the last old value
                         (when (> old-nrows 0)
-                          (let ((last-buf (double-matrix 1)))
-                            ;; Read the last element of the old data
-                            ;; It's at byte offset: 24 + (old-nrows - 1) * 8
-                            ;; We'll just check: if new data starts >= we're ok
-                            ;; For simplicity, read the whole old column's last val
-                            (let ((old-data (double-matrix old-nrows)))
-                              (_cdb-read-doubles fname old-data old-nrows)
-                              ;; But wait, the file already has appended data now.
-                              ;; Read just old-nrows elements
-                              ;; Actually, _cdb-read-doubles reads from offset 24,
-                              ;; and reads nrows doubles. The old data is at the start.
-                              ;; We only need the last old value.
-                              ;; This is a bit wasteful; optimize later.
-                              (when (> (data 0) (old-data (1- old-nrows)))
-                                () )  ;; ok
-                              (when (< (data 0) (old-data (1- old-nrows)))
-                                (setq still-sorted ()) ) ) ) )
-                        ;; Also check new data is sorted
+                          (let ((old-data (double-matrix old-nrows)))
+                            (_cdb-read-doubles fname old-data old-nrows)
+                            (when (< (data 0) (old-data (1- old-nrows)))
+                              (setq still-sorted ()) ) ) )
+                        ;; Also check new data is sorted (compiled C)
                         (when (and still-sorted
-                                   (not (_cdb-is-sorted-double data new-nrows)))
+                                   (<> 1 (idx-d1sortedp data)))
                           (setq still-sorted ()) )
                         (when still-sorted
                           (setq new-sorted (nconc1 new-sorted ci)) ) ) ) ) )
@@ -435,11 +382,11 @@
                     (let ((rc (_cdb-append-ints fname data new-nrows total-rows)))
                       (when (< rc 0)
                         (error "columnardb-append" "failed to append column" name) ) )
-                    ;; Check sort status
+                    ;; Check sort status (compiled C)
                     (when (member ci old-sorted)
                       (let ((still-sorted t))
                         (when (and still-sorted
-                                   (not (_cdb-is-sorted-int data new-nrows)))
+                                   (<> 1 (idx-i1sortedp data)))
                           (setq still-sorted ()) )
                         (when still-sorted
                           (setq new-sorted (nconc1 new-sorted ci)) ) ) ) ) )
@@ -531,9 +478,10 @@
       (error "columnardb-range" "range queries not supported on string columns" col-name) )
 
     (if (member col-idx sorted-cols)
-      ;; Fast path: binary search on sorted column
-      (let ((left (_cdb-bsearch-left-double col nrows lo))
-            (right (_cdb-bsearch-right-double col nrows hi)) )
+      ;; Fast path: compiled C binary search on sorted column
+      (let* ((view (narrow col 0 nrows 0))
+             (left (idx-d1bsearch-left view lo))
+             (right (idx-d1bsearch-right view hi)) )
         (if (> left right)
           ()  ;; empty result
           ;; Build result list

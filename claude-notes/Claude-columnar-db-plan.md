@@ -121,6 +121,34 @@ struct index {
 - idx1 sort: `sort_idx` in idx1.c (quicksort variants)
 - idx1 search: binary search via `idx_sortedp`, finding operations
 
+### IDX Sorting and Binary Search Functions (`lsh/libidx/idx-sort.lsh`)
+
+The `idx-sort.lsh` library provides compiled C (via dhc-make) heap sort and
+binary search functions for vectors.  These are critical building blocks for
+columnar database operations.
+
+**Binary search** (requires sorted ascending input):
+- `(idx-d1bsearch <vec> <val>)` -- index of element <= val in double vector
+- `(idx-f1bsearch <vec> <val>)` -- same for float
+- `(idx-i1bsearch <vec> <val>)` -- same for int
+
+**In-place sorting:**
+- `(idx-d1sortup <vec>)` / `(idx-d1sortdown <vec>)` -- double ascending/descending
+- `(idx-f1sortup <vec>)` / `(idx-f1sortdown <vec>)` -- float
+- `(idx-i1sortup <vec>)` / `(idx-i1sortdown <vec>)` -- int
+
+**Paired sort (grade/argsort)** -- sorts data vector and carries an
+accompanying int index vector with the same permutation.  To compute a
+grade (permutation vector): fill the int vector with 0..n-1, copy the data
+column, then call the paired sort.  The int vector becomes the grade.
+- `(idx-d1i1sortup <data> <grade>)` / `(idx-d1i1sortdown ...)` -- **double** (timestamps, reals)
+- `(idx-f1i1sortup <data> <grade>)` / `(idx-f1i1sortdown ...)` -- float
+- `(idx-i1i1sortup <data> <grade>)` / `(idx-i1i1sortdown ...)` -- int
+
+**Note:** `idx-d1i1sortup` is the primary grade function for timestamp and
+real columns.  Since timestamps are stored as doubles (seconds since epoch),
+this is the timestamp grade sort.  Added 2026-02-23.
+
 ### Constraints for Our Design
 1. **No dynamic growth for mmap**: `storage_realloc` only works on
    STS_MALLOC storages. Mmap'd storages are read-only and fixed-size.
@@ -262,21 +290,40 @@ DX(xtimestamp_components) // vectorized extraction
 **Sort order (grade vector):**
 
 Kerf's `grade_up` is equivalent to computing a permutation that sorts the
-column. Lush already has `idx-sortdown` / `idx-sortup` in idx1.c. We
-need a `grade-up` that returns the permutation vector:
+column.  The `idx-sort.lsh` library provides compiled C paired sort
+functions that serve exactly this purpose.  For double/timestamp columns,
+`idx-d1i1sortup` sorts a double vector and carries an int index vector
+with the same permutation.
 
 ```lisp
 (defmethod DataTable sort-by (column-name &optional descending)
-  ;; Compute permutation vector
+  ;; Compute permutation vector using compiled paired sort
   (let* ((col (==> this get-column column-name))
-         (grade (int-array (num-rows))))
+         (nrows (==> this num-rows))
+         (data-copy (double-matrix nrows))
+         (grade (int-matrix nrows)))
+    ;; Copy data (paired sort is destructive)
+    (for (i 0 (1- nrows)) (data-copy i (col i)))
     ;; Fill grade with 0..n-1
-    (idx-bloop ((g grade) (i (range num-rows))) (g i))
-    ;; Sort grade by comparing col values
-    ;; ... use idx1 argsort or implement via C primitive
+    (for (i 0 (1- nrows)) (grade i i))
+    ;; Compiled C heap sort: O(n log n), carries grade with same permutation
+    (if descending
+      (idx-d1i1sortdown data-copy grade)
+      (idx-d1i1sortup data-copy grade))
+    ;; grade now contains the permutation vector
     (setq sort-order grade)
     (setq sort-column column-name)))
 ```
+
+For int columns, use `idx-i1i1sortup`/`idx-i1i1sortdown` instead.
+
+**Binary search on sorted columns:** The `idx-d1bsearch` function from
+`idx-sort.lsh` provides compiled C binary search on sorted double vectors.
+It returns the index of the element <= the target value.  The columnardb
+range query functions (`_cdb-bsearch-left-double`, `_cdb-bsearch-right-double`)
+currently implement this in interpreted Lush and should be migrated to use
+`idx-d1bsearch` as the core search, with thin wrappers for lower-bound
+(>=) semantics.
 
 **ATTR_SORTED tracking:** Maintain a per-column boolean flag. Set on
 initial sorted load, checked on append (compare with last element),
@@ -569,12 +616,16 @@ Lush's existing capabilities.
 
 ### Significant Challenges
 
-1. **No native argsort / grade_up in Lush.**
-   Lush's `idx-sortup` sorts in-place but doesn't return a permutation
-   vector. We need to implement argsort, either:
-   - In Lush (slow for large columns)
-   - As a new C primitive `idx-argsort` (preferred)
-   This is not a show-stopper but is required for Stage 4.
+1. **~~No native argsort / grade_up in Lush.~~** **RESOLVED.**
+   The `idx-sort.lsh` library provides paired sort functions that serve
+   as grade/argsort: `idx-d1i1sortup`, `idx-f1i1sortup`, `idx-i1i1sortup`
+   (and their sortdown variants).  These sort a data vector and carry an
+   accompanying int index vector with the same permutation.  To get a
+   grade vector: fill an int vector with 0..n-1, copy the data, call the
+   paired sort.  The int vector becomes the permutation.  These are
+   compiled C (heap sort via dhc-make), not interpreted Lush.
+   `idx-d1i1sortup` is the primary grade function for timestamp and real
+   columns (added 2026-02-23).  No new C primitives needed.
 
 2. **storage_realloc only grows, never shrinks.**
    This means tables can only grow. Deleting rows requires either:
@@ -1108,10 +1159,12 @@ in-place modifications.  It would still be needed for growing columns
    in-place modification of mapped columns.  Combined with COW for
    growth (append), this gives near-Kerf write behavior.
 
-3. **Compiled binary search:** The current binary search runs in
-   interpreted Lush.  A compiled (dhc-make) version would be faster
-   for very large tables.  Similarly, the sort-check loop could be
-   compiled.
+3. **~~Use compiled binary search:~~** **DONE.** All binary search and
+   sort-check functions in columnardb are now compiled C.  The interpreted
+   `_cdb-bsearch-left-double`, `_cdb-bsearch-right-double`,
+   `_cdb-is-sorted-double`, and `_cdb-is-sorted-int` have been removed
+   and replaced with `idx-d1bsearch-left`, `idx-d1bsearch-right`,
+   `idx-d1sortedp`, and `idx-i1sortedp` from `idx-sort.lsh`.
 
 4. **Compression:** Add optional LZ4 or zstd compression for cold
    columns.  Compressed columns would be decompressed on load (not
@@ -1154,3 +1207,110 @@ All 101 tests pass.  No regressions in existing test suites:
 - 623 datatable package tests: all pass
 - 116 core interpreter tests: all pass
 - 52 csvread tests: all pass (new test harness)
+
+---
+
+## Part 10: IDX Sort Integration and Status (2026-02-23)
+
+### What was missing from the original plan
+
+The plan originally claimed "No native argsort / grade_up in Lush" (Part 5,
+Significant Challenge #1).  This was incorrect.  The `idx-sort.lsh` library
+in `lsh/libidx/` provides compiled C (via dhc-make) sort and binary search
+functions that were overlooked during the initial design.
+
+### Available IDX sort primitives (all compiled C, heap sort)
+
+| Function | Type | Purpose |
+|----------|------|---------|
+| `idx-d1sortup/down` | double | In-place sort |
+| `idx-f1sortup/down` | float | In-place sort |
+| `idx-i1sortup/down` | int | In-place sort |
+| `idx-d1i1sortup/down` | double+int | **Grade/argsort for timestamps and reals** |
+| `idx-f1i1sortup/down` | float+int | Grade/argsort for float columns |
+| `idx-i1i1sortup/down` | int+int | Grade/argsort for int columns |
+| `idx-d1bsearch` | double | Binary search (element <= target) |
+| `idx-f1bsearch` | float | Binary search |
+| `idx-i1bsearch` | int | Binary search |
+| `idx-d1bsearch-left` | double | **Lower bound (leftmost i where a[i] >= target)** |
+| `idx-d1bsearch-right` | double | **Upper bound (rightmost i where a[i] <= target)** |
+| `idx-d1sortedp` | double | **Check if sorted ascending (returns 1/0)** |
+| `idx-i1sortedp` | int | **Check if sorted ascending (returns 1/0)** |
+
+### What was added
+
+**`idx-d1i1sortup` and `idx-d1i1sortdown`** (added 2026-02-23 to
+`lsh/libidx/idx-sort.lsh`):  Paired sort for double data + int index
+vectors.  These are the grade/argsort functions for timestamp and real
+columns.  Since timestamps are stored as doubles (seconds since epoch),
+`idx-d1i1sortup` IS the timestamp grade sort.  No separate timestamp
+sort function is needed.
+
+Usage pattern for grade (argsort):
+```lisp
+;; Given a double column 'col' of length n:
+(let ((data-copy (double-matrix n))
+      (grade (int-matrix n)))
+  (for (i 0 (1- n)) (data-copy i (col i)))  ;; copy (sort is destructive)
+  (for (i 0 (1- n)) (grade i i))             ;; fill with 0..n-1
+  (idx-d1i1sortup data-copy grade)            ;; compiled C heap sort
+  ;; grade now contains the permutation vector:
+  ;; grade[0] = index of smallest element in original
+  ;; grade[n-1] = index of largest element in original
+  )
+```
+
+The paired sort functions previously existed only for float+int and int+int.
+The double+int variants were the gap -- timestamp and real columns are double
+but had no compiled grade function.
+
+### Current implementation status
+
+| Component | Status | Notes |
+|-----------|--------|-------|
+| DataTable class (Stage 1) | **Done** | packages/datatable/ |
+| Amortized growth (Stage 2) | **Done** | Capacity doubling |
+| Timestamp utilities (Stage 3a) | **Done** | packages/timedate/ (double seconds) |
+| Timestamp C primitives (Stage 3b) | Not done | Low priority, Lush-level works |
+| StringColumn dict encoding (Stage 5) | **Done** | Per-column pool + int codes |
+| ColumnarDB persistence (Stage 6a) | **Done** | 101 tests, native-endian LCDB format |
+| Sort detection on save | **Done** | idx-d1sortedp/idx-i1sortedp (compiled C) |
+| Binary search range query | **Done** | idx-d1bsearch-left/right (compiled C) |
+| Grade/argsort functions | **Done** | idx-d1i1sortup/down (compiled C) |
+| DataTable sort-by method | **Not done** | Needs to wire up idx-d1i1sortup |
+| COW for mmap'd tables | **Not done** | Designed in Part 9, not implemented |
+| Writable mmap (Stage 6b) | **Not done** | Requires C changes to storage_mmap |
+| ASOF joins | **Not done** | Future |
+| Partitioned tables | **Not done** | Future |
+
+### Completed: All interpreted searches removed (2026-02-23)
+
+All interpreted Lush search and sort-check functions have been removed from
+`columnardb.lsh` and replaced with compiled C functions from `idx-sort.lsh`:
+
+| Removed (interpreted) | Replaced with (compiled C) |
+|----------------------|---------------------------|
+| `_cdb-is-sorted-double` | `idx-d1sortedp` |
+| `_cdb-is-sorted-int` | `idx-i1sortedp` |
+| `_cdb-bsearch-left-double` | `idx-d1bsearch-left` |
+| `_cdb-bsearch-right-double` | `idx-d1bsearch-right` |
+
+The `columnardb.lsh` file now `libload`s `libidx/idx-sort` and uses:
+- `idx-d1sortedp` / `idx-i1sortedp` in `columnardb-save` and `columnardb-append`
+- `idx-d1bsearch-left` / `idx-d1bsearch-right` in `columnardb-range`
+
+All 101 columnardb tests, 623 datatable tests, and 116 core tests pass.
+
+### Near-term work items
+
+1. **Wire up DataTable `sort-by` method** using `idx-d1i1sortup`.
+   The grade function now exists as compiled C; we just need the DataTable
+   method to call it and store the resulting permutation vector.
+
+2. **Implement COW** for mmap'd tables (designed in Part 9).
+   This would eliminate the awkward `columnardb-load` vs `columnardb-load-mem`
+   split.
+
+3. **Add `select-rows` using grade vectors.**
+   Apply a grade permutation to reorder all columns simultaneously, returning
+   a new DataTable in sorted order.  This enables ORDER BY semantics.

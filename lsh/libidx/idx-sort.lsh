@@ -108,6 +108,100 @@
       } #}
       lo))
 
+#? (idx-d1bsearch-left <am> <v>)
+;; returns the leftmost index i in sorted idx1 of double <am>
+;; such that am[i] >= <v> (lower bound).
+;; returns (idx-dim am 0) if all elements < <v>.
+;; this assumes the elements in <am> are sorted
+;; in ascending order.
+(de idx-d1bsearch-left (am v)
+    ((-double-) v)
+    ((-idx1- (-double-)) am)
+    (when (<> 1 (idx-modulo am 0)) (error "vector is not contiguous"))
+    (let ((m (idx-dim am 0))
+	  (lo 0)
+	  (hi 0))
+      ((-int-) m lo hi)
+      (setq hi m)
+      #{{
+      double *a;
+      int mid;
+      a = IDX_PTR($am, double);
+      while ($lo < $hi) {
+        mid = $lo + ($hi - $lo) / 2;
+        if (a[mid] < $v) $lo = mid + 1; else $hi = mid;
+      }
+      } #}
+      lo))
+
+#? (idx-d1bsearch-right <am> <v>)
+;; returns the rightmost index i in sorted idx1 of double <am>
+;; such that am[i] <= <v> (upper bound).
+;; returns -1 if all elements > <v>.
+;; this assumes the elements in <am> are sorted
+;; in ascending order.
+(de idx-d1bsearch-right (am v)
+    ((-double-) v)
+    ((-idx1- (-double-)) am)
+    (when (<> 1 (idx-modulo am 0)) (error "vector is not contiguous"))
+    (let ((m (idx-dim am 0))
+	  (lo 0)
+	  (hi 0))
+      ((-int-) m lo hi)
+      (setq hi m)
+      #{{
+      double *a;
+      int mid;
+      a = IDX_PTR($am, double);
+      while ($lo < $hi) {
+        mid = $lo + ($hi - $lo) / 2;
+        if (a[mid] <= $v) $lo = mid + 1; else $hi = mid;
+      }
+      } #}
+      (1- lo)))
+
+#? (idx-d1sortedp <am>)
+;; returns 1 if the double vector <am> is sorted in ascending
+;; order (non-strict: allows equal adjacent elements).
+;; returns 0 if not sorted.
+;; returns 1 for empty or single-element vectors.
+(de idx-d1sortedp (am)
+    ((-idx1- (-double-)) am)
+    (when (<> 1 (idx-modulo am 0)) (error "vector is not contiguous"))
+    (let ((m (idx-dim am 0))
+	  (result 1))
+      ((-int-) m result)
+      #{{
+      double *a;
+      int i;
+      a = IDX_PTR($am, double);
+      for (i = 1; i < $m; i++) {
+        if (a[i] < a[i-1]) { $result = 0; break; }
+      }
+      } #}
+      result))
+
+#? (idx-i1sortedp <am>)
+;; returns 1 if the int vector <am> is sorted in ascending
+;; order (non-strict: allows equal adjacent elements).
+;; returns 0 if not sorted.
+;; returns 1 for empty or single-element vectors.
+(de idx-i1sortedp (am)
+    ((-idx1- (-int-)) am)
+    (when (<> 1 (idx-modulo am 0)) (error "vector is not contiguous"))
+    (let ((m (idx-dim am 0))
+	  (result 1))
+      ((-int-) m result)
+      #{{
+      int *a;
+      int i;
+      a = IDX_PTR($am, int);
+      for (i = 1; i < $m; i++) {
+        if (a[i] < a[i-1]) { $result = 0; break; }
+      }
+      } #}
+      result))
+
 #? (idx-f1sortup <m>)
 ;; sorts element in float vector <m> in ascending order
 (de idx-f1sortup (m)
@@ -332,8 +426,116 @@
 	)
       ()))
 
+#? (idx-d1i1sortup <m> <p>)
+;; <m> is a vector of double, <p> is a vector of integers
+;; (same dimension as <m>).
+;; on output, <m> is sorted in ascending order, and <p>
+;; is sorted with the same permutation table.
+;; This is the primary grade/argsort function for real-valued
+;; and timestamp columns: fill <p> with 0..n-1, then call this.
+(de idx-d1i1sortup (m p)
+    ((-idx1- (-double-)) m)
+    ((-idx1- (-int-)) p)
+    (when (<> 1 (idx-modulo m 0)) (error "vector is not contiguous"))
+    (when (<> 1 (idx-modulo p 0)) (error "vector is not contiguous"))
+    (let ((n (idx-dim m 0))
+	  (z (idx-dim p 0)))
+      ((-int-) n z)
+      (when (<> n z) (error "idx-d1i1sortup: vectors have different sizes"))
+      (when (> n 1)
+      #{ {
+      int l,j,ir,i;
+      double *ra, rra;
+      int *rb, rrb;
+
+      ra = (double*)(IDX_PTR($m, double)) -1;
+      rb = (int*)(IDX_PTR($p, int)) -1;
+
+      l=($n >> 1)+1;
+      ir=$n;
+      for (;;) {
+	   if (l > 1) {
+	    rra=ra[--l];
+	    rrb=rb[l];
+	    } else {
+	      rra=ra[ir];
+	      rrb=rb[ir];
+	      ra[ir]=ra[1];
+	      rb[ir]=rb[1];
+	      if (--ir == 1) {
+ 	        ra[1]=rra;
+		rb[1]=rrb;
+		goto end; } }
+        i=l;
+	j=l << 1;
+	while (j <= ir)	{
+	  if (j < ir && ra[j] < ra[j+1]) ++j;
+	  if (rra < ra[j]) {
+	    ra[i]=ra[j];
+	    rb[i]=rb[j];
+	    j += (i=j);
+	    } else j=ir+1; }
+	ra[i]=rra;
+	rb[i]=rrb; }}
+	end: #}
+	)
+      ()))
+
+#? (idx-d1i1sortdown <m> <p>)
+;; <m> is a vector of double, <p> is a vector of integers
+;; (same dimension as <m>).
+;; on output, <m> is sorted in descending order, and <p>
+;; is sorted with the same permutation table.
+(de idx-d1i1sortdown (m p)
+    ((-idx1- (-double-)) m)
+    ((-idx1- (-int-)) p)
+    (when (<> 1 (idx-modulo m 0)) (error "vector is not contiguous"))
+    (when (<> 1 (idx-modulo p 0)) (error "vector is not contiguous"))
+    (let ((n (idx-dim m 0))
+	  (z (idx-dim p 0)))
+      ((-int-) n z)
+      (when (<> n z) (error "idx-d1i1sortdown: vectors have different sizes"))
+      (when (> n 1)
+      #{ {
+      int l,j,ir,i;
+      double *ra, rra;
+      int *rb, rrb;
+
+      ra = (double*)(IDX_PTR($m, double)) -1;
+      rb = (int*)(IDX_PTR($p, int)) -1;
+
+      l=($n >> 1)+1;
+      ir=$n;
+      for (;;) {
+	   if (l > 1) {
+	    rra=ra[--l];
+	    rrb=rb[l];
+	    } else {
+	      rra=ra[ir];
+	      rrb=rb[ir];
+	      ra[ir]=ra[1];
+	      rb[ir]=rb[1];
+	      if (--ir == 1) {
+ 	        ra[1]=rra;
+		rb[1]=rrb;
+		goto end; } }
+        i=l;
+	j=l << 1;
+	while (j <= ir)	{
+	  if (j < ir && ra[j] > ra[j+1]) ++j;
+	  if (rra > ra[j]) {
+	    ra[i]=ra[j];
+	    rb[i]=rb[j];
+	    j += (i=j);
+	    } else j=ir+1; }
+	ra[i]=rra;
+	rb[i]=rrb; }}
+	end: #}
+	)
+      ()))
+
 #? (idx-f1i1sortup <m> <p>)
-;; <m> is a vector of float, <p> is a vector of integers 
+;; <m> is a vector of float, <p> is a vector of integers
 ;; (same dimension as <m>).
 ;; on output, <m> is sorted in ascending order, and <p>
 ;; is sorted with the same permutation table.
@@ -547,8 +749,11 @@
 
 (dhc-make ()
 	  idx-f1bsearch idx-d1bsearch idx-i1bsearch
-	  idx-f1sortdown idx-d1sortdown idx-i1sortdown 
+	  idx-d1bsearch-left idx-d1bsearch-right
+	  idx-d1sortedp idx-i1sortedp
+	  idx-f1sortdown idx-d1sortdown idx-i1sortdown
 	  idx-f1sortup idx-d1sortup idx-i1sortup
 	  idx-i1i1sortup idx-i1i1sortdown
 	  idx-f1i1sortup idx-f1i1sortdown
+	  idx-d1i1sortup idx-d1i1sortdown
 )          
