@@ -15,6 +15,7 @@
 
 ;; Load the packages
 (libload "datatable/datatable-csv")   ;; datatable + timedate
+(libload "datatable/datatable-join")  ;; join operations + sorted check
 (libload "httpd/httpd")               ;; web server
 (libload "mapper/mapper")             ;; mapper + metrics + cluster + graph + lens + stats
 
@@ -26,6 +27,7 @@
 (load (concat (dirname file-being-loaded) "/test-stringcol.lsh"))
 (load (concat (dirname file-being-loaded) "/test-datatable.lsh"))
 (load (concat (dirname file-being-loaded) "/test-csv.lsh"))
+(load (concat (dirname file-being-loaded) "/test-join.lsh"))
 (load (concat (dirname file-being-loaded) "/test-httpd.lsh"))
 (load (concat (dirname file-being-loaded) "/test-mapper.lsh"))
 (load (concat (dirname file-being-loaded) "/test-e2e.lsh"))

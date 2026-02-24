@@ -1,0 +1,387 @@
+;;; test-join.lsh -- Tests for datatable-join: sorted?, left-join, right-join, asof-join
+
+;; ============================================================
+;; datatable-sorted? tests
+;; ============================================================
+
+(test-suite "datatable-sorted? ascending real"
+  (let ((dt (new DataTable)))
+    (==> dt add-column "val" 'real)
+    (==> dt append-row (list 1.0))
+    (==> dt append-row (list 2.0))
+    (==> dt append-row (list 3.0))
+    (==> dt append-row (list 3.0))
+    (test-check "ascending real sorted" (datatable-sorted? dt "val"))
+    (test-check "ascending real sorted (explicit asc)" (datatable-sorted? dt "val" 'asc)) ) )
+
+(test-suite "datatable-sorted? unsorted real"
+  (let ((dt (new DataTable)))
+    (==> dt add-column "val" 'real)
+    (==> dt append-row (list 3.0))
+    (==> dt append-row (list 1.0))
+    (==> dt append-row (list 2.0))
+    (test-check "unsorted real" (not (datatable-sorted? dt "val"))) ) )
+
+(test-suite "datatable-sorted? ascending stamp"
+  (let ((dt (new DataTable)))
+    (==> dt add-column "ts" 'stamp)
+    (==> dt append-row (list (timestamp-from-date 2024 1 1)))
+    (==> dt append-row (list (timestamp-from-date 2024 1 2)))
+    (==> dt append-row (list (timestamp-from-date 2024 1 3)))
+    (test-check "ascending stamp sorted" (datatable-sorted? dt "ts")) ) )
+
+(test-suite "datatable-sorted? ascending int"
+  (let ((dt (new DataTable)))
+    (==> dt add-column "id" 'int)
+    (==> dt append-row (list 10))
+    (==> dt append-row (list 20))
+    (==> dt append-row (list 30))
+    (test-check "ascending int sorted" (datatable-sorted? dt "id")) ) )
+
+(test-suite "datatable-sorted? single row and empty"
+  ;; Single row
+  (let ((dt (new DataTable)))
+    (==> dt add-column "val" 'real)
+    (==> dt append-row (list 42.0))
+    (test-check "single row sorted" (datatable-sorted? dt "val")) )
+  ;; Empty table
+  (let ((dt (new DataTable)))
+    (==> dt add-column "val" 'real)
+    (test-check "empty table sorted" (datatable-sorted? dt "val")) ) )
+
+(test-suite "datatable-sorted? descending"
+  (let ((dt (new DataTable)))
+    (==> dt add-column "val" 'real)
+    (==> dt append-row (list 5.0))
+    (==> dt append-row (list 3.0))
+    (==> dt append-row (list 1.0))
+    (test-check "descending real sorted desc" (datatable-sorted? dt "val" 'desc))
+    (test-check "descending real not sorted asc" (not (datatable-sorted? dt "val" 'asc))) ) )
+
+(test-suite "datatable-sorted? ascending float"
+  (let ((dt (new DataTable)))
+    (==> dt add-column "val" 'float)
+    (==> dt append-row (list 1.0))
+    (==> dt append-row (list 2.0))
+    (==> dt append-row (list 3.0))
+    (test-check "ascending float sorted" (datatable-sorted? dt "val")) ) )
+
+
+;; ============================================================
+;; datatable-left-join tests
+;; ============================================================
+
+(test-suite "left-join basic string key 1:1"
+  ;; left: id, name   right: id, score
+  (let ((left (new DataTable))
+        (right (new DataTable)) )
+    (==> left add-column "id" 'string)
+    (==> left add-column "name" 'string)
+    (==> left append-row (list "a" "Alice"))
+    (==> left append-row (list "b" "Bob"))
+    (==> left append-row (list "c" "Carol"))
+
+    (==> right add-column "id" 'string)
+    (==> right add-column "score" 'real)
+    (==> right append-row (list "a" 90.0))
+    (==> right append-row (list "b" 80.0))
+    (==> right append-row (list "c" 70.0))
+
+    (let ((result (datatable-left-join left right "id")))
+      (test-equal "left-join 1:1 num-rows" (==> result num-rows) 3)
+      (test-equal "left-join 1:1 num-cols" (==> result num-cols) 3)  ;; id, name, score
+      (test-string-equal "left-join 1:1 id[0]" (==> result get 0 "id") "a")
+      (test-string-equal "left-join 1:1 name[0]" (==> result get 0 "name") "Alice")
+      (test-approx "left-join 1:1 score[0]" (==> result get 0 "score") 90.0 0.001)
+      (test-approx "left-join 1:1 score[2]" (==> result get 2 "score") 70.0 0.001) ) ) )
+
+(test-suite "left-join unmatched left rows"
+  ;; left has key "d" not in right
+  (let ((left (new DataTable))
+        (right (new DataTable)) )
+    (==> left add-column "id" 'string)
+    (==> left add-column "name" 'string)
+    (==> left append-row (list "a" "Alice"))
+    (==> left append-row (list "d" "Dave"))
+
+    (==> right add-column "id" 'string)
+    (==> right add-column "score" 'real)
+    (==> right append-row (list "a" 90.0))
+
+    (let ((result (datatable-left-join left right "id")))
+      (test-equal "left-join unmatched num-rows" (==> result num-rows) 2)
+      (test-approx "left-join matched score" (==> result get 0 "score") 90.0 0.001)
+      ;; Unmatched row: score should be NaN (null for real)
+      (test-check "left-join unmatched score is null" (nanp (==> result get 1 "score")))
+      (test-string-equal "left-join unmatched name" (==> result get 1 "name") "Dave") ) ) )
+
+(test-suite "left-join one-to-many"
+  ;; left key "a" matches 2 right rows
+  (let ((left (new DataTable))
+        (right (new DataTable)) )
+    (==> left add-column "id" 'string)
+    (==> left add-column "name" 'string)
+    (==> left append-row (list "a" "Alice"))
+    (==> left append-row (list "b" "Bob"))
+
+    (==> right add-column "id" 'string)
+    (==> right add-column "val" 'real)
+    (==> right append-row (list "a" 1.0))
+    (==> right append-row (list "a" 2.0))
+    (==> right append-row (list "b" 3.0))
+
+    (let ((result (datatable-left-join left right "id")))
+      ;; "a" expands to 2 rows + "b" to 1 row = 3 rows
+      (test-equal "left-join 1:many num-rows" (==> result num-rows) 3)
+      (test-string-equal "left-join 1:many name[0]" (==> result get 0 "name") "Alice")
+      (test-string-equal "left-join 1:many name[1]" (==> result get 1 "name") "Alice")
+      (test-string-equal "left-join 1:many name[2]" (==> result get 2 "name") "Bob")
+      (test-approx "left-join 1:many val[0]" (==> result get 0 "val") 1.0 0.001)
+      (test-approx "left-join 1:many val[1]" (==> result get 1 "val") 2.0 0.001)
+      (test-approx "left-join 1:many val[2]" (==> result get 2 "val") 3.0 0.001) ) ) )
+
+(test-suite "left-join no matches"
+  ;; No keys in common
+  (let ((left (new DataTable))
+        (right (new DataTable)) )
+    (==> left add-column "id" 'string)
+    (==> left add-column "x" 'real)
+    (==> left append-row (list "a" 1.0))
+    (==> left append-row (list "b" 2.0))
+
+    (==> right add-column "id" 'string)
+    (==> right add-column "y" 'real)
+    (==> right append-row (list "c" 10.0))
+    (==> right append-row (list "d" 20.0))
+
+    (let ((result (datatable-left-join left right "id")))
+      (test-equal "left-join no-match num-rows" (==> result num-rows) 2)
+      (test-check "left-join no-match y[0] null" (nanp (==> result get 0 "y")))
+      (test-check "left-join no-match y[1] null" (nanp (==> result get 1 "y"))) ) ) )
+
+(test-suite "left-join numeric key"
+  ;; Join on integer key
+  (let ((left (new DataTable))
+        (right (new DataTable)) )
+    (==> left add-column "id" 'int)
+    (==> left add-column "name" 'string)
+    (==> left append-row (list 1 "Alice"))
+    (==> left append-row (list 2 "Bob"))
+
+    (==> right add-column "id" 'int)
+    (==> right add-column "score" 'real)
+    (==> right append-row (list 1 95.0))
+    (==> right append-row (list 2 85.0))
+
+    (let ((result (datatable-left-join left right "id")))
+      (test-equal "left-join int-key num-rows" (==> result num-rows) 2)
+      (test-approx "left-join int-key score[0]" (==> result get 0 "score") 95.0 0.001)
+      (test-approx "left-join int-key score[1]" (==> result get 1 "score") 85.0 0.001) ) ) )
+
+(test-suite "left-join duplicate column name suffix"
+  ;; Both tables have "val" column
+  (let ((left (new DataTable))
+        (right (new DataTable)) )
+    (==> left add-column "id" 'string)
+    (==> left add-column "val" 'real)
+    (==> left append-row (list "a" 1.0))
+
+    (==> right add-column "id" 'string)
+    (==> right add-column "val" 'real)
+    (==> right append-row (list "a" 2.0))
+
+    (let ((result (datatable-left-join left right "id")))
+      (test-equal "left-join dup-name num-cols" (==> result num-cols) 3)  ;; id, val, val.right
+      (test-approx "left-join dup-name val" (==> result get 0 "val") 1.0 0.001)
+      (test-approx "left-join dup-name val.right" (==> result get 0 "val.right") 2.0 0.001) ) ) )
+
+
+;; ============================================================
+;; datatable-right-join tests
+;; ============================================================
+
+(test-suite "right-join basic"
+  ;; right has key "d" not in left
+  (let ((left (new DataTable))
+        (right (new DataTable)) )
+    (==> left add-column "id" 'string)
+    (==> left add-column "name" 'string)
+    (==> left append-row (list "a" "Alice"))
+
+    (==> right add-column "id" 'string)
+    (==> right add-column "score" 'real)
+    (==> right append-row (list "a" 90.0))
+    (==> right append-row (list "d" 60.0))
+
+    (let ((result (datatable-right-join left right "id")))
+      (test-equal "right-join num-rows" (==> result num-rows) 2)
+      ;; Row 0: matched (a), name=Alice, score=90
+      (test-string-equal "right-join name[0]" (==> result get 0 "name") "Alice")
+      (test-approx "right-join score[0]" (==> result get 0 "score") 90.0 0.001)
+      ;; Row 1: unmatched (d), name=null (""), score=60
+      (test-string-equal "right-join name[1] null" (==> result get 1 "name") "")
+      (test-approx "right-join score[1]" (==> result get 1 "score") 60.0 0.001) ) ) )
+
+(test-suite "right-join column ordering"
+  ;; Verify: left cols (except on-col), on-col, right cols (except on-col)
+  (let ((left (new DataTable))
+        (right (new DataTable)) )
+    (==> left add-column "id" 'string)
+    (==> left add-column "x" 'real)
+    (==> left append-row (list "a" 1.0))
+
+    (==> right add-column "id" 'string)
+    (==> right add-column "y" 'real)
+    (==> right append-row (list "a" 2.0))
+
+    (let* ((result (datatable-right-join left right "id"))
+           (names (==> result col-names)) )
+      (test-equal "right-join num-cols" (==> result num-cols) 3)
+      ;; Left cols except on-col come first
+      (test-string-equal "right-join col[0]" (nth 0 names) "x")
+      ;; on-col
+      (test-string-equal "right-join col[1]" (nth 1 names) "id")
+      ;; Right cols except on-col
+      (test-string-equal "right-join col[2]" (nth 2 names) "y") ) ) )
+
+
+;; ============================================================
+;; datatable-asof-join tests
+;; ============================================================
+
+(test-suite "asof-join basic timestamps"
+  ;; left: timestamps 10, 20, 35
+  ;; right: timestamps 5, 15, 25, 30
+  ;; Expected: left[10]->right[5], left[20]->right[15], left[35]->right[30]
+  (let ((left (new DataTable))
+        (right (new DataTable)) )
+    (==> left add-column "ts" 'stamp)
+    (==> left add-column "name" 'string)
+    (==> left append-row (list 10 "a"))
+    (==> left append-row (list 20 "b"))
+    (==> left append-row (list 35 "c"))
+
+    (==> right add-column "ts" 'stamp)
+    (==> right add-column "val" 'real)
+    (==> right append-row (list 5 100.0))
+    (==> right append-row (list 15 200.0))
+    (==> right append-row (list 25 300.0))
+    (==> right append-row (list 30 400.0))
+
+    (let ((result (datatable-asof-join left right "ts")))
+      (test-equal "asof num-rows" (==> result num-rows) 3)
+      ;; left[0] ts=10, matches right ts=5
+      (test-approx "asof val[0]" (==> result get 0 "val") 100.0 0.001)
+      ;; left[1] ts=20, matches right ts=15
+      (test-approx "asof val[1]" (==> result get 1 "val") 200.0 0.001)
+      ;; left[2] ts=35, matches right ts=30
+      (test-approx "asof val[2]" (==> result get 2 "val") 400.0 0.001)
+      ;; left columns preserved
+      (test-string-equal "asof name[0]" (==> result get 0 "name") "a")
+      (test-string-equal "asof name[2]" (==> result get 2 "name") "c") ) ) )
+
+(test-suite "asof-join left before all right"
+  ;; Left row has key smaller than all right keys -> null
+  (let ((left (new DataTable))
+        (right (new DataTable)) )
+    (==> left add-column "ts" 'stamp)
+    (==> left add-column "x" 'real)
+    (==> left append-row (list 1 1.0))
+    (==> left append-row (list 20 2.0))
+
+    (==> right add-column "ts" 'stamp)
+    (==> right add-column "y" 'real)
+    (==> right append-row (list 10 100.0))
+    (==> right append-row (list 30 200.0))
+
+    (let ((result (datatable-asof-join left right "ts")))
+      (test-equal "asof-before num-rows" (==> result num-rows) 2)
+      ;; left[0] ts=1, all right > 1, no match -> null
+      (test-check "asof-before y[0] null" (nanp (==> result get 0 "y")))
+      ;; left[1] ts=20, matches right ts=10
+      (test-approx "asof-before y[1]" (==> result get 1 "y") 100.0 0.001) ) ) )
+
+(test-suite "asof-join exact match"
+  ;; Left key exactly equals a right key
+  (let ((left (new DataTable))
+        (right (new DataTable)) )
+    (==> left add-column "ts" 'stamp)
+    (==> left append-row (list 10))
+    (==> left append-row (list 20))
+
+    (==> right add-column "ts" 'stamp)
+    (==> right add-column "val" 'real)
+    (==> right append-row (list 10 1.0))
+    (==> right append-row (list 20 2.0))
+
+    (let ((result (datatable-asof-join left right "ts")))
+      (test-approx "asof-exact val[0]" (==> result get 0 "val") 1.0 0.001)
+      (test-approx "asof-exact val[1]" (==> result get 1 "val") 2.0 0.001) ) ) )
+
+(test-suite "asof-join unsorted input auto-sorts"
+  ;; Both tables unsorted; should auto-sort before joining
+  (let ((left (new DataTable))
+        (right (new DataTable)) )
+    (==> left add-column "ts" 'stamp)
+    (==> left add-column "name" 'string)
+    ;; Deliberately unsorted
+    (==> left append-row (list 30 "c"))
+    (==> left append-row (list 10 "a"))
+    (==> left append-row (list 20 "b"))
+
+    (==> right add-column "ts" 'stamp)
+    (==> right add-column "val" 'real)
+    ;; Deliberately unsorted
+    (==> right append-row (list 25 300.0))
+    (==> right append-row (list 5 100.0))
+    (==> right append-row (list 15 200.0))
+
+    (let ((result (datatable-asof-join left right "ts")))
+      (test-equal "asof-unsorted num-rows" (==> result num-rows) 3)
+      ;; After sorting left: ts=10,20,30  right: ts=5,15,25
+      ;; left[0] ts=10, matches right ts=5  -> val=100
+      (test-approx "asof-unsorted val[0]" (==> result get 0 "val") 100.0 0.001)
+      ;; left[1] ts=20, matches right ts=15 -> val=200
+      (test-approx "asof-unsorted val[1]" (==> result get 1 "val") 200.0 0.001)
+      ;; left[2] ts=30, matches right ts=25 -> val=300
+      (test-approx "asof-unsorted val[2]" (==> result get 2 "val") 300.0 0.001) ) ) )
+
+(test-suite "asof-join real column"
+  ;; asof-join on real (double) column
+  (let ((left (new DataTable))
+        (right (new DataTable)) )
+    (==> left add-column "price" 'real)
+    (==> left add-column "sym" 'string)
+    (==> left append-row (list 10.5 "A"))
+    (==> left append-row (list 20.5 "B"))
+    (==> left append-row (list 30.5 "C"))
+
+    (==> right add-column "price" 'real)
+    (==> right add-column "bid" 'real)
+    (==> right append-row (list 10.0 1.0))
+    (==> right append-row (list 15.0 2.0))
+    (==> right append-row (list 25.0 3.0))
+
+    (let ((result (datatable-asof-join left right "price")))
+      (test-equal "asof-real num-rows" (==> result num-rows) 3)
+      ;; left[0] price=10.5 -> right price=10.0, bid=1.0
+      (test-approx "asof-real bid[0]" (==> result get 0 "bid") 1.0 0.001)
+      ;; left[1] price=20.5 -> right price=15.0, bid=2.0
+      (test-approx "asof-real bid[1]" (==> result get 1 "bid") 2.0 0.001)
+      ;; left[2] price=30.5 -> right price=25.0, bid=3.0
+      (test-approx "asof-real bid[2]" (==> result get 2 "bid") 3.0 0.001) ) ) )
+
+(test-suite "asof-join empty right table"
+  ;; Right table is empty -> all nulls
+  (let ((left (new DataTable))
+        (right (new DataTable)) )
+    (==> left add-column "ts" 'stamp)
+    (==> left add-column "x" 'real)
+    (==> left append-row (list 10 1.0))
+
+    (==> right add-column "ts" 'stamp)
+    (==> right add-column "y" 'real)
+
+    (let ((result (datatable-asof-join left right "ts")))
+      (test-equal "asof-empty-right num-rows" (==> result num-rows) 1)
+      (test-check "asof-empty-right y[0] null" (nanp (==> result get 0 "y"))) ) ) )

@@ -1,0 +1,480 @@
+;;; datatable-join.lsh -- Join operations for DataTable
+;;;
+;;; Provides:
+;;;   datatable-sorted?     -- check if a column is sorted ascending/descending
+;;;   datatable-left-join   -- all left rows, matched right columns (NULL where unmatched)
+;;;   datatable-right-join  -- all right rows, matched left columns (NULL where unmatched)
+;;;   datatable-asof-join   -- for each left row, last right row where right.key <= left.key
+;;;
+;;; Usage:
+;;;   (libload "datatable/datatable-join")
+;;;   (datatable-sorted? dt "price")
+;;;   (datatable-left-join left right "id")
+;;;   (datatable-right-join left right "id")
+;;;   (datatable-asof-join left right "timestamp")
+
+;; datatable.lsh loads stringcol, timedate, datatable-null, datatable-compiled, libidx/idx-sort
+;; columnardb-compiled provides _cdb-*sortedp, _cdb-*bsearch-*, _cdb-*gather
+(libload "datatable/datatable")
+(libload "columnardb/columnardb-compiled")
+
+#? *** DataTable Joins and Sorted Check
+
+
+;; ============================================================
+;; datatable-sorted? -- O(n) sorted check
+;; ============================================================
+
+#? (datatable-sorted? <dt> <col-name> [<direction>])
+;; Check if column <col-name> in DataTable <dt> is sorted.
+;; <direction> is 'asc (default) or 'desc.
+;; Returns t if sorted, () if not.
+;; String columns are not supported (error).
+(de datatable-sorted? (dt col-name &optional direction)
+  (when (not direction) (setq direction 'asc))
+  (let* ((ci (==> dt col-index col-name))
+         (type (==> dt col-type ci))
+         (col (==> dt get-column ci))
+         (nr (==> dt num-rows)) )
+    (when (not ci)
+      (error "datatable-sorted?" "column not found" col-name) )
+    (when (= type 'string)
+      (error "datatable-sorted?" "string columns not supported" col-name) )
+    ;; Trivial: 0 or 1 rows are always sorted
+    (if (<= nr 1)
+      t
+      (if (= direction 'asc)
+        ;; Ascending: use compiled sorted checks
+        (let ((view (narrow col 0 nr 0)))
+          (cond
+           ((= type 'real)
+            (if (functionp _cdb-d1sortedp-safe)
+              (= 1 (_cdb-d1sortedp-safe view nr))
+              (= 1 (idx-d1sortedp view)) ) )
+           ((= type 'float)
+            (if (functionp _cdb-f1sortedp)
+              (= 1 (_cdb-f1sortedp view nr))
+              ;; Interpreted fallback
+              (let ((ok t))
+                (for (i 1 (1- nr))
+                  (when (and ok (< (view i) (view (1- i))))
+                    (setq ok ()) ) )
+                ok ) ) )
+           ((= type 'stamp)
+            (if (functionp _cdb-l1sortedp)
+              (= 1 (_cdb-l1sortedp view nr))
+              ;; Interpreted fallback
+              (let ((ok t))
+                (for (i 1 (1- nr))
+                  (when (and ok (< (view i) (view (1- i))))
+                    (setq ok ()) ) )
+                ok ) ) )
+           ((= type 'int)
+            (= 1 (idx-i1sortedp view)) )
+           (t (error "datatable-sorted?" "unsupported column type" type)) ) )
+        ;; Descending: interpreted loop (no compiled descending checks)
+        (let ((ok t))
+          (for (i 1 (1- nr))
+            (when (and ok (> (col i) (col (1- i))))
+              (setq ok ()) ) )
+          ok ) ) ) ) )
+
+
+;; ============================================================
+;; Internal: build hash index for equi-join
+;; ============================================================
+
+;; Build an index mapping key values to lists of row indices.
+;; For string columns: use StringColumn.where-eq with CSR index.
+;; For numeric columns: htable with sprintf key.
+;; Returns: (htable unique-keys) where htable maps key-string -> row-index-list
+;;          and unique-keys is a list of distinct key strings.
+(de _join-build-index (dt col-name)
+  (let* ((ci (==> dt col-index col-name))
+         (type (==> dt col-type ci))
+         (col (==> dt get-column ci))
+         (nr (==> dt num-rows)) )
+    (if (= type 'string)
+      ;; String column: build CSR index then use it
+      (progn
+        (when (not (==> col has-index))
+          (==> col build-index) )
+        (let* ((pool (==> col get-pool))
+               (ht (htable (max 32 (* 2 (length pool)))))
+               (keys ()) )
+          (each ((s pool))
+            (let ((rows (==> col where-eq s)))
+              (when rows
+                (ht s rows)
+                (setq keys (nconc1 keys s)) ) ) )
+          (list ht keys) ) )
+      ;; Numeric/stamp column: single-pass htable
+      (let ((ht (htable (max 32 (/ nr 2))))
+            (keys ()) )
+        (for (i 0 (1- nr))
+          (let* ((v (col i))
+                 (key (cond ((= type 'stamp) (sprintf "%ld" v))
+                            (t (sprintf "%g" v)) ))
+                 (existing (ht key)) )
+            (if existing
+              (ht key (nconc1 existing i))
+              (progn
+                (ht key (list i))
+                (setq keys (nconc1 keys key)) ) ) ) )
+        (list ht keys) ) ) ) )
+
+
+;; Format a value as a key string for hash lookup (must match _join-build-index)
+(de _join-format-key (type value)
+  (cond ((= type 'string) value)
+        ((= type 'stamp) (sprintf "%ld" value))
+        (t (sprintf "%g" value)) ) )
+
+
+;; ============================================================
+;; Internal: gather column data by row indices
+;; ============================================================
+
+;; Gather rows from a column into a new column array.
+;; perm is an idx1 of row indices. -1 means "fill with null".
+(de _join-gather-column (col type perm nr)
+  (if (= type 'string)
+    ;; Build new StringColumn by appending gathered strings
+    (let ((sc (new StringColumn (max 64 nr))))
+      (for (i 0 (1- nr))
+        (let ((ri (perm i)))
+          (if (= ri -1)
+            (==> sc append "")
+            (==> sc append (==> col get ri)) ) ) )
+      sc )
+    ;; Numeric/stamp column
+    (let ((dst (cond ((= type 'real)  (double-matrix nr))
+                     ((= type 'float) (float-matrix nr))
+                     ((= type 'int)   (int-matrix nr))
+                     ((= type 'stamp) (long-matrix nr)) ))
+          (null-val (dt-null type)) )
+      (for (i 0 (1- nr))
+        (let ((ri (perm i)))
+          (if (= ri -1)
+            (dst i null-val)
+            (dst i (col ri)) ) ) )
+      dst ) ) )
+
+
+;; ============================================================
+;; datatable-left-join
+;; ============================================================
+
+#? (datatable-left-join <left> <right> <on-col>)
+;; Left join: all rows from <left>, matched columns from <right>.
+;; <on-col> is a column name present in both tables.
+;; Right columns with NULL where no match found.
+;; If a left key matches multiple right rows, result has one row per match.
+;; Right columns that share names with left columns (other than on-col)
+;; get a ".right" suffix.
+;; Returns a new DataTable.
+(de datatable-left-join (left right on-col)
+  (let* ((l-nr (==> left num-rows))
+         (r-nr (==> right num-rows))
+         ;; Validate on-col exists in both
+         (l-ci (==> left col-index on-col))
+         (r-ci (==> right col-index on-col)) )
+    (when (not l-ci)
+      (error "datatable-left-join" "on-col not found in left table" on-col) )
+    (when (not r-ci)
+      (error "datatable-left-join" "on-col not found in right table" on-col) )
+
+    ;; Build index on right table
+    (let* ((idx-result (_join-build-index right on-col))
+           (r-ht (car idx-result))
+           (l-type (==> left col-type on-col))
+           (l-col (==> left get-column on-col)) )
+
+      ;; Pass 1: count result rows
+      (let ((result-nr 0))
+        (for (i 0 (1- l-nr))
+          (let* ((v (if (= l-type 'string)
+                     (==> l-col get i)
+                     (l-col i) ))
+                 (key (_join-format-key l-type v))
+                 (matches (r-ht key)) )
+            (if matches
+              (setq result-nr (+ result-nr (length matches)))
+              (setq result-nr (1+ result-nr)) ) ) )
+
+        ;; Build permutation arrays for left and right
+        (let ((l-perm (int-matrix result-nr))
+              (r-perm (int-matrix result-nr))
+              (wi 0) )
+          ;; Pass 2: fill permutations
+          (for (i 0 (1- l-nr))
+            (let* ((v (if (= l-type 'string)
+                       (==> l-col get i)
+                       (l-col i) ))
+                   (key (_join-format-key l-type v))
+                   (matches (r-ht key)) )
+              (if matches
+                (each ((ri matches))
+                  (l-perm wi i)
+                  (r-perm wi ri)
+                  (setq wi (1+ wi)) )
+                (progn
+                  (l-perm wi i)
+                  (r-perm wi -1)
+                  (setq wi (1+ wi)) ) ) ) )
+
+          ;; Build result columns
+          ;; Left columns: all included
+          (let ((result-names ())
+                (result-types ())
+                (result-cols ())
+                (l-names (==> left col-names))
+                (l-types (==> left col-types))
+                (r-names (==> right col-names))
+                (r-types (==> right col-types))
+                ;; Build set of left column names for duplicate detection
+                (l-name-set (htable 64)) )
+            (each ((n l-names))
+              (l-name-set n t) )
+
+            ;; Gather left columns
+            (let ((ci 0))
+              (each ((name l-names) (type l-types))
+                (let ((col (==> left get-column ci)))
+                  (setq result-names (nconc1 result-names name))
+                  (setq result-types (nconc1 result-types type))
+                  (setq result-cols (nconc1 result-cols
+                    (_join-gather-column col type l-perm result-nr))) )
+                (setq ci (1+ ci)) ) )
+
+            ;; Gather right columns (skip on-col)
+            (let ((ci 0))
+              (each ((name r-names) (type r-types))
+                (when (<> name on-col)
+                  (let ((col (==> right get-column ci))
+                        (out-name (if (l-name-set name)
+                                    (concat name ".right")
+                                    name )) )
+                    (setq result-names (nconc1 result-names out-name))
+                    (setq result-types (nconc1 result-types type))
+                    (setq result-cols (nconc1 result-cols
+                      (_join-gather-column col type r-perm result-nr))) ) )
+                (setq ci (1+ ci)) ) )
+
+            ;; Assemble result
+            (datatable-from-columns result-names result-types result-cols result-nr) ) ) ) ) ) )
+
+
+;; ============================================================
+;; datatable-right-join
+;; ============================================================
+
+#? (datatable-right-join <left> <right> <on-col>)
+;; Right join: all rows from <right>, matched columns from <left>.
+;; <on-col> is a column name present in both tables.
+;; Left columns with NULL where no match found.
+;; If a right key matches multiple left rows, result has one row per match.
+;; Left columns that share names with right columns (other than on-col)
+;; get a ".left" suffix.
+;; Returns a new DataTable.
+(de datatable-right-join (left right on-col)
+  (let* ((l-nr (==> left num-rows))
+         (r-nr (==> right num-rows))
+         ;; Validate on-col exists in both
+         (l-ci (==> left col-index on-col))
+         (r-ci (==> right col-index on-col)) )
+    (when (not l-ci)
+      (error "datatable-right-join" "on-col not found in left table" on-col) )
+    (when (not r-ci)
+      (error "datatable-right-join" "on-col not found in right table" on-col) )
+
+    ;; Build index on left table
+    (let* ((idx-result (_join-build-index left on-col))
+           (l-ht (car idx-result))
+           (r-type (==> right col-type on-col))
+           (r-col (==> right get-column on-col)) )
+
+      ;; Pass 1: count result rows
+      (let ((result-nr 0))
+        (for (i 0 (1- r-nr))
+          (let* ((v (if (= r-type 'string)
+                     (==> r-col get i)
+                     (r-col i) ))
+                 (key (_join-format-key r-type v))
+                 (matches (l-ht key)) )
+            (if matches
+              (setq result-nr (+ result-nr (length matches)))
+              (setq result-nr (1+ result-nr)) ) ) )
+
+        ;; Build permutation arrays
+        (let ((l-perm (int-matrix result-nr))
+              (r-perm (int-matrix result-nr))
+              (wi 0) )
+          ;; Pass 2: fill permutations
+          (for (i 0 (1- r-nr))
+            (let* ((v (if (= r-type 'string)
+                       (==> r-col get i)
+                       (r-col i) ))
+                   (key (_join-format-key r-type v))
+                   (matches (l-ht key)) )
+              (if matches
+                (each ((li matches))
+                  (l-perm wi li)
+                  (r-perm wi i)
+                  (setq wi (1+ wi)) )
+                (progn
+                  (l-perm wi -1)
+                  (r-perm wi i)
+                  (setq wi (1+ wi)) ) ) ) )
+
+          ;; Build result columns
+          ;; Column order: left cols (except on-col) + on-col + right cols (except on-col)
+          (let ((result-names ())
+                (result-types ())
+                (result-cols ())
+                (l-names (==> left col-names))
+                (l-types (==> left col-types))
+                (r-names (==> right col-names))
+                (r-types (==> right col-types))
+                ;; Build set of right column names for duplicate detection
+                (r-name-set (htable 64)) )
+            (each ((n r-names))
+              (r-name-set n t) )
+
+            ;; Gather left columns (skip on-col)
+            (let ((ci 0))
+              (each ((name l-names) (type l-types))
+                (when (<> name on-col)
+                  (let ((col (==> left get-column ci))
+                        (out-name (if (r-name-set name)
+                                    (concat name ".left")
+                                    name )) )
+                    (setq result-names (nconc1 result-names out-name))
+                    (setq result-types (nconc1 result-types type))
+                    (setq result-cols (nconc1 result-cols
+                      (_join-gather-column col type l-perm result-nr))) ) )
+                (setq ci (1+ ci)) ) )
+
+            ;; on-col comes from right table (always present)
+            (let ((on-type (==> right col-type on-col))
+                  (on-data (==> right get-column r-ci)) )
+              (setq result-names (nconc1 result-names on-col))
+              (setq result-types (nconc1 result-types on-type))
+              (setq result-cols (nconc1 result-cols
+                (_join-gather-column on-data on-type r-perm result-nr))) )
+
+            ;; Gather right columns (skip on-col)
+            (let ((ci 0))
+              (each ((name r-names) (type r-types))
+                (when (<> name on-col)
+                  (let ((col (==> right get-column ci)))
+                    (setq result-names (nconc1 result-names name))
+                    (setq result-types (nconc1 result-types type))
+                    (setq result-cols (nconc1 result-cols
+                      (_join-gather-column col type r-perm result-nr))) ) )
+                (setq ci (1+ ci)) ) )
+
+            ;; Assemble result
+            (datatable-from-columns result-names result-types result-cols result-nr) ) ) ) ) ) )
+
+
+;; ============================================================
+;; datatable-asof-join
+;; ============================================================
+
+#? (datatable-asof-join <left> <right> <on-col>)
+;; As-of join: for each left row, find the last right row where
+;; right.on-col <= left.on-col.
+;; <on-col> must be a numeric or stamp column (not string).
+;; Both tables are auto-sorted ascending on <on-col> if not already.
+;; Returns a new DataTable with all left rows + matched right columns.
+;; Right columns are NULL-filled where no right row matches (i.e.
+;; all right values are greater than the left value).
+(de datatable-asof-join (left right on-col)
+  (let* ((l-ci (==> left col-index on-col))
+         (r-ci (==> right col-index on-col))
+         (l-type (==> left col-type on-col))
+         (r-type (==> right col-type on-col)) )
+    (when (not l-ci)
+      (error "datatable-asof-join" "on-col not found in left table" on-col) )
+    (when (not r-ci)
+      (error "datatable-asof-join" "on-col not found in right table" on-col) )
+    (when (= l-type 'string)
+      (error "datatable-asof-join" "on-col must be numeric or stamp, not string" on-col) )
+    (when (= r-type 'string)
+      (error "datatable-asof-join" "on-col must be numeric or stamp, not string" on-col) )
+
+    ;; Auto-sort if needed
+    (let ((sl (if (datatable-sorted? left on-col)
+               left
+               (==> left sort-by on-col) ))
+          (sr (if (datatable-sorted? right on-col)
+               right
+               (==> right sort-by on-col) )) )
+      (let* ((l-nr (==> sl num-rows))
+             (r-nr (==> sr num-rows))
+             (l-col (==> sl get-column on-col))
+             (r-col (==> sr get-column on-col)) )
+
+        ;; Two-pointer merge scan
+        ;; For each left row, find last right row where right.key <= left.key
+        (let ((r-perm (int-matrix l-nr))  ;; matched right row index per left row
+              (ri 0) )                     ;; right pointer
+          ;; Initialize all to -1 (no match)
+          (for (i 0 (1- l-nr))
+            (r-perm i -1) )
+
+          (when (> r-nr 0)
+            (setq ri 0)
+            (for (li 0 (1- l-nr))
+              (let ((lv (l-col li)))
+                ;; Advance ri while next right value <= left value
+                (while (and (< ri (1- r-nr))
+                            (<= (r-col (1+ ri)) lv) )
+                  (setq ri (1+ ri)) )
+                ;; Check if current right value <= left value
+                (when (<= (r-col ri) lv)
+                  (r-perm li ri) ) ) ) )
+
+          ;; Build result: all left columns + right columns (except on-col)
+          (let ((result-names ())
+                (result-types ())
+                (result-cols ())
+                (l-names (==> sl col-names))
+                (l-types (==> sl col-types))
+                (r-names (==> sr col-names))
+                (r-types (==> sr col-types))
+                (l-name-set (htable 64))
+                ;; Identity permutation for left rows
+                (l-perm (int-matrix l-nr)) )
+            (for (i 0 (1- l-nr))
+              (l-perm i i) )
+            (each ((n l-names))
+              (l-name-set n t) )
+
+            ;; Left columns (all, identity gather)
+            (let ((ci 0))
+              (each ((name l-names) (type l-types))
+                (let ((col (==> sl get-column ci)))
+                  (setq result-names (nconc1 result-names name))
+                  (setq result-types (nconc1 result-types type))
+                  (setq result-cols (nconc1 result-cols
+                    (_join-gather-column col type l-perm l-nr))) )
+                (setq ci (1+ ci)) ) )
+
+            ;; Right columns (skip on-col)
+            (let ((ci 0))
+              (each ((name r-names) (type r-types))
+                (when (<> name on-col)
+                  (let ((col (==> sr get-column ci))
+                        (out-name (if (l-name-set name)
+                                    (concat name ".right")
+                                    name )) )
+                    (setq result-names (nconc1 result-names out-name))
+                    (setq result-types (nconc1 result-types type))
+                    (setq result-cols (nconc1 result-cols
+                      (_join-gather-column col type r-perm l-nr))) ) )
+                (setq ci (1+ ci)) ) )
+
+            ;; Assemble result
+            (datatable-from-columns result-names result-types result-cols l-nr) ) ) ) ) ) )
