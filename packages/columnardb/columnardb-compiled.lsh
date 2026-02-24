@@ -682,6 +682,331 @@
 
 
 ;; ============================================================
+;; Long (int64) primitives for stamp columns
+;; ============================================================
+
+;; Long sum data[perm[i]] for i in [start, end), returns double to avoid overflow
+(de _cdb-l1sum-perm (data perm start end)
+  ((-idx1- (-long-)) data)
+  ((-idx1- (-int-)) perm)
+  ((-int-) start end)
+  (let ((result 0.0))
+    ((-double-) result)
+    #{
+    {
+      long long *d = IDX_PTR($data, long long);
+      int *p = IDX_PTR($perm, int);
+      double s = 0.0;
+      int i;
+      for (i = $start; i < $end; i++) {
+        s += (double)d[p[i]];
+      }
+      $result = s;
+    }
+    #}
+    result ) )
+
+;; Long min data[perm[i]] for i in [start, end)
+(de _cdb-l1min-perm (data perm start end)
+  ((-idx1- (-long-)) data)
+  ((-idx1- (-int-)) perm)
+  ((-int-) start end)
+  (let ((result 0))
+    ((-long-) result)
+    #{
+    {
+      long long *d = IDX_PTR($data, long long);
+      int *p = IDX_PTR($perm, int);
+      long long m = d[p[$start]];
+      int i;
+      for (i = $start + 1; i < $end; i++) {
+        if (d[p[i]] < m) m = d[p[i]];
+      }
+      $result = m;
+    }
+    #}
+    result ) )
+
+;; Long max data[perm[i]] for i in [start, end)
+(de _cdb-l1max-perm (data perm start end)
+  ((-idx1- (-long-)) data)
+  ((-idx1- (-int-)) perm)
+  ((-int-) start end)
+  (let ((result 0))
+    ((-long-) result)
+    #{
+    {
+      long long *d = IDX_PTR($data, long long);
+      int *p = IDX_PTR($perm, int);
+      long long m = d[p[$start]];
+      int i;
+      for (i = $start + 1; i < $end; i++) {
+        if (d[p[i]] > m) m = d[p[i]];
+      }
+      $result = m;
+    }
+    #}
+    result ) )
+
+;; Long sum skipping null sentinel (INT64_MIN)
+(de _cdb-l1sum-perm-skipnull (data perm start end)
+  ((-idx1- (-long-)) data)
+  ((-idx1- (-int-)) perm)
+  ((-int-) start end)
+  (let ((result 0.0))
+    ((-double-) result)
+    #{
+    {
+      long long *d = IDX_PTR($data, long long);
+      int *p = IDX_PTR($perm, int);
+      long long sentinel = (-9223372036854775807LL - 1LL);
+      double s = 0.0;
+      int i;
+      for (i = $start; i < $end; i++) {
+        long long v = d[p[i]];
+        if (v != sentinel) s += (double)v;
+      }
+      $result = s;
+    }
+    #}
+    result ) )
+
+;; Long min skipping null sentinel
+(de _cdb-l1min-perm-skipnull (data perm start end)
+  ((-idx1- (-long-)) data)
+  ((-idx1- (-int-)) perm)
+  ((-int-) start end)
+  (let ((result 0))
+    ((-long-) result)
+    #{
+    {
+      long long *d = IDX_PTR($data, long long);
+      int *p = IDX_PTR($perm, int);
+      long long sentinel = (-9223372036854775807LL - 1LL);
+      long long m = 0;
+      int i, found = 0;
+      for (i = $start; i < $end; i++) {
+        long long v = d[p[i]];
+        if (v != sentinel) { if (!found || v < m) { m = v; found = 1; } }
+      }
+      $result = found ? m : sentinel;
+    }
+    #}
+    result ) )
+
+;; Long max skipping null sentinel
+(de _cdb-l1max-perm-skipnull (data perm start end)
+  ((-idx1- (-long-)) data)
+  ((-idx1- (-int-)) perm)
+  ((-int-) start end)
+  (let ((result 0))
+    ((-long-) result)
+    #{
+    {
+      long long *d = IDX_PTR($data, long long);
+      int *p = IDX_PTR($perm, int);
+      long long sentinel = (-9223372036854775807LL - 1LL);
+      long long m = 0;
+      int i, found = 0;
+      for (i = $start; i < $end; i++) {
+        long long v = d[p[i]];
+        if (v != sentinel) { if (!found || v > m) { m = v; found = 1; } }
+      }
+      $result = found ? m : sentinel;
+    }
+    #}
+    result ) )
+
+;; Long count non-null entries
+(de _cdb-l1count-nonnull (data perm start end)
+  ((-idx1- (-long-)) data)
+  ((-idx1- (-int-)) perm)
+  ((-int-) start end)
+  (let ((result 0))
+    ((-int-) result)
+    #{
+    {
+      long long *d = IDX_PTR($data, long long);
+      int *p = IDX_PTR($perm, int);
+      long long sentinel = (-9223372036854775807LL - 1LL);
+      int cnt = 0, i;
+      for (i = $start; i < $end; i++) {
+        if (d[p[i]] != sentinel) cnt++;
+      }
+      $result = cnt;
+    }
+    #}
+    result ) )
+
+;; dest[i] = src[perm[i]] for longs
+(de _cdb-l1gather (dest src perm n)
+  ((-idx1- (-long-)) dest src)
+  ((-idx1- (-int-)) perm)
+  ((-int-) n)
+  #{
+  {
+    long long *d = IDX_PTR($dest, long long);
+    long long *s = IDX_PTR($src, long long);
+    int *p = IDX_PTR($perm, int);
+    int i;
+    for (i = 0; i < $n; i++) {
+      d[i] = s[p[i]];
+    }
+  }
+  #}
+  () )
+
+;; Check if long array is sorted ascending (non-strict)
+;; Skips null sentinel (INT64_MIN) values — returns 0 if any nulls found
+(de _cdb-l1sortedp (data n)
+  ((-idx1- (-long-)) data)
+  ((-int-) n)
+  (let ((result 1))
+    ((-int-) result)
+    #{
+    {
+      long long *d = IDX_PTR($data, long long);
+      long long sentinel = (-9223372036854775807LL - 1LL);
+      int i;
+      /* Check for nulls first */
+      for (i = 0; i < $n; i++) {
+        if (d[i] == sentinel) { $result = 0; break; }
+      }
+      if ($result) {
+        for (i = 1; i < $n; i++) {
+          if (d[i] < d[i-1]) { $result = 0; break; }
+        }
+      }
+    }
+    #}
+    result ) )
+
+;; Leftmost index where data[i] >= val (for longs)
+(de _cdb-l1bsearch-left (data n val)
+  ((-idx1- (-long-)) data)
+  ((-int-) n)
+  ((-long-) val)
+  (let ((lo 0))
+    ((-int-) lo)
+    #{
+    {
+      long long *d = IDX_PTR($data, long long);
+      int hi = $n;
+      while ($lo < hi) {
+        int mid = $lo + (hi - $lo) / 2;
+        if (d[mid] < $val) $lo = mid + 1; else hi = mid;
+      }
+    }
+    #}
+    lo ) )
+
+;; Rightmost index where data[i] <= val (for longs)
+(de _cdb-l1bsearch-right (data n val)
+  ((-idx1- (-long-)) data)
+  ((-int-) n)
+  ((-long-) val)
+  (let ((lo 0))
+    ((-int-) lo)
+    #{
+    {
+      long long *d = IDX_PTR($data, long long);
+      int hi = $n;
+      while ($lo < hi) {
+        int mid = $lo + (hi - $lo) / 2;
+        if (d[mid] <= $val) $lo = mid + 1; else hi = mid;
+      }
+    }
+    #}
+    (1- lo) ) )
+
+;; Heapsort ascending for longs with int permutation
+;; Sorts key[0..n-1] and perm[0..n-1] together, by key ascending.
+(de _cdb-l1i1sortup (key perm n)
+  ((-idx1- (-long-)) key)
+  ((-idx1- (-int-)) perm)
+  ((-int-) n)
+  #{
+  {
+    long long *k = IDX_PTR($key, long long);
+    int *p = IDX_PTR($perm, int);
+    int nn = $n;
+    /* Heapsort */
+    int i, j, child;
+    long long kv; int pv;
+    /* Build heap */
+    for (i = nn/2 - 1; i >= 0; i--) {
+      kv = k[i]; pv = p[i];
+      j = i;
+      while ((child = 2*j + 1) < nn) {
+        if (child + 1 < nn && k[child+1] > k[child]) child++;
+        if (kv >= k[child]) break;
+        k[j] = k[child]; p[j] = p[child];
+        j = child;
+      }
+      k[j] = kv; p[j] = pv;
+    }
+    /* Extract max repeatedly */
+    for (i = nn - 1; i > 0; i--) {
+      kv = k[i]; k[i] = k[0]; k[0] = kv;
+      pv = p[i]; p[i] = p[0]; p[0] = pv;
+      j = 0;
+      while ((child = 2*j + 1) < i) {
+        if (child + 1 < i && k[child+1] > k[child]) child++;
+        if (k[0] >= k[child]) { /* sift from root */ }
+        if (k[j] >= k[child]) break;
+        kv = k[j]; k[j] = k[child]; k[child] = kv;
+        pv = p[j]; p[j] = p[child]; p[child] = pv;
+        j = child;
+      }
+    }
+  }
+  #}
+  () )
+
+;; Heapsort descending for longs with int permutation
+(de _cdb-l1i1sortdown (key perm n)
+  ((-idx1- (-long-)) key)
+  ((-idx1- (-int-)) perm)
+  ((-int-) n)
+  #{
+  {
+    long long *k = IDX_PTR($key, long long);
+    int *p = IDX_PTR($perm, int);
+    int nn = $n;
+    /* Heapsort (min-heap for descending) */
+    int i, j, child;
+    long long kv; int pv;
+    /* Build min-heap */
+    for (i = nn/2 - 1; i >= 0; i--) {
+      kv = k[i]; pv = p[i];
+      j = i;
+      while ((child = 2*j + 1) < nn) {
+        if (child + 1 < nn && k[child+1] < k[child]) child++;
+        if (kv <= k[child]) break;
+        k[j] = k[child]; p[j] = p[child];
+        j = child;
+      }
+      k[j] = kv; p[j] = pv;
+    }
+    /* Extract min repeatedly */
+    for (i = nn - 1; i > 0; i--) {
+      kv = k[i]; k[i] = k[0]; k[0] = kv;
+      pv = p[i]; p[i] = p[0]; p[0] = pv;
+      j = 0;
+      while ((child = 2*j + 1) < i) {
+        if (child + 1 < i && k[child+1] < k[child]) child++;
+        if (k[j] <= k[child]) break;
+        kv = k[j]; k[j] = k[child]; k[child] = kv;
+        pv = p[j]; p[j] = p[child]; p[child] = pv;
+        j = child;
+      }
+    }
+  }
+  #}
+  () )
+
+
+;; ============================================================
 ;; Compile all functions
 ;; ============================================================
 
@@ -698,7 +1023,12 @@
   _cdb-f1min-perm-skipnan _cdb-f1max-perm-skipnan
   _cdb-d1count-nonnull _cdb-f1count-nonnull
   _cdb-i1sum-perm-skipnull _cdb-i1count-nonnull
-  _cdb-d1gather _cdb-i1gather _cdb-f1gather
+  _cdb-l1sum-perm _cdb-l1min-perm _cdb-l1max-perm
+  _cdb-l1sum-perm-skipnull _cdb-l1min-perm-skipnull _cdb-l1max-perm-skipnull
+  _cdb-l1count-nonnull
+  _cdb-d1gather _cdb-i1gather _cdb-f1gather _cdb-l1gather
+  _cdb-l1sortedp _cdb-l1bsearch-left _cdb-l1bsearch-right
+  _cdb-l1i1sortup _cdb-l1i1sortdown
   _cdb-f1sortedp _cdb-f1bsearch-left _cdb-f1bsearch-right
   _cdb-d1sortedp-safe
   _cdb-i1count-codes _cdb-i1prefix-sum _cdb-i1csr-fill

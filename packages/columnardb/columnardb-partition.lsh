@@ -49,9 +49,21 @@
                 (ci 0) )
             (each ((name names) (type types))
               (cond
-               ;; Real or stamp column
-               ((or (= type 'real) (= type 'stamp))
+               ;; Real column
+               ((= type 'real)
                 (let ((combined (double-matrix total-rows))
+                      (offset 0) )
+                  (each ((t tables))
+                    (let ((col (==> t get-column ci))
+                          (nr (==> t num-rows)) )
+                      (for (i 0 (1- nr))
+                        (combined (+ offset i) (col i)) )
+                      (setq offset (+ offset nr)) ) )
+                  (setq column-list (nconc1 column-list combined)) ) )
+
+               ;; Stamp column (long/int64)
+               ((= type 'stamp)
+                (let ((combined (long-matrix total-rows))
                       (offset 0) )
                   (each ((t tables))
                     (let ((col (==> t get-column ci))

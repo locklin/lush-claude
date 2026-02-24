@@ -4,9 +4,9 @@
 ;;;        timestamp-parse, timestamp-to-string, timestamp-components,
 ;;;        timestamp-diff, timestamp-add
 ;;;
-;;; Timestamps are seconds since epoch (double precision).
+;;; Timestamps are microseconds since epoch (int64 long).
 ;;;
-;;; Reference timestamps (UTC):
+;;; Reference timestamps (UTC, shown as seconds, actual values in microseconds):
 ;;;   1970-01-01 00:00:00 =          0
 ;;;   1999-12-31 23:59:59 =  946684799
 ;;;   2000-01-01 00:00:00 =  946684800
@@ -23,10 +23,10 @@
 (test-suite "timestamp-now"
   (let ((ts (timestamp-now)))
     (test-check "now returns positive" (> ts 0))
-    ;; Should be after 2020-01-01: 1577836800 seconds
-    (test-check "now after 2020" (> ts 1577836800))
-    ;; Should be before 2100-01-01: 4102444800 seconds
-    (test-check "now before 2100" (< ts 4102444800))
+    ;; Should be after 2020-01-01: 1577836800 seconds = (* 1577836800.0 1000000) us
+    (test-check "now after 2020" (> ts (* 1577836800.0 1000000)))
+    ;; Should be before 2100-01-01: 4102444800 seconds = (* 4102444800.0 1000000) us
+    (test-check "now before 2100" (< ts (* 4102444800.0 1000000)))
     ;; Two calls should be monotonically increasing (or equal)
     (let ((ts2 (timestamp-now)))
       (test-check "now monotonic" (>= ts2 ts)) )
@@ -38,7 +38,7 @@
           (when (< cur prev) (setq ok ()))
           (setq prev cur) ) )
       (test-check "now 10-sample monotonic" ok) )
-    ;; timestamp-now should return a double (not integer)
+    ;; timestamp-now should return a number
     (test-check "now is number" (numberp ts)) ) )
 
 
@@ -49,19 +49,19 @@
 (test-suite "timestamp-from-date"
   ;; Unix epoch
   (let ((ts (timestamp-from-date 1970 1 1)))
-    (test-approx "epoch is 0" ts 0 0.01) )
-  ;; Known date: 2024-01-15 midnight UTC = 1705276800
+    (test-equal "epoch is 0" ts 0) )
+  ;; Known date: 2024-01-15 midnight UTC = 1705276800s = (* 1705276800.0 1000000) us
   (let ((ts (timestamp-from-date 2024 1 15)))
-    (test-approx "2024-01-15" ts 1705276800 0.01) )
-  ;; Known date: 2000-06-15 midnight UTC = 961027200
+    (test-equal "2024-01-15" ts (* 1705276800.0 1000000)) )
+  ;; Known date: 2000-06-15 midnight UTC = 961027200s = (* 961027200.0 1000000) us
   (let ((ts (timestamp-from-date 2000 6 15)))
-    (test-approx "2000-06-15" ts 961027200 0.01) )
-  ;; Y2K: 2000-01-01 = 946684800
+    (test-equal "2000-06-15" ts (* 961027200.0 1000000)) )
+  ;; Y2K: 2000-01-01 = 946684800s
   (let ((ts (timestamp-from-date 2000 1 1)))
-    (test-approx "Y2K" ts 946684800 0.01) )
-  ;; Leap year: 2000-02-29 = 951782400
+    (test-equal "Y2K" ts (* 946684800.0 1000000)) )
+  ;; Leap year: 2000-02-29 = 951782400s
   (let ((ts (timestamp-from-date 2000 2 29)))
-    (test-approx "leap day 2000" ts 951782400 0.01) )
+    (test-equal "leap day 2000" ts (* 951782400.0 1000000)) )
   ;; Leap year: 2024-02-29 exists
   (let ((ts (timestamp-from-date 2024 2 29)))
     (let ((comps (timestamp-components ts)))
@@ -69,7 +69,7 @@
       (test-equal "2024 leap day day" (nth 2 comps) 29) ) )
   ;; End of year
   (let ((ts (timestamp-from-date 1999 12 31)))
-    (test-approx "1999-12-31" ts 946598400 0.01) )
+    (test-equal "1999-12-31" ts (* 946598400.0 1000000)) )
   ;; Month lengths: Jan 31
   (let ((ts (timestamp-from-date 2024 1 31)))
     (let ((comps (timestamp-components ts)))
@@ -79,14 +79,14 @@
     (let ((comps (timestamp-components ts)))
       (test-equal "apr30 month" (nth 1 comps) 4)
       (test-equal "apr30 day" (nth 2 comps) 30) ) )
-  ;; Consecutive days differ by 86400
+  ;; Consecutive days differ by 86400 seconds = (* 86400 1000000.0) microseconds
   (let ((d1 (timestamp-from-date 2024 3 15))
         (d2 (timestamp-from-date 2024 3 16)) )
-    (test-approx "consecutive days" (- d2 d1) 86400 0.01) )
+    (test-equal "consecutive days" (- d2 d1) (* 86400 1000000.0)) )
   ;; from-date == from-datetime with 0,0,0
   (let ((fd (timestamp-from-date 2024 7 4))
         (fdt (timestamp-from-datetime 2024 7 4 0 0 0)) )
-    (test-approx "from-date==from-datetime" fd fdt 0.01) ) )
+    (test-equal "from-date==from-datetime" fd fdt) ) )
 
 
 ;; ============================================================
@@ -94,19 +94,19 @@
 ;; ============================================================
 
 (test-suite "timestamp-from-date pre-epoch"
-  ;; 1969-12-31 should be -86400
+  ;; 1969-12-31 should be -86400s = (* -86400 1000000.0) us
   (let ((ts (timestamp-from-date 1969 12 31)))
-    (test-approx "1969-12-31" ts -86400 0.01) )
-  ;; 1960-01-01 = -315619200
+    (test-equal "1969-12-31" ts (* -86400 1000000.0)) )
+  ;; 1960-01-01 = -315619200s
   (let ((ts (timestamp-from-date 1960 1 1)))
-    (test-approx "1960-01-01" ts -315619200 0.01) )
+    (test-equal "1960-01-01" ts (* -315619200.0 1000000)) )
   ;; Pre-epoch should be negative
   (let ((ts (timestamp-from-date 1950 6 15)))
     (test-check "1950 is negative" (< ts 0)) )
   ;; 1969-12-31 is exactly 1 day before epoch
   (let ((d1 (timestamp-from-date 1969 12 31))
         (d2 (timestamp-from-date 1970 1 1)) )
-    (test-approx "day before epoch" (- d2 d1) 86400 0.01) ) )
+    (test-equal "day before epoch" (- d2 d1) (* 86400 1000000.0)) ) )
 
 
 ;; ============================================================
@@ -116,10 +116,10 @@
 (test-suite "timestamp-from-date far future"
   ;; 2038-01-19: 32-bit Unix time limit day
   (let ((ts (timestamp-from-date 2038 1 19)))
-    (test-check "2038 positive" (> ts 2147400000)) )
-  ;; 2100-01-01: past 32-bit limit, double can handle it
+    (test-check "2038 positive" (> ts (* 2147400000.0 1000000))) )
+  ;; 2100-01-01: past 32-bit limit, longs can handle it
   (let ((ts (timestamp-from-date 2100 1 1)))
-    (test-approx "2100 past 32bit" ts 4102444800 0.01)
+    (test-equal "2100 past 32bit" ts (* 4102444800.0 1000000))
     (let ((comps (timestamp-components ts)))
       (test-equal "2100 year" (nth 0 comps) 2100)
       (test-equal "2100 month" (nth 1 comps) 1)
@@ -127,11 +127,11 @@
   ;; 2100 is NOT a leap year (divisible by 100, not 400)
   (let ((feb28 (timestamp-from-date 2100 2 28))
         (mar01 (timestamp-from-date 2100 3 1)) )
-    (test-approx "2100 no leap day" (- mar01 feb28) 86400 0.01) )
+    (test-equal "2100 no leap day" (- mar01 feb28) (* 86400 1000000.0)) )
   ;; 2000 IS a leap year (divisible by 400)
   (let ((feb28 (timestamp-from-date 2000 2 28))
         (mar01 (timestamp-from-date 2000 3 1)) )
-    (test-approx "2000 has leap day" (- mar01 feb28) (* 2 86400) 0.01) ) )
+    (test-equal "2000 has leap day" (- mar01 feb28) (* 2 (* 86400 1000000.0))) ) )
 
 
 ;; ============================================================
@@ -141,40 +141,40 @@
 (test-suite "timestamp-from-datetime"
   ;; 1970-01-01 00:00:00 = epoch
   (let ((ts (timestamp-from-datetime 1970 1 1 0 0 0)))
-    (test-approx "epoch datetime" ts 0 0.01) )
-  ;; 1970-01-01 00:00:01 = 1 second
+    (test-equal "epoch datetime" ts 0) )
+  ;; 1970-01-01 00:00:01 = 1 second = 1000000 microseconds
   (let ((ts (timestamp-from-datetime 1970 1 1 0 0 1)))
-    (test-approx "1 second after epoch" ts 1 0.01) )
-  ;; 1970-01-01 01:00:00 = 3600 seconds
+    (test-equal "1 second after epoch" ts 1000000) )
+  ;; 1970-01-01 01:00:00 = 3600 seconds = (* 3600 1000000.0) us
   (let ((ts (timestamp-from-datetime 1970 1 1 1 0 0)))
-    (test-approx "1 hour after epoch" ts 3600 0.01) )
-  ;; 1970-01-01 00:01:00 = 60 seconds
+    (test-equal "1 hour after epoch" ts (* 3600 1000000.0)) )
+  ;; 1970-01-01 00:01:00 = 60 seconds = (* 60 1000000) us
   (let ((ts (timestamp-from-datetime 1970 1 1 0 1 0)))
-    (test-approx "1 minute after epoch" ts 60 0.01) )
+    (test-equal "1 minute after epoch" ts (* 60 1000000)) )
   ;; End of day: 23:59:59
   (let ((ts (timestamp-from-datetime 1970 1 1 23 59 59)))
-    (test-approx "end of day" ts 86399 0.01) )
-  ;; Known: 2024-03-14 15:09:26 = 1710428966
+    (test-equal "end of day" ts (* 86399 1000000.0)) )
+  ;; Known: 2024-03-14 15:09:26 = 1710428966s
   (let ((ts (timestamp-from-datetime 2024 3 14 15 9 26)))
-    (test-approx "pi day time" ts 1710428966 0.01) )
-  ;; 1999-12-31 23:59:59 = 946684799
+    (test-equal "pi day time" ts (* 1710428966.0 1000000)) )
+  ;; 1999-12-31 23:59:59 = 946684799s
   (let ((ts (timestamp-from-datetime 1999 12 31 23 59 59)))
-    (test-approx "1s before Y2K" ts 946684799 0.01) )
-  ;; 2000-01-01 00:00:00 = 946684800
+    (test-equal "1s before Y2K" ts (* 946684799.0 1000000)) )
+  ;; 2000-01-01 00:00:00 = 946684800s
   (let ((ts (timestamp-from-datetime 2000 1 1 0 0 0)))
-    (test-approx "Y2K midnight" ts 946684800 0.01) )
-  ;; 1s before Y2K + 1 = Y2K midnight
+    (test-equal "Y2K midnight" ts (* 946684800.0 1000000)) )
+  ;; 1s before Y2K + 1s = Y2K midnight
   (let ((pre (timestamp-from-datetime 1999 12 31 23 59 59))
         (y2k (timestamp-from-datetime 2000 1 1 0 0 0)) )
-    (test-approx "Y2K boundary" (- y2k pre) 1 0.01) )
+    (test-equal "Y2K boundary" (- y2k pre) 1000000) )
   ;; All time components contribute correctly
-  ;; 2h + 30m + 45s = 9045 seconds from midnight
+  ;; 2h + 30m + 45s = 9045 seconds = (* 9045 1000000.0) us from midnight
   (let ((base (timestamp-from-date 2024 6 1))
         (full (timestamp-from-datetime 2024 6 1 2 30 45)) )
-    (test-approx "time components sum" (- full base) 9045 0.01) )
+    (test-equal "time components sum" (- full base) (* 9045 1000000.0)) )
   ;; Pre-epoch datetime
   (let ((ts (timestamp-from-datetime 1969 12 31 23 59 59)))
-    (test-approx "1s before epoch" ts -1 0.01) ) )
+    (test-equal "1s before epoch" ts -1000000) ) )
 
 
 ;; ============================================================
@@ -188,10 +188,10 @@
         (h12 (timestamp-from-datetime 2024 1 1 12 0 0))
         (h18 (timestamp-from-datetime 2024 1 1 18 0 0))
         (h23 (timestamp-from-datetime 2024 1 1 23 0 0)) )
-    (test-approx "6h offset" (- h6 h0) (* 6 3600) 0.01)
-    (test-approx "12h offset" (- h12 h0) (* 12 3600) 0.01)
-    (test-approx "18h offset" (- h18 h0) (* 18 3600) 0.01)
-    (test-approx "23h offset" (- h23 h0) (* 23 3600) 0.01) ) )
+    (test-equal "6h offset" (- h6 h0) (* 6 (* 3600 1000000.0)))
+    (test-equal "12h offset" (- h12 h0) (* 12 (* 3600 1000000.0)))
+    (test-equal "18h offset" (- h18 h0) (* 18 (* 3600 1000000.0)))
+    (test-equal "23h offset" (- h23 h0) (* 23 (* 3600 1000000.0))) ) )
 
 
 ;; ============================================================
@@ -201,23 +201,23 @@
 (test-suite "timestamp-parse"
   ;; ISO date only
   (let ((ts (timestamp-parse "1970-01-01" "%Y-%m-%d")))
-    (test-approx "parse epoch date" ts 0 0.01) )
+    (test-equal "parse epoch date" ts 0) )
   ;; ISO datetime with space
   (let ((ts (timestamp-parse "1970-01-01 00:00:01" "%Y-%m-%d %H:%M:%S")))
-    (test-approx "parse epoch+1s" ts 1 0.01) )
+    (test-equal "parse epoch+1s" ts 1000000) )
   ;; ISO datetime with T
   (let ((ts (timestamp-parse "2024-01-15T10:30:00" "%Y-%m-%dT%H:%M:%S")))
     (let ((expected (timestamp-from-datetime 2024 1 15 10 30 0)))
-      (test-approx "parse ISO T datetime" ts expected 0.01) ) )
+      (test-equal "parse ISO T datetime" ts expected) ) )
   ;; US date format
   (let ((ts (timestamp-parse "06/15/2000" "%m/%d/%Y")))
     (let ((expected (timestamp-from-date 2000 6 15)))
-      (test-approx "parse US date" ts expected 0.01) ) )
+      (test-equal "parse US date" ts expected) ) )
   ;; Roundtrip: from-date -> to-string -> parse
   (let* ((orig (timestamp-from-date 2023 7 4))
          (str (timestamp-to-string orig "%Y-%m-%d"))
          (parsed (timestamp-parse str "%Y-%m-%d")) )
-    (test-approx "roundtrip date" parsed orig 0.01) ) )
+    (test-equal "roundtrip date" parsed orig) ) )
 
 
 ;; ============================================================
@@ -227,16 +227,15 @@
 (test-suite "timestamp-parse formats"
   ;; Slash-separated date
   (let ((ts (timestamp-parse "2024/03/14" "%Y/%m/%d")))
-    (test-approx "parse slash date" ts (timestamp-from-date 2024 3 14) 0.01) )
+    (test-equal "parse slash date" ts (timestamp-from-date 2024 3 14)) )
   ;; Time with no seconds
   (let ((ts (timestamp-parse "2024-01-15 10:30" "%Y-%m-%d %H:%M")))
-    (test-approx "parse no seconds" ts (timestamp-from-datetime 2024 1 15 10 30 0) 0.01) )
+    (test-equal "parse no seconds" ts (timestamp-from-datetime 2024 1 15 10 30 0)) )
   ;; Abbreviated month name
   (let ((ts (timestamp-parse "15-Jan-2024" "%d-%b-%Y")))
-    (test-approx "parse abbrev month" ts (timestamp-from-date 2024 1 15) 0.01) )
+    (test-equal "parse abbrev month" ts (timestamp-from-date 2024 1 15)) )
   ;; Hour-minute-second only (date defaults to epoch base)
   (let ((ts (timestamp-parse "14:30:45" "%H:%M:%S")))
-    ;; Should be 14*3600 + 30*60 + 45 = 52245 on 1900-01-01 or epoch base
     ;; strptime with no date fields leaves struct tm zeroed => 1900-01-01
     ;; timegm will compute something; just verify roundtrip
     (let ((comps (timestamp-components ts)))
@@ -245,10 +244,10 @@
       (test-equal "parse time-only sec" (nth 5 comps) 45) ) )
   ;; Leap day parse
   (let ((ts (timestamp-parse "2000-02-29" "%Y-%m-%d")))
-    (test-approx "parse leap day" ts (timestamp-from-date 2000 2 29) 0.01) )
+    (test-equal "parse leap day" ts (timestamp-from-date 2000 2 29)) )
   ;; Y2K parse
   (let ((ts (timestamp-parse "2000-01-01 00:00:00" "%Y-%m-%d %H:%M:%S")))
-    (test-approx "parse Y2K" ts 946684800 0.01) ) )
+    (test-equal "parse Y2K" ts (* 946684800.0 1000000)) ) )
 
 
 ;; ============================================================
@@ -257,26 +256,26 @@
 
 (test-suite "timestamp-parse fractional seconds"
   ;; The C code handles trailing .NNN after strptime match
-  ;; Parse "2024-01-15 10:30:00.5" => 10:30:00 + 0.5
+  ;; Parse "2024-01-15 10:30:00.5" => 10:30:00 + 500000 us
   (let ((ts (timestamp-parse "2024-01-15 10:30:00.5" "%Y-%m-%d %H:%M:%S"))
         (base (timestamp-from-datetime 2024 1 15 10 30 0)) )
-    (test-approx "frac .5" ts (+ base 0.5) 0.001) )
+    (test-equal "frac .5" ts (+ base 500000)) )
   ;; Three decimal places: .123
   (let ((ts (timestamp-parse "2024-01-15 10:30:00.123" "%Y-%m-%d %H:%M:%S"))
         (base (timestamp-from-datetime 2024 1 15 10 30 0)) )
-    (test-approx "frac .123" ts (+ base 0.123) 0.001) )
+    (test-equal "frac .123" ts (+ base 123000)) )
   ;; Six decimal places: .123456
   (let ((ts (timestamp-parse "2024-01-15 10:30:00.123456" "%Y-%m-%d %H:%M:%S"))
         (base (timestamp-from-datetime 2024 1 15 10 30 0)) )
-    (test-approx "frac .123456" ts (+ base 0.123456) 0.0001) )
+    (test-equal "frac .123456" ts (+ base 123456)) )
   ;; .0 => no fractional part
   (let ((ts (timestamp-parse "2024-01-15 10:30:00.0" "%Y-%m-%d %H:%M:%S"))
         (base (timestamp-from-datetime 2024 1 15 10 30 0)) )
-    (test-approx "frac .0" ts base 0.001) )
+    (test-equal "frac .0" ts base) )
   ;; .999 => nearly 1 second
   (let ((ts (timestamp-parse "2024-01-15 10:30:00.999" "%Y-%m-%d %H:%M:%S"))
         (base (timestamp-from-datetime 2024 1 15 10 30 0)) )
-    (test-approx "frac .999" ts (+ base 0.999) 0.001) ) )
+    (test-equal "frac .999" ts (+ base 999000)) ) )
 
 
 ;; ============================================================
@@ -288,30 +287,30 @@
   (let* ((orig (timestamp-from-datetime 2024 7 4 18 30 0))
          (str (timestamp-to-string orig "%Y-%m-%d %H:%M:%S"))
          (parsed (timestamp-parse str "%Y-%m-%d %H:%M:%S")) )
-    (test-approx "roundtrip datetime" parsed orig 0.01) )
+    (test-equal "roundtrip datetime" parsed orig) )
   ;; date roundtrip across year boundary
   (let* ((orig (timestamp-from-date 1999 12 31))
          (str (timestamp-to-string orig "%Y-%m-%d"))
          (parsed (timestamp-parse str "%Y-%m-%d")) )
-    (test-approx "roundtrip Y2K eve" parsed orig 0.01) )
+    (test-equal "roundtrip Y2K eve" parsed orig) )
   ;; US format roundtrip
   (let* ((orig (timestamp-from-date 2024 7 4))
          (str (timestamp-to-string orig "%m/%d/%Y"))
          (parsed (timestamp-parse str "%m/%d/%Y")) )
-    (test-approx "roundtrip US fmt" parsed orig 0.01) )
+    (test-equal "roundtrip US fmt" parsed orig) )
   ;; Roundtrip many dates: first of each month in 2024
   (let ((ok t))
     (for (m 1 12)
       (let* ((orig (timestamp-from-date 2024 m 1))
              (str (timestamp-to-string orig "%Y-%m-%d"))
              (parsed (timestamp-parse str "%Y-%m-%d")) )
-        (when (> (abs (- parsed orig)) 0.01)
+        (when (<> parsed orig)
           (setq ok ()) ) ) )
     (test-check "roundtrip 12 months" ok) )
   ;; parse agrees with from-datetime
   (let ((parsed (timestamp-parse "2024-06-15 14:30:45" "%Y-%m-%d %H:%M:%S"))
         (built (timestamp-from-datetime 2024 6 15 14 30 45)) )
-    (test-approx "parse==from-datetime" parsed built 0.01) ) )
+    (test-equal "parse==from-datetime" parsed built) ) )
 
 
 ;; ============================================================
@@ -398,7 +397,8 @@
     (test-equal "epoch day" (nth 2 comps) 1)
     (test-equal "epoch hour" (nth 3 comps) 0)
     (test-equal "epoch minute" (nth 4 comps) 0)
-    (test-equal "epoch second" (nth 5 comps) 0) )
+    (test-equal "epoch second" (nth 5 comps) 0)
+    (test-equal "epoch microsecond" (nth 6 comps) 0) )
   ;; Known date
   (let* ((ts (timestamp-from-datetime 2024 6 15 14 30 45))
          (comps (timestamp-components ts)) )
@@ -407,14 +407,15 @@
     (test-equal "15th day" (nth 2 comps) 15)
     (test-equal "14 hour" (nth 3 comps) 14)
     (test-equal "30 minute" (nth 4 comps) 30)
-    (test-equal "45 second" (nth 5 comps) 45) )
+    (test-equal "45 second" (nth 5 comps) 45)
+    (test-equal "0 microsecond" (nth 6 comps) 0) )
   ;; Roundtrip: datetime -> components -> make timestamp
   (let* ((orig (timestamp-from-datetime 2000 2 29 12 0 0))
          (comps (timestamp-components orig))
          (rebuilt (timestamp-from-datetime
                     (nth 0 comps) (nth 1 comps) (nth 2 comps)
                     (nth 3 comps) (nth 4 comps) (nth 5 comps))) )
-    (test-approx "roundtrip components" rebuilt orig 0.01) ) )
+    (test-equal "roundtrip components" rebuilt orig) ) )
 
 
 ;; ============================================================
@@ -422,9 +423,9 @@
 ;; ============================================================
 
 (test-suite "timestamp-components additional"
-  ;; Components returns exactly 6 elements
+  ;; Components returns exactly 7 elements
   (let ((comps (timestamp-components 0)))
-    (test-equal "comps length" (length comps) 6) )
+    (test-equal "comps length" (length comps) 7) )
   ;; Leap day components
   (let* ((ts (timestamp-from-date 2024 2 29))
          (comps (timestamp-components ts)) )
@@ -468,14 +469,14 @@
 (test-suite "timestamp-diff and timestamp-add"
   (let ((ts1 (timestamp-from-date 2024 1 1))
         (ts2 (timestamp-from-date 2024 1 2)) )
-    ;; Difference should be 86400 seconds
-    (test-approx "1 day diff" (timestamp-diff ts2 ts1) 86400 0.01)
+    ;; Difference should be 86400 seconds = (* 86400 1000000.0) microseconds
+    (test-equal "1 day diff" (timestamp-diff ts2 ts1) (* 86400 1000000.0))
     ;; Add 1 day to ts1 should equal ts2
-    (test-approx "add 1 day" (timestamp-add ts1 86400) ts2 0.01)
+    (test-equal "add 1 day" (timestamp-add ts1 (* 86400 1000000.0)) ts2)
     ;; Diff of same timestamp = 0
-    (test-approx "diff same" (timestamp-diff ts1 ts1) 0 0.01)
+    (test-equal "diff same" (timestamp-diff ts1 ts1) 0)
     ;; Negative diff
-    (test-approx "negative diff" (timestamp-diff ts1 ts2) -86400 0.01) ) )
+    (test-equal "negative diff" (timestamp-diff ts1 ts2) (* -86400 1000000.0)) ) )
 
 
 ;; ============================================================
@@ -483,49 +484,47 @@
 ;; ============================================================
 
 (test-suite "timestamp-diff additional"
-  ;; One week = 7 * 86400
+  ;; One week = 7 * 86400s = (* 7 (* 86400 1000000.0)) us
   (let ((d1 (timestamp-from-date 2024 3 1))
         (d2 (timestamp-from-date 2024 3 8)) )
-    (test-approx "1 week diff" (timestamp-diff d2 d1) (* 7 86400) 0.01) )
-  ;; One hour = 3600
+    (test-equal "1 week diff" (timestamp-diff d2 d1) (* 7 (* 86400 1000000.0))) )
+  ;; One hour = 3600s = (* 3600 1000000.0) us
   (let ((t1 (timestamp-from-datetime 2024 1 1 10 0 0))
         (t2 (timestamp-from-datetime 2024 1 1 11 0 0)) )
-    (test-approx "1 hour diff" (timestamp-diff t2 t1) 3600 0.01) )
-  ;; One minute = 60
+    (test-equal "1 hour diff" (timestamp-diff t2 t1) (* 3600 1000000.0)) )
+  ;; One minute = 60s = (* 60 1000000) us
   (let ((t1 (timestamp-from-datetime 2024 1 1 10 0 0))
         (t2 (timestamp-from-datetime 2024 1 1 10 1 0)) )
-    (test-approx "1 min diff" (timestamp-diff t2 t1) 60 0.01) )
+    (test-equal "1 min diff" (timestamp-diff t2 t1) (* 60 1000000)) )
   ;; Cross year boundary
   (let ((d1 (timestamp-from-date 2023 12 31))
         (d2 (timestamp-from-date 2024 1 1)) )
-    (test-approx "year boundary diff" (timestamp-diff d2 d1) 86400 0.01) )
+    (test-equal "year boundary diff" (timestamp-diff d2 d1) (* 86400 1000000.0)) )
   ;; Cross month boundary
   (let ((d1 (timestamp-from-date 2024 1 31))
         (d2 (timestamp-from-date 2024 2 1)) )
-    (test-approx "month boundary diff" (timestamp-diff d2 d1) 86400 0.01) )
+    (test-equal "month boundary diff" (timestamp-diff d2 d1) (* 86400 1000000.0)) )
   ;; Leap year: Feb has 29 days in 2024
   (let ((d1 (timestamp-from-date 2024 2 1))
         (d2 (timestamp-from-date 2024 3 1)) )
-    (test-approx "feb 2024 days" (timestamp-diff d2 d1) (* 29 86400) 0.01) )
+    (test-equal "feb 2024 days" (timestamp-diff d2 d1) (* 29 (* 86400 1000000.0))) )
   ;; Non-leap year: Feb has 28 days in 2023
   (let ((d1 (timestamp-from-date 2023 2 1))
         (d2 (timestamp-from-date 2023 3 1)) )
-    (test-approx "feb 2023 days" (timestamp-diff d2 d1) (* 28 86400) 0.01) )
+    (test-equal "feb 2023 days" (timestamp-diff d2 d1) (* 28 (* 86400 1000000.0))) )
   ;; Full year 2024 (leap) = 366 days
   (let ((d1 (timestamp-from-date 2024 1 1))
         (d2 (timestamp-from-date 2025 1 1)) )
-    (test-approx "2024 is 366 days" (timestamp-diff d2 d1) (* 366 86400) 0.01) )
+    (test-equal "2024 is 366 days" (timestamp-diff d2 d1) (* 366 (* 86400 1000000.0))) )
   ;; Full year 2023 (non-leap) = 365 days
   (let ((d1 (timestamp-from-date 2023 1 1))
         (d2 (timestamp-from-date 2024 1 1)) )
-    (test-approx "2023 is 365 days" (timestamp-diff d2 d1) (* 365 86400) 0.01) )
+    (test-equal "2023 is 365 days" (timestamp-diff d2 d1) (* 365 (* 86400 1000000.0))) )
   ;; Large diff: 10 years
   (let ((d1 (timestamp-from-date 2014 1 1))
         (d2 (timestamp-from-date 2024 1 1)) )
-    ;; 10 years includes 2 leap years (2016, 2020) + 2024 boundary
-    ;; so 10*365 + 3 = 3653 days (2016,2020,2024 are leap but 2024 Jan 1
-    ;; means we count 2016 and 2020 leap days = 3652+1? Let's just verify positive
-    (test-check "10yr diff positive" (> (timestamp-diff d2 d1) (* 3650 86400))) ) )
+    ;; 10 years includes leap years; just verify positive and large enough
+    (test-check "10yr diff positive" (> (timestamp-diff d2 d1) (* 3650 (* 86400 1000000.0)))) ) )
 
 
 ;; ============================================================
@@ -535,22 +534,22 @@
 (test-suite "timestamp-add additional"
   ;; Add negative delta (go back in time)
   (let ((ts (timestamp-from-date 2024 1 2)))
-    (test-approx "add negative" (timestamp-add ts -86400) (timestamp-from-date 2024 1 1) 0.01) )
+    (test-equal "add negative" (timestamp-add ts (* -86400 1000000.0)) (timestamp-from-date 2024 1 1)) )
   ;; Add 0
   (let ((ts (timestamp-from-date 2024 1 1)))
-    (test-approx "add zero" (timestamp-add ts 0) ts 0.01) )
-  ;; Add fractional seconds
+    (test-equal "add zero" (timestamp-add ts 0) ts) )
+  ;; Add fractional seconds (500000 microseconds = 0.5 seconds)
   (let ((ts (timestamp-from-date 2024 1 1)))
-    (test-approx "add 0.5s" (timestamp-add ts 0.5) (+ ts 0.5) 0.001) )
-  ;; Add 1 hour
+    (test-equal "add 0.5s" (timestamp-add ts 500000) (+ ts 500000)) )
+  ;; Add 1 hour = (* 3600 1000000.0) us
   (let ((ts (timestamp-from-datetime 2024 1 1 10 0 0)))
-    (test-approx "add 1 hour" (timestamp-add ts 3600) (timestamp-from-datetime 2024 1 1 11 0 0) 0.01) )
-  ;; Add 1 week
+    (test-equal "add 1 hour" (timestamp-add ts (* 3600 1000000.0)) (timestamp-from-datetime 2024 1 1 11 0 0)) )
+  ;; Add 1 week = (* 7 (* 86400 1000000.0)) us
   (let ((ts (timestamp-from-date 2024 3 1)))
-    (test-approx "add 1 week" (timestamp-add ts (* 7 86400)) (timestamp-from-date 2024 3 8) 0.01) )
+    (test-equal "add 1 week" (timestamp-add ts (* 7 (* 86400 1000000.0))) (timestamp-from-date 2024 3 8)) )
   ;; Add across year boundary
   (let ((ts (timestamp-from-datetime 2023 12 31 23 59 59)))
-    (let ((next (timestamp-add ts 1)))
+    (let ((next (timestamp-add ts 1000000)))
       (let ((comps (timestamp-components next)))
         (test-equal "add to new year y" (nth 0 comps) 2024)
         (test-equal "add to new year m" (nth 1 comps) 1)
@@ -560,13 +559,13 @@
         (test-equal "add to new year s" (nth 5 comps) 0) ) ) )
   ;; Add then diff = identity
   (let ((ts (timestamp-from-date 2024 6 15))
-        (delta 123456) )
-    (test-approx "add-diff identity" (timestamp-diff (timestamp-add ts delta) ts) delta 0.01) )
+        (delta (* 123456 1000000.0)) )
+    (test-equal "add-diff identity" (timestamp-diff (timestamp-add ts delta) ts) delta) )
   ;; Diff then add = identity
   (let ((t1 (timestamp-from-date 2024 1 1))
         (t2 (timestamp-from-date 2024 6 15)) )
     (let ((d (timestamp-diff t2 t1)))
-      (test-approx "diff-add identity" (timestamp-add t1 d) t2 0.01) ) ) )
+      (test-equal "diff-add identity" (timestamp-add t1 d) t2) ) ) )
 
 
 ;; ============================================================
@@ -577,11 +576,11 @@
   ;; from-date midnight matches parse of date string
   (let ((fd (timestamp-from-date 2024 3 14))
         (parsed (timestamp-parse "2024-03-14" "%Y-%m-%d")) )
-    (test-approx "from-date==parse" fd parsed 0.01) )
+    (test-equal "from-date==parse" fd parsed) )
   ;; from-datetime matches parse of datetime string
   (let ((fdt (timestamp-from-datetime 2024 3 14 15 9 26))
         (parsed (timestamp-parse "2024-03-14 15:09:26" "%Y-%m-%d %H:%M:%S")) )
-    (test-approx "from-datetime==parse dt" fdt parsed 0.01) )
+    (test-equal "from-datetime==parse dt" fdt parsed) )
   ;; components of from-datetime match input args
   (let* ((ts (timestamp-from-datetime 2024 8 15 9 30 0))
          (comps (timestamp-components ts)) )
@@ -605,20 +604,20 @@
                     (nth 3 comps) (nth 4 comps) (nth 5 comps)))
          (result-str (timestamp-to-string rebuilt "%Y-%m-%d %H:%M:%S")) )
     (test-string-equal "full chain roundtrip" result-str orig-str) )
-  ;; now -> components -> from-datetime -> diff from now ≈ 0
+  ;; now -> components -> from-datetime -> diff from now < 1 second (10^6 us)
   (let* ((now (timestamp-now))
          (comps (timestamp-components now))
          (rebuilt (timestamp-from-datetime
                     (nth 0 comps) (nth 1 comps) (nth 2 comps)
                     (nth 3 comps) (nth 4 comps) (nth 5 comps))) )
     ;; Difference should be < 1 second (components truncate sub-second)
-    (test-check "now roundtrip <1s" (< (abs (- rebuilt now)) 1.0)) )
-  ;; now -> to-string -> parse -> diff from now ≈ 0
+    (test-check "now roundtrip <1s" (< (abs (- rebuilt now)) 1000000)) )
+  ;; now -> to-string -> parse -> diff from now < 1 second
   (let* ((now (timestamp-now))
          (str (timestamp-to-string now "%Y-%m-%d %H:%M:%S"))
          (parsed (timestamp-parse str "%Y-%m-%d %H:%M:%S")) )
     ;; to-string truncates sub-second, so diff should be < 1 second
-    (test-check "now str roundtrip <1s" (< (abs (- parsed now)) 1.0)) ) )
+    (test-check "now str roundtrip <1s" (< (abs (- parsed now)) 1000000)) ) )
 
 
 ;; ============================================================
@@ -651,17 +650,18 @@
 ;; ============================================================
 
 (test-suite "timestamp 32-bit boundary"
-  ;; 2^31 - 1 = 2147483647 = 2038-01-19 03:14:07 UTC
-  (let ((comps (timestamp-components 2147483647)))
+  ;; 2^31 - 1 = 2147483647 seconds = 2038-01-19 03:14:07 UTC
+  ;; In microseconds: (* 2147483647.0 1000000)
+  (let ((comps (timestamp-components (* 2147483647.0 1000000))))
     (test-equal "32bit max year" (nth 0 comps) 2038)
     (test-equal "32bit max month" (nth 1 comps) 1)
     (test-equal "32bit max day" (nth 2 comps) 19)
     (test-equal "32bit max hour" (nth 3 comps) 3)
     (test-equal "32bit max min" (nth 4 comps) 14)
     (test-equal "32bit max sec" (nth 5 comps) 7) )
-  ;; 2^31 = 2147483648 = 2038-01-19 03:14:08 (just past 32-bit limit)
-  ;; doubles handle this fine
-  (let ((comps (timestamp-components 2147483648)))
+  ;; 2^31 = 2147483648 seconds = 2038-01-19 03:14:08 (just past 32-bit limit)
+  ;; longs handle this fine
+  (let ((comps (timestamp-components (* 2147483648.0 1000000))))
     (test-equal "32bit+1 sec" (nth 5 comps) 8) )
   ;; Roundtrip past 32-bit limit
   (let* ((ts (timestamp-from-datetime 2040 6 15 12 0 0))

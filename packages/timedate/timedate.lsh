@@ -1,42 +1,42 @@
-;;; timedate.lsh -- Second-precision UTC timestamps for Lush
+;;; timedate.lsh -- Microsecond-precision UTC timestamps for Lush
 ;;;
-;;; Timestamps are double-precision seconds since Unix epoch
+;;; Timestamps are int64 (long) microseconds since Unix epoch
 ;;; (1970-01-01T00:00:00Z).  Column type symbol: 'stamp.
-;;; Stored as doubles, giving exact representation for whole seconds
-;;; and microsecond precision for fractional seconds through ~year 2255.
+;;; Stored as longs, giving exact integer representation.
 ;;;
 ;;; Usage:
 ;;;   (libload "timedate/timedate")
-;;;   (timestamp-now)                              ;; current time as double seconds
+;;;   (timestamp-now)                              ;; current time as long microseconds
 ;;;   (timestamp-to-string (timestamp-now))         ;; formatted string
-;;;   (timestamp-parse "2024-01-15" "%Y-%m-%d")     ;; parse to seconds
+;;;   (timestamp-parse "2024-01-15" "%Y-%m-%d")     ;; parse to microseconds
 ;;;   (timestamp-components (timestamp-now))         ;; (y m d H M S)
 
 (libload "timedate/timedate-config")
 
-#? *** TimeDate: UTC Timestamps for Lush
+#? *** TimeDate: UTC Timestamps for Lush (microsecond long integers)
 
 
 ;; ============================================================
 ;; Compiled Lush functions (C bridge via dhc-make)
 ;; ============================================================
 
-;; internal: get current UTC time as seconds since epoch
+;; internal: get current UTC time as microseconds since epoch
 (de _td-timestamp-now-out (out)
-  ((-idx1- (-double-)) out)
+  ((-idx1- (-long-)) out)
   #{
   {
     struct timespec ts;
     clock_gettime(CLOCK_REALTIME, &ts);
-    IDX_PTR($out, double)[0] = (double)ts.tv_sec + (double)ts.tv_nsec * 1e-9;
+    IDX_PTR($out, long long)[0] = (long long)ts.tv_sec * 1000000LL
+                                + (long long)ts.tv_nsec / 1000LL;
   }
   #}
   () )
 
-;; internal: parse date/time string to seconds since epoch
-(de _td-strptime-to-secs-out (str fmt out)
+;; internal: parse date/time string to microseconds since epoch
+(de _td-strptime-to-micros-out (str fmt out)
   ((-str-) str fmt)
-  ((-idx1- (-double-)) out)
+  ((-idx1- (-long-)) out)
   #{
   {
     struct tm tm_val;
@@ -44,38 +44,39 @@
     const char *rest = strptime((const char *)$str->data,
                                  (const char *)$fmt->data, &tm_val);
     if (!rest) {
-      IDX_PTR($out, double)[0] = -1e30;
+      IDX_PTR($out, long long)[0] = (-9223372036854775807LL - 1LL);
     } else {
       time_t secs = timegm(&tm_val);
-      double frac = 0.0;
+      long long frac_micros = 0;
       /* Handle fractional seconds after strptime */
       if (*rest == '.') {
         rest++;
-        double place = 0.1;
-        while (*rest >= '0' && *rest <= '9') {
-          frac += (*rest - '0') * place;
-          place *= 0.1;
+        long long mult = 100000LL;  /* 10^5 */
+        while (*rest >= '0' && *rest <= '9' && mult > 0) {
+          frac_micros += (*rest - '0') * mult;
+          mult /= 10;
           rest++;
         }
       }
-      IDX_PTR($out, double)[0] = (double)secs + frac;
+      IDX_PTR($out, long long)[0] = (long long)secs * 1000000LL + frac_micros;
     }
   }
   #}
   () )
 
-;; internal: format seconds to string in buffer
+;; internal: format microseconds to string in buffer
 ;; Returns 0 on success, -1 on failure
-(de _td-secs-to-string (secs-arr fmt buf)
-  ((-idx1- (-double-)) secs-arr)
+(de _td-micros-to-string (micros-arr fmt buf)
+  ((-idx1- (-long-)) micros-arr)
   ((-str-) fmt)
   ((-idx1- (-ubyte-)) buf)
   (let ((rc 0))
     ((-int-) rc)
     #{
     {
-      double secs = IDX_PTR($secs_arr, double)[0];
-      time_t t = (time_t)secs;
+      long long micros = IDX_PTR($micros_arr, long long)[0];
+      time_t t = (time_t)(micros / 1000000LL);
+      if (micros < 0 && (micros % 1000000LL) != 0) t--;
       struct tm tm_val;
       if (!gmtime_r(&t, &tm_val)) {
         $rc = -1;
@@ -88,14 +89,16 @@
     #}
     rc ) )
 
-;; internal: decompose seconds to 6 components (y m d H M S)
-(de _td-components (secs-arr out)
-  ((-idx1- (-double-)) secs-arr)
+;; internal: decompose microseconds to 7 components (y m d H M S us)
+(de _td-components (micros-arr out)
+  ((-idx1- (-long-)) micros-arr)
   ((-idx1- (-int-)) out)
   #{
   {
-    double secs = IDX_PTR($secs_arr, double)[0];
-    time_t t = (time_t)secs;
+    long long micros = IDX_PTR($micros_arr, long long)[0];
+    time_t t = (time_t)(micros / 1000000LL);
+    long long rem = micros % 1000000LL;
+    if (micros < 0 && rem != 0) { t--; rem += 1000000LL; }
     struct tm tm_val;
     gmtime_r(&t, &tm_val);
     int *o = IDX_PTR($out, int);
@@ -105,14 +108,15 @@
     o[3] = tm_val.tm_hour;
     o[4] = tm_val.tm_min;
     o[5] = tm_val.tm_sec;
+    o[6] = (int)rem;
   }
   #}
   () )
 
-;; internal: build seconds from 6 int args
+;; internal: build microseconds from 6 int args
 (de _td-make-timestamp-out (y m d hh mm ss out)
   ((-int-) y m d hh mm ss)
-  ((-idx1- (-double-)) out)
+  ((-idx1- (-long-)) out)
   #{
   {
     struct tm tm_val;
@@ -124,16 +128,16 @@
     tm_val.tm_min  = $mm;
     tm_val.tm_sec  = $ss;
     time_t secs = timegm(&tm_val);
-    IDX_PTR($out, double)[0] = (double)secs;
+    IDX_PTR($out, long long)[0] = (long long)secs * 1000000LL;
   }
   #}
   () )
 
 ;; internal: parse with specific format, used by CSV stamp reader
-;; Parses date/time string and writes seconds to stamps array at idx
+;; Parses date/time string and writes microseconds to stamps array at idx
 (de _td-parse-stamp-at (str fmt stamps-arr idx)
   ((-str-) str fmt)
-  ((-idx1- (-double-)) stamps-arr)
+  ((-idx1- (-long-)) stamps-arr)
   ((-int-) idx)
   #{
   {
@@ -142,27 +146,33 @@
     const char *rest = strptime((const char *)$str->data,
                                  (const char *)$fmt->data, &tm_val);
     if (!rest) {
-      IDX_PTR($stamps_arr, double)[$idx] = -1e30;
+      IDX_PTR($stamps_arr, long long)[$idx] = (-9223372036854775807LL - 1LL);
     } else {
       time_t secs = timegm(&tm_val);
-      double frac = 0.0;
+      long long frac_micros = 0;
       if (*rest == '.') {
         rest++;
-        double place = 0.1;
-        while (*rest >= '0' && *rest <= '9') {
-          frac += (*rest - '0') * place;
-          place *= 0.1;
+        long long mult = 100000LL;
+        while (*rest >= '0' && *rest <= '9' && mult > 0) {
+          frac_micros += (*rest - '0') * mult;
+          mult /= 10;
           rest++;
         }
       }
-      IDX_PTR($stamps_arr, double)[$idx] = (double)secs + frac;
+      IDX_PTR($stamps_arr, long long)[$idx] = (long long)secs * 1000000LL + frac_micros;
     }
   }
   #}
   () )
 
+;; internal: return INT64_MIN as the null sentinel for long stamps
+(de _td-get-long-min (out)
+  ((-idx1- (-long-)) out)
+  #{ IDX_PTR($out, long long)[0] = (-9223372036854775807LL - 1LL); #}
+  () )
 
-;; Compile the bridge functions
+
+;; Compile all bridge functions in a single dhc-make
 (let ((dhc-make-lushflags
        (concat dhc-make-lushflags " -I" (dirname file-being-loaded))))
   (dhc-make-with-libs () t
@@ -170,8 +180,9 @@
     #include <time.h>
     #include <string.h>
     #}
-    _td-timestamp-now-out _td-strptime-to-secs-out _td-secs-to-string
-    _td-components _td-make-timestamp-out _td-parse-stamp-at ) )
+    _td-timestamp-now-out _td-strptime-to-micros-out _td-micros-to-string
+    _td-components _td-make-timestamp-out _td-parse-stamp-at
+    _td-get-long-min ) )
 
 
 ;; ============================================================
@@ -189,13 +200,25 @@
 
 
 ;; ============================================================
+;; Null sentinel for long stamps (INT64_MIN)
+;; ============================================================
+
+(defvar *td-stamp-null* ())  ;; set below via compiled function
+
+;; Initialize *td-stamp-null* to LONG_MIN
+(let ((tmp (long-matrix 1)))
+  (_td-get-long-min tmp)
+  (setq *td-stamp-null* (tmp 0)) )
+
+
+;; ============================================================
 ;; Public API (interpreted)
 ;; ============================================================
 
 #? (timestamp-now)
-;; Return the current UTC time as seconds since epoch.
+;; Return the current UTC time as microseconds since epoch.
 (de timestamp-now ()
-  (let ((out (double-matrix 1)))
+  (let ((out (long-matrix 1)))
     (_td-timestamp-now-out out)
     (out 0) ) )
 
@@ -203,24 +226,26 @@
 #? (timestamp-from-date <y> <m> <d>)
 ;; Build a timestamp for midnight UTC on the given date.
 ;; y=year, m=month(1-12), d=day(1-31).
+;; Returns microseconds since epoch.
 (de timestamp-from-date (y m d)
-  (let ((out (double-matrix 1)))
+  (let ((out (long-matrix 1)))
     (_td-make-timestamp-out y m d 0 0 0 out)
     (out 0) ) )
 
 
 #? (timestamp-from-datetime <y> <m> <d> <H> <M> <S>)
 ;; Build a timestamp from date and time components.
+;; Returns microseconds since epoch.
 (de timestamp-from-datetime (y m d hh mm ss)
-  (let ((out (double-matrix 1)))
+  (let ((out (long-matrix 1)))
     (_td-make-timestamp-out y m d hh mm ss out)
     (out 0) ) )
 
 
 #? (timestamp-parse <str> <fmt>)
 ;; Parse a date/time string using strptime format.
-;; Returns seconds since epoch.  Signals error on parse failure.
-;; Handles trailing fractional seconds (.123) automatically.
+;; Returns microseconds since epoch.  Signals error on parse failure.
+;; Handles trailing fractional seconds (.123456) automatically.
 ;;
 ;; Common formats:
 ;;   "%Y-%m-%d %H:%M:%S"   ISO datetime with space
@@ -228,46 +253,46 @@
 ;;   "%Y-%m-%d"             ISO date only
 ;;   "%m/%d/%Y"             US date
 (de timestamp-parse (str fmt)
-  (let ((out (double-matrix 1)))
-    (_td-strptime-to-secs-out str fmt out)
+  (let ((out (long-matrix 1)))
+    (_td-strptime-to-micros-out str fmt out)
     (let ((result (out 0)))
-      (when (< result -1e29)
+      (when (= result *td-stamp-null*)
         (error "timestamp-parse" "failed to parse date/time string" str) )
       result ) ) )
 
 
-#? (timestamp-to-string <secs> [<fmt>])
-;; Format a timestamp (seconds since epoch) as a string.
+#? (timestamp-to-string <micros> [<fmt>])
+;; Format a timestamp (microseconds since epoch) as a string.
 ;; Default format: "%Y-%m-%d %H:%M:%S".
-(de timestamp-to-string (secs &optional fmt)
+(de timestamp-to-string (micros &optional fmt)
   (when (not fmt) (setq fmt "%Y-%m-%d %H:%M:%S"))
-  (let ((secs-arr (double-matrix 1))
+  (let ((micros-arr (long-matrix 1))
         (buf (ubyte-matrix 256)) )
-    (secs-arr 0 secs)
-    (let ((rc (_td-secs-to-string secs-arr fmt buf)))
+    (micros-arr 0 micros)
+    (let ((rc (_td-micros-to-string micros-arr fmt buf)))
       (when (< rc 0)
-        (error "timestamp-to-string" "failed to format timestamp" secs) )
+        (error "timestamp-to-string" "failed to format timestamp" micros) )
       (_td-extract-string buf) ) ) )
 
 
-#? (timestamp-components <secs>)
+#? (timestamp-components <micros>)
 ;; Decompose a timestamp into a list:
-;;   (year month day hour minute second)
-(de timestamp-components (secs)
-  (let ((secs-arr (double-matrix 1))
-        (out (int-matrix 6)) )
-    (secs-arr 0 secs)
-    (_td-components secs-arr out)
-    (list (out 0) (out 1) (out 2) (out 3) (out 4) (out 5)) ) )
+;;   (year month day hour minute second microsecond)
+(de timestamp-components (micros)
+  (let ((micros-arr (long-matrix 1))
+        (out (int-matrix 7)) )
+    (micros-arr 0 micros)
+    (_td-components micros-arr out)
+    (list (out 0) (out 1) (out 2) (out 3) (out 4) (out 5) (out 6)) ) )
 
 
 #? (timestamp-diff <a> <b>)
-;; Return the difference (a - b) in seconds.
+;; Return the difference (a - b) in microseconds.
 (de timestamp-diff (a b)
   (- a b) )
 
 
-#? (timestamp-add <secs> <delta>)
-;; Add delta seconds to a timestamp.
-(de timestamp-add (secs delta)
-  (+ secs delta) )
+#? (timestamp-add <micros> <delta-micros>)
+;; Add delta microseconds to a timestamp.
+(de timestamp-add (micros delta-micros)
+  (+ micros delta-micros) )

@@ -1,8 +1,9 @@
 ;;; datatable-null.lsh -- NULL sentinel values for DataTable columns
 ;;;
 ;;; Sentinel values for representing missing data:
-;;;   float/double/stamp: IEEE 754 NaN (checked with nanp)
+;;;   float/double: IEEE 754 NaN (checked with nanp)
 ;;;   int32: INT_MIN (-2147483648)
+;;;   stamp (long): INT64_MIN (*td-stamp-null* from timedate.lsh)
 ;;;   string: "" (empty string)
 
 #? *** DataTable NULL Sentinels
@@ -14,7 +15,7 @@
 (de dt-null (type)
   (cond ((= type 'real)  (nan))
         ((= type 'float) (nan))
-        ((= type 'stamp) (nan))
+        ((= type 'stamp) *td-stamp-null*)
         ((= type 'int)   *dt-null-int*)
         ((= type 'string) "")
         (t (error "dt-null" "unknown type" type))))
@@ -22,8 +23,10 @@
 #? (dt-null? <type> <value>)
 ;; Check if a value is the null sentinel for its type.
 (de dt-null? (type value)
-  (cond ((or (= type 'real) (= type 'float) (= type 'stamp))
+  (cond ((or (= type 'real) (= type 'float))
          (nanp value))
+        ((= type 'stamp)
+         (= value *td-stamp-null*))
         ((= type 'int)
          (= value *dt-null-int*))
         ((= type 'string)

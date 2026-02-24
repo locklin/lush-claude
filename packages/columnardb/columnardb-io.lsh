@@ -9,7 +9,7 @@
 ;;;   Bytes  0-3:  Magic "LCDB" (0x4C434442)
 ;;;   Bytes  4-7:  Version (uint32 native, currently 1)
 ;;;   Bytes  8-15: Element count (int64 native)
-;;;   Bytes 16-19: Type code (uint32 native): 1=double, 2=int32, 5=float
+;;;   Bytes 16-19: Type code (uint32 native): 1=double, 2=int32, 5=float, 7=long(int64)
 ;;;   Bytes 20-23: Reserved (zeros)
 ;;;   Bytes 24+:   Raw element data in native byte order
 ;;;
@@ -25,6 +25,7 @@
 (defvar *cdb-type-double* 1)
 (defvar *cdb-type-int32* 2)
 (defvar *cdb-type-float* 5)
+(defvar *cdb-type-long* 7)
 (defvar *cdb-header-size* 24)
 
 
@@ -318,6 +319,90 @@
     rc ) )
 
 
+;; Write an idx1 of longs (int64) to a file as native-endian binary.
+;; Returns 0 on success, -1 on failure.
+(de _cdb-write-longs (filename data nrows)
+  ((-str-) filename)
+  ((-idx1- (-long-)) data)
+  ((-int-) nrows)
+  (let ((rc 0))
+    ((-int-) rc)
+    #{
+    {
+      FILE *f = fopen((const char *)$filename->data, "wb");
+      if (!f) { $rc = -1; }
+      else {
+        /* Write 24-byte header */
+        uint32_t magic = 0x4C434442u;
+        uint32_t version = 1;
+        int64_t count = (int64_t)$nrows;
+        uint32_t typecode = 7; /* long (int64) */
+        uint32_t reserved = 0;
+        fwrite(&magic, 4, 1, f);
+        fwrite(&version, 4, 1, f);
+        fwrite(&count, 8, 1, f);
+        fwrite(&typecode, 4, 1, f);
+        fwrite(&reserved, 4, 1, f);
+        /* Write raw int64 data */
+        size_t written = fwrite(IDX_PTR($data, long long), sizeof(long long), $nrows, f);
+        if ((int)written != $nrows) $rc = -1;
+        fclose(f);
+      }
+    }
+    #}
+    rc ) )
+
+
+;; Read raw longs (int64) from a .col file into a pre-allocated idx1.
+;; Seeks past the 24-byte header, reads nrows int64s.
+(de _cdb-read-longs (filename data nrows)
+  ((-str-) filename)
+  ((-idx1- (-long-)) data)
+  ((-int-) nrows)
+  (let ((rc 0))
+    ((-int-) rc)
+    #{
+    {
+      FILE *f = fopen((const char *)$filename->data, "rb");
+      if (!f) { $rc = -1; }
+      else {
+        fseek(f, 24, SEEK_SET);
+        size_t got = fread(IDX_PTR($data, long long), sizeof(long long), $nrows, f);
+        if ((int)got != $nrows) $rc = -1;
+        fclose(f);
+      }
+    }
+    #}
+    rc ) )
+
+
+;; Append longs (int64) to an existing .col file.
+(de _cdb-append-longs (filename data nrows new-total)
+  ((-str-) filename)
+  ((-idx1- (-long-)) data)
+  ((-int-) nrows new-total)
+  (let ((rc 0))
+    ((-int-) rc)
+    #{
+    {
+      FILE *f = fopen((const char *)$filename->data, "r+b");
+      if (!f) { $rc = -1; }
+      else {
+        /* Update count in header (bytes 8-15) */
+        int64_t count = (int64_t)$new_total;
+        fseek(f, 8, SEEK_SET);
+        fwrite(&count, 8, 1, f);
+        /* Seek to end and append data */
+        fseek(f, 0, SEEK_END);
+        size_t written = fwrite(IDX_PTR($data, long long), sizeof(long long), $nrows, f);
+        if ((int)written != $nrows) $rc = -1;
+        fclose(f);
+      }
+    }
+    #}
+    rc ) )
+
+
 ;; Advisory file locking via flock(2).
 ;; operation: LOCK_SH, LOCK_EX, LOCK_UN, or LOCK_EX|LOCK_NB etc.
 ;; Returns 0 on success, -1 on failure (e.g. LOCK_NB and lock held).
@@ -363,8 +448,8 @@
   #include <stdint.h>
   #include <sys/file.h>
   #}
-  _cdb-write-doubles _cdb-write-ints _cdb-write-floats
-  _cdb-read-header _cdb-read-doubles _cdb-read-ints _cdb-read-floats
-  _cdb-append-doubles _cdb-append-ints _cdb-append-floats
+  _cdb-write-doubles _cdb-write-ints _cdb-write-floats _cdb-write-longs
+  _cdb-read-header _cdb-read-doubles _cdb-read-ints _cdb-read-floats _cdb-read-longs
+  _cdb-append-doubles _cdb-append-ints _cdb-append-floats _cdb-append-longs
   _cdb-write-bytes
   _cdb-flock )

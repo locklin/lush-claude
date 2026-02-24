@@ -127,10 +127,10 @@
       ;; Load and verify timestamps round-trip
       (let ((dt2 (columnardb-load path)))
         (test-equal "stamp rows" (==> dt2 num-rows) 4)
-        (test-approx "stamp[0]" (==> dt2 get 0 "time") t1 0.01)
-        (test-approx "stamp[1]" (==> dt2 get 1 "time") t2 0.01)
-        (test-approx "stamp[2]" (==> dt2 get 2 "time") t3 0.01)
-        (test-approx "stamp[3]" (==> dt2 get 3 "time") t4 0.01)
+        (test-equal "stamp[0]" (==> dt2 get 0 "time") t1)
+        (test-equal "stamp[1]" (==> dt2 get 1 "time") t2)
+        (test-equal "stamp[2]" (==> dt2 get 2 "time") t3)
+        (test-equal "stamp[3]" (==> dt2 get 3 "time") t4)
 
         ;; Verify timestamps can be formatted
         (let ((s (timestamp-to-string (==> dt2 get 0 "time"))))
@@ -481,7 +481,7 @@
     ;; 100 rows: every 60 seconds, cycling through 5 symbols
     (let ((symbols (list "AAPL" "GOOG" "MSFT" "TSLA" "AMZN")))
       (for (i 0 99)
-        (let ((t (+ base-time (* i 60)))
+        (let ((t (+ base-time (* i 60000000)))
               (sym (nth (mod i 5) symbols))
               (p (+ 100.0 (* i 0.1))) )
           (==> dt append-row (list t sym p)) ) ) )
@@ -494,29 +494,29 @@
         ;; Time column should be sorted
         (test-check "ts time sorted" (columnardb-sorted? meta 0))
 
-        ;; Query: first 10 minutes (600 seconds)
+        ;; Query: first 10 rows (10 * 60s in microseconds)
         (let ((t-start base-time)
-              (t-end (+ base-time 599)) )
+              (t-end (+ base-time (* 10 60000000) -1)) )
           (let ((r (columnardb-range dt2 "time" t-start t-end meta)))
             (test-equal "10min range" (length r) 10) ) )
 
-        ;; Query: second 10 minutes
-        (let ((t-start (+ base-time 600))
-              (t-end (+ base-time 1199)) )
+        ;; Query: second 10 rows
+        (let ((t-start (+ base-time (* 10 60000000)))
+              (t-end (+ base-time (* 20 60000000) -1)) )
           (let ((r (columnardb-range dt2 "time" t-start t-end meta)))
             (test-equal "2nd 10min range" (length r) 10) ) )
 
         ;; Query: specific symbol within time range
         ;; Range first 25 rows (25 minutes), filter for AAPL (every 5th row)
         (let ((t-start base-time)
-              (t-end (+ base-time (* 24 60))) )
+              (t-end (+ base-time (* 24 60000000))) )
           (let ((range-rows (columnardb-range dt2 "time" t-start t-end meta)))
             (let ((sub (==> dt2 select-rows range-rows)))
               (let ((aapl-rows (==> sub where '= "symbol" "AAPL")))
                 (test-equal "AAPL in 25min" (length aapl-rows) 5) ) ) ) )
 
         ;; Query: full range
-        (let ((r (columnardb-range dt2 "time" 0 (+ base-time 999999) meta)))
+        (let ((r (columnardb-range dt2 "time" 0 (+ base-time (* 999999 1000000.0)) meta)))
           (test-equal "full ts range" (length r) 100) ) ) ) )
 )
 
@@ -533,9 +533,9 @@
     (==> dt add-column "volume" 'int)
     (==> dt add-column "time" 'stamp)
     (==> dt add-column "symbol" 'string)
-    (==> dt append-row (list 100.0 1000 5000.0 "AAPL"))
-    (==> dt append-row (list 200.0 2000 6000.0 "GOOG"))
-    (==> dt append-row (list 300.0 3000 7000.0 "MSFT"))
+    (==> dt append-row (list 100.0 1000 5000 "AAPL"))
+    (==> dt append-row (list 200.0 2000 6000 "GOOG"))
+    (==> dt append-row (list 300.0 3000 7000 "MSFT"))
 
     (let ((path (concat *test-dir* "/cow")))
       (columnardb-save dt path)
@@ -557,15 +557,15 @@
 
       ;; --- COW set on stamp column ---
       (let ((dt2 (columnardb-load path)))
-        (==> dt2 set 2 "time" 9999.0)
-        (test-approx "COW stamp set" (==> dt2 get 2 "time") 9999.0 0.001)
-        (test-approx "COW stamp other[0]" (==> dt2 get 0 "time") 5000.0 0.001) )
+        (==> dt2 set 2 "time" 9999)
+        (test-equal "COW stamp set" (==> dt2 get 2 "time") 9999)
+        (test-equal "COW stamp other[0]" (==> dt2 get 0 "time") 5000) )
 
       ;; --- COW disk unchanged: reload and verify original data ---
       (let ((dt3 (columnardb-load path)))
         (test-approx "COW disk price[1]" (==> dt3 get 1 "price") 200.0 0.001)
         (test-equal "COW disk volume[0]" (==> dt3 get 0 "volume") 1000)
-        (test-approx "COW disk time[2]" (==> dt3 get 2 "time") 7000.0 0.001)
+        (test-equal "COW disk time[2]" (==> dt3 get 2 "time") 7000)
         (test-string-equal "COW disk symbol[0]" (==> dt3 get 0 "symbol") "AAPL") )
 
       ;; --- COW multiple sets: first triggers copy, subsequent are cheap ---
@@ -688,11 +688,11 @@
     (==> dt add-column "time" 'stamp)
     (==> dt add-column "price" 'real)
     (==> dt add-column "symbol" 'string)
-    (==> dt append-row (list 100.0 10.0 "AAPL"))
-    (==> dt append-row (list 200.0 20.0 "GOOG"))
-    (==> dt append-row (list 300.0 30.0 "AAPL"))
-    (==> dt append-row (list 400.0 40.0 "MSFT"))
-    (==> dt append-row (list 500.0 50.0 "GOOG"))
+    (==> dt append-row (list 100 10.0 "AAPL"))
+    (==> dt append-row (list 200 20.0 "GOOG"))
+    (==> dt append-row (list 300 30.0 "AAPL"))
+    (==> dt append-row (list 400 40.0 "MSFT"))
+    (==> dt append-row (list 500 50.0 "GOOG"))
 
     (let ((path (concat *test-dir* "/lazy")))
       (columnardb-save dt path)
@@ -700,7 +700,7 @@
       ;; Load table, access only numeric columns (pool not loaded yet)
       (let ((dt2 (columnardb-load path)))
         ;; Numeric columns work without triggering pool load
-        (test-approx "lazy numeric time[0]" (==> dt2 get 0 "time") 100.0 0.001)
+        (test-equal "lazy numeric time[0]" (==> dt2 get 0 "time") 100)
         (test-approx "lazy numeric price[3]" (==> dt2 get 3 "price") 40.0 0.001)
 
         ;; Access string column -> triggers lazy load
@@ -1378,7 +1378,7 @@
     (let ((symbols (list "AAPL" "GOOG" "MSFT")))
       (for (i 0 29)
         (==> dt append-row
-             (list (* i 100.0) (nth (mod i 3) symbols) (* i 1.5)) ) ) )
+             (list (* i 100) (nth (mod i 3) symbols) (* i 1.5)) ) ) )
 
     (let ((path (concat *test-dir* "/index-where")))
       (columnardb-save dt path)
@@ -1615,7 +1615,7 @@
     (==> dt add-column "price" 'real)
     (==> dt add-column "symbol" 'string)
     (for (i 0 999)
-      (==> dt append-row (list (* i 1.0) (* i 0.5) "X")) )
+      (==> dt append-row (list i (* i 0.5) "X")) )
     (let ((path (concat *test-dir* "/compiled-xproc"))
           (result-file (concat *test-dir* "/compiled-xproc-result.lsh"))
           (pkg-dir (dirname (dirname (dirname file-being-loaded))))
@@ -1648,7 +1648,7 @@
       (==> dt add-column "qty" 'int)
       (==> dt add-column "time" 'stamp)
       (for (i 0 9)
-        (==> dt append-row (list (sprintf "item%d" i) (* i 10.0) (* i 100) (* i 1000.0))) )
+        (==> dt append-row (list (sprintf "item%d" i) (* i 10.0) (* i 100) (* i 1000))) )
       (columnardb-save dt path) )
 
     ;; Delete single row
@@ -1668,7 +1668,7 @@
       (==> dt add-column "qty" 'int)
       (==> dt add-column "time" 'stamp)
       (for (i 0 9)
-        (==> dt append-row (list (sprintf "item%d" i) (* i 10.0) (* i 100) (* i 1000.0))) )
+        (==> dt append-row (list (sprintf "item%d" i) (* i 10.0) (* i 100) (* i 1000))) )
       (columnardb-save dt path) )
 
     ;; Delete multiple rows
@@ -1688,7 +1688,7 @@
       (==> dt add-column "qty" 'int)
       (==> dt add-column "time" 'stamp)
       (for (i 0 9)
-        (==> dt append-row (list (sprintf "item%d" i) (* i 10.0) (* i 100) (* i 1000.0))) )
+        (==> dt append-row (list (sprintf "item%d" i) (* i 10.0) (* i 100) (* i 1000))) )
       (columnardb-save dt path) )
 
     ;; Delete all rows
@@ -1956,24 +1956,24 @@
   (let ((dt (new DataTable)))
     (==> dt add-column "time" 'stamp)
     (==> dt add-column "price" 'real)
-    (for (i 0 99) (==> dt append-row (list (* i 1.0) (* i 0.5))))
+    (for (i 0 99) (==> dt append-row (list i (* i 0.5))))
     (let ((path (concat *test-dir* "/compress-delta")))
       (columnardb-save-compressed dt path)
-      ;; Verify typecode is delta
+      ;; Verify typecode is delta-long
       (let ((cnt-out (double-matrix 1))
             (typ-out (int-matrix 1)) )
         (_cdb-read-header (concat path "/col-0.col") cnt-out typ-out)
-        (test-equal "delta typecode" (typ-out 0) 3) )
+        (test-equal "delta typecode" (typ-out 0) 8) )
       ;; Load and verify values
       (let ((dt2 (columnardb-load path)))
         (test-equal "delta load rows" (==> dt2 num-rows) 100)
-        (test-approx "delta load[0]" (==> dt2 get 0 "time") 0.0 0.001)
-        (test-approx "delta load[50]" (==> dt2 get 50 "time") 50.0 0.001)
-        (test-approx "delta load[99]" (==> dt2 get 99 "time") 99.0 0.001)
+        (test-equal "delta load[0]" (==> dt2 get 0 "time") 0)
+        (test-equal "delta load[50]" (==> dt2 get 50 "time") 50)
+        (test-equal "delta load[99]" (==> dt2 get 99 "time") 99)
         (test-approx "delta load price[50]" (==> dt2 get 50 "price") 25.0 0.001) )
       ;; Load-mem also works
       (let ((dt2 (columnardb-load-mem path)))
-        (test-approx "delta mem[99]" (==> dt2 get 99 "time") 99.0 0.001) ) ) )
+        (test-equal "delta mem[99]" (==> dt2 get 99 "time") 99) ) ) )
 
   ;; Save compressed + load: RLE on sorted int column
   (let ((dt (new DataTable)))
@@ -2077,7 +2077,7 @@
   (let ((dt (new DataTable)))
     (==> dt add-column "time" 'stamp)
     (==> dt add-column "val" 'real)
-    (for (i 0 99) (==> dt append-row (list (* i 1.0) (* i 0.5))))
+    (for (i 0 99) (==> dt append-row (list i (* i 0.5))))
     (let ((path (concat *test-dir* "/compress-xproc"))
           (result-file (concat *test-dir* "/compress-xproc-result.lsh"))
           (pkg-dir (dirname (dirname (dirname file-being-loaded))))
@@ -2091,8 +2091,8 @@
            "    (writing f (printf \"\\n\"))))'"))
       (when (filep result-file)
         (let ((val (_cdb-read-sexp result-file)))
-          (test-approx "compress xproc first" (car val) 0.0 0.01)
-          (test-approx "compress xproc last" (cadr val) 99.0 0.01) ) ) ) )
+          (test-equal "compress xproc first" (car val) 0)
+          (test-equal "compress xproc last" (cadr val) 99) ) ) ) )
 )
 
 
@@ -2315,7 +2315,7 @@
   ;; dt-null returns correct sentinel for each type
   (test-check "null real is nan" (nanp (dt-null 'real)))
   (test-check "null float is nan" (nanp (dt-null 'float)))
-  (test-check "null stamp is nan" (nanp (dt-null 'stamp)))
+  (test-equal "null stamp is LONG_MIN" (dt-null 'stamp) *td-stamp-null*)
   (test-equal "null int is INT_MIN" (dt-null 'int) -2147483648)
   (test-string-equal "null string is empty" (dt-null 'string) "")
 
@@ -2323,6 +2323,7 @@
   (test-check "null? real nan" (dt-null? 'real (nan)))
   (test-check "null? float nan" (dt-null? 'float (nan)))
   (test-check "null? int sentinel" (dt-null? 'int -2147483648))
+  (test-check "null? stamp sentinel" (dt-null? 'stamp *td-stamp-null*))
   (test-check "null? string nil" (dt-null? 'string ()))
   (test-check "null? string empty" (dt-null? 'string ""))
   (test-check "not null? real 1.0" (not (dt-null? 'real 1.0)))

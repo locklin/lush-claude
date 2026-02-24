@@ -1,0 +1,92 @@
+;;; datatable-compiled.lsh -- Compiled utility functions for DataTable
+;;;
+;;; Provides long (int64) heapsort for stamp column grading.
+
+#? *** DataTable Compiled Utilities
+
+;; Heapsort for long key with int permutation (ascending)
+(de _dt-l1i1sortup (key perm n)
+  ((-idx1- (-long-)) key)
+  ((-idx1- (-int-)) perm)
+  ((-int-) n)
+  #{
+  {
+    int i, j, child;
+    long long tmp_key;
+    int tmp_perm;
+    long long *k = IDX_PTR($key, long long);
+    int *p = IDX_PTR($perm, int);
+    /* build max-heap */
+    for (i = $n / 2 - 1; i >= 0; i--) {
+      j = i;
+      tmp_key = k[j]; tmp_perm = p[j];
+      while ((child = 2*j+1) < $n) {
+        if (child+1 < $n && k[child+1] > k[child]) child++;
+        if (k[child] <= tmp_key) break;
+        k[j] = k[child]; p[j] = p[child];
+        j = child;
+      }
+      k[j] = tmp_key; p[j] = tmp_perm;
+    }
+    /* extract */
+    for (i = $n - 1; i > 0; i--) {
+      tmp_key = k[i]; k[i] = k[0]; k[0] = tmp_key;
+      tmp_perm = p[i]; p[i] = p[0]; p[0] = tmp_perm;
+      j = 0;
+      tmp_key = k[0]; tmp_perm = p[0];
+      while ((child = 2*j+1) < i) {
+        if (child+1 < i && k[child+1] > k[child]) child++;
+        if (k[child] <= tmp_key) break;
+        k[j] = k[child]; p[j] = p[child];
+        j = child;
+      }
+      k[j] = tmp_key; p[j] = tmp_perm;
+    }
+  }
+  #}
+  () )
+
+;; Heapsort for long key with int permutation (descending)
+(de _dt-l1i1sortdown (key perm n)
+  ((-idx1- (-long-)) key)
+  ((-idx1- (-int-)) perm)
+  ((-int-) n)
+  #{
+  {
+    int i, j, child;
+    long long tmp_key;
+    int tmp_perm;
+    long long *k = IDX_PTR($key, long long);
+    int *p = IDX_PTR($perm, int);
+    /* build min-heap */
+    for (i = $n / 2 - 1; i >= 0; i--) {
+      j = i;
+      tmp_key = k[j]; tmp_perm = p[j];
+      while ((child = 2*j+1) < $n) {
+        if (child+1 < $n && k[child+1] < k[child]) child++;
+        if (k[child] >= tmp_key) break;
+        k[j] = k[child]; p[j] = p[child];
+        j = child;
+      }
+      k[j] = tmp_key; p[j] = tmp_perm;
+    }
+    /* extract */
+    for (i = $n - 1; i > 0; i--) {
+      tmp_key = k[i]; k[i] = k[0]; k[0] = tmp_key;
+      tmp_perm = p[i]; p[i] = p[0]; p[0] = tmp_perm;
+      j = 0;
+      tmp_key = k[0]; tmp_perm = p[0];
+      while ((child = 2*j+1) < i) {
+        if (child+1 < i && k[child+1] < k[child]) child++;
+        if (k[child] >= tmp_key) break;
+        k[j] = k[child]; p[j] = p[child];
+        j = child;
+      }
+      k[j] = tmp_key; p[j] = tmp_perm;
+    }
+  }
+  #}
+  () )
+
+;; Compile
+(dhc-make () _dt-l1i1sortup _dt-l1i1sortdown)

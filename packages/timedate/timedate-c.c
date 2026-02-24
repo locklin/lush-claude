@@ -1,6 +1,6 @@
-/* timedate-c.c -- Nanosecond-precision UTC timestamps for Lush
+/* timedate-c.c -- Microsecond-precision UTC timestamps for Lush
  *
- * Implements int64 nanosecond timestamps using POSIX time functions.
+ * Implements int64 microsecond timestamps using POSIX time functions.
  * All conversions are UTC (timegm/gmtime_r).
  */
 
@@ -18,28 +18,28 @@
 #include <limits.h>
 #include <ctype.h>
 
-#define NANOS_PER_SEC  1000000000LL
-#define TD_PARSE_FAIL  INT64_MIN
+#define MICROS_PER_SEC  1000000LL
+#define TD_PARSE_FAIL   INT64_MIN
 
 /* ================================================================
- * td_timestamp_now -- current UTC time as nanoseconds
+ * td_timestamp_now -- current UTC time as microseconds
  * ================================================================ */
 
 int64_t td_timestamp_now(void) {
     struct timespec ts;
     clock_gettime(CLOCK_REALTIME, &ts);
-    return (int64_t)ts.tv_sec * NANOS_PER_SEC + (int64_t)ts.tv_nsec;
+    return (int64_t)ts.tv_sec * MICROS_PER_SEC + (int64_t)ts.tv_nsec / 1000LL;
 }
 
 /* ================================================================
- * td_strptime_to_nanos -- parse date/time string to nanoseconds
+ * td_strptime_to_micros -- parse date/time string to microseconds
  * ================================================================
  *
  * Uses strptime for the main format, then manually parses any
  * trailing fractional seconds after a '.' character.
  */
 
-int64_t td_strptime_to_nanos(const char *str, const char *fmt) {
+int64_t td_strptime_to_micros(const char *str, const char *fmt) {
     struct tm tm;
     memset(&tm, 0, sizeof(tm));
 
@@ -56,12 +56,12 @@ int64_t td_strptime_to_nanos(const char *str, const char *fmt) {
     }
 
     /* Parse fractional seconds if present */
-    int64_t frac_nanos = 0;
+    int64_t frac_micros = 0;
     if (*rest == '.') {
         rest++;
-        int64_t mult = 100000000LL; /* 10^8 */
+        int64_t mult = 100000LL; /* 10^5 */
         while (*rest >= '0' && *rest <= '9' && mult > 0) {
-            frac_nanos += (*rest - '0') * mult;
+            frac_micros += (*rest - '0') * mult;
             mult /= 10;
             rest++;
         }
@@ -70,17 +70,17 @@ int64_t td_strptime_to_nanos(const char *str, const char *fmt) {
     /* Skip trailing timezone chars (Z, +00:00 etc) -- accept them */
     /* We already parsed via UTC, so timezone suffix is informational only */
 
-    return (int64_t)secs * NANOS_PER_SEC + frac_nanos;
+    return (int64_t)secs * MICROS_PER_SEC + frac_micros;
 }
 
 /* ================================================================
- * td_nanos_to_strftime -- format nanoseconds to string
+ * td_micros_to_strftime -- format microseconds to string
  * ================================================================ */
 
-int td_nanos_to_strftime(int64_t nanos, const char *fmt, char *buf, int buf_size) {
-    time_t secs = (time_t)(nanos / NANOS_PER_SEC);
-    /* Handle negative nanoseconds (pre-epoch) */
-    if (nanos < 0 && (nanos % NANOS_PER_SEC) != 0)
+int td_micros_to_strftime(int64_t micros, const char *fmt, char *buf, int buf_size) {
+    time_t secs = (time_t)(micros / MICROS_PER_SEC);
+    /* Handle negative microseconds (pre-epoch) */
+    if (micros < 0 && (micros % MICROS_PER_SEC) != 0)
         secs--;
 
     struct tm tm;
@@ -98,15 +98,15 @@ int td_nanos_to_strftime(int64_t nanos, const char *fmt, char *buf, int buf_size
 }
 
 /* ================================================================
- * td_timestamp_components -- decompose nanoseconds to parts
+ * td_timestamp_components -- decompose microseconds to parts
  * ================================================================ */
 
-void td_timestamp_components(int64_t nanos, int *out7) {
-    time_t secs = (time_t)(nanos / NANOS_PER_SEC);
-    int64_t remainder = nanos % NANOS_PER_SEC;
-    if (nanos < 0 && remainder != 0) {
+void td_timestamp_components(int64_t micros, int *out7) {
+    time_t secs = (time_t)(micros / MICROS_PER_SEC);
+    int64_t remainder = micros % MICROS_PER_SEC;
+    if (micros < 0 && remainder != 0) {
         secs--;
-        remainder += NANOS_PER_SEC;
+        remainder += MICROS_PER_SEC;
     }
 
     struct tm tm;
@@ -122,10 +122,10 @@ void td_timestamp_components(int64_t nanos, int *out7) {
 }
 
 /* ================================================================
- * td_make_timestamp -- build nanoseconds from components
+ * td_make_timestamp -- build microseconds from components
  * ================================================================ */
 
-int64_t td_make_timestamp(int y, int m, int d, int H, int M, int S, int nano) {
+int64_t td_make_timestamp(int y, int m, int d, int H, int M, int S, int micro) {
     struct tm tm;
     memset(&tm, 0, sizeof(tm));
     tm.tm_year = y - 1900;
@@ -136,5 +136,5 @@ int64_t td_make_timestamp(int y, int m, int d, int H, int M, int S, int nano) {
     tm.tm_sec  = S;
 
     time_t secs = timegm(&tm);
-    return (int64_t)secs * NANOS_PER_SEC + (int64_t)nano;
+    return (int64_t)secs * MICROS_PER_SEC + (int64_t)micro;
 }

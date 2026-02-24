@@ -56,6 +56,7 @@ next_record(dhrecord *drec)
     case DHT_INT:
     case DHT_FLT:
     case DHT_REAL:
+    case DHT_LONG:
     case DHT_GPTR:
     case DHT_STR:
     case DHT_OBJ:
@@ -468,13 +469,15 @@ dhinfo_record(dhrecord *drec)
       return cons(named("ubyte"),NIL);
     case DHT_SHORT: 
       return cons(named("short"),NIL);
-    case DHT_INT: 
+    case DHT_INT:
       return cons(named("int"),NIL);
-    case DHT_FLT: 
+    case DHT_LONG:
+      return cons(named("long"),NIL);
+    case DHT_FLT:
       return cons(named("flt"),NIL);
-    case DHT_REAL: 
+    case DHT_REAL:
       return cons(named("real"),NIL);
-    case DHT_NIL: 
+    case DHT_NIL:
       return cons(named("bool"),NIL);
 
     case DHT_GPTR:

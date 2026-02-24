@@ -272,7 +272,7 @@
 
                   ;; Phase 2c: Read stamp columns
                   ;; Read as strings first, then parse with timedate
-                  ;; Build a htable: col-index -> double-matrix of seconds
+                  ;; Build a htable: col-index -> long-matrix of microseconds
                   (let ((stamp-col-ht (htable 32)))
                     (each ((ci stamp-col-indices) (fmt stamp-col-fmts))
                       ;; Read the column as strings
@@ -296,18 +296,16 @@
                                   (nconc1 strings
                                            (_csv-extract-string unique-buf
                                                                  (unique-offs u)))) )
-                          ;; Parse unique strings to seconds
-                          (let ((unique-secs (double-matrix n-unique)))
+                          ;; Parse unique strings to microseconds (long)
+                          (let ((unique-micros (long-matrix n-unique)))
                             (let ((ui 0))
                               (each ((s strings))
-                                (let ((out (double-matrix 1)))
-                                  (_td-strptime-to-secs-out s fmt out)
-                                  (unique-secs ui (out 0)) )
+                                (_td-parse-stamp-at s fmt unique-micros ui)
                                 (setq ui (1+ ui)) ) )
-                            ;; Build stamps array by mapping codes to parsed seconds
-                            (let ((stamps-out (double-matrix nrows)))
+                            ;; Build stamps array by mapping codes to parsed microseconds
+                            (let ((stamps-out (long-matrix nrows)))
                               (for (r 0 (1- nrows))
-                                (stamps-out r (unique-secs (codes-out r))) )
+                                (stamps-out r (unique-micros (codes-out r))) )
                               (stamp-col-ht (sprintf "%d" ci) stamps-out) ) ) ) ) )
 
                     ;; Phase 3: Build the columns list in O(n) — one pass

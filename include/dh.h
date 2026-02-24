@@ -155,6 +155,8 @@ typedef struct s_dhrecord
         {DHT_FLT}
 #define DH_REAL \
         {DHT_REAL}
+#define DH_LONG \
+        {DHT_LONG}
 #define DH_GPTR(s) \
         {DHT_GPTR,0,0,s}
 #define DH_STR \
