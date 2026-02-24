@@ -1,0 +1,135 @@
+;;; columnardb-multiindex.lsh -- Multi-column index intersection
+;;;
+;;; Provides multi-condition filtering by processing each condition
+;;; independently (using CSR index for strings, binary search for
+;;; sorted ranges, linear scan otherwise) then intersecting sorted
+;;; row-index arrays via compiled C merge-intersect.
+;;;
+;;; Usage:
+;;;   (columnardb-where-multi dt '((= "symbol" "AAPL") (> "price" 100.0)))
+;;;   (columnardb-where-multi-rows dt '((= "symbol" "AAPL") (> "price" 100.0)))
+
+#? *** ColumnarDB Multi-Column Index
+
+
+;; ============================================================
+;; Internal helpers
+;; ============================================================
+
+;; Convert a Lush list of ints to a sorted idx1 of int.
+;; Returns () for empty list, otherwise sorted idx1.
+(de _list-to-sorted-idx1 (lst)
+  (let ((n (length lst)))
+    (if (= n 0)
+      ()
+      (let ((arr (int-matrix n))
+            (i 0) )
+        (each ((v lst))
+          (arr i v)
+          (setq i (1+ i)) )
+        ;; Sort in place
+        (when (> n 1)
+          (let ((key (int-matrix n)))
+            (idx-copy arr key)
+            (idx-i1i1sortup key arr) ) )
+        arr ) ) ) )
+
+
+;; Process one condition to a sorted idx1 of matching row indices.
+;; Returns () for no matches, otherwise sorted idx1.
+(de _multi-index-condition (dt cond meta)
+  (let ((op (car cond))
+        (col-name (cadr cond))
+        (val (caddr cond)) )
+    (cond
+     ;; Special form: (range col lo hi)
+     ((= op 'range)
+      (let ((lo val)
+            (hi (nth 3 cond)) )
+        ;; Use columnardb-range if sorted, else linear scan
+        (let ((indices (columnardb-range dt col-name lo hi meta)))
+          (_list-to-sorted-idx1 indices) ) ) )
+
+     ;; String equality: use CSR index if available
+     ((and (= op '=)
+           (= (==> dt col-type col-name) 'string))
+      (let* ((col-idx (==> dt col-index col-name))
+             (sc (==> dt get-column col-idx)) )
+        ;; Ensure index is built
+        (when (not (==> sc has-index))
+          (==> sc build-index) )
+        (let ((rows (==> sc where-eq val)))
+          (if rows
+            (_list-to-sorted-idx1 rows)
+            () ) ) ) )
+
+     ;; General comparison: use DataTable.where
+     (t
+      (let ((rows (==> dt where op col-name val)))
+        (if rows
+          (_list-to-sorted-idx1 rows)
+          () ) ) ) ) ) )
+
+
+;; Intersect two sorted idx1 arrays using compiled C.
+;; Returns () for empty result, otherwise idx1.
+(de _multi-index-intersect (a b)
+  (if (or (not a) (not b))
+    ()
+    (let ((na (idx-dim a 0))
+          (nb (idx-dim b 0)) )
+      (let ((dest (int-matrix (min na nb))))
+        (let ((count (_cdb-i1intersect-sorted a na b nb dest)))
+          (if (= count 0)
+            ()
+            (narrow dest 0 count 0) ) ) ) ) ) )
+
+
+;; ============================================================
+;; Public API
+;; ============================================================
+
+#? (columnardb-where-multi <dt> <conditions> [<meta>])
+;; Return a list of row indices satisfying ALL conditions.
+;; <conditions>: list of (op col-name value) triples.
+;;   e.g. ((= "symbol" "AAPL") (> "price" 100.0))
+;;   Special form for range: (range "time" lo hi)
+;; <meta>: optional metadata (for sorted column detection in range queries).
+;; Returns list of matching row indices.
+(de columnardb-where-multi (dt conditions &optional meta)
+  (when (not meta) (setq meta ()))
+  (when (not conditions)
+    (error "columnardb-where-multi" "no conditions provided" ()) )
+
+  ;; Process all conditions to sorted idx1 arrays (or () for empty)
+  (let ((idx-arrays ()))
+    (each ((cond conditions))
+      (setq idx-arrays (nconc1 idx-arrays
+        (_multi-index-condition dt cond meta) )) )
+
+    ;; Early exit: if any condition returned (), result is empty
+    (let ((has-empty ()))
+      (each ((arr idx-arrays))
+        (when (not arr) (setq has-empty t)) )
+      (if has-empty
+        ()
+        ;; Pairwise intersect all arrays
+        (let ((result (car idx-arrays)))
+          (each ((arr (cdr idx-arrays)))
+            (setq result (_multi-index-intersect result arr)) )
+
+          ;; Convert idx1 back to list
+          (if (not result)
+            ()
+            (let ((n (idx-dim result 0))
+                  (lst ()) )
+              (for (i 0 (1- n))
+                (setq lst (nconc1 lst (result i))) )
+              lst ) ) ) ) ) ) )
+
+
+#? (columnardb-where-multi-rows <dt> <conditions> [<meta>])
+;; Return a new DataTable with rows matching ALL conditions.
+(de columnardb-where-multi-rows (dt conditions &optional meta)
+  (let ((indices (columnardb-where-multi dt conditions meta)))
+    (==> dt select-rows indices) ) )

@@ -298,13 +298,18 @@
   (when (> num-rows 0)
     ;; Pass 1: count rows per code
     (let ((counts (int-matrix (1+ pool-size))))
-      (for (i 0 (1- num-rows))
-        (let ((c (codes i)))
-          (counts c (1+ (counts c))) ) )
+      (if (functionp _cdb-i1count-codes)
+        ;; Compiled C path
+        (_cdb-i1count-codes codes counts num-rows)
+        ;; Interpreted fallback
+        (for (i 0 (1- num-rows))
+          (let ((c (codes i)))
+            (counts c (1+ (counts c))) ) ) )
       ;; Prefix sum -> offsets array (length pool-size + 1)
       (let ((offsets (int-matrix (1+ pool-size)))
             (rows-arr (int-matrix num-rows))
             (pos (int-matrix pool-size)) )
+        ;; Build offsets from counts
         (offsets 0 0)
         (for (c 0 (1- pool-size))
           (offsets (1+ c) (+ (offsets c) (counts c))) )
@@ -312,10 +317,14 @@
         (for (c 0 (1- pool-size))
           (pos c (offsets c)) )
         ;; Pass 2: fill rows array
-        (for (i 0 (1- num-rows))
-          (let ((c (codes i)))
-            (rows-arr (pos c) i)
-            (pos c (1+ (pos c))) ) )
+        (if (functionp _cdb-i1csr-fill)
+          ;; Compiled C path
+          (_cdb-i1csr-fill codes pos rows-arr num-rows)
+          ;; Interpreted fallback
+          (for (i 0 (1- num-rows))
+            (let ((c (codes i)))
+              (rows-arr (pos c) i)
+              (pos c (1+ (pos c))) ) ) )
         (setq idx-offsets offsets)
         (setq idx-rows rows-arr)
         (setq idx-valid t) ) ) ) )

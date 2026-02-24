@@ -1394,6 +1394,709 @@
 
 
 ;; ============================================================
+;; Stage 19: Grouped Aggregation
+;; ============================================================
+
+(test-suite "Stage 19: Grouped aggregation"
+
+  ;; Build a 100-row table with 5 symbols
+  (let ((dt (new DataTable)))
+    (==> dt add-column "symbol" 'string)
+    (==> dt add-column "price" 'real)
+    (==> dt add-column "volume" 'int)
+    (let ((symbols (list "AAPL" "GOOG" "MSFT" "TSLA" "AMZN")))
+      (for (i 0 99)
+        (let ((sym (nth (mod i 5) symbols)))
+          (==> dt append-row (list sym (* (1+ i) 1.0) (1+ i))) ) ) )
+
+    ;; String group: count
+    (let ((result (columnardb-group-by dt "symbol" () 'count)))
+      (test-equal "gb count rows" (==> result num-rows) 5)
+      (test-equal "gb count ncols" (==> result num-cols) 2)
+      ;; Each symbol appears 20 times
+      (for (i 0 (1- (==> result num-rows)))
+        (test-equal (concat "gb count val " (str i))
+                    (==> result get i "count") 20) ) )
+
+    ;; String group: sum
+    (let ((result (columnardb-group-by dt "symbol" "price" 'sum)))
+      (test-equal "gb sum rows" (==> result num-rows) 5)
+      ;; AAPL is rows 0,5,10,...,95 -> values 1,6,11,...,96 -> sum = 20 values
+      ;; AAPL values: 1,6,11,16,21,26,31,36,41,46,51,56,61,66,71,76,81,86,91,96
+      ;; Sum = 20 * (1+96)/2 = 970
+      (test-approx "gb sum AAPL" (==> result get 0 "price_sum") 970.0 0.1) )
+
+    ;; String group: mean
+    (let ((result (columnardb-group-by dt "symbol" "price" 'mean)))
+      (test-approx "gb mean AAPL" (==> result get 0 "price_mean") 48.5 0.1) )
+
+    ;; String group: min
+    (let ((result (columnardb-group-by dt "symbol" "price" 'min)))
+      (test-approx "gb min AAPL" (==> result get 0 "price_min") 1.0 0.01) )
+
+    ;; String group: max
+    (let ((result (columnardb-group-by dt "symbol" "price" 'max)))
+      (test-approx "gb max AAPL" (==> result get 0 "price_max") 96.0 0.01) ) )
+
+  ;; Numeric group: count and sum
+  (let ((dt (new DataTable)))
+    (==> dt add-column "group" 'int)
+    (==> dt add-column "value" 'real)
+    (for (i 0 19)
+      (==> dt append-row (list (mod i 4) (* i 1.0))) )
+
+    (let ((result (columnardb-group-by dt "group" () 'count)))
+      (test-equal "gb numeric count rows" (==> result num-rows) 4)
+      (test-equal "gb numeric count[0]" (==> result get 0 "count") 5) )
+
+    (let ((result (columnardb-group-by dt "group" "value" 'sum)))
+      (test-equal "gb numeric sum rows" (==> result num-rows) 4)
+      ;; group 0: rows 0,4,8,12,16 -> vals 0,4,8,12,16 -> sum=40
+      (test-approx "gb numeric sum[0]" (==> result get 0 "value_sum") 40.0 0.1) ) )
+
+  ;; Single group (all same)
+  (let ((dt (new DataTable)))
+    (==> dt add-column "tag" 'string)
+    (==> dt add-column "val" 'real)
+    (for (i 0 9) (==> dt append-row (list "X" (* i 1.0))))
+    (let ((result (columnardb-group-by dt "tag" () 'count)))
+      (test-equal "gb single group" (==> result num-rows) 1)
+      (test-equal "gb single count" (==> result get 0 "count") 10) ) )
+
+  ;; All unique groups
+  (let ((dt (new DataTable)))
+    (==> dt add-column "name" 'string)
+    (==> dt add-column "val" 'real)
+    (for (i 0 4)
+      (==> dt append-row (list (sprintf "n%d" i) (* i 1.0))) )
+    (let ((result (columnardb-group-by dt "name" () 'count)))
+      (test-equal "gb all-unique groups" (==> result num-rows) 5)
+      (for (i 0 4) (test-equal (concat "gb unique count " (str i))
+                                (==> result get i "count") 1)) ) )
+
+  ;; Loaded-from-disk table with CSR index
+  (let ((dt (new DataTable)))
+    (==> dt add-column "symbol" 'string)
+    (==> dt add-column "price" 'real)
+    (let ((symbols (list "AAPL" "GOOG" "MSFT")))
+      (for (i 0 29)
+        (==> dt append-row (list (nth (mod i 3) symbols) (* i 1.0))) ) )
+    (let ((path (concat *test-dir* "/groupby-disk")))
+      (columnardb-save dt path)
+      (let ((dt2 (columnardb-load path)))
+        ;; dt2 has CSR index loaded from disk
+        (let ((sc (==> dt2 get-column 0)))
+          (test-check "gb disk has index" (==> sc has-index)) )
+        (let ((result (columnardb-group-by dt2 "symbol" () 'count)))
+          (test-equal "gb disk count rows" (==> result num-rows) 3)
+          (test-equal "gb disk count[0]" (==> result get 0 "count") 10) ) ) ) )
+
+  ;; Cross-process persistence test
+  (let ((dt (new DataTable)))
+    (==> dt add-column "symbol" 'string)
+    (==> dt add-column "value" 'real)
+    (let ((symbols (list "A" "B" "C" "D" "E")))
+      (for (i 0 99)
+        (==> dt append-row (list (nth (mod i 5) symbols) (* i 1.0))) ) )
+    (let ((path (concat *test-dir* "/groupby-xproc"))
+          (result-file (concat *test-dir* "/groupby-xproc-result.lsh"))
+          (pkg-dir (dirname (dirname (dirname file-being-loaded))))
+          (lush-bin "/workspaces/claude-sandbox/lush-claude/bin/lush") )
+      (columnardb-save dt path)
+      (sys (concat "TMPDIR=/tmp/claude " lush-bin " -e '(addpath \"" pkg-dir "\") "
+           "(libload \"columnardb/columnardb\") "
+           "(let ((dt (columnardb-load \"" path "\"))) "
+           "  (let ((r (columnardb-group-by dt \"symbol\" () (quote count)))) "
+           "    (let ((f (open-write \"" result-file "\"))) "
+           "      (writing f (print (==> r num-rows))) (writing f (printf \"\\n\")))))'"))
+      (when (filep result-file)
+        (let ((val (_cdb-read-sexp result-file)))
+          (test-equal "gb xproc groups" val 5) ) ) ) )
+)
+
+
+;; ============================================================
+;; Stage 20: Compiled Hot Paths
+;; ============================================================
+
+(test-suite "Stage 20: Compiled hot paths"
+
+  ;; Gather double
+  (let ((src (double-matrix 5))
+        (dest (double-matrix 3))
+        (perm (int-matrix 3)) )
+    (src 0 10.0) (src 1 20.0) (src 2 30.0) (src 3 40.0) (src 4 50.0)
+    (perm 0 4) (perm 1 2) (perm 2 0)
+    (_cdb-d1gather dest src perm 3)
+    (test-approx "gather d[0]" (dest 0) 50.0 0.001)
+    (test-approx "gather d[1]" (dest 1) 30.0 0.001)
+    (test-approx "gather d[2]" (dest 2) 10.0 0.001) )
+
+  ;; Gather int
+  (let ((src (int-matrix 5))
+        (dest (int-matrix 3))
+        (perm (int-matrix 3)) )
+    (src 0 10) (src 1 20) (src 2 30) (src 3 40) (src 4 50)
+    (perm 0 4) (perm 1 2) (perm 2 0)
+    (_cdb-i1gather dest src perm 3)
+    (test-equal "gather i[0]" (dest 0) 50)
+    (test-equal "gather i[1]" (dest 1) 30)
+    (test-equal "gather i[2]" (dest 2) 10) )
+
+  ;; Sum perm
+  (let ((data (double-matrix 5))
+        (perm (int-matrix 3)) )
+    (data 0 10.0) (data 1 20.0) (data 2 30.0) (data 3 40.0) (data 4 50.0)
+    (perm 0 0) (perm 1 2) (perm 2 4)
+    (test-approx "sum perm" (_cdb-d1sum-perm data perm 0 3) 90.0 0.001) )
+
+  ;; Min/max perm
+  (let ((data (double-matrix 5))
+        (perm (int-matrix 3)) )
+    (data 0 10.0) (data 1 20.0) (data 2 30.0) (data 3 5.0) (data 4 50.0)
+    (perm 0 0) (perm 1 3) (perm 2 4)
+    (test-approx "min perm" (_cdb-d1min-perm data perm 0 3) 5.0 0.001)
+    (test-approx "max perm" (_cdb-d1max-perm data perm 0 3) 50.0 0.001) )
+
+  ;; CSR build compiled
+  (let ((sc (new StringColumn 100)))
+    (==> sc append "A") (==> sc append "B") (==> sc append "A")
+    (==> sc append "C") (==> sc append "B") (==> sc append "A")
+    (==> sc build-index)
+    (test-check "csr compiled has index" (==> sc has-index))
+    (let ((a-rows (==> sc where-eq "A")))
+      (test-equal "csr A count" (length a-rows) 3)
+      (test-equal "csr A[0]" (car a-rows) 0)
+      (test-equal "csr A[1]" (cadr a-rows) 2)
+      (test-equal "csr A[2]" (caddr a-rows) 5) ) )
+
+  ;; Where-eq compiled
+  (let ((codes (int-matrix 6)))
+    (codes 0 0) (codes 1 1) (codes 2 0) (codes 3 2) (codes 4 1) (codes 5 0)
+    (test-equal "count-eq 0" (_cdb-i1count-eq codes 6 0) 3)
+    (test-equal "count-eq 1" (_cdb-i1count-eq codes 6 1) 2)
+    (let ((dest (int-matrix 3)))
+      (let ((n (_cdb-i1where-eq codes 6 0 dest)))
+        (test-equal "where-eq n" n 3)
+        (test-equal "where-eq[0]" (dest 0) 0)
+        (test-equal "where-eq[1]" (dest 1) 2)
+        (test-equal "where-eq[2]" (dest 2) 5) ) ) )
+
+  ;; Sorted intersection
+  (let ((a (int-matrix 5))
+        (b (int-matrix 4))
+        (dest (int-matrix 4)) )
+    (a 0 1) (a 1 3) (a 2 5) (a 3 7) (a 4 9)
+    (b 0 2) (b 1 3) (b 2 7) (b 3 8)
+    (let ((n (_cdb-i1intersect-sorted a 5 b 4 dest)))
+      (test-equal "intersect n" n 2)
+      (test-equal "intersect[0]" (dest 0) 3)
+      (test-equal "intersect[1]" (dest 1) 7) ) )
+
+  ;; select-rows-idx regression (compiled gather)
+  (let ((dt (new DataTable)))
+    (==> dt add-column "x" 'real)
+    (==> dt add-column "y" 'int)
+    (==> dt add-column "s" 'string)
+    (for (i 0 9) (==> dt append-row (list (* i 1.0) i (sprintf "s%d" i))))
+    (let ((perm (int-matrix 3)))
+      (perm 0 9) (perm 1 5) (perm 2 0)
+      (let ((sub (==> dt select-rows-idx perm)))
+        (test-equal "sri rows" (==> sub num-rows) 3)
+        (test-approx "sri x[0]" (==> sub get 0 "x") 9.0 0.001)
+        (test-approx "sri x[1]" (==> sub get 1 "x") 5.0 0.001)
+        (test-approx "sri x[2]" (==> sub get 2 "x") 0.0 0.001)
+        (test-equal "sri y[0]" (==> sub get 0 "y") 9)
+        (test-string-equal "sri s[0]" (==> sub get 0 "s") "s9") ) ) )
+
+  ;; Cross-process persistence test (compiled gather)
+  (let ((dt (new DataTable)))
+    (==> dt add-column "time" 'stamp)
+    (==> dt add-column "price" 'real)
+    (==> dt add-column "symbol" 'string)
+    (for (i 0 999)
+      (==> dt append-row (list (* i 1.0) (* i 0.5) "X")) )
+    (let ((path (concat *test-dir* "/compiled-xproc"))
+          (result-file (concat *test-dir* "/compiled-xproc-result.lsh"))
+          (pkg-dir (dirname (dirname (dirname file-being-loaded))))
+          (lush-bin "/workspaces/claude-sandbox/lush-claude/bin/lush") )
+      (columnardb-save dt path)
+      (sys (concat "TMPDIR=/tmp/claude " lush-bin " -e '(addpath \"" pkg-dir "\") "
+           "(libload \"columnardb/columnardb\") "
+           "(let ((dt (columnardb-load \"" path "\"))) "
+           "  (let* ((perm (int-matrix 1)) (_ (perm 0 500)) "
+           "         (sub (==> dt select-rows-idx perm))) "
+           "    (let ((f (open-write \"" result-file "\"))) "
+           "      (writing f (print (==> sub get 0 \"price\"))) (writing f (printf \"\\n\")))))'"))
+      (when (filep result-file)
+        (let ((val (_cdb-read-sexp result-file)))
+          (test-approx "compiled xproc val" val 250.0 0.01) ) ) ) )
+)
+
+
+;; ============================================================
+;; Stage 21: Delete/Update Support
+;; ============================================================
+
+(test-suite "Stage 21: Delete/update support"
+
+  ;; Build a 10-row table with mixed types
+  (let ((path (concat *test-dir* "/mutate")))
+    (let ((dt (new DataTable)))
+      (==> dt add-column "name" 'string)
+      (==> dt add-column "price" 'real)
+      (==> dt add-column "qty" 'int)
+      (==> dt add-column "time" 'stamp)
+      (for (i 0 9)
+        (==> dt append-row (list (sprintf "item%d" i) (* i 10.0) (* i 100) (* i 1000.0))) )
+      (columnardb-save dt path) )
+
+    ;; Delete single row
+    (let ((new-nr (columnardb-delete-rows path (list 3))))
+      (test-equal "del single nrows" new-nr 9) )
+
+    ;; Reload and verify
+    (let ((dt2 (columnardb-load-mem path)))
+      (test-equal "del single verify rows" (==> dt2 num-rows) 9)
+      ;; Row 3 (item3) should be gone, row 4 (item4) is now at index 3
+      (test-string-equal "del single item[3]" (==> dt2 get 3 "name") "item4") )
+
+    ;; Reset table
+    (let ((dt (new DataTable)))
+      (==> dt add-column "name" 'string)
+      (==> dt add-column "price" 'real)
+      (==> dt add-column "qty" 'int)
+      (==> dt add-column "time" 'stamp)
+      (for (i 0 9)
+        (==> dt append-row (list (sprintf "item%d" i) (* i 10.0) (* i 100) (* i 1000.0))) )
+      (columnardb-save dt path) )
+
+    ;; Delete multiple rows
+    (let ((new-nr (columnardb-delete-rows path (list 1 3 5 7 9))))
+      (test-equal "del multi nrows" new-nr 5) )
+    (let ((dt2 (columnardb-load-mem path)))
+      (test-string-equal "del multi[0]" (==> dt2 get 0 "name") "item0")
+      (test-string-equal "del multi[1]" (==> dt2 get 1 "name") "item2")
+      (test-string-equal "del multi[2]" (==> dt2 get 2 "name") "item4")
+      (test-string-equal "del multi[3]" (==> dt2 get 3 "name") "item6")
+      (test-string-equal "del multi[4]" (==> dt2 get 4 "name") "item8") )
+
+    ;; Reset table
+    (let ((dt (new DataTable)))
+      (==> dt add-column "name" 'string)
+      (==> dt add-column "price" 'real)
+      (==> dt add-column "qty" 'int)
+      (==> dt add-column "time" 'stamp)
+      (for (i 0 9)
+        (==> dt append-row (list (sprintf "item%d" i) (* i 10.0) (* i 100) (* i 1000.0))) )
+      (columnardb-save dt path) )
+
+    ;; Delete all rows
+    (let ((all (list 0 1 2 3 4 5 6 7 8 9)))
+      (let ((new-nr (columnardb-delete-rows path all)))
+        (test-equal "del all nrows" new-nr 0) ) )
+
+    ;; Delete no rows
+    (let ((dt (new DataTable)))
+      (==> dt add-column "x" 'real)
+      (for (i 0 4) (==> dt append-row (list (* i 1.0))))
+      (columnardb-save dt path) )
+    (let ((new-nr (columnardb-delete-rows path ())))
+      (test-equal "del none nrows" new-nr 5) )
+
+    ;; Delete-where string equality
+    (let ((dt (new DataTable)))
+      (==> dt add-column "tag" 'string)
+      (==> dt add-column "val" 'real)
+      (for (i 0 9)
+        (==> dt append-row (list (if (< i 3) "keep" "remove") (* i 1.0))) )
+      (columnardb-save dt path) )
+    (let ((ndel (columnardb-delete-where path '= "tag" "remove")))
+      (test-equal "del-where str count" ndel 7) )
+    (let ((dt2 (columnardb-load-mem path)))
+      (test-equal "del-where str rows" (==> dt2 num-rows) 3) )
+
+    ;; Delete-where numeric
+    (let ((dt (new DataTable)))
+      (==> dt add-column "x" 'real)
+      (for (i 0 9) (==> dt append-row (list (* i 1.0))))
+      (columnardb-save dt path) )
+    (let ((ndel (columnardb-delete-where path '> "x" 5.0)))
+      (test-equal "del-where num count" ndel 4) )
+    (let ((dt2 (columnardb-load-mem path)))
+      (test-equal "del-where num rows" (==> dt2 num-rows) 6) )
+
+    ;; Delete-where no match
+    (let ((dt (new DataTable)))
+      (==> dt add-column "x" 'real)
+      (for (i 0 4) (==> dt append-row (list (* i 1.0))))
+      (columnardb-save dt path) )
+    (let ((ndel (columnardb-delete-where path '> "x" 100.0)))
+      (test-equal "del-where no match" ndel 0) )
+
+    ;; Update single row
+    (let ((dt (new DataTable)))
+      (==> dt add-column "name" 'string)
+      (==> dt add-column "price" 'real)
+      (for (i 0 4) (==> dt append-row (list (sprintf "item%d" i) (* i 10.0))))
+      (columnardb-save dt path) )
+    (let ((nupd (columnardb-update-rows path (list 2) "price" 999.0)))
+      (test-equal "upd single count" nupd 1) )
+    (let ((dt2 (columnardb-load-mem path)))
+      (test-approx "upd single val" (==> dt2 get 2 "price") 999.0 0.01)
+      ;; Other rows unchanged
+      (test-approx "upd single other[0]" (==> dt2 get 0 "price") 0.0 0.01)
+      (test-approx "upd single other[1]" (==> dt2 get 1 "price") 10.0 0.01)
+      ;; String column preserved
+      (test-string-equal "upd preserve str[2]" (==> dt2 get 2 "name") "item2") )
+
+    ;; Update-where
+    (let ((dt (new DataTable)))
+      (==> dt add-column "tag" 'string)
+      (==> dt add-column "val" 'real)
+      (for (i 0 9)
+        (==> dt append-row (list (if (< i 5) "low" "high") (* i 1.0))) )
+      (columnardb-save dt path) )
+    (let ((nupd (columnardb-update-where path '= "tag" "high" "val" -1.0)))
+      (test-equal "upd-where count" nupd 5) )
+    (let ((dt2 (columnardb-load-mem path)))
+      (test-approx "upd-where val[5]" (==> dt2 get 5 "val") -1.0 0.01)
+      (test-approx "upd-where val[0]" (==> dt2 get 0 "val") 0.0 0.01) )
+
+    ;; Cross-process persistence test for delete
+    (let ((dt (new DataTable)))
+      (==> dt add-column "name" 'string)
+      (==> dt add-column "val" 'real)
+      (for (i 0 9) (==> dt append-row (list (sprintf "r%d" i) (* i 1.0))))
+      (let ((del-path (concat *test-dir* "/mutate-xproc")))
+        (columnardb-save dt del-path)
+        ;; Delete rows 3, 5, 7
+        (columnardb-delete-rows del-path (list 3 5 7))
+        (let ((result-file (concat *test-dir* "/mutate-xproc-result.lsh"))
+              (pkg-dir (dirname (dirname (dirname file-being-loaded))))
+              (lush-bin "/workspaces/claude-sandbox/lush-claude/bin/lush") )
+          (sys (concat "TMPDIR=/tmp/claude " lush-bin " -e '(addpath \"" pkg-dir "\") "
+               "(libload \"columnardb/columnardb\") "
+               "(let ((dt (columnardb-load \"" del-path "\"))) "
+               "  (let ((f (open-write \"" result-file "\"))) "
+               "    (writing f (print (list (==> dt num-rows) (==> dt get 0 \"val\")))) "
+               "    (writing f (printf \"\\n\"))))'"))
+          (when (filep result-file)
+            (let ((val (_cdb-read-sexp result-file)))
+              (test-equal "del xproc nrows" (car val) 7)
+              (test-approx "del xproc val[0]" (cadr val) 0.0 0.01) ) ) ) ) ) )
+)
+
+
+;; ============================================================
+;; Stage 22: Multi-Column Indexes
+;; ============================================================
+
+(test-suite "Stage 22: Multi-column indexes"
+
+  ;; Build a table with two string columns and a numeric column
+  (let ((dt (new DataTable)))
+    (==> dt add-column "symbol" 'string)
+    (==> dt add-column "exchange" 'string)
+    (==> dt add-column "price" 'real)
+    (let ((syms (list "AAPL" "GOOG" "MSFT"))
+          (exch (list "NYSE" "NASDAQ")) )
+      (for (i 0 59)
+        (==> dt append-row
+             (list (nth (mod i 3) syms)
+                   (nth (mod i 2) exch)
+                   (* i 1.0) )) ) )
+
+    ;; Two string conditions
+    (let ((result (columnardb-where-multi dt '((= "symbol" "AAPL") (= "exchange" "NYSE")))))
+      ;; AAPL: rows 0,3,6,9,...  NYSE: rows 0,2,4,6,...
+      ;; AAPL AND NYSE: rows where mod3=0 AND mod2=0 -> mod6=0: 0,6,12,18,24,30,36,42,48,54
+      (test-equal "multi 2str count" (length result) 10) )
+
+    ;; String + numeric
+    (let ((result (columnardb-where-multi dt '((= "symbol" "AAPL") (> "price" 30.0)))))
+      ;; AAPL rows: 0,3,6,9,...,57 (20 rows), price > 30: 33,36,...,57 -> 9 rows
+      (test-equal "multi str+num count" (length result) 9) )
+
+    ;; Three conditions combined
+    (let ((result (columnardb-where-multi dt
+                    '((= "symbol" "GOOG") (= "exchange" "NASDAQ") (> "price" 20.0)))))
+      ;; GOOG: mod3=1: 1,4,7,10,...  NASDAQ: mod2=1: 1,3,5,...
+      ;; GOOG AND NASDAQ: mod6=1: 1,7,13,19,25,31,37,43,49,55
+      ;; price>20: 25,31,37,43,49,55 -> 6 rows
+      (test-equal "multi 3cond count" (length result) 6) )
+
+    ;; No overlap (empty result)
+    (let ((result (columnardb-where-multi dt '((= "symbol" "AAPL") (> "price" 100.0)))))
+      (test-equal "multi empty" (length result) 0) )
+
+    ;; Single condition (behaves like regular where)
+    (let ((result (columnardb-where-multi dt '((= "symbol" "MSFT")))))
+      (test-equal "multi single cond" (length result) 20) ) )
+
+  ;; Large table: 10000 rows, two string cols × 10 values
+  (let ((dt (new DataTable)))
+    (==> dt add-column "a" 'string)
+    (==> dt add-column "b" 'string)
+    (==> dt add-column "v" 'real)
+    (for (i 0 9999)
+      (==> dt append-row
+           (list (sprintf "a%d" (mod i 10))
+                 (sprintf "b%d" (mod i 10))
+                 (* i 0.1) )))
+
+    ;; a="a0" AND b="b0": rows where mod10=0 for both -> every 10th row
+    (let ((result (columnardb-where-multi dt '((= "a" "a0") (= "b" "b0")))))
+      (test-equal "multi large count" (length result) 1000) )
+
+    ;; a="a3" AND b="b7": no overlap (mod10=3 vs mod10=7)
+    (let ((result (columnardb-where-multi dt '((= "a" "a3") (= "b" "b7")))))
+      (test-equal "multi large no overlap" (length result) 0) ) )
+
+  ;; Order independence
+  (let ((dt (new DataTable)))
+    (==> dt add-column "x" 'string)
+    (==> dt add-column "y" 'real)
+    (for (i 0 19)
+      (==> dt append-row (list (if (< i 10) "A" "B") (* i 1.0))) )
+
+    (let ((r1 (columnardb-where-multi dt '((= "x" "A") (> "y" 5.0))))
+          (r2 (columnardb-where-multi dt '((> "y" 5.0) (= "x" "A")))) )
+      (test-equal "multi order count" (length r1) (length r2))
+      (when (and r1 r2)
+        (test-equal "multi order first" (car r1) (car r2)) ) ) )
+
+  ;; Edge: empty table
+  (let ((dt (new DataTable)))
+    (==> dt add-column "x" 'string)
+    (==> dt add-column "y" 'real)
+    (let ((result (columnardb-where-multi dt '((= "x" "A")))))
+      (test-equal "multi empty table" (length result) 0) ) )
+
+  ;; Cross-process persistence test
+  (let ((dt (new DataTable)))
+    (==> dt add-column "sym" 'string)
+    (==> dt add-column "exch" 'string)
+    (==> dt add-column "price" 'real)
+    (let ((syms (list "AAPL" "GOOG" "MSFT"))
+          (exch (list "NYSE" "NASDAQ")) )
+      (for (i 0 59)
+        (==> dt append-row
+             (list (nth (mod i 3) syms) (nth (mod i 2) exch) (* i 1.0))) ) )
+    (let ((path (concat *test-dir* "/multiidx-xproc"))
+          (result-file (concat *test-dir* "/multiidx-xproc-result.lsh"))
+          (pkg-dir (dirname (dirname (dirname file-being-loaded))))
+          (lush-bin "/workspaces/claude-sandbox/lush-claude/bin/lush") )
+      (columnardb-save dt path)
+      (sys (concat "TMPDIR=/tmp/claude " lush-bin " -e '(addpath \"" pkg-dir "\") "
+           "(libload \"columnardb/columnardb\") "
+           "(let ((dt (columnardb-load \"" path "\"))) "
+           "  (let ((r (columnardb-where-multi dt (list (list (quote =) \"sym\" \"AAPL\") "
+           "            (list (quote =) \"exch\" \"NYSE\"))))) "
+           "    (let ((f (open-write \"" result-file "\"))) "
+           "      (writing f (print (length r))) (writing f (printf \"\\n\")))))'"))
+      (when (filep result-file)
+        (let ((val (_cdb-read-sexp result-file)))
+          (test-equal "multi xproc count" val 10) ) ) ) )
+)
+
+
+;; ============================================================
+;; Stage 23: Column-Level Compression
+;; ============================================================
+
+(test-suite "Stage 23: Column-level compression"
+
+  ;; Delta encode/decode round-trip
+  (let ((src (double-matrix 5))
+        (delta (double-matrix 5))
+        (decoded (double-matrix 5)) )
+    (src 0 10.0) (src 1 20.0) (src 2 30.0) (src 3 40.0) (src 4 50.0)
+    (_cdb-d1delta-encode src delta 5)
+    ;; delta should be: 10, 10, 10, 10, 10
+    (test-approx "delta enc[0]" (delta 0) 10.0 0.001)
+    (test-approx "delta enc[1]" (delta 1) 10.0 0.001)
+    (_cdb-d1delta-decode delta decoded 5)
+    (test-approx "delta dec[0]" (decoded 0) 10.0 0.001)
+    (test-approx "delta dec[4]" (decoded 4) 50.0 0.001) )
+
+  ;; RLE encode/decode round-trip
+  (let ((data (int-matrix 8)))
+    (data 0 1) (data 1 1) (data 2 1) (data 3 2) (data 4 2) (data 5 3) (data 6 3) (data 7 3)
+    (let ((nruns (_cdb-i1rle-count-runs data 8)))
+      (test-equal "rle count-runs" nruns 3)
+      (let ((values (int-matrix nruns))
+            (lengths (int-matrix nruns)) )
+        (let ((actual (_cdb-i1rle-encode data 8 values lengths)))
+          (test-equal "rle nruns" actual 3)
+          (test-equal "rle val[0]" (values 0) 1)
+          (test-equal "rle len[0]" (lengths 0) 3)
+          (test-equal "rle val[1]" (values 1) 2)
+          (test-equal "rle len[1]" (lengths 1) 2)
+          (test-equal "rle val[2]" (values 2) 3)
+          (test-equal "rle len[2]" (lengths 2) 3)
+          ;; Decode
+          (let ((decoded (int-matrix 8)))
+            (_cdb-i1rle-decode values lengths actual decoded)
+            (test-equal "rle dec[0]" (decoded 0) 1)
+            (test-equal "rle dec[3]" (decoded 3) 2)
+            (test-equal "rle dec[7]" (decoded 7) 3) ) ) ) ) )
+
+  ;; RLE all-same (1 run)
+  (let ((data (int-matrix 5)))
+    (for (i 0 4) (data i 42))
+    (test-equal "rle 1-run" (_cdb-i1rle-count-runs data 5) 1) )
+
+  ;; RLE all-unique (n runs)
+  (let ((data (int-matrix 5)))
+    (for (i 0 4) (data i i))
+    (test-equal "rle n-runs" (_cdb-i1rle-count-runs data 5) 5) )
+
+  ;; Save compressed + load: sorted real with delta
+  (let ((dt (new DataTable)))
+    (==> dt add-column "time" 'stamp)
+    (==> dt add-column "price" 'real)
+    (for (i 0 99) (==> dt append-row (list (* i 1.0) (* i 0.5))))
+    (let ((path (concat *test-dir* "/compress-delta")))
+      (columnardb-save-compressed dt path)
+      ;; Verify typecode is delta
+      (let ((cnt-out (double-matrix 1))
+            (typ-out (int-matrix 1)) )
+        (_cdb-read-header (concat path "/col-0.col") cnt-out typ-out)
+        (test-equal "delta typecode" (typ-out 0) 3) )
+      ;; Load and verify values
+      (let ((dt2 (columnardb-load path)))
+        (test-equal "delta load rows" (==> dt2 num-rows) 100)
+        (test-approx "delta load[0]" (==> dt2 get 0 "time") 0.0 0.001)
+        (test-approx "delta load[50]" (==> dt2 get 50 "time") 50.0 0.001)
+        (test-approx "delta load[99]" (==> dt2 get 99 "time") 99.0 0.001)
+        (test-approx "delta load price[50]" (==> dt2 get 50 "price") 25.0 0.001) )
+      ;; Load-mem also works
+      (let ((dt2 (columnardb-load-mem path)))
+        (test-approx "delta mem[99]" (==> dt2 get 99 "time") 99.0 0.001) ) ) )
+
+  ;; Save compressed + load: RLE on sorted int column
+  (let ((dt (new DataTable)))
+    (==> dt add-column "group" 'int)
+    (==> dt add-column "val" 'real)
+    ;; Sorted int: 0,0,0,1,1,1,2,2,2,...
+    (for (i 0 29) (==> dt append-row (list (/ i 3) (* i 1.0))))
+    (let ((path (concat *test-dir* "/compress-rle")))
+      (columnardb-save-compressed dt path)
+      ;; Verify typecode is RLE
+      (let ((cnt-out (double-matrix 1))
+            (typ-out (int-matrix 1)) )
+        (_cdb-read-header (concat path "/col-0.col") cnt-out typ-out)
+        (test-equal "rle typecode" (typ-out 0) 4) )
+      ;; Load and verify values
+      (let ((dt2 (columnardb-load path)))
+        (test-equal "rle load rows" (==> dt2 num-rows) 30)
+        (test-equal "rle load[0]" (==> dt2 get 0 "group") 0)
+        (test-equal "rle load[3]" (==> dt2 get 3 "group") 1)
+        (test-equal "rle load[29]" (==> dt2 get 29 "group") 9)
+        (test-approx "rle load val[0]" (==> dt2 get 0 "val") 0.0 0.01) ) ) )
+
+  ;; Mixed: some columns compressed, others not
+  (let ((dt (new DataTable)))
+    (==> dt add-column "sorted" 'real)
+    (==> dt add-column "unsorted" 'real)
+    (for (i 0 49)
+      (==> dt append-row (list (* i 1.0) (if (= (mod i 2) 0) 100.0 0.0))) )
+    (let ((path (concat *test-dir* "/compress-mixed")))
+      (columnardb-save-compressed dt path)
+      ;; sorted col should be delta, unsorted should be raw
+      (let ((cnt-out (double-matrix 1))
+            (typ-out (int-matrix 1)) )
+        (_cdb-read-header (concat path "/col-0.col") cnt-out typ-out)
+        (test-equal "mixed sorted typecode" (typ-out 0) 3)
+        (_cdb-read-header (concat path "/col-1.col") cnt-out typ-out)
+        (test-equal "mixed unsorted typecode" (typ-out 0) 1) )
+      ;; Load and verify both columns
+      (let ((dt2 (columnardb-load path)))
+        (test-approx "mixed sorted[25]" (==> dt2 get 25 "sorted") 25.0 0.001)
+        (test-approx "mixed unsorted[0]" (==> dt2 get 0 "unsorted") 100.0 0.001)
+        (test-approx "mixed unsorted[1]" (==> dt2 get 1 "unsorted") 0.0 0.001) ) ) )
+
+  ;; RLE on sorted string codes column
+  (let ((dt (new DataTable)))
+    (==> dt add-column "tag" 'string)
+    (==> dt add-column "val" 'real)
+    ;; Sorted string codes: AAA x5, BBB x5, CCC x5
+    (for (i 0 4) (==> dt append-row (list "AAA" (* i 1.0))))
+    (for (i 5 9) (==> dt append-row (list "BBB" (* i 1.0))))
+    (for (i 10 14) (==> dt append-row (list "CCC" (* i 1.0))))
+    (let ((path (concat *test-dir* "/compress-str")))
+      ;; Force compress string codes column (index 0)
+      (columnardb-save-compressed dt path (list 0))
+      ;; Verify codes file has RLE typecode
+      (let ((cnt-out (double-matrix 1))
+            (typ-out (int-matrix 1)) )
+        (_cdb-read-header (concat path "/col-0-codes.col") cnt-out typ-out)
+        (test-equal "str rle codes typecode" (typ-out 0) 4) )
+      ;; Load and verify string values
+      (let ((dt2 (columnardb-load path)))
+        (test-equal "str rle rows" (==> dt2 num-rows) 15)
+        (test-string-equal "str rle[0]" (==> dt2 get 0 "tag") "AAA")
+        (test-string-equal "str rle[5]" (==> dt2 get 5 "tag") "BBB")
+        (test-string-equal "str rle[10]" (==> dt2 get 10 "tag") "CCC")
+        (test-approx "str rle val[14]" (==> dt2 get 14 "val") 14.0 0.01) ) ) )
+
+  ;; Backward compatibility: old format (typecodes 1,2) still loads
+  (let ((dt (new DataTable)))
+    (==> dt add-column "x" 'real)
+    (==> dt add-column "y" 'int)
+    (==> dt append-row (list 42.0 99))
+    (let ((path (concat *test-dir* "/compress-compat")))
+      ;; Regular save (uncompressed)
+      (columnardb-save dt path)
+      ;; Load should still work
+      (let ((dt2 (columnardb-load path)))
+        (test-approx "compat real" (==> dt2 get 0 "x") 42.0 0.01)
+        (test-equal "compat int" (==> dt2 get 0 "y") 99) ) ) )
+
+  ;; Single row and two rows
+  (let ((dt (new DataTable)))
+    (==> dt add-column "x" 'real)
+    (==> dt append-row (list 42.0))
+    (let ((path (concat *test-dir* "/compress-1row")))
+      (columnardb-save-compressed dt path)
+      (let ((dt2 (columnardb-load path)))
+        (test-approx "compress 1row" (==> dt2 get 0 "x") 42.0 0.01) ) ) )
+
+  (let ((dt (new DataTable)))
+    (==> dt add-column "x" 'real)
+    (==> dt append-row (list 10.0))
+    (==> dt append-row (list 20.0))
+    (let ((path (concat *test-dir* "/compress-2row")))
+      (columnardb-save-compressed dt path)
+      (let ((dt2 (columnardb-load path)))
+        (test-approx "compress 2row[0]" (==> dt2 get 0 "x") 10.0 0.01)
+        (test-approx "compress 2row[1]" (==> dt2 get 1 "x") 20.0 0.01) ) ) )
+
+  ;; Cross-process persistence test for compression
+  (let ((dt (new DataTable)))
+    (==> dt add-column "time" 'stamp)
+    (==> dt add-column "val" 'real)
+    (for (i 0 99) (==> dt append-row (list (* i 1.0) (* i 0.5))))
+    (let ((path (concat *test-dir* "/compress-xproc"))
+          (result-file (concat *test-dir* "/compress-xproc-result.lsh"))
+          (pkg-dir (dirname (dirname (dirname file-being-loaded))))
+          (lush-bin "/workspaces/claude-sandbox/lush-claude/bin/lush") )
+      (columnardb-save-compressed dt path)
+      (sys (concat "TMPDIR=/tmp/claude " lush-bin " -e '(addpath \"" pkg-dir "\") "
+           "(libload \"columnardb/columnardb\") "
+           "(let ((dt (columnardb-load \"" path "\"))) "
+           "  (let ((f (open-write \"" result-file "\"))) "
+           "    (writing f (print (list (==> dt get 0 \"time\") (==> dt get 99 \"time\")))) "
+           "    (writing f (printf \"\\n\"))))'"))
+      (when (filep result-file)
+        (let ((val (_cdb-read-sexp result-file)))
+          (test-approx "compress xproc first" (car val) 0.0 0.01)
+          (test-approx "compress xproc last" (cadr val) 99.0 0.01) ) ) ) )
+)
+
+
+;; ============================================================
 ;; Summary
 ;; ============================================================
 

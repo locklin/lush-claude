@@ -1,0 +1,295 @@
+;;; columnardb-compiled.lsh -- Compiled C hot-path functions
+;;;
+;;; Provides compiled (dhc-make) implementations for inner loops that
+;;; benefit from native C execution: gather, CSR build, aggregation,
+;;; where-eq, and sorted intersection.
+
+(libload "libc/stdio")
+
+#? *** ColumnarDB Compiled Hot Paths
+
+
+;; ============================================================
+;; Aggregation primitives (used by groupby)
+;; ============================================================
+
+;; Sum data[perm[i]] for i in [start, end)
+(de _cdb-d1sum-perm (data perm start end)
+  ((-idx1- (-double-)) data)
+  ((-idx1- (-int-)) perm)
+  ((-int-) start end)
+  (let ((result 0.0))
+    ((-double-) result)
+    #{
+    {
+      double *d = IDX_PTR($data, double);
+      int *p = IDX_PTR($perm, int);
+      double s = 0.0;
+      int i;
+      for (i = $start; i < $end; i++) {
+        s += d[p[i]];
+      }
+      $result = s;
+    }
+    #}
+    result ) )
+
+
+;; Min data[perm[i]] for i in [start, end)
+(de _cdb-d1min-perm (data perm start end)
+  ((-idx1- (-double-)) data)
+  ((-idx1- (-int-)) perm)
+  ((-int-) start end)
+  (let ((result 0.0))
+    ((-double-) result)
+    #{
+    {
+      double *d = IDX_PTR($data, double);
+      int *p = IDX_PTR($perm, int);
+      double m = d[p[$start]];
+      int i;
+      for (i = $start + 1; i < $end; i++) {
+        if (d[p[i]] < m) m = d[p[i]];
+      }
+      $result = m;
+    }
+    #}
+    result ) )
+
+
+;; Max data[perm[i]] for i in [start, end)
+(de _cdb-d1max-perm (data perm start end)
+  ((-idx1- (-double-)) data)
+  ((-idx1- (-int-)) perm)
+  ((-int-) start end)
+  (let ((result 0.0))
+    ((-double-) result)
+    #{
+    {
+      double *d = IDX_PTR($data, double);
+      int *p = IDX_PTR($perm, int);
+      double m = d[p[$start]];
+      int i;
+      for (i = $start + 1; i < $end; i++) {
+        if (d[p[i]] > m) m = d[p[i]];
+      }
+      $result = m;
+    }
+    #}
+    result ) )
+
+
+;; Int sum data[perm[i]] for i in [start, end)
+(de _cdb-i1sum-perm (data perm start end)
+  ((-idx1- (-int-)) data)
+  ((-idx1- (-int-)) perm)
+  ((-int-) start end)
+  (let ((result 0))
+    ((-int-) result)
+    #{
+    {
+      int *d = IDX_PTR($data, int);
+      int *p = IDX_PTR($perm, int);
+      int s = 0;
+      int i;
+      for (i = $start; i < $end; i++) {
+        s += d[p[i]];
+      }
+      $result = s;
+    }
+    #}
+    result ) )
+
+
+;; ============================================================
+;; Gather (used by select-rows-idx)
+;; ============================================================
+
+;; dest[i] = src[perm[i]] for doubles
+(de _cdb-d1gather (dest src perm n)
+  ((-idx1- (-double-)) dest src)
+  ((-idx1- (-int-)) perm)
+  ((-int-) n)
+  #{
+  {
+    double *d = IDX_PTR($dest, double);
+    double *s = IDX_PTR($src, double);
+    int *p = IDX_PTR($perm, int);
+    int i;
+    for (i = 0; i < $n; i++) {
+      d[i] = s[p[i]];
+    }
+  }
+  #}
+  () )
+
+
+;; dest[i] = src[perm[i]] for ints
+(de _cdb-i1gather (dest src perm n)
+  ((-idx1- (-int-)) dest src perm)
+  ((-int-) n)
+  #{
+  {
+    int *d = IDX_PTR($dest, int);
+    int *s = IDX_PTR($src, int);
+    int *p = IDX_PTR($perm, int);
+    int i;
+    for (i = 0; i < $n; i++) {
+      d[i] = s[p[i]];
+    }
+  }
+  #}
+  () )
+
+
+;; ============================================================
+;; CSR build (used by StringColumn.build-index)
+;; ============================================================
+
+;; Count occurrences of each code: counts[codes[i]]++ for i in [0,n)
+(de _cdb-i1count-codes (codes counts n)
+  ((-idx1- (-int-)) codes counts)
+  ((-int-) n)
+  #{
+  {
+    int *c = IDX_PTR($codes, int);
+    int *cnt = IDX_PTR($counts, int);
+    int i;
+    for (i = 0; i < $n; i++) {
+      cnt[c[i]]++;
+    }
+  }
+  #}
+  () )
+
+
+;; Exclusive prefix sum in-place: arr[i] = sum of arr[0..i-1]
+(de _cdb-i1prefix-sum (arr n)
+  ((-idx1- (-int-)) arr)
+  ((-int-) n)
+  #{
+  {
+    int *a = IDX_PTR($arr, int);
+    int i, s = 0, t;
+    for (i = 0; i < $n; i++) {
+      t = a[i];
+      a[i] = s;
+      s += t;
+    }
+  }
+  #}
+  () )
+
+
+;; CSR fill pass: scatter row indices using offsets as write cursors
+;; offsets is modified in-place (used as write pointer)
+(de _cdb-i1csr-fill (codes offsets rows n)
+  ((-idx1- (-int-)) codes offsets rows)
+  ((-int-) n)
+  #{
+  {
+    int *c = IDX_PTR($codes, int);
+    int *off = IDX_PTR($offsets, int);
+    int *r = IDX_PTR($rows, int);
+    int i;
+    for (i = 0; i < $n; i++) {
+      r[off[c[i]]++] = i;
+    }
+  }
+  #}
+  () )
+
+
+;; ============================================================
+;; Where-eq compiled fallback
+;; ============================================================
+
+;; Count how many codes[i] == target
+(de _cdb-i1count-eq (codes n target)
+  ((-idx1- (-int-)) codes)
+  ((-int-) n target)
+  (let ((result 0))
+    ((-int-) result)
+    #{
+    {
+      int *c = IDX_PTR($codes, int);
+      int cnt = 0;
+      int i;
+      for (i = 0; i < $n; i++) {
+        if (c[i] == $target) cnt++;
+      }
+      $result = cnt;
+    }
+    #}
+    result ) )
+
+
+;; Fill dest with row indices where codes[i] == target, return count
+(de _cdb-i1where-eq (codes n target dest)
+  ((-idx1- (-int-)) codes dest)
+  ((-int-) n target)
+  (let ((result 0))
+    ((-int-) result)
+    #{
+    {
+      int *c = IDX_PTR($codes, int);
+      int *d = IDX_PTR($dest, int);
+      int cnt = 0;
+      int i;
+      for (i = 0; i < $n; i++) {
+        if (c[i] == $target) {
+          d[cnt++] = i;
+        }
+      }
+      $result = cnt;
+    }
+    #}
+    result ) )
+
+
+;; ============================================================
+;; Sorted intersection (used by multi-column index)
+;; ============================================================
+
+;; Merge-intersect two sorted int arrays, write result to dest.
+;; Returns count of elements in intersection.
+(de _cdb-i1intersect-sorted (a na b nb dest)
+  ((-idx1- (-int-)) a b dest)
+  ((-int-) na nb)
+  (let ((result 0))
+    ((-int-) result)
+    #{
+    {
+      int *aa = IDX_PTR($a, int);
+      int *bb = IDX_PTR($b, int);
+      int *dd = IDX_PTR($dest, int);
+      int ia = 0, ib = 0, cnt = 0;
+      while (ia < $na && ib < $nb) {
+        if (aa[ia] < bb[ib]) ia++;
+        else if (aa[ia] > bb[ib]) ib++;
+        else {
+          dd[cnt++] = aa[ia];
+          ia++;
+          ib++;
+        }
+      }
+      $result = cnt;
+    }
+    #}
+    result ) )
+
+
+;; ============================================================
+;; Compile all functions
+;; ============================================================
+
+(dhc-make ()
+  #{
+  #include <stdio.h>
+  #include <stdint.h>
+  #}
+  _cdb-d1sum-perm _cdb-d1min-perm _cdb-d1max-perm _cdb-i1sum-perm
+  _cdb-d1gather _cdb-i1gather
+  _cdb-i1count-codes _cdb-i1prefix-sum _cdb-i1csr-fill
+  _cdb-i1count-eq _cdb-i1where-eq
+  _cdb-i1intersect-sorted )

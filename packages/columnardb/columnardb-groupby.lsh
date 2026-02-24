@@ -1,0 +1,191 @@
+;;; columnardb-groupby.lsh -- Grouped aggregation for DataTable
+;;;
+;;; Provides per-group statistics: count, sum, mean, min, max.
+;;; Leverages the CSR inverted index on string columns for O(n) grouping.
+;;;
+;;; Usage:
+;;;   (columnardb-group-by dt "symbol" "price" 'sum)
+;;;   (columnardb-group-by dt "symbol" () 'count)
+
+#? *** ColumnarDB Grouped Aggregation
+
+
+;; ============================================================
+;; Internal: grouped aggregation using CSR index (string groups)
+;; ============================================================
+
+;; Fast path: string group column with CSR index already built.
+;; For each unique code, iterate idx-rows[offsets[c]..offsets[c+1]-1]
+;; and accumulate from the agg column.
+(de _groupby-string-indexed (dt gc-idx ac-idx op)
+  (let* ((gc (==> dt get-column gc-idx))
+         (pool (==> gc get-pool))
+         (offsets (==> gc get-idx-offsets))
+         (rows-arr (==> gc get-idx-rows))
+         (nu (==> gc num-unique))
+         (nrows (==> dt num-rows))
+         (gc-name (==> dt col-name gc-idx))
+         ;; Result columns
+         (group-vals ())
+         (agg-vals ()) )
+    ;; Determine agg column info
+    (let ((ac (if ac-idx (==> dt get-column ac-idx) ()))
+          (ac-type (if ac-idx (==> dt col-type ac-idx) ())) )
+      ;; For each unique string code
+      (for (c 0 (1- nu))
+        (let ((start (offsets c))
+              (end (offsets (1+ c)))
+              (group-str (nth c pool)) )
+          (let ((cnt (- end start)))
+            (when (> cnt 0)
+              (setq group-vals (nconc1 group-vals group-str))
+              (cond
+               ((= op 'count)
+                (setq agg-vals (nconc1 agg-vals cnt)) )
+               ((= op 'sum)
+                (let ((s (if (or (= ac-type 'real) (= ac-type 'stamp))
+                           (_cdb-d1sum-perm ac rows-arr start end)
+                           (_cdb-i1sum-perm ac rows-arr start end) )))
+                  (setq agg-vals (nconc1 agg-vals s)) ) )
+               ((= op 'mean)
+                (let ((s (if (or (= ac-type 'real) (= ac-type 'stamp))
+                           (_cdb-d1sum-perm ac rows-arr start end)
+                           (_cdb-i1sum-perm ac rows-arr start end) )))
+                  (setq agg-vals (nconc1 agg-vals (/ (to-double s) cnt))) ) )
+               ((= op 'min)
+                (if (or (= ac-type 'real) (= ac-type 'stamp))
+                  (setq agg-vals (nconc1 agg-vals (_cdb-d1min-perm ac rows-arr start end)))
+                  ;; int min via interpreted loop (small overhead)
+                  (let ((m (ac (rows-arr start))))
+                    (for (i (1+ start) (1- end))
+                      (let ((v (ac (rows-arr i))))
+                        (when (< v m) (setq m v)) ) )
+                    (setq agg-vals (nconc1 agg-vals m)) ) ) )
+               ((= op 'max)
+                (if (or (= ac-type 'real) (= ac-type 'stamp))
+                  (setq agg-vals (nconc1 agg-vals (_cdb-d1max-perm ac rows-arr start end)))
+                  ;; int max via interpreted loop
+                  (let ((m (ac (rows-arr start))))
+                    (for (i (1+ start) (1- end))
+                      (let ((v (ac (rows-arr i))))
+                        (when (> v m) (setq m v)) ) )
+                    (setq agg-vals (nconc1 agg-vals m)) ) ) ) ) ) ) ) ) )
+
+    ;; Build result table
+    (let ((result (new DataTable))
+          (ngroups (length group-vals))
+          (agg-col-name (if ac-idx
+                          (concat (==> dt col-name ac-idx) "_" (pname op))
+                          "count")) )
+      (==> result add-column gc-name 'string)
+      (if (= op 'count)
+        (==> result add-column agg-col-name 'int)
+        (==> result add-column agg-col-name 'real) )
+      (let ((gi 0))
+        (each ((gv group-vals) (av agg-vals))
+          (==> result append-row (list gv av))
+          (setq gi (1+ gi)) ) )
+      result ) ) )
+
+
+;; Slow path: string column without index. Build index first, then delegate.
+(de _groupby-string-unindexed (dt gc-idx ac-idx op)
+  (let ((gc (==> dt get-column gc-idx)))
+    (==> gc build-index)
+    (_groupby-string-indexed dt gc-idx ac-idx op) ) )
+
+
+;; ============================================================
+;; Internal: grouped aggregation for numeric group column
+;; ============================================================
+
+;; Uses htable to map group value (as string key) to accumulator.
+;; Accumulator: (sum count min max) stored as list.
+(de _groupby-numeric (dt gc-idx ac-idx op)
+  (let* ((gc (==> dt get-column gc-idx))
+         (gc-type (==> dt col-type gc-idx))
+         (gc-name (==> dt col-name gc-idx))
+         (nrows (==> dt num-rows))
+         (ac (if ac-idx (==> dt get-column ac-idx) ()))
+         (ac-type (if ac-idx (==> dt col-type ac-idx) ()))
+         ;; htable: group-key-string -> (sum count min max)
+         (ht (htable (max 32 (/ nrows 2))))
+         ;; preserve insertion order
+         (group-order ()) )
+    ;; Single pass
+    (for (i 0 (1- nrows))
+      (let* ((gv (gc i))
+             (key (sprintf "%g" gv))
+             (av (cond ((not ac) 0)
+                       ((= ac-type 'string) (error "columnardb-group-by" "cannot aggregate string column" ()))
+                       (t (ac i)) ))
+             (existing (ht key)) )
+        (if existing
+          ;; Update accumulator
+          (let ((s (car existing))
+                (c (cadr existing))
+                (mn (caddr existing))
+                (mx (nth 3 existing)) )
+            (ht key (list (+ s av) (1+ c) (min mn av) (max mx av))) )
+          ;; New group
+          (progn
+            (ht key (list av 1 av av))
+            (setq group-order (nconc1 group-order (list gv key))) ) ) ) )
+
+    ;; Build result table
+    (let ((result (new DataTable))
+          (agg-col-name (if ac-idx
+                          (concat (==> dt col-name ac-idx) "_" (pname op))
+                          "count")) )
+      (==> result add-column gc-name gc-type)
+      (if (= op 'count)
+        (==> result add-column agg-col-name 'int)
+        (==> result add-column agg-col-name 'real) )
+      (each ((gentry group-order))
+        (let* ((gv (car gentry))
+               (key (cadr gentry))
+               (acc (ht key))
+               (s (car acc))
+               (c (cadr acc))
+               (mn (caddr acc))
+               (mx (nth 3 acc)) )
+          (let ((agg-val (cond
+                          ((= op 'count) c)
+                          ((= op 'sum) s)
+                          ((= op 'mean) (/ (to-double s) c))
+                          ((= op 'min) mn)
+                          ((= op 'max) mx) )))
+            (==> result append-row (list gv agg-val)) ) ) )
+      result ) ) )
+
+
+;; ============================================================
+;; Public API
+;; ============================================================
+
+#? (columnardb-group-by <dt> <group-col> <agg-col> <op>)
+;; Compute per-group statistics.
+;; <group-col>: column name to group by (string or numeric)
+;; <agg-col>: column name to aggregate, or () for count-only
+;; <op>: one of 'count 'sum 'mean 'min 'max
+;; Returns a new DataTable with (group-col, agg-col-name) columns.
+;; agg-col-name is "<agg-col>_<op>" or "count" for count-only.
+(de columnardb-group-by (dt group-col agg-col op)
+  (let* ((gc-idx (==> dt col-index group-col))
+         (gc-type (==> dt col-type gc-idx))
+         (ac-idx (if agg-col (==> dt col-index agg-col) ())) )
+    ;; Validate op
+    (when (not (member op (list 'count 'sum 'mean 'min 'max)))
+      (error "columnardb-group-by" "unknown operation" op) )
+    ;; Validate agg-col for non-count ops
+    (when (and (not ac-idx) (<> op 'count))
+      (error "columnardb-group-by" "agg-col required for non-count operations" op) )
+    ;; Dispatch
+    (if (= gc-type 'string)
+      ;; String group column
+      (let ((gc (==> dt get-column gc-idx)))
+        (if (==> gc has-index)
+          (_groupby-string-indexed dt gc-idx ac-idx op)
+          (_groupby-string-unindexed dt gc-idx ac-idx op) ) )
+      ;; Numeric group column
+      (_groupby-numeric dt gc-idx ac-idx op) ) ) )

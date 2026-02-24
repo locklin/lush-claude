@@ -1,0 +1,462 @@
+;;; columnardb-compress.lsh -- Column-level compression (delta + RLE)
+;;;
+;;; Extends the LCDB file format with two new typecodes:
+;;;   typecode 3 = delta-encoded double (first value + deltas)
+;;;   typecode 4 = RLE-encoded int32 (run-count + value/length pairs)
+;;;
+;;; Delta encoding is used for sorted real/stamp columns.
+;;; RLE encoding is used for sorted int/string-code columns.
+;;;
+;;; Usage:
+;;;   (columnardb-save-compressed dt path)        ;; auto-detect
+;;;   (columnardb-save-compressed dt path '(0 2)) ;; compress cols 0 and 2
+
+(libload "libc/stdio")
+
+#? *** ColumnarDB Column Compression
+
+(defvar *cdb-type-delta-double* 3)
+(defvar *cdb-type-rle-int32* 4)
+
+
+;; ============================================================
+;; Compiled C functions for delta encoding
+;; ============================================================
+
+;; Delta encode: dest[0]=src[0], dest[i]=src[i]-src[i-1]
+(de _cdb-d1delta-encode (src dest n)
+  ((-idx1- (-double-)) src dest)
+  ((-int-) n)
+  #{
+  {
+    double *s = IDX_PTR($src, double);
+    double *d = IDX_PTR($dest, double);
+    if ($n > 0) {
+      d[0] = s[0];
+      int i;
+      for (i = 1; i < $n; i++) {
+        d[i] = s[i] - s[i-1];
+      }
+    }
+  }
+  #}
+  () )
+
+
+;; Delta decode: dest[0]=src[0], dest[i]=dest[i-1]+src[i]
+(de _cdb-d1delta-decode (src dest n)
+  ((-idx1- (-double-)) src dest)
+  ((-int-) n)
+  #{
+  {
+    double *s = IDX_PTR($src, double);
+    double *d = IDX_PTR($dest, double);
+    if ($n > 0) {
+      d[0] = s[0];
+      int i;
+      for (i = 1; i < $n; i++) {
+        d[i] = d[i-1] + s[i];
+      }
+    }
+  }
+  #}
+  () )
+
+
+;; ============================================================
+;; Compiled C functions for RLE encoding
+;; ============================================================
+
+;; Count number of runs in an int array
+(de _cdb-i1rle-count-runs (data n)
+  ((-idx1- (-int-)) data)
+  ((-int-) n)
+  (let ((result 0))
+    ((-int-) result)
+    #{
+    {
+      int *d = IDX_PTR($data, int);
+      if ($n == 0) { $result = 0; }
+      else {
+        int runs = 1;
+        int i;
+        for (i = 1; i < $n; i++) {
+          if (d[i] != d[i-1]) runs++;
+        }
+        $result = runs;
+      }
+    }
+    #}
+    result ) )
+
+
+;; RLE encode: fill values[] and lengths[] arrays, return nruns
+(de _cdb-i1rle-encode (data n values lengths)
+  ((-idx1- (-int-)) data values lengths)
+  ((-int-) n)
+  (let ((result 0))
+    ((-int-) result)
+    #{
+    {
+      int *d = IDX_PTR($data, int);
+      int *v = IDX_PTR($values, int);
+      int *l = IDX_PTR($lengths, int);
+      if ($n == 0) { $result = 0; }
+      else {
+        int runs = 0;
+        v[0] = d[0];
+        l[0] = 1;
+        int i;
+        for (i = 1; i < $n; i++) {
+          if (d[i] == d[i-1]) {
+            l[runs]++;
+          } else {
+            runs++;
+            v[runs] = d[i];
+            l[runs] = 1;
+          }
+        }
+        $result = runs + 1;
+      }
+    }
+    #}
+    result ) )
+
+
+;; RLE decode: expand value/length pairs to full array
+(de _cdb-i1rle-decode (values lengths nruns dest)
+  ((-idx1- (-int-)) values lengths dest)
+  ((-int-) nruns)
+  #{
+  {
+    int *v = IDX_PTR($values, int);
+    int *l = IDX_PTR($lengths, int);
+    int *d = IDX_PTR($dest, int);
+    int pos = 0;
+    int r;
+    for (r = 0; r < $nruns; r++) {
+      int j;
+      for (j = 0; j < l[r]; j++) {
+        d[pos++] = v[r];
+      }
+    }
+  }
+  #}
+  () )
+
+
+;; ============================================================
+;; Compiled C: write delta-encoded doubles file
+;; ============================================================
+
+;; Write LCDB header with typecode=3, then delta-encoded double data
+(de _cdb-write-delta-doubles (filename data nrows)
+  ((-str-) filename)
+  ((-idx1- (-double-)) data)
+  ((-int-) nrows)
+  (let ((rc 0))
+    ((-int-) rc)
+    #{
+    {
+      FILE *f = fopen((const char *)$filename->data, "wb");
+      if (!f) { $rc = -1; }
+      else {
+        uint32_t magic = 0x4C434442u;
+        uint32_t version = 1;
+        int64_t count = (int64_t)$nrows;
+        uint32_t typecode = 3; /* delta double */
+        uint32_t reserved = 0;
+        fwrite(&magic, 4, 1, f);
+        fwrite(&version, 4, 1, f);
+        fwrite(&count, 8, 1, f);
+        fwrite(&typecode, 4, 1, f);
+        fwrite(&reserved, 4, 1, f);
+        size_t written = fwrite(IDX_PTR($data, double), sizeof(double), $nrows, f);
+        if ((int)written != $nrows) $rc = -1;
+        fclose(f);
+      }
+    }
+    #}
+    rc ) )
+
+
+;; ============================================================
+;; Compiled C: write RLE-encoded ints file
+;; ============================================================
+
+;; Write LCDB header with typecode=4, then nruns (int32), then
+;; interleaved value/length pairs.
+(de _cdb-write-rle-ints (filename values lengths nruns nrows)
+  ((-str-) filename)
+  ((-idx1- (-int-)) values lengths)
+  ((-int-) nruns nrows)
+  (let ((rc 0))
+    ((-int-) rc)
+    #{
+    {
+      FILE *f = fopen((const char *)$filename->data, "wb");
+      if (!f) { $rc = -1; }
+      else {
+        uint32_t magic = 0x4C434442u;
+        uint32_t version = 1;
+        int64_t count = (int64_t)$nrows;
+        uint32_t typecode = 4; /* RLE int32 */
+        uint32_t reserved = 0;
+        fwrite(&magic, 4, 1, f);
+        fwrite(&version, 4, 1, f);
+        fwrite(&count, 8, 1, f);
+        fwrite(&typecode, 4, 1, f);
+        fwrite(&reserved, 4, 1, f);
+        /* Write nruns */
+        int32_t nr = (int32_t)$nruns;
+        fwrite(&nr, 4, 1, f);
+        /* Write interleaved value/length pairs */
+        int *v = IDX_PTR($values, int);
+        int *l = IDX_PTR($lengths, int);
+        int i;
+        for (i = 0; i < $nruns; i++) {
+          fwrite(&v[i], 4, 1, f);
+          fwrite(&l[i], 4, 1, f);
+        }
+        fclose(f);
+      }
+    }
+    #}
+    rc ) )
+
+
+;; ============================================================
+;; Compiled C: read RLE-encoded ints file
+;; ============================================================
+
+;; Read RLE file: header (typecode=4), nruns, value/length pairs.
+;; Decodes into dest array of nrows ints.
+(de _cdb-read-rle-ints (filename dest nrows)
+  ((-str-) filename)
+  ((-idx1- (-int-)) dest)
+  ((-int-) nrows)
+  (let ((rc 0))
+    ((-int-) rc)
+    #{
+    {
+      FILE *f = fopen((const char *)$filename->data, "rb");
+      if (!f) { $rc = -1; }
+      else {
+        /* Skip 24-byte header */
+        fseek(f, 24, SEEK_SET);
+        /* Read nruns */
+        int32_t nruns;
+        fread(&nruns, 4, 1, f);
+        /* Read and decode pairs */
+        int *d = IDX_PTR($dest, int);
+        int pos = 0;
+        int i;
+        for (i = 0; i < nruns; i++) {
+          int32_t val, len;
+          fread(&val, 4, 1, f);
+          fread(&len, 4, 1, f);
+          int j;
+          for (j = 0; j < len && pos < $nrows; j++) {
+            d[pos++] = val;
+          }
+        }
+        fclose(f);
+      }
+    }
+    #}
+    rc ) )
+
+
+;; Compile all compression functions
+(dhc-make ()
+  #{
+  #include <stdio.h>
+  #include <stdint.h>
+  #}
+  _cdb-d1delta-encode _cdb-d1delta-decode
+  _cdb-i1rle-count-runs _cdb-i1rle-encode _cdb-i1rle-decode
+  _cdb-write-delta-doubles _cdb-write-rle-ints _cdb-read-rle-ints )
+
+
+;; ============================================================
+;; Public API: save with compression
+;; ============================================================
+
+#? (columnardb-save-compressed <dt> <path> [<compress-cols>])
+;; Save a DataTable with optional column-level compression.
+;; If compress-cols is () or omitted, auto-detects:
+;;   - Delta encoding for sorted real/stamp columns
+;;   - RLE encoding for sorted int columns (including string codes)
+;; If compress-cols is a list of column indices, only those are compressed.
+;; Returns the path.
+(de columnardb-save-compressed (dt path &optional compress-cols)
+  (_cdb-mkdir path)
+  (let ((names (==> dt col-names))
+        (types (==> dt col-types))
+        (nrows (==> dt num-rows))
+        (ncols (==> dt num-cols))
+        (sorted-cols ())
+        (compressed-cols ()) )
+
+    ;; First pass: detect sorted columns
+    (let ((ci 0))
+      (each ((name names) (type types))
+        (when (> nrows 0)
+          (let ((col (==> dt get-column ci)))
+            (cond
+             ((or (= type 'real) (= type 'stamp))
+              (let ((data (double-matrix nrows)))
+                (for (i 0 (1- nrows)) (data i (col i)))
+                (when (= 1 (idx-d1sortedp data))
+                  (setq sorted-cols (nconc1 sorted-cols ci)) ) ) )
+             ((= type 'int)
+              (let ((data (int-matrix nrows)))
+                (for (i 0 (1- nrows)) (data i (col i)))
+                (when (= 1 (idx-i1sortedp data))
+                  (setq sorted-cols (nconc1 sorted-cols ci)) ) ) ) ) ) )
+        (setq ci (1+ ci)) ) )
+
+    ;; Determine which columns to compress
+    (let ((to-compress
+           (if compress-cols
+             compress-cols
+             ;; Auto-detect: compress sorted numeric columns
+             sorted-cols )))
+
+      ;; Save each column
+      (let ((ci 0))
+        (each ((name names) (type types))
+          (when (> nrows 0)
+            (let ((col (==> dt get-column ci)))
+              (cond
+               ;; Real or stamp column
+               ((or (= type 'real) (= type 'stamp))
+                (let ((fname (concat path "/col-" (str ci) ".col"))
+                      (data (double-matrix nrows)) )
+                  (for (i 0 (1- nrows)) (data i (col i)))
+                  (if (member ci to-compress)
+                    ;; Delta compress
+                    (let ((delta (double-matrix nrows)))
+                      (_cdb-d1delta-encode data delta nrows)
+                      (let ((rc (_cdb-write-delta-doubles fname delta nrows)))
+                        (when (< rc 0)
+                          (error "columnardb-save-compressed" "failed to write delta column" name) ) )
+                      (setq compressed-cols (nconc1 compressed-cols ci)) )
+                    ;; Raw
+                    (let ((rc (_cdb-write-doubles fname data nrows)))
+                      (when (< rc 0)
+                        (error "columnardb-save-compressed" "failed to write column" name) ) ) )
+                  ;; Track sorted
+                  (when (= 1 (idx-d1sortedp data))
+                    (when (not (member ci sorted-cols))
+                      (setq sorted-cols (nconc1 sorted-cols ci)) ) ) ) )
+
+               ;; Integer column
+               ((= type 'int)
+                (let ((fname (concat path "/col-" (str ci) ".col"))
+                      (data (int-matrix nrows)) )
+                  (for (i 0 (1- nrows)) (data i (col i)))
+                  (if (member ci to-compress)
+                    ;; RLE compress
+                    (let ((nruns (_cdb-i1rle-count-runs data nrows)))
+                      (let ((values (int-matrix nruns))
+                            (lengths (int-matrix nruns)) )
+                        (let ((actual-runs (_cdb-i1rle-encode data nrows values lengths)))
+                          (let ((rc (_cdb-write-rle-ints fname values lengths actual-runs nrows)))
+                            (when (< rc 0)
+                              (error "columnardb-save-compressed" "failed to write RLE column" name) ) ) )
+                        (setq compressed-cols (nconc1 compressed-cols ci)) ) )
+                    ;; Raw
+                    (let ((rc (_cdb-write-ints fname data nrows)))
+                      (when (< rc 0)
+                        (error "columnardb-save-compressed" "failed to write column" name) ) ) )
+                  (when (= 1 (idx-i1sortedp data))
+                    (when (not (member ci sorted-cols))
+                      (setq sorted-cols (nconc1 sorted-cols ci)) ) ) ) )
+
+               ;; String column -- same as regular save (codes + pool)
+               ((= type 'string)
+                (let ((codes-fname (concat path "/col-" (str ci) "-codes.col"))
+                      (pool-fname (concat path "/col-" (str ci) "-pool.lsh"))
+                      (pool-idx-fname (concat path "/col-" (str ci) "-pool-idx.col"))
+                      (pool-str-fname (concat path "/col-" (str ci) "-pool-str.bin"))
+                      (codes (==> col get-codes))
+                      (pool (==> col get-pool)) )
+                  ;; Write codes (possibly RLE compressed)
+                  (let ((data (int-matrix nrows)))
+                    (for (i 0 (1- nrows)) (data i (codes i)))
+                    (if (member ci to-compress)
+                      ;; RLE compress codes
+                      (let ((nruns (_cdb-i1rle-count-runs data nrows)))
+                        (let ((values (int-matrix nruns))
+                              (lengths (int-matrix nruns)) )
+                          (let ((actual-runs (_cdb-i1rle-encode data nrows values lengths)))
+                            (let ((rc (_cdb-write-rle-ints codes-fname values lengths actual-runs nrows)))
+                              (when (< rc 0)
+                                (error "columnardb-save-compressed" "failed to write RLE codes" name) ) ) )
+                          (setq compressed-cols (nconc1 compressed-cols ci)) ) )
+                      ;; Raw codes
+                      (let ((rc (_cdb-write-ints codes-fname data nrows)))
+                        (when (< rc 0)
+                          (error "columnardb-save-compressed" "failed to write string codes" name) ) ) ) )
+                  ;; Write pool (same as regular save)
+                  (_cdb-write-sexp pool-fname pool)
+                  (let ((nu (length pool)))
+                    (when (> nu 0)
+                      (let ((offsets (int-matrix nu))
+                            (total-bytes 0) )
+                        (let ((idx 0))
+                          (each ((s pool))
+                            (offsets idx total-bytes)
+                            (setq total-bytes (+ total-bytes (len s) 1))
+                            (setq idx (1+ idx)) ) )
+                        (let ((str-data (ubyte-matrix total-bytes))
+                              (pos 0) )
+                          (each ((s pool))
+                            (let ((bytes (explode-bytes s)))
+                              (each ((b bytes))
+                                (str-data pos b)
+                                (setq pos (1+ pos)) ) )
+                            (str-data pos 0)
+                            (setq pos (1+ pos)) )
+                          (let ((rc (_cdb-write-ints pool-idx-fname offsets nu)))
+                            (when (< rc 0)
+                              (error "columnardb-save-compressed" "failed to write pool offsets" name) ) )
+                          (let ((rc (_cdb-write-bytes pool-str-fname str-data total-bytes)))
+                            (when (< rc 0)
+                              (error "columnardb-save-compressed" "failed to write pool strings" name) ) ) ) ) ) )
+                  ;; Build and write CSR index
+                  (when (> nrows 0)
+                    (when (not (==> col has-index))
+                      (==> col build-index) )
+                    (when (==> col has-index)
+                      (let ((idx-off-fname (concat path "/col-" (str ci) "-idx-offsets.col"))
+                            (idx-row-fname (concat path "/col-" (str ci) "-idx-rows.col"))
+                            (ioff (==> col get-idx-offsets))
+                            (irow (==> col get-idx-rows)) )
+                        (let ((rc (_cdb-write-ints idx-off-fname ioff (idx-dim ioff 0))))
+                          (when (< rc 0)
+                            (error "columnardb-save-compressed" "failed to write index offsets" name) ) )
+                        (let ((rc (_cdb-write-ints idx-row-fname irow (idx-dim irow 0))))
+                          (when (< rc 0)
+                            (error "columnardb-save-compressed" "failed to write index rows" name) ) ) ) ) ) ) )
+
+               (t (error "columnardb-save-compressed" "unknown column type" type)) ) ) )
+          (setq ci (1+ ci)) ) )
+
+      ;; Write metadata
+      (let ((meta (list
+                   (list 'version 1)
+                   (list 'nrows nrows)
+                   (list 'ncols ncols)
+                   (list 'names names)
+                   (list 'types types)
+                   (list 'sorted sorted-cols)
+                   (list 'compressed compressed-cols) )))
+        (_cdb-write-sexp (concat path "/meta.lsh") meta) ) )
+
+    (printf "columnardb-save-compressed: %s -> %d rows x %d cols" path nrows ncols)
+    (when compressed-cols
+      (printf " (compressed: %l)" compressed-cols) )
+    (printf "\n")
+    path ) )

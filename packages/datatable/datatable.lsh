@@ -495,8 +495,14 @@
             (let ((dst (cond ((= type 'real)  (double-matrix nr))
                              ((= type 'int)   (int-matrix nr))
                              ((= type 'stamp) (double-matrix nr)) )))
-              (for (i 0 (1- nr))
-                (dst i (col (idx-perm i))) )
+              (if (and (functionp _cdb-d1gather) (functionp _cdb-i1gather))
+                ;; Compiled gather path
+                (if (= type 'int)
+                  (_cdb-i1gather dst col idx-perm nr)
+                  (_cdb-d1gather dst col idx-perm nr) )
+                ;; Interpreted fallback
+                (for (i 0 (1- nr))
+                  (dst i (col (idx-perm i))) ) )
               (setq new-cols (nconc1 new-cols dst)) ) ) ) )
         (datatable-from-columns new-names new-types new-cols nr) ) ) ) )
 

@@ -1,0 +1,113 @@
+;;; columnardb-mutate.lsh -- Delete/update support for persisted tables
+;;;
+;;; Provides atomic delete and update operations on persisted tables.
+;;; Uses exclusive locks for thread safety.
+;;;
+;;; Note: update-rows only works on numeric columns (real/int/stamp).
+;;; String column cell-level set is not supported by DataTable.
+
+#? *** ColumnarDB Delete/Update Operations
+
+
+;; ============================================================
+;; Delete operations
+;; ============================================================
+
+#? (columnardb-delete-rows <path> <row-indices>)
+;; Delete rows at the given indices from a persisted table.
+;; Loads the table, removes specified rows, saves back.
+;; Uses exclusive lock. Returns new row count.
+(de columnardb-delete-rows (path row-indices)
+  (let ((lock (columnardb-lock-exclusive path)))
+    (let ((result 0))
+      (let ((dt (columnardb-load-mem path))
+            (nrows 0) )
+        (setq nrows (==> dt num-rows))
+        ;; Build delete set for O(1) lookup
+        (let ((del-ht (htable (max 32 (* 2 (length row-indices))))))
+          (each ((ri row-indices))
+            (del-ht (sprintf "%d" ri) t) )
+          ;; Build keep list
+          (let ((keep ()))
+            (for (i 0 (1- nrows))
+              (when (not (del-ht (sprintf "%d" i)))
+                (setq keep (nconc1 keep i)) ) )
+            ;; Select and save
+            (let ((new-dt (==> dt select-rows keep)))
+              (columnardb-save new-dt path)
+              (setq result (==> new-dt num-rows)) ) ) ) )
+      (columnardb-unlock lock)
+      result ) ) )
+
+
+#? (columnardb-delete-where <path> <op> <col-name> <value>)
+;; Delete rows matching a condition from a persisted table.
+;; Returns number of rows deleted.
+(de columnardb-delete-where (path op col-name value)
+  (let ((lock (columnardb-lock-exclusive path)))
+    (let ((result 0))
+      (let ((dt (columnardb-load-mem path)))
+        (let ((old-nrows (==> dt num-rows))
+              (match-rows (==> dt where op col-name value)) )
+          (if (or (not match-rows) (= (length match-rows) 0))
+            (setq result 0)
+            ;; Build keep set (all rows NOT in match-rows)
+            (let ((del-ht (htable (max 32 (* 2 (length match-rows))))))
+              (each ((ri match-rows))
+                (del-ht (sprintf "%d" ri) t) )
+              (let ((keep ()))
+                (for (i 0 (1- old-nrows))
+                  (when (not (del-ht (sprintf "%d" i)))
+                    (setq keep (nconc1 keep i)) ) )
+                (let ((new-dt (==> dt select-rows keep)))
+                  (columnardb-save new-dt path)
+                  (setq result (- old-nrows (==> new-dt num-rows))) ) ) ) ) ) )
+      (columnardb-unlock lock)
+      result ) ) )
+
+
+;; ============================================================
+;; Update operations
+;; ============================================================
+
+#? (columnardb-update-rows <path> <row-indices> <col-name> <value>)
+;; Update cells at specified rows in a numeric column.
+;; String columns are not supported (DataTable.set refuses them).
+;; Uses exclusive lock. Returns number of rows updated.
+(de columnardb-update-rows (path row-indices col-name value)
+  (let ((lock (columnardb-lock-exclusive path)))
+    (let ((result 0))
+      (let ((dt (columnardb-load-mem path)))
+        (let ((col-type (==> dt col-type col-name)))
+          (when (= col-type 'string)
+            (columnardb-unlock lock)
+            (error "columnardb-update-rows" "cannot update string columns" col-name) )
+          (each ((ri row-indices))
+            (when (and (>= ri 0) (< ri (==> dt num-rows)))
+              (==> dt set ri col-name value)
+              (setq result (1+ result)) ) )
+          (columnardb-save dt path) ) )
+      (columnardb-unlock lock)
+      result ) ) )
+
+
+#? (columnardb-update-where <path> <cond-op> <cond-col> <cond-val> <update-col> <update-val>)
+;; Find rows matching a condition and update a column value.
+;; Returns number of rows updated.
+(de columnardb-update-where (path cond-op cond-col cond-val update-col update-val)
+  (let ((lock (columnardb-lock-exclusive path)))
+    (let ((result 0))
+      (let ((dt (columnardb-load-mem path)))
+        (let ((col-type (==> dt col-type update-col)))
+          (when (= col-type 'string)
+            (columnardb-unlock lock)
+            (error "columnardb-update-where" "cannot update string columns" update-col) )
+          (let ((match-rows (==> dt where cond-op cond-col cond-val)))
+            (when match-rows
+              (each ((ri match-rows))
+                (==> dt set ri update-col update-val)
+                (setq result (1+ result)) ) )
+            (when (> result 0)
+              (columnardb-save dt path) ) ) ) )
+      (columnardb-unlock lock)
+      result ) ) )
