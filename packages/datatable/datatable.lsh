@@ -17,12 +17,13 @@
 ;;;   (==> t print-table 5)
 
 (libload "datatable/stringcol")
+(libload "datatable/datatable-null")
 (libload "timedate/timedate")
 (libload "libidx/idx-sort")
 
 #? *** DataTable: Typed Columnar Table
 
-;; Column type symbols: 'real 'int 'string 'stamp
+;; Column type symbols: 'real 'int 'float 'string 'stamp
 
 
 ;; ============================================================
@@ -94,10 +95,11 @@
     (error "DataTable" "duplicate column name" name) )
   (let ((col (cond
                ((= type 'real)   (double-matrix capacity))
+               ((= type 'float)  (float-matrix capacity))
                ((= type 'int)    (int-matrix capacity))
                ((= type 'stamp)  (double-matrix capacity))
                ((= type 'string) (new StringColumn capacity))
-               (t (error "DataTable" "unknown column type (use 'real, 'int, 'stamp, or 'string)" type)) )))
+               (t (error "DataTable" "unknown column type (use 'real, 'float, 'int, 'stamp, or 'string)" type)) )))
     (setq col-names-list (nconc1 col-names-list name))
     (setq col-types-list (nconc1 col-types-list type))
     (col-names-ht name n-cols)
@@ -174,9 +176,9 @@
      (t
       (when (not (writablep col))
         ;; Numeric/stamp column: copy to writable heap array
-        (let ((new-col (if (= type 'int)
-                         (int-matrix n-rows)
-                         (double-matrix n-rows) )))
+        (let ((new-col (cond ((= type 'int) (int-matrix n-rows))
+                             ((= type 'float) (float-matrix n-rows))
+                             (t (double-matrix n-rows)) )))
           (for (i 0 (1- n-rows)) (new-col i (col i)))
           (setq columns (_dt-list-replace columns col-idx new-col)) ) ) ) ) ) )
 
@@ -211,9 +213,10 @@
     (let ((new-cap (* 2 capacity)))
       (let ((ci 0))
         (each ((col columns) (type col-types-list))
-          (when (or (= type 'real) (= type 'int) (= type 'stamp))
+          (when (or (= type 'real) (= type 'float) (= type 'int) (= type 'stamp))
             ;; Allocate new array and copy
             (let ((new-col (cond ((= type 'real)  (double-matrix new-cap))
+                                 ((= type 'float) (float-matrix new-cap))
                                  ((= type 'int)   (int-matrix new-cap))
                                  ((= type 'stamp) (double-matrix new-cap)) )))
               (for (i 0 (1- n-rows))
@@ -231,11 +234,13 @@
                               ((not val) "")
                               (t (sprintf "%g" val)) )) )
        ((= type 'real)
-        (col n-rows (if val (to-double val) 0)) )
+        (col n-rows (if val (to-double val) (nan))) )
+       ((= type 'float)
+        (col n-rows (if val (to-float val) (nan))) )
        ((= type 'int)
-        (col n-rows (if val (to-int val) 0)) )
+        (col n-rows (if val (to-int val) *dt-null-int*)) )
        ((= type 'stamp)
-        (col n-rows (if val val 0)) ) )
+        (col n-rows (if val val (nan))) ) )
       (setq ci (1+ ci)) ) )
   (setq n-rows (1+ n-rows)) )
 
@@ -314,8 +319,12 @@
             (for (r 0 (1- (min show-rows n-rows)))
               (let ((sv (cond
                          ((= type 'string) (==> col get r))
-                         ((= type 'real) (sprintf "%.6g" (col r)))
-                         ((= type 'int)  (sprintf "%d" (col r)))
+                         ((= type 'real)
+                          (let ((v (col r))) (if (nanp v) "NULL" (sprintf "%.6g" v))))
+                         ((= type 'float)
+                          (let ((v (col r))) (if (nanp v) "NULL" (sprintf "%.6g" v))))
+                         ((= type 'int)
+                          (let ((v (col r))) (if (= v *dt-null-int*) "NULL" (sprintf "%d" v))))
                          ((= type 'stamp) (timestamp-to-string (col r))) )))
                 (when sv
                   (setq w (max w (min 20 (len sv))))) ) )
@@ -345,8 +354,13 @@
                          ((= type 'string) (==> col get r))
                          ((= type 'real)
                           (let ((v (col r)))
-                            (if (<> v v) "NaN" (sprintf "%.6g" v)) ) )
-                         ((= type 'int) (sprintf "%d" (col r)))
+                            (if (nanp v) "NULL" (sprintf "%.6g" v)) ) )
+                         ((= type 'float)
+                          (let ((v (col r)))
+                            (if (nanp v) "NULL" (sprintf "%.6g" v)) ) )
+                         ((= type 'int)
+                          (let ((v (col r)))
+                            (if (= v *dt-null-int*) "NULL" (sprintf "%d" v)) ) )
                          ((= type 'stamp) (timestamp-to-string (col r))) )))
                 (when (not sv) (setq sv ""))
                 (when (> (len sv) 20) (setq sv (concat (left sv 17) "...")))
@@ -384,6 +398,7 @@
               (==> dst-col append (==> src-col get r)) ) )
           ;; Copy numeric/stamp column
           (let ((dst-col (cond ((= type 'real)  (double-matrix n-rows))
+                               ((= type 'float) (float-matrix n-rows))
                                ((= type 'int)   (int-matrix n-rows))
                                ((= type 'stamp) (double-matrix n-rows)) )))
             (for (r 0 (1- n-rows))
@@ -414,6 +429,7 @@
            (t
             ;; Numeric or stamp column
             (let ((dst-col (cond ((= type 'real)  (double-matrix nr))
+                                 ((= type 'float) (float-matrix nr))
                                  ((= type 'int)   (int-matrix nr))
                                  ((= type 'stamp) (double-matrix nr)) )))
               (let ((di 0))
@@ -457,6 +473,13 @@
             (if descending
               (idx-d1i1sortdown key perm)
               (idx-d1i1sortup key perm) ) ) )
+         ((= type 'float)
+          (let ((key (float-matrix n-rows)))
+            (let ((src (narrow col 0 n-rows 0)))
+              (idx-copy src key) )
+            (if descending
+              (idx-f1i1sortdown key perm)
+              (idx-f1i1sortup key perm) ) ) )
          ((= type 'int)
           (let ((key (int-matrix n-rows)))
             (let ((src (narrow col 0 n-rows 0)))
@@ -493,13 +516,18 @@
            (t
             ;; Numeric or stamp column
             (let ((dst (cond ((= type 'real)  (double-matrix nr))
+                             ((= type 'float) (float-matrix nr))
                              ((= type 'int)   (int-matrix nr))
                              ((= type 'stamp) (double-matrix nr)) )))
               (if (and (functionp _cdb-d1gather) (functionp _cdb-i1gather))
                 ;; Compiled gather path
-                (if (= type 'int)
-                  (_cdb-i1gather dst col idx-perm nr)
-                  (_cdb-d1gather dst col idx-perm nr) )
+                (cond ((= type 'int)
+                       (_cdb-i1gather dst col idx-perm nr))
+                      ((= type 'float)
+                       (if (functionp _cdb-f1gather)
+                         (_cdb-f1gather dst col idx-perm nr)
+                         (for (i 0 (1- nr)) (dst i (col (idx-perm i))))))
+                      (t (_cdb-d1gather dst col idx-perm nr)))
                 ;; Interpreted fallback
                 (for (i 0 (1- nr))
                   (dst i (col (idx-perm i))) ) )
@@ -567,6 +595,8 @@
                         ((= op '<=) (<= v value))
                         ((= op '>=) (>= v value))
                         ((= op '<>) (<> v value))
+                        ((= op 'null?) (dt-null? type v))
+                        ((= op 'not-null?) (not (dt-null? type v)))
                         (t (error "DataTable" "unknown operator" op)) )
               (setq result (nconc1 result r)) ) ) )
         result ) ) ) )

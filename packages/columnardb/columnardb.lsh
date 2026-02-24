@@ -90,7 +90,7 @@
                   (when (< rc 0)
                     (error "columnardb-save" "failed to write column" name) ) )
                 ;; Check if sorted (compiled C)
-                (when (= 1 (idx-d1sortedp data))
+                (when (= 1 (_cdb-d1sortedp-safe data nrows))
                   (setq sorted-cols (nconc1 sorted-cols ci)) ) ) )
 
              ;; Integer column
@@ -104,6 +104,17 @@
                 (when (= 1 (idx-i1sortedp data))
                   (setq sorted-cols (nconc1 sorted-cols ci)) ) ) )
 
+             ;; Float column
+             ((= type 'float)
+              (let ((fname (concat path "/col-" (str ci) ".col"))
+                    (data (float-matrix nrows)) )
+                (for (i 0 (1- nrows)) (data i (col i)))
+                (let ((rc (_cdb-write-floats fname data nrows)))
+                  (when (< rc 0)
+                    (error "columnardb-save" "failed to write column" name) ) )
+                (when (= 1 (_cdb-f1sortedp data nrows))
+                  (setq sorted-cols (nconc1 sorted-cols ci)) ) ) )
+
              ;; Stamp (double) column -- same binary format as real
              ((= type 'stamp)
               (let ((fname (concat path "/col-" (str ci) ".col"))
@@ -113,7 +124,7 @@
                   (when (< rc 0)
                     (error "columnardb-save" "failed to write column" name) ) )
                 ;; Check if sorted (stamps are often the sort key, compiled C)
-                (when (= 1 (idx-d1sortedp data))
+                (when (= 1 (_cdb-d1sortedp-safe data nrows))
                   (setq sorted-cols (nconc1 sorted-cols ci)) ) ) )
 
              ;; String column (dictionary-encoded)
@@ -226,6 +237,8 @@
             (cond
              ((or (= type 'real) (= type 'stamp))
               (setq column-list (nconc1 column-list (double-matrix 1))) )
+             ((= type 'float)
+              (setq column-list (nconc1 column-list (float-matrix 1))) )
              ((= type 'int)
               (setq column-list (nconc1 column-list (int-matrix 1))) )
              ((= type 'string)
@@ -248,6 +261,25 @@
                       (_cdb-d1delta-decode deltas data nrows) )
                     ;; Raw doubles
                     (let ((rc (_cdb-read-doubles fname data nrows)))
+                      (when (< rc 0)
+                        (error "columnardb-load-mem" "failed to read column" name) ) ) ) )
+                (setq column-list (nconc1 column-list data)) ) )
+
+             ;; Float column
+             ((= type 'float)
+              (let ((fname (concat path "/col-" (str ci) ".col"))
+                    (data (float-matrix nrows)) )
+                ;; Check typecode for compression
+                (let ((cnt-chk (double-matrix 1))
+                      (typ-chk (int-matrix 1)) )
+                  (_cdb-read-header fname cnt-chk typ-chk)
+                  (if (= (typ-chk 0) *cdb-type-delta-float*)
+                    ;; Delta-encoded: read deltas then decode
+                    (let ((deltas (float-matrix nrows)))
+                      (_cdb-read-floats fname deltas nrows)
+                      (_cdb-f1delta-decode deltas data nrows) )
+                    ;; Raw floats
+                    (let ((rc (_cdb-read-floats fname data nrows)))
                       (when (< rc 0)
                         (error "columnardb-load-mem" "failed to read column" name) ) ) ) )
                 (setq column-list (nconc1 column-list data)) ) )
@@ -342,6 +374,8 @@
             (cond
              ((or (= type 'real) (= type 'stamp))
               (setq column-list (nconc1 column-list (double-matrix 1))) )
+             ((= type 'float)
+              (setq column-list (nconc1 column-list (float-matrix 1))) )
              ((= type 'int)
               (setq column-list (nconc1 column-list (int-matrix 1))) )
              ((= type 'string)
@@ -365,6 +399,25 @@
                       (setq column-list (nconc1 column-list data)) )
                     ;; Raw: mmap
                     (let ((stor (double-storage)))
+                      (storage-mmap stor fname *cdb-header-size*)
+                      (let ((col (new-index stor (list nrows))))
+                        (setq column-list (nconc1 column-list col)) ) ) ) ) ) )
+
+             ;; Float column -> mmap as float (or decode delta)
+             ((= type 'float)
+              (let ((fname (concat path "/col-" (str ci) ".col")))
+                (let ((cnt-chk (double-matrix 1))
+                      (typ-chk (int-matrix 1)) )
+                  (_cdb-read-header fname cnt-chk typ-chk)
+                  (if (= (typ-chk 0) *cdb-type-delta-float*)
+                    ;; Compressed: decode
+                    (let ((data (float-matrix nrows))
+                          (deltas (float-matrix nrows)) )
+                      (_cdb-read-floats fname deltas nrows)
+                      (_cdb-f1delta-decode deltas data nrows)
+                      (setq column-list (nconc1 column-list data)) )
+                    ;; Raw: mmap
+                    (let ((stor (float-storage)))
                       (storage-mmap stor fname *cdb-header-size*)
                       (let ((col (new-index stor (list nrows))))
                         (setq column-list (nconc1 column-list col)) ) ) ) ) ) )
@@ -478,6 +531,8 @@
             (cond
              ((or (= type 'real) (= type 'stamp))
               (setq column-list (nconc1 column-list (double-matrix 1))) )
+             ((= type 'float)
+              (setq column-list (nconc1 column-list (float-matrix 1))) )
              ((= type 'int)
               (setq column-list (nconc1 column-list (int-matrix 1))) )
              ((= type 'string)
@@ -489,6 +544,14 @@
              ((or (= type 'real) (= type 'stamp))
               (let ((fname (concat path "/col-" (str ci) ".col")))
                 (let ((stor (double-storage)))
+                  (storage-mmap-rw stor fname *cdb-header-size*)
+                  (let ((col (new-index stor (list nrows))))
+                    (setq column-list (nconc1 column-list col)) ) ) ) )
+
+             ;; Float column -> mmap-rw as float
+             ((= type 'float)
+              (let ((fname (concat path "/col-" (str ci) ".col")))
+                (let ((stor (float-storage)))
                   (storage-mmap-rw stor fname *cdb-header-size*)
                   (let ((col (new-index stor (list nrows))))
                     (setq column-list (nconc1 column-list col)) ) ) ) )
@@ -623,9 +686,31 @@
                             (_cdb-read-doubles fname old-data old-nrows)
                             (when (< (data 0) (old-data (1- old-nrows)))
                               (setq still-sorted ()) ) ) )
-                        ;; Also check new data is sorted (compiled C)
+                        ;; Also check new data is sorted (compiled C, NaN-safe)
                         (when (and still-sorted
-                                   (<> 1 (idx-d1sortedp data)))
+                                   (<> 1 (_cdb-d1sortedp-safe data new-nrows)))
+                          (setq still-sorted ()) )
+                        (when still-sorted
+                          (setq new-sorted (nconc1 new-sorted ci)) ) ) ) ) )
+
+                 ;; Float column
+                 ((= type 'float)
+                  (let ((fname (concat path "/col-" (str ci) ".col"))
+                        (data (float-matrix new-nrows)) )
+                    (for (i 0 (1- new-nrows)) (data i (col i)))
+                    (let ((rc (_cdb-append-floats fname data new-nrows total-rows)))
+                      (when (< rc 0)
+                        (error "columnardb-append" "failed to append column" name) ) )
+                    ;; Check if this column stays sorted
+                    (when (member ci old-sorted)
+                      (let ((still-sorted t))
+                        (when (> old-nrows 0)
+                          (let ((old-data (float-matrix old-nrows)))
+                            (_cdb-read-floats fname old-data old-nrows)
+                            (when (< (data 0) (old-data (1- old-nrows)))
+                              (setq still-sorted ()) ) ) )
+                        (when (and still-sorted
+                                   (<> 1 (_cdb-f1sortedp data new-nrows)))
                           (setq still-sorted ()) )
                         (when still-sorted
                           (setq new-sorted (nconc1 new-sorted ci)) ) ) ) ) )
@@ -749,16 +834,28 @@
 
     (if (member col-idx sorted-cols)
       ;; Fast path: compiled C binary search on sorted column
-      (let* ((view (narrow col 0 nrows 0))
-             (left (idx-d1bsearch-left view lo))
-             (right (idx-d1bsearch-right view hi)) )
-        (if (> left right)
-          ()  ;; empty result
-          ;; Build result list
-          (let ((result ()))
-            (for (i left right)
-              (setq result (nconc1 result i)) )
-            result ) ) )
+      (if (= type 'float)
+        ;; Float column: use float bsearch
+        (let* ((view (narrow col 0 nrows 0))
+               (left (_cdb-f1bsearch-left view nrows (to-float lo)))
+               (right (_cdb-f1bsearch-right view nrows (to-float hi))) )
+          (if (> left right)
+            ()
+            (let ((result ()))
+              (for (i left right)
+                (setq result (nconc1 result i)) )
+              result ) ) )
+        ;; Double/stamp/int column: use double bsearch
+        (let* ((view (narrow col 0 nrows 0))
+               (left (idx-d1bsearch-left view lo))
+               (right (idx-d1bsearch-right view hi)) )
+          (if (> left right)
+            ()  ;; empty result
+            ;; Build result list
+            (let ((result ()))
+              (for (i left right)
+                (setq result (nconc1 result i)) )
+              result ) ) ) )
       ;; Slow path: linear scan
       (let ((result ()))
         (for (i 0 (1- nrows))

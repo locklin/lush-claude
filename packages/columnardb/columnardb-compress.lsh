@@ -17,6 +17,7 @@
 
 (defvar *cdb-type-delta-double* 3)
 (defvar *cdb-type-rle-int32* 4)
+(defvar *cdb-type-delta-float* 6)
 
 
 ;; ============================================================
@@ -61,6 +62,81 @@
   }
   #}
   () )
+
+
+;; ============================================================
+;; Compiled C functions for float delta encoding
+;; ============================================================
+
+;; Float delta encode: dest[0]=src[0], dest[i]=src[i]-src[i-1]
+(de _cdb-f1delta-encode (src dest n)
+  ((-idx1- (-float-)) src dest)
+  ((-int-) n)
+  #{
+  {
+    float *s = IDX_PTR($src, float);
+    float *d = IDX_PTR($dest, float);
+    if ($n > 0) {
+      d[0] = s[0];
+      int i;
+      for (i = 1; i < $n; i++) {
+        d[i] = s[i] - s[i-1];
+      }
+    }
+  }
+  #}
+  () )
+
+
+;; Float delta decode: dest[0]=src[0], dest[i]=dest[i-1]+src[i]
+(de _cdb-f1delta-decode (src dest n)
+  ((-idx1- (-float-)) src dest)
+  ((-int-) n)
+  #{
+  {
+    float *s = IDX_PTR($src, float);
+    float *d = IDX_PTR($dest, float);
+    if ($n > 0) {
+      d[0] = s[0];
+      int i;
+      for (i = 1; i < $n; i++) {
+        d[i] = d[i-1] + s[i];
+      }
+    }
+  }
+  #}
+  () )
+
+
+;; Write LCDB header with typecode=6, then delta-encoded float data
+(de _cdb-write-delta-floats (filename data nrows)
+  ((-str-) filename)
+  ((-idx1- (-float-)) data)
+  ((-int-) nrows)
+  (let ((rc 0))
+    ((-int-) rc)
+    #{
+    {
+      FILE *f = fopen((const char *)$filename->data, "wb");
+      if (!f) { $rc = -1; }
+      else {
+        uint32_t magic = 0x4C434442u;
+        uint32_t version = 1;
+        int64_t count = (int64_t)$nrows;
+        uint32_t typecode = 6; /* delta float */
+        uint32_t reserved = 0;
+        fwrite(&magic, 4, 1, f);
+        fwrite(&version, 4, 1, f);
+        fwrite(&count, 8, 1, f);
+        fwrite(&typecode, 4, 1, f);
+        fwrite(&reserved, 4, 1, f);
+        size_t written = fwrite(IDX_PTR($data, float), sizeof(float), $nrows, f);
+        if ((int)written != $nrows) $rc = -1;
+        fclose(f);
+      }
+    }
+    #}
+    rc ) )
 
 
 ;; ============================================================
@@ -274,6 +350,7 @@
   #include <stdint.h>
   #}
   _cdb-d1delta-encode _cdb-d1delta-decode
+  _cdb-f1delta-encode _cdb-f1delta-decode _cdb-write-delta-floats
   _cdb-i1rle-count-runs _cdb-i1rle-encode _cdb-i1rle-decode
   _cdb-write-delta-doubles _cdb-write-rle-ints _cdb-read-rle-ints )
 
@@ -307,7 +384,12 @@
              ((or (= type 'real) (= type 'stamp))
               (let ((data (double-matrix nrows)))
                 (for (i 0 (1- nrows)) (data i (col i)))
-                (when (= 1 (idx-d1sortedp data))
+                (when (= 1 (_cdb-d1sortedp-safe data nrows))
+                  (setq sorted-cols (nconc1 sorted-cols ci)) ) ) )
+             ((= type 'float)
+              (let ((data (float-matrix nrows)))
+                (for (i 0 (1- nrows)) (data i (col i)))
+                (when (= 1 (_cdb-f1sortedp data nrows))
                   (setq sorted-cols (nconc1 sorted-cols ci)) ) ) )
              ((= type 'int)
               (let ((data (int-matrix nrows)))
@@ -347,7 +429,28 @@
                       (when (< rc 0)
                         (error "columnardb-save-compressed" "failed to write column" name) ) ) )
                   ;; Track sorted
-                  (when (= 1 (idx-d1sortedp data))
+                  (when (= 1 (_cdb-d1sortedp-safe data nrows))
+                    (when (not (member ci sorted-cols))
+                      (setq sorted-cols (nconc1 sorted-cols ci)) ) ) ) )
+
+               ;; Float column
+               ((= type 'float)
+                (let ((fname (concat path "/col-" (str ci) ".col"))
+                      (data (float-matrix nrows)) )
+                  (for (i 0 (1- nrows)) (data i (col i)))
+                  (if (member ci to-compress)
+                    ;; Delta compress
+                    (let ((delta (float-matrix nrows)))
+                      (_cdb-f1delta-encode data delta nrows)
+                      (let ((rc (_cdb-write-delta-floats fname delta nrows)))
+                        (when (< rc 0)
+                          (error "columnardb-save-compressed" "failed to write delta float column" name) ) )
+                      (setq compressed-cols (nconc1 compressed-cols ci)) )
+                    ;; Raw
+                    (let ((rc (_cdb-write-floats fname data nrows)))
+                      (when (< rc 0)
+                        (error "columnardb-save-compressed" "failed to write column" name) ) ) )
+                  (when (= 1 (_cdb-f1sortedp data nrows))
                     (when (not (member ci sorted-cols))
                       (setq sorted-cols (nconc1 sorted-cols ci)) ) ) ) )
 

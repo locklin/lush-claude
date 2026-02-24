@@ -2097,6 +2097,389 @@
 
 
 ;; ============================================================
+;; Stage 24: Float Column Type
+;; ============================================================
+
+(test-suite "Stage 24: Float Column Type"
+
+  ;; Basic float column create, append, get
+  (let ((dt (new DataTable)))
+    (==> dt add-column "x" 'float)
+    (==> dt add-column "label" 'string)
+    (==> dt append-row (list 1.5 "a"))
+    (==> dt append-row (list 2.5 "b"))
+    (==> dt append-row (list 3.5 "c"))
+    (test-equal "float rows" (==> dt num-rows) 3)
+    (test-approx "float get[0]" (==> dt get 0 "x") 1.5 0.01)
+    (test-approx "float get[2]" (==> dt get 2 "x") 3.5 0.01)
+    (test-string-equal "float str[1]" (==> dt get 1 "label") "b")
+
+    ;; Float save/load-mem round-trip
+    (let ((path (concat *test-dir* "/float-basic")))
+      (columnardb-save dt path)
+      (let ((dt2 (columnardb-load-mem path)))
+        (test-equal "float mem rows" (==> dt2 num-rows) 3)
+        (test-approx "float mem[0]" (==> dt2 get 0 "x") 1.5 0.01)
+        (test-approx "float mem[2]" (==> dt2 get 2 "x") 3.5 0.01) )
+
+      ;; Float save/load (mmap) round-trip
+      (let ((dt3 (columnardb-load path)))
+        (test-equal "float mmap rows" (==> dt3 num-rows) 3)
+        (test-approx "float mmap[0]" (==> dt3 get 0 "x") 1.5 0.01)
+        (test-approx "float mmap[2]" (==> dt3 get 2 "x") 3.5 0.01) )
+
+      ;; Float save/load-rw round-trip
+      (let ((dt4 (columnardb-load-rw path)))
+        (test-equal "float rw rows" (==> dt4 num-rows) 3)
+        (test-approx "float rw[0]" (==> dt4 get 0 "x") 1.5 0.01)
+        (test-approx "float rw[2]" (==> dt4 get 2 "x") 3.5 0.01) ) ) )
+
+  ;; Float append to persisted table
+  (let ((dt (new DataTable)))
+    (==> dt add-column "val" 'float)
+    (==> dt append-row (list 10.0))
+    (==> dt append-row (list 20.0))
+    (let ((path (concat *test-dir* "/float-append")))
+      (columnardb-save dt path)
+      (let ((dt2 (new DataTable)))
+        (==> dt2 add-column "val" 'float)
+        (==> dt2 append-row (list 30.0))
+        (columnardb-append path dt2) )
+      (let ((dt3 (columnardb-load-mem path)))
+        (test-equal "float append rows" (==> dt3 num-rows) 3)
+        (test-approx "float append[2]" (==> dt3 get 2 "val") 30.0 0.01) ) ) )
+
+  ;; Float select-rows
+  (let ((dt (new DataTable)))
+    (==> dt add-column "x" 'float)
+    (for (i 0 4) (==> dt append-row (list (* i 1.0))))
+    (let ((sub (==> dt select-rows (list 1 3))))
+      (test-equal "float select rows" (==> sub num-rows) 2)
+      (test-approx "float select[0]" (==> sub get 0 "x") 1.0 0.01)
+      (test-approx "float select[1]" (==> sub get 1 "x") 3.0 0.01) ) )
+
+  ;; Float select-rows-idx
+  (let ((dt (new DataTable)))
+    (==> dt add-column "x" 'float)
+    (for (i 0 4) (==> dt append-row (list (* i 2.0))))
+    (let ((perm (int-matrix 2)))
+      (perm 0 4) (perm 1 0)
+      (let ((sub (==> dt select-rows-idx perm)))
+        (test-equal "float sel-idx rows" (==> sub num-rows) 2)
+        (test-approx "float sel-idx[0]" (==> sub get 0 "x") 8.0 0.01)
+        (test-approx "float sel-idx[1]" (==> sub get 1 "x") 0.0 0.01) ) ) )
+
+  ;; Float select-columns
+  (let ((dt (new DataTable)))
+    (==> dt add-column "a" 'real)
+    (==> dt add-column "b" 'float)
+    (==> dt add-column "c" 'int)
+    (==> dt append-row (list 1.0 2.0 3))
+    (let ((sub (==> dt select-columns (list "b"))))
+      (test-equal "float selcol cols" (==> sub num-cols) 1)
+      (test-approx "float selcol[0]" (==> sub get 0 "b") 2.0 0.01) ) )
+
+  ;; Float grade/sort-by ascending/descending
+  (let ((dt (new DataTable)))
+    (==> dt add-column "x" 'float)
+    (==> dt append-row (list 3.0))
+    (==> dt append-row (list 1.0))
+    (==> dt append-row (list 2.0))
+    (let ((sorted-asc (==> dt sort-by "x")))
+      (test-approx "float sort asc[0]" (==> sorted-asc get 0 "x") 1.0 0.01)
+      (test-approx "float sort asc[2]" (==> sorted-asc get 2 "x") 3.0 0.01) )
+    (let ((sorted-desc (==> dt sort-by "x" t)))
+      (test-approx "float sort desc[0]" (==> sorted-desc get 0 "x") 3.0 0.01)
+      (test-approx "float sort desc[2]" (==> sorted-desc get 2 "x") 1.0 0.01) ) )
+
+  ;; Float where
+  (let ((dt (new DataTable)))
+    (==> dt add-column "x" 'float)
+    (for (i 0 4) (==> dt append-row (list (* i 1.0))))
+    (test-equal "float where >" (length (==> dt where '> "x" 2.0)) 2)
+    (test-equal "float where =" (length (==> dt where '= "x" 3.0)) 1) )
+
+  ;; Float groupby (sum, mean, min, max by string group)
+  (let ((dt (new DataTable)))
+    (==> dt add-column "grp" 'string)
+    (==> dt add-column "val" 'float)
+    (==> dt append-row (list "A" 1.0))
+    (==> dt append-row (list "B" 2.0))
+    (==> dt append-row (list "A" 3.0))
+    (==> dt append-row (list "B" 4.0))
+    (let ((sc (==> dt get-column "grp")))
+      (==> sc build-index) )
+    (let ((sum-dt (columnardb-group-by dt "grp" "val" 'sum)))
+      (test-approx "float grp sum A" (==> sum-dt get 0 1) 4.0 0.01)
+      (test-approx "float grp sum B" (==> sum-dt get 1 1) 6.0 0.01) )
+    (let ((mean-dt (columnardb-group-by dt "grp" "val" 'mean)))
+      (test-approx "float grp mean A" (==> mean-dt get 0 1) 2.0 0.01)
+      (test-approx "float grp mean B" (==> mean-dt get 1 1) 3.0 0.01) )
+    (let ((min-dt (columnardb-group-by dt "grp" "val" 'min)))
+      (test-approx "float grp min A" (==> min-dt get 0 1) 1.0 0.01)
+      (test-approx "float grp min B" (==> min-dt get 1 1) 2.0 0.01) )
+    (let ((max-dt (columnardb-group-by dt "grp" "val" 'max)))
+      (test-approx "float grp max A" (==> max-dt get 0 1) 3.0 0.01)
+      (test-approx "float grp max B" (==> max-dt get 1 1) 4.0 0.01) ) )
+
+  ;; Float range query on sorted float column
+  (let ((dt (new DataTable)))
+    (==> dt add-column "x" 'float)
+    (for (i 0 9) (==> dt append-row (list (* i 1.0))))
+    (let ((path (concat *test-dir* "/float-range")))
+      (columnardb-save dt path)
+      (let ((dt2 (columnardb-load path))
+            (meta (columnardb-meta path)) )
+        (let ((result (columnardb-range dt2 "x" 3.0 7.0 meta)))
+          (test-equal "float range count" (length result) 5)
+          (test-equal "float range first" (car result) 3)
+          (test-equal "float range last" (nth 4 result) 7) ) ) ) )
+
+  ;; Float compressed save/load (delta encoding)
+  (let ((dt (new DataTable)))
+    (==> dt add-column "x" 'float)
+    (for (i 0 99) (==> dt append-row (list (* i 0.5))))
+    (let ((path (concat *test-dir* "/float-compress")))
+      (columnardb-save-compressed dt path)
+      (let ((dt2 (columnardb-load-mem path)))
+        (test-approx "float compress[0]" (==> dt2 get 0 "x") 0.0 0.01)
+        (test-approx "float compress[99]" (==> dt2 get 99 "x") 49.5 0.1) )
+      (let ((dt3 (columnardb-load path)))
+        (test-approx "float compress mmap[0]" (==> dt3 get 0 "x") 0.0 0.01)
+        (test-approx "float compress mmap[99]" (==> dt3 get 99 "x") 49.5 0.1) ) ) )
+
+  ;; Float partition concat
+  (let ((dt1 (new DataTable))
+        (dt2 (new DataTable)))
+    (==> dt1 add-column "x" 'float)
+    (==> dt2 add-column "x" 'float)
+    (==> dt1 append-row (list 1.0))
+    (==> dt1 append-row (list 2.0))
+    (==> dt2 append-row (list 3.0))
+    (let ((combined (_partition-concat-tables (list dt1 dt2))))
+      (test-equal "float concat rows" (==> combined num-rows) 3)
+      (test-approx "float concat[2]" (==> combined get 2 "x") 3.0 0.01) ) )
+
+  ;; _cdb-f1sortedp: sorted and unsorted arrays
+  (let ((sorted (float-matrix 5))
+        (unsorted (float-matrix 5)) )
+    (for (i 0 4) (sorted i (* i 1.0)))
+    (unsorted 0 3.0) (unsorted 1 1.0) (unsorted 2 2.0) (unsorted 3 4.0) (unsorted 4 0.0)
+    (test-equal "f1sortedp sorted" (_cdb-f1sortedp sorted 5) 1)
+    (test-equal "f1sortedp unsorted" (_cdb-f1sortedp unsorted 5) 0) )
+
+  ;; Mixed table: real + float + int + string
+  (let ((dt (new DataTable)))
+    (==> dt add-column "a" 'real)
+    (==> dt add-column "b" 'float)
+    (==> dt add-column "c" 'int)
+    (==> dt add-column "d" 'string)
+    (==> dt append-row (list 1.1 2.2 3 "hello"))
+    (==> dt append-row (list 4.4 5.5 6 "world"))
+    (let ((path (concat *test-dir* "/float-mixed")))
+      (columnardb-save dt path)
+      (let ((dt2 (columnardb-load path)))
+        (test-approx "mixed real[0]" (==> dt2 get 0 "a") 1.1 0.01)
+        (test-approx "mixed float[0]" (==> dt2 get 0 "b") 2.2 0.1)
+        (test-equal "mixed int[1]" (==> dt2 get 1 "c") 6)
+        (test-string-equal "mixed str[1]" (==> dt2 get 1 "d") "world") ) ) )
+
+  ;; Cross-process: save float table, child loads + reads value
+  (let ((dt (new DataTable)))
+    (==> dt add-column "x" 'float)
+    (for (i 0 9) (==> dt append-row (list (* i 1.5))))
+    (let ((path (concat *test-dir* "/float-xproc"))
+          (result-file (concat *test-dir* "/float-xproc-result.lsh"))
+          (pkg-dir (dirname (dirname (dirname file-being-loaded))))
+          (lush-bin "/workspaces/claude-sandbox/lush-claude/bin/lush") )
+      (columnardb-save dt path)
+      (sys (concat "TMPDIR=/tmp/claude " lush-bin " -e '(addpath \"" pkg-dir "\") "
+           "(libload \"columnardb/columnardb\") "
+           "(let ((dt (columnardb-load \"" path "\"))) "
+           "  (let ((f (open-write \"" result-file "\"))) "
+           "    (writing f (print (list (==> dt get 0 \"x\") (==> dt get 9 \"x\")))) "
+           "    (writing f (printf \"\\n\"))))'"))
+      (when (filep result-file)
+        (let ((val (_cdb-read-sexp result-file)))
+          (test-approx "float xproc first" (car val) 0.0 0.01)
+          (test-approx "float xproc last" (cadr val) 13.5 0.1) ) ) ) )
+)
+
+
+;; ============================================================
+;; Stage 25: NULL Sentinels
+;; ============================================================
+
+(test-suite "Stage 25: NULL Sentinels"
+
+  ;; dt-null returns correct sentinel for each type
+  (test-check "null real is nan" (nanp (dt-null 'real)))
+  (test-check "null float is nan" (nanp (dt-null 'float)))
+  (test-check "null stamp is nan" (nanp (dt-null 'stamp)))
+  (test-equal "null int is INT_MIN" (dt-null 'int) -2147483648)
+  (test-string-equal "null string is empty" (dt-null 'string) "")
+
+  ;; dt-null? correctly identifies sentinels
+  (test-check "null? real nan" (dt-null? 'real (nan)))
+  (test-check "null? float nan" (dt-null? 'float (nan)))
+  (test-check "null? int sentinel" (dt-null? 'int -2147483648))
+  (test-check "null? string nil" (dt-null? 'string ()))
+  (test-check "null? string empty" (dt-null? 'string ""))
+  (test-check "not null? real 1.0" (not (dt-null? 'real 1.0)))
+  (test-check "not null? int 42" (not (dt-null? 'int 42)))
+
+  ;; Append row with nil value -> sentinel stored
+  (let ((dt (new DataTable)))
+    (==> dt add-column "r" 'real)
+    (==> dt add-column "f" 'float)
+    (==> dt add-column "i" 'int)
+    (==> dt append-row (list () () ()))
+    (==> dt append-row (list 1.0 2.0 3))
+    (test-check "null real stored" (nanp (==> dt get 0 "r")))
+    (test-check "null float stored" (nanp (==> dt get 0 "f")))
+    (test-equal "null int stored" (==> dt get 0 "i") -2147483648)
+    (test-approx "nonnull real" (==> dt get 1 "r") 1.0 0.01)
+    (test-approx "nonnull float" (==> dt get 1 "f") 2.0 0.01)
+    (test-equal "nonnull int" (==> dt get 1 "i") 3) )
+
+  ;; Where null? finds null rows
+  (let ((dt (new DataTable)))
+    (==> dt add-column "x" 'real)
+    (==> dt append-row (list 1.0))
+    (==> dt append-row (list ()))
+    (==> dt append-row (list 3.0))
+    (==> dt append-row (list ()))
+    (let ((nulls (==> dt where 'null? "x" ())))
+      (test-equal "where null? count" (length nulls) 2)
+      (test-equal "where null? first" (car nulls) 1)
+      (test-equal "where null? second" (cadr nulls) 3) ) )
+
+  ;; Where not-null? finds non-null rows
+  (let ((dt (new DataTable)))
+    (==> dt add-column "x" 'int)
+    (==> dt append-row (list 10))
+    (==> dt append-row (list ()))
+    (==> dt append-row (list 30))
+    (let ((nonnulls (==> dt where 'not-null? "x" ())))
+      (test-equal "where not-null? count" (length nonnulls) 2)
+      (test-equal "where not-null? first" (car nonnulls) 0)
+      (test-equal "where not-null? second" (cadr nonnulls) 2) ) )
+
+  ;; Groupby sum skips nulls
+  (let ((dt (new DataTable)))
+    (==> dt add-column "grp" 'string)
+    (==> dt add-column "val" 'real)
+    (==> dt append-row (list "A" 1.0))
+    (==> dt append-row (list "A" ()))
+    (==> dt append-row (list "A" 3.0))
+    (==> dt append-row (list "B" ()))
+    (==> dt append-row (list "B" 5.0))
+    (let ((sc (==> dt get-column "grp")))
+      (==> sc build-index) )
+    (let ((sum-dt (columnardb-group-by dt "grp" "val" 'sum)))
+      (test-approx "null sum A" (==> sum-dt get 0 1) 4.0 0.01)
+      (test-approx "null sum B" (==> sum-dt get 1 1) 5.0 0.01) ) )
+
+  ;; Groupby mean with nulls (correct divisor)
+  (let ((dt (new DataTable)))
+    (==> dt add-column "grp" 'string)
+    (==> dt add-column "val" 'real)
+    (==> dt append-row (list "A" 2.0))
+    (==> dt append-row (list "A" ()))
+    (==> dt append-row (list "A" 4.0))
+    (let ((sc (==> dt get-column "grp")))
+      (==> sc build-index) )
+    (let ((mean-dt (columnardb-group-by dt "grp" "val" 'mean)))
+      (test-approx "null mean A" (==> mean-dt get 0 1) 3.0 0.01) ) )
+
+  ;; Groupby min/max ignore nulls
+  (let ((dt (new DataTable)))
+    (==> dt add-column "grp" 'string)
+    (==> dt add-column "val" 'float)
+    (==> dt append-row (list "A" ()))
+    (==> dt append-row (list "A" 5.0))
+    (==> dt append-row (list "A" 2.0))
+    (let ((sc (==> dt get-column "grp")))
+      (==> sc build-index) )
+    (let ((min-dt (columnardb-group-by dt "grp" "val" 'min)))
+      (test-approx "null min A" (==> min-dt get 0 1) 2.0 0.01) )
+    (let ((max-dt (columnardb-group-by dt "grp" "val" 'max)))
+      (test-approx "null max A" (==> max-dt get 0 1) 5.0 0.01) ) )
+
+  ;; Groupby count with nulls (counts non-null only)
+  (let ((dt (new DataTable)))
+    (==> dt add-column "grp" 'string)
+    (==> dt add-column "val" 'real)
+    (==> dt append-row (list "A" 1.0))
+    (==> dt append-row (list "A" ()))
+    (==> dt append-row (list "A" 3.0))
+    (let ((sc (==> dt get-column "grp")))
+      (==> sc build-index) )
+    (let ((cnt-dt (columnardb-group-by dt "grp" "val" 'count)))
+      (test-equal "null count A" (==> cnt-dt get 0 1) 2) ) )
+
+  ;; Save/load preserves sentinels (NaN round-trips, INT_MIN round-trips)
+  (let ((dt (new DataTable)))
+    (==> dt add-column "r" 'real)
+    (==> dt add-column "f" 'float)
+    (==> dt add-column "i" 'int)
+    (==> dt append-row (list () () ()))
+    (==> dt append-row (list 1.0 2.0 3))
+    (let ((path (concat *test-dir* "/null-roundtrip")))
+      (columnardb-save dt path)
+      (let ((dt2 (columnardb-load-mem path)))
+        (test-check "null roundtrip real" (nanp (==> dt2 get 0 "r")))
+        (test-check "null roundtrip float" (nanp (==> dt2 get 0 "f")))
+        (test-equal "null roundtrip int" (==> dt2 get 0 "i") -2147483648)
+        (test-approx "nonnull roundtrip real" (==> dt2 get 1 "r") 1.0 0.01) )
+      (let ((dt3 (columnardb-load path)))
+        (test-check "null mmap roundtrip real" (nanp (==> dt3 get 0 "r")))
+        (test-check "null mmap roundtrip float" (nanp (==> dt3 get 0 "f")))
+        (test-equal "null mmap roundtrip int" (==> dt3 get 0 "i") -2147483648) ) ) )
+
+  ;; Mixed nulls: some rows null, some not, across multiple types
+  (let ((dt (new DataTable)))
+    (==> dt add-column "a" 'real)
+    (==> dt add-column "b" 'float)
+    (==> dt add-column "c" 'int)
+    (==> dt append-row (list 1.0 () 10))
+    (==> dt append-row (list () 2.0 ()))
+    (==> dt append-row (list 3.0 3.0 30))
+    (test-approx "mixed null a[0]" (==> dt get 0 "a") 1.0 0.01)
+    (test-check "mixed null b[0]" (nanp (==> dt get 0 "b")))
+    (test-check "mixed null a[1]" (nanp (==> dt get 1 "a")))
+    (test-approx "mixed null b[1]" (==> dt get 1 "b") 2.0 0.01)
+    (test-equal "mixed null c[1]" (==> dt get 1 "c") -2147483648)
+    (test-equal "mixed null c[0]" (==> dt get 0 "c") 10) )
+
+  ;; Cross-process: save table with nulls, child loads + checks sentinel values
+  (let ((dt (new DataTable)))
+    (==> dt add-column "x" 'real)
+    (==> dt add-column "y" 'int)
+    (==> dt append-row (list () ()))
+    (==> dt append-row (list 42.0 99))
+    (let ((path (concat *test-dir* "/null-xproc"))
+          (result-file (concat *test-dir* "/null-xproc-result.lsh"))
+          (pkg-dir (dirname (dirname (dirname file-being-loaded))))
+          (lush-bin "/workspaces/claude-sandbox/lush-claude/bin/lush") )
+      (columnardb-save dt path)
+      (sys (concat "TMPDIR=/tmp/claude " lush-bin " -e '(addpath \"" pkg-dir "\") "
+           "(libload \"columnardb/columnardb\") "
+           "(let ((dt (columnardb-load \"" path "\"))) "
+           "  (let ((f (open-write \"" result-file "\"))) "
+           "    (writing f (print (list (nanp (==> dt get 0 \"x\")) "
+           "                           (==> dt get 0 \"y\") "
+           "                           (==> dt get 1 \"x\")))) "
+           "    (writing f (printf \"\\n\"))))'"))
+      (when (filep result-file)
+        (let ((val (_cdb-read-sexp result-file)))
+          (test-check "null xproc nanp" (car val))
+          (test-equal "null xproc int" (cadr val) -2147483648)
+          (test-approx "null xproc real" (caddr val) 42.0 0.01) ) ) ) )
+)
+
+
+;; ============================================================
 ;; Summary
 ;; ============================================================
 

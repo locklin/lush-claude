@@ -61,6 +61,18 @@
                       (setq offset (+ offset nr)) ) )
                   (setq column-list (nconc1 column-list combined)) ) )
 
+               ;; Float column
+               ((= type 'float)
+                (let ((combined (float-matrix total-rows))
+                      (offset 0) )
+                  (each ((t tables))
+                    (let ((col (==> t get-column ci))
+                          (nr (==> t num-rows)) )
+                      (for (i 0 (1- nr))
+                        (combined (+ offset i) (col i)) )
+                      (setq offset (+ offset nr)) ) )
+                  (setq column-list (nconc1 column-list combined)) ) )
+
                ;; Integer column
                ((= type 'int)
                 (let ((combined (int-matrix total-rows))

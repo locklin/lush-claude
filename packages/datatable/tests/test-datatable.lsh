@@ -677,3 +677,139 @@
       (test-approx "pipeline sales[0]" (==> result get 0 "sales") 100.0 0.001)
       (test-approx "pipeline sales[2]" (==> result get 2 "sales") 300.0 0.001)
       (test-equal "pipeline units[1]" (==> result get 1 "units") 15) ) ) )
+
+
+;; ============================================================
+;; Float column type (standalone datatable)
+;; ============================================================
+
+(test-suite "DataTable Float Columns"
+  ;; Create, append, get
+  (let ((dt (new DataTable)))
+    (==> dt add-column "x" 'float)
+    (==> dt add-column "y" 'real)
+    (==> dt append-row (list 1.5 10.0))
+    (==> dt append-row (list 2.5 20.0))
+    (test-equal "float dt rows" (==> dt num-rows) 2)
+    (test-approx "float dt get[0]" (==> dt get 0 "x") 1.5 0.01)
+    (test-approx "float dt get[1]" (==> dt get 1 "x") 2.5 0.01) )
+
+  ;; Float column type symbol
+  (let ((dt (new DataTable)))
+    (==> dt add-column "x" 'float)
+    (test-equal "float col-type" (==> dt col-type "x") 'float) )
+
+  ;; Float grade/sort
+  (let ((dt (new DataTable)))
+    (==> dt add-column "x" 'float)
+    (==> dt append-row (list 3.0))
+    (==> dt append-row (list 1.0))
+    (==> dt append-row (list 2.0))
+    (let ((sorted (==> dt sort-by "x")))
+      (test-approx "float sort[0]" (==> sorted get 0 "x") 1.0 0.01)
+      (test-approx "float sort[2]" (==> sorted get 2 "x") 3.0 0.01) ) )
+
+  ;; Float select-rows
+  (let ((dt (new DataTable)))
+    (==> dt add-column "x" 'float)
+    (==> dt append-row (list 10.0))
+    (==> dt append-row (list 20.0))
+    (==> dt append-row (list 30.0))
+    (let ((sub (==> dt select-rows (list 0 2))))
+      (test-equal "float sel rows" (==> sub num-rows) 2)
+      (test-approx "float sel[0]" (==> sub get 0 "x") 10.0 0.01)
+      (test-approx "float sel[1]" (==> sub get 1 "x") 30.0 0.01) ) )
+
+  ;; Float select-columns
+  (let ((dt (new DataTable)))
+    (==> dt add-column "a" 'float)
+    (==> dt add-column "b" 'int)
+    (==> dt append-row (list 1.5 2))
+    (let ((sub (==> dt select-columns (list "a"))))
+      (test-approx "float selcol[0]" (==> sub get 0 "a") 1.5 0.01) ) )
+
+  ;; Float where
+  (let ((dt (new DataTable)))
+    (==> dt add-column "x" 'float)
+    (==> dt append-row (list 1.0))
+    (==> dt append-row (list 2.0))
+    (==> dt append-row (list 3.0))
+    (test-equal "float where >" (length (==> dt where '> "x" 1.5)) 2)
+    (test-equal "float where =" (length (==> dt where '= "x" 2.0)) 1) )
+
+  ;; Float set
+  (let ((dt (new DataTable)))
+    (==> dt add-column "x" 'float)
+    (==> dt append-row (list 1.0))
+    (==> dt append-row (list 2.0))
+    (==> dt set 0 "x" 9.9)
+    (test-approx "float set[0]" (==> dt get 0 "x") 9.9 0.1) )
+
+  ;; Mixed float + real + int
+  (let ((dt (new DataTable)))
+    (==> dt add-column "f" 'float)
+    (==> dt add-column "r" 'real)
+    (==> dt add-column "i" 'int)
+    (==> dt add-column "s" 'string)
+    (==> dt append-row (list 1.5 2.5 3 "hello"))
+    (test-approx "mixed float" (==> dt get 0 "f") 1.5 0.01)
+    (test-approx "mixed real" (==> dt get 0 "r") 2.5 0.001)
+    (test-equal "mixed int" (==> dt get 0 "i") 3)
+    (test-string-equal "mixed str" (==> dt get 0 "s") "hello") ) )
+
+
+;; ============================================================
+;; NULL sentinel support (standalone datatable)
+;; ============================================================
+
+(test-suite "DataTable NULL Sentinels"
+  ;; dt-null returns correct sentinels
+  (test-check "dt-null real" (nanp (dt-null 'real)))
+  (test-check "dt-null float" (nanp (dt-null 'float)))
+  (test-equal "dt-null int" (dt-null 'int) -2147483648)
+
+  ;; dt-null? identifies sentinels
+  (test-check "dt-null? real nan" (dt-null? 'real (nan)))
+  (test-check "dt-null? float nan" (dt-null? 'float (nan)))
+  (test-check "dt-null? int min" (dt-null? 'int -2147483648))
+  (test-check "not dt-null? real 1" (not (dt-null? 'real 1.0)))
+
+  ;; Append nil stores sentinel
+  (let ((dt (new DataTable)))
+    (==> dt add-column "r" 'real)
+    (==> dt add-column "f" 'float)
+    (==> dt add-column "i" 'int)
+    (==> dt append-row (list () () ()))
+    (==> dt append-row (list 1.0 2.0 3))
+    (test-check "nil->nan real" (nanp (==> dt get 0 "r")))
+    (test-check "nil->nan float" (nanp (==> dt get 0 "f")))
+    (test-equal "nil->sentinel int" (==> dt get 0 "i") -2147483648)
+    (test-approx "non-nil real" (==> dt get 1 "r") 1.0 0.01)
+    (test-approx "non-nil float" (==> dt get 1 "f") 2.0 0.01)
+    (test-equal "non-nil int" (==> dt get 1 "i") 3) )
+
+  ;; Where null? / not-null?
+  (let ((dt (new DataTable)))
+    (==> dt add-column "x" 'real)
+    (==> dt append-row (list 1.0))
+    (==> dt append-row (list ()))
+    (==> dt append-row (list 3.0))
+    (test-equal "where null?" (length (==> dt where 'null? "x" ())) 1)
+    (test-equal "where not-null?" (length (==> dt where 'not-null? "x" ())) 2) )
+
+  ;; Where null? on int column
+  (let ((dt (new DataTable)))
+    (==> dt add-column "x" 'int)
+    (==> dt append-row (list 10))
+    (==> dt append-row (list ()))
+    (test-equal "where null? int" (length (==> dt where 'null? "x" ())) 1)
+    (test-equal "where not-null? int" (length (==> dt where 'not-null? "x" ())) 1) )
+
+  ;; Where null? on float column
+  (let ((dt (new DataTable)))
+    (==> dt add-column "x" 'float)
+    (==> dt append-row (list 1.0))
+    (==> dt append-row (list ()))
+    (==> dt append-row (list ()))
+    (test-equal "where null? float" (length (==> dt where 'null? "x" ())) 2)
+    (test-equal "where not-null? float" (length (==> dt where 'not-null? "x" ())) 1) ) )

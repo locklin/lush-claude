@@ -102,6 +102,298 @@
 
 
 ;; ============================================================
+;; Float aggregation primitives (used by groupby)
+;; ============================================================
+
+;; Float sum data[perm[i]] for i in [start, end)
+(de _cdb-f1sum-perm (data perm start end)
+  ((-idx1- (-float-)) data)
+  ((-idx1- (-int-)) perm)
+  ((-int-) start end)
+  (let ((result 0.0))
+    ((-double-) result)
+    #{
+    {
+      float *d = IDX_PTR($data, float);
+      int *p = IDX_PTR($perm, int);
+      double s = 0.0;
+      int i;
+      for (i = $start; i < $end; i++) {
+        s += (double)d[p[i]];
+      }
+      $result = s;
+    }
+    #}
+    result ) )
+
+
+;; Float min data[perm[i]] for i in [start, end)
+(de _cdb-f1min-perm (data perm start end)
+  ((-idx1- (-float-)) data)
+  ((-idx1- (-int-)) perm)
+  ((-int-) start end)
+  (let ((result 0.0))
+    ((-double-) result)
+    #{
+    {
+      float *d = IDX_PTR($data, float);
+      int *p = IDX_PTR($perm, int);
+      double m = (double)d[p[$start]];
+      int i;
+      for (i = $start + 1; i < $end; i++) {
+        double v = (double)d[p[i]];
+        if (v < m) m = v;
+      }
+      $result = m;
+    }
+    #}
+    result ) )
+
+
+;; Float max data[perm[i]] for i in [start, end)
+(de _cdb-f1max-perm (data perm start end)
+  ((-idx1- (-float-)) data)
+  ((-idx1- (-int-)) perm)
+  ((-int-) start end)
+  (let ((result 0.0))
+    ((-double-) result)
+    #{
+    {
+      float *d = IDX_PTR($data, float);
+      int *p = IDX_PTR($perm, int);
+      double m = (double)d[p[$start]];
+      int i;
+      for (i = $start + 1; i < $end; i++) {
+        double v = (double)d[p[i]];
+        if (v > m) m = v;
+      }
+      $result = m;
+    }
+    #}
+    result ) )
+
+
+;; ============================================================
+;; Null-skipping aggregation (NaN-aware for double/float)
+;; ============================================================
+
+;; Double sum skipping NaN
+(de _cdb-d1sum-perm-skipnan (data perm start end)
+  ((-idx1- (-double-)) data)
+  ((-idx1- (-int-)) perm)
+  ((-int-) start end)
+  (let ((result 0.0))
+    ((-double-) result)
+    #{
+    {
+      double *d = IDX_PTR($data, double);
+      int *p = IDX_PTR($perm, int);
+      double s = 0.0;
+      int i;
+      for (i = $start; i < $end; i++) {
+        double v = d[p[i]];
+        if (v == v) s += v;  /* skip NaN */
+      }
+      $result = s;
+    }
+    #}
+    result ) )
+
+;; Float sum skipping NaN
+(de _cdb-f1sum-perm-skipnan (data perm start end)
+  ((-idx1- (-float-)) data)
+  ((-idx1- (-int-)) perm)
+  ((-int-) start end)
+  (let ((result 0.0))
+    ((-double-) result)
+    #{
+    {
+      float *d = IDX_PTR($data, float);
+      int *p = IDX_PTR($perm, int);
+      double s = 0.0;
+      int i;
+      for (i = $start; i < $end; i++) {
+        float v = d[p[i]];
+        if (v == v) s += (double)v;
+      }
+      $result = s;
+    }
+    #}
+    result ) )
+
+;; Double min skipping NaN
+(de _cdb-d1min-perm-skipnan (data perm start end)
+  ((-idx1- (-double-)) data)
+  ((-idx1- (-int-)) perm)
+  ((-int-) start end)
+  (let ((result 0.0))
+    ((-double-) result)
+    #{
+    {
+      double *d = IDX_PTR($data, double);
+      int *p = IDX_PTR($perm, int);
+      double m = 1e308;
+      int i, found = 0;
+      for (i = $start; i < $end; i++) {
+        double v = d[p[i]];
+        if (v == v) { if (!found || v < m) { m = v; found = 1; } }
+      }
+      if (found) $result = m; else { union { long long i; double d; } u; u.i = 0x7FF8000000000000LL; $result = u.d; }
+    }
+    #}
+    result ) )
+
+;; Double max skipping NaN
+(de _cdb-d1max-perm-skipnan (data perm start end)
+  ((-idx1- (-double-)) data)
+  ((-idx1- (-int-)) perm)
+  ((-int-) start end)
+  (let ((result 0.0))
+    ((-double-) result)
+    #{
+    {
+      double *d = IDX_PTR($data, double);
+      int *p = IDX_PTR($perm, int);
+      double m = -1e308;
+      int i, found = 0;
+      for (i = $start; i < $end; i++) {
+        double v = d[p[i]];
+        if (v == v) { if (!found || v > m) { m = v; found = 1; } }
+      }
+      if (found) $result = m; else { union { long long i; double d; } u; u.i = 0x7FF8000000000000LL; $result = u.d; }
+    }
+    #}
+    result ) )
+
+;; Float min skipping NaN
+(de _cdb-f1min-perm-skipnan (data perm start end)
+  ((-idx1- (-float-)) data)
+  ((-idx1- (-int-)) perm)
+  ((-int-) start end)
+  (let ((result 0.0))
+    ((-double-) result)
+    #{
+    {
+      float *d = IDX_PTR($data, float);
+      int *p = IDX_PTR($perm, int);
+      double m = 1e308;
+      int i, found = 0;
+      for (i = $start; i < $end; i++) {
+        float v = d[p[i]];
+        if (v == v) { if (!found || (double)v < m) { m = (double)v; found = 1; } }
+      }
+      if (found) $result = m; else { union { long long i; double d; } u; u.i = 0x7FF8000000000000LL; $result = u.d; }
+    }
+    #}
+    result ) )
+
+;; Float max skipping NaN
+(de _cdb-f1max-perm-skipnan (data perm start end)
+  ((-idx1- (-float-)) data)
+  ((-idx1- (-int-)) perm)
+  ((-int-) start end)
+  (let ((result 0.0))
+    ((-double-) result)
+    #{
+    {
+      float *d = IDX_PTR($data, float);
+      int *p = IDX_PTR($perm, int);
+      double m = -1e308;
+      int i, found = 0;
+      for (i = $start; i < $end; i++) {
+        float v = d[p[i]];
+        if (v == v) { if (!found || (double)v > m) { m = (double)v; found = 1; } }
+      }
+      if (found) $result = m; else { union { long long i; double d; } u; u.i = 0x7FF8000000000000LL; $result = u.d; }
+    }
+    #}
+    result ) )
+
+;; Double count non-NaN entries
+(de _cdb-d1count-nonnull (data perm start end)
+  ((-idx1- (-double-)) data)
+  ((-idx1- (-int-)) perm)
+  ((-int-) start end)
+  (let ((result 0))
+    ((-int-) result)
+    #{
+    {
+      double *d = IDX_PTR($data, double);
+      int *p = IDX_PTR($perm, int);
+      int cnt = 0, i;
+      for (i = $start; i < $end; i++) {
+        double v = d[p[i]];
+        if (v == v) cnt++;
+      }
+      $result = cnt;
+    }
+    #}
+    result ) )
+
+;; Float count non-NaN entries
+(de _cdb-f1count-nonnull (data perm start end)
+  ((-idx1- (-float-)) data)
+  ((-idx1- (-int-)) perm)
+  ((-int-) start end)
+  (let ((result 0))
+    ((-int-) result)
+    #{
+    {
+      float *d = IDX_PTR($data, float);
+      int *p = IDX_PTR($perm, int);
+      int cnt = 0, i;
+      for (i = $start; i < $end; i++) {
+        float v = d[p[i]];
+        if (v == v) cnt++;
+      }
+      $result = cnt;
+    }
+    #}
+    result ) )
+
+;; Int sum skipping sentinel (INT_MIN)
+(de _cdb-i1sum-perm-skipnull (data perm start end sentinel)
+  ((-idx1- (-int-)) data)
+  ((-idx1- (-int-)) perm)
+  ((-int-) start end sentinel)
+  (let ((result 0))
+    ((-int-) result)
+    #{
+    {
+      int *d = IDX_PTR($data, int);
+      int *p = IDX_PTR($perm, int);
+      int s = 0, i;
+      for (i = $start; i < $end; i++) {
+        int v = d[p[i]];
+        if (v != $sentinel) s += v;
+      }
+      $result = s;
+    }
+    #}
+    result ) )
+
+;; Int count non-null (non-sentinel) entries
+(de _cdb-i1count-nonnull (data perm start end sentinel)
+  ((-idx1- (-int-)) data)
+  ((-idx1- (-int-)) perm)
+  ((-int-) start end sentinel)
+  (let ((result 0))
+    ((-int-) result)
+    #{
+    {
+      int *d = IDX_PTR($data, int);
+      int *p = IDX_PTR($perm, int);
+      int cnt = 0, i;
+      for (i = $start; i < $end; i++) {
+        if (d[p[i]] != $sentinel) cnt++;
+      }
+      $result = cnt;
+    }
+    #}
+    result ) )
+
+
+;; ============================================================
 ;; Gather (used by select-rows-idx)
 ;; ============================================================
 
@@ -140,6 +432,116 @@
   }
   #}
   () )
+
+
+;; dest[i] = src[perm[i]] for floats
+(de _cdb-f1gather (dest src perm n)
+  ((-idx1- (-float-)) dest src)
+  ((-idx1- (-int-)) perm)
+  ((-int-) n)
+  #{
+  {
+    float *d = IDX_PTR($dest, float);
+    float *s = IDX_PTR($src, float);
+    int *p = IDX_PTR($perm, int);
+    int i;
+    for (i = 0; i < $n; i++) {
+      d[i] = s[p[i]];
+    }
+  }
+  #}
+  () )
+
+
+;; ============================================================
+;; Float sorted check and binary search
+;; ============================================================
+
+;; Check if float array is sorted ascending (non-strict, NaN-safe)
+;; Returns 0 if any NaN or if unsorted
+(de _cdb-f1sortedp (data n)
+  ((-idx1- (-float-)) data)
+  ((-int-) n)
+  (let ((result 1))
+    ((-int-) result)
+    #{
+    {
+      float *d = IDX_PTR($data, float);
+      int i;
+      for (i = 0; i < $n; i++) {
+        if (d[i] != d[i]) { $result = 0; break; }
+      }
+      if ($result) {
+        for (i = 1; i < $n; i++) {
+          if (d[i] < d[i-1]) { $result = 0; break; }
+        }
+      }
+    }
+    #}
+    result ) )
+
+
+;; Leftmost index where data[i] >= val
+(de _cdb-f1bsearch-left (data n val)
+  ((-idx1- (-float-)) data)
+  ((-int-) n)
+  ((-float-) val)
+  (let ((lo 0))
+    ((-int-) lo)
+    #{
+    {
+      float *d = IDX_PTR($data, float);
+      int hi = $n;
+      while ($lo < hi) {
+        int mid = $lo + (hi - $lo) / 2;
+        if (d[mid] < $val) $lo = mid + 1; else hi = mid;
+      }
+    }
+    #}
+    lo ) )
+
+
+;; Rightmost index where data[i] <= val
+(de _cdb-f1bsearch-right (data n val)
+  ((-idx1- (-float-)) data)
+  ((-int-) n)
+  ((-float-) val)
+  (let ((lo 0))
+    ((-int-) lo)
+    #{
+    {
+      float *d = IDX_PTR($data, float);
+      int hi = $n;
+      while ($lo < hi) {
+        int mid = $lo + (hi - $lo) / 2;
+        if (d[mid] <= $val) $lo = mid + 1; else hi = mid;
+      }
+    }
+    #}
+    (1- lo) ) )
+
+
+;; NaN-safe sorted check for doubles (returns 0 if any NaN or unsorted)
+(de _cdb-d1sortedp-safe (data n)
+  ((-idx1- (-double-)) data)
+  ((-int-) n)
+  (let ((result 1))
+    ((-int-) result)
+    #{
+    {
+      double *d = IDX_PTR($data, double);
+      int i;
+      for (i = 0; i < $n; i++) {
+        if (d[i] != d[i]) { $result = 0; break; }
+      }
+      if ($result) {
+        for (i = 1; i < $n; i++) {
+          if (d[i] < d[i-1]) { $result = 0; break; }
+        }
+      }
+    }
+    #}
+    result ) )
 
 
 ;; ============================================================
@@ -287,9 +689,18 @@
   #{
   #include <stdio.h>
   #include <stdint.h>
+  #include <math.h>
   #}
   _cdb-d1sum-perm _cdb-d1min-perm _cdb-d1max-perm _cdb-i1sum-perm
-  _cdb-d1gather _cdb-i1gather
+  _cdb-f1sum-perm _cdb-f1min-perm _cdb-f1max-perm
+  _cdb-d1sum-perm-skipnan _cdb-f1sum-perm-skipnan
+  _cdb-d1min-perm-skipnan _cdb-d1max-perm-skipnan
+  _cdb-f1min-perm-skipnan _cdb-f1max-perm-skipnan
+  _cdb-d1count-nonnull _cdb-f1count-nonnull
+  _cdb-i1sum-perm-skipnull _cdb-i1count-nonnull
+  _cdb-d1gather _cdb-i1gather _cdb-f1gather
+  _cdb-f1sortedp _cdb-f1bsearch-left _cdb-f1bsearch-right
+  _cdb-d1sortedp-safe
   _cdb-i1count-codes _cdb-i1prefix-sum _cdb-i1csr-fill
   _cdb-i1count-eq _cdb-i1where-eq
   _cdb-i1intersect-sorted )
