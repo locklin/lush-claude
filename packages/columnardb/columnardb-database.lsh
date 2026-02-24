@@ -1,0 +1,315 @@
+;;; columnardb-database.lsh -- Database class for columnardb
+;;;
+;;; A Database groups multiple persisted and/or volatile DataTables
+;;; under a single directory with a shared catalog.  Each table lives
+;;; in its own splayed subdirectory (tables/<name>/).
+;;;
+;;; Disk layout:
+;;;   /path/to/mydb/
+;;;     db-catalog.lsh          ;; S-expression catalog
+;;;     tables/
+;;;       trades/               ;; Standard columnardb splayed directory
+;;;         meta.lsh
+;;;         col-0.col
+;;;         ...
+;;;       quotes/
+;;;         meta.lsh
+;;;         ...
+;;;
+;;; Usage:
+;;;   (libload "columnardb/columnardb")
+;;;   (setq db (new Database "/tmp/mydb"))
+;;;   (==> db attach "trades" some-datatable)
+;;;   (==> db table "trades")
+;;;   (==> db save-catalog)
+
+#? *** Database: Named Collection of Tables
+
+
+;; ============================================================
+;; Database class
+;; ============================================================
+
+(defclass Database object
+  ;; Core identity
+  db-path                  ;; string: root directory path (or () for in-memory-only)
+
+  ;; Table catalog: htable mapping name-string -> table-entry
+  ;; table-entry is a list: (type path dt-cache)
+  ;;   type: 'persisted or 'volatile
+  ;;   path: string directory path (for persisted), or ()
+  ;;   dt-cache: loaded DataTable object, or () (lazy)
+  catalog                  ;; htable
+
+  ;; Ordered list of table names (preserves insertion order)
+  table-names              ;; list of strings
+
+  ;; Catalog format version
+  db-version               ;; int
+)
+
+
+;; ============================================================
+;; Constructor
+;; ============================================================
+
+#? (new Database <path>)
+;; Create a new Database.
+;; <path> is the root directory (string), or () for in-memory-only.
+;; If the directory has db-catalog.lsh, the catalog is loaded.
+;; Otherwise an empty database is created (directory created if needed).
+(defmethod Database Database (path)
+  (setq db-path path)
+  (setq catalog (htable 32))
+  (setq table-names ())
+  (setq db-version 1)
+  (when path
+    ;; Create directory structure if needed
+    (when (not (dirp path))
+      (sys (concat "mkdir -p '" path "'")) )
+    (let ((tables-dir (concat path "/tables")))
+      (when (not (dirp tables-dir))
+        (sys (concat "mkdir -p '" tables-dir "'")) ) )
+    ;; Load existing catalog if present
+    (let ((cat-file (concat path "/db-catalog.lsh")))
+      (when (filep cat-file)
+        (==> this _db-load-catalog cat-file) ) ) ) )
+
+
+;; ============================================================
+;; Internal helpers
+;; ============================================================
+
+;; Load catalog from disk
+(defmethod Database _db-load-catalog (cat-file)
+  (let ((sexp (let ((f (open-read cat-file)))
+                (reading f (read)) )))
+    (let ((ver (cadr (assoc 'version sexp)))
+          (tbl-list (cadr (assoc 'tables sexp))) )
+      (when ver (setq db-version ver))
+      (when tbl-list
+        (each ((entry tbl-list))
+          ;; entry is (name type relative-path)
+          (let ((name (car entry))
+                (type (cadr entry))
+                (rel-path (caddr entry)) )
+            (let ((abs-path (concat db-path "/" rel-path)))
+              (catalog name (list type abs-path ()))
+              (setq table-names (nconc1 table-names name)) ) ) ) ) ) ) )
+
+;; Make a catalog entry
+(defmethod Database _db-make-entry (type path dt)
+  (list type path dt) )
+
+;; Get parts of a catalog entry
+(de _db-entry-type (entry) (car entry))
+(de _db-entry-path (entry) (cadr entry))
+(de _db-entry-dt (entry) (caddr entry))
+
+
+;; ============================================================
+;; Table management
+;; ============================================================
+
+#? (==> <db> attach <name> <dt-or-path>)
+;; Register a table in the database.
+;; If <dt-or-path> is a DataTable, it is stored as volatile (in-memory).
+;; If <dt-or-path> is a string path to an existing columnardb directory,
+;; the data is imported (loaded and re-saved) under db-path/tables/name/
+;; so all persisted tables live inside the database directory.
+(defmethod Database attach (name dt-or-path)
+  ;; Remove existing entry if present
+  (when (catalog name)
+    (==> this detach name) )
+  (if (stringp dt-or-path)
+    ;; String path: import persisted table into database directory
+    (let ((src-path dt-or-path))
+      (if db-path
+        ;; Persisted database: load from source, save into db tables dir
+        (let ((dest-path (concat db-path "/tables/" name)))
+          (let ((dt (columnardb-load-mem src-path)))
+            (columnardb-save dt dest-path)
+            (catalog name (list 'persisted dest-path ()))
+            (setq table-names (nconc1 table-names name)) ) )
+        ;; In-memory database: load into memory as volatile
+        (let ((dt (columnardb-load-mem dt-or-path)))
+          (catalog name (list 'volatile () dt))
+          (setq table-names (nconc1 table-names name)) ) ) )
+    ;; DataTable object: store as volatile
+    (progn
+      (catalog name (list 'volatile () dt-or-path))
+      (setq table-names (nconc1 table-names name)) ) ) )
+
+#? (==> <db> detach <name>)
+;; Remove a table reference from the catalog.
+;; Does not delete any files on disk.
+(defmethod Database detach (name)
+  (when (not (catalog name))
+    (error "Database.detach" "table not found" name) )
+  (catalog name ())
+  ;; Remove from ordered list
+  (let ((new-names ()))
+    (each ((n table-names))
+      (when (<> n name)
+        (setq new-names (nconc1 new-names n)) ) )
+    (setq table-names new-names) ) )
+
+#? (==> <db> tables)
+;; Return the ordered list of table names.
+(defmethod Database tables ()
+  table-names )
+
+#? (==> <db> table <name>)
+;; Get a DataTable by name.
+;; Lazy-loads persisted tables via columnardb-load on first access.
+;; Returns the cached DataTable on subsequent calls.
+(defmethod Database table (name)
+  (let ((entry (catalog name)))
+    (when (not entry)
+      (error "Database.table" "table not found" name) )
+    (let ((dt (_db-entry-dt entry)))
+      (if dt
+        dt
+        ;; Lazy load
+        (let ((type (_db-entry-type entry))
+              (path (_db-entry-path entry)) )
+          (when (or (= type 'volatile) (not path))
+            (error "Database.table" "volatile table has no cached data" name) )
+          (let ((loaded-dt (columnardb-load path)))
+            ;; Update cache in catalog entry
+            (catalog name (list type path loaded-dt))
+            loaded-dt ) ) ) ) ) )
+
+#? (==> <db> table-meta <name>)
+;; Get metadata for a table without loading it.
+;; For persisted tables, delegates to columnardb-meta.
+;; For volatile tables, reads from the cached DataTable.
+(defmethod Database table-meta (name)
+  (let ((entry (catalog name)))
+    (when (not entry)
+      (error "Database.table-meta" "table not found" name) )
+    (let ((type (_db-entry-type entry))
+          (path (_db-entry-path entry))
+          (dt (_db-entry-dt entry)) )
+      (if (and (= type 'persisted) path)
+        ;; Persisted: read from disk metadata
+        (columnardb-meta path)
+        ;; Volatile or cached: build from DataTable
+        (if dt
+          (list (list 'version 1)
+                (list 'nrows (==> dt num-rows))
+                (list 'ncols (==> dt num-cols))
+                (list 'names (==> dt col-names))
+                (list 'types (==> dt col-types))
+                (list 'sorted ()) )
+          (error "Database.table-meta" "no data available for table" name) ) ) ) ) )
+
+#? (==> <db> table-type <name>)
+;; Return 'persisted or 'volatile for the named table.
+(defmethod Database table-type (name)
+  (let ((entry (catalog name)))
+    (when (not entry)
+      (error "Database.table-type" "table not found" name) )
+    (_db-entry-type entry) ) )
+
+
+;; ============================================================
+;; Persistence
+;; ============================================================
+
+#? (==> <db> save-volatile <name> &optional <path>)
+;; Persist a volatile table to disk via columnardb-save.
+;; If <path> is not given, saves under db-path/tables/name/.
+;; Updates the catalog entry from volatile to persisted.
+(defmethod Database save-volatile (name . rest)
+  (let ((entry (catalog name)))
+    (when (not entry)
+      (error "Database.save-volatile" "table not found" name) )
+    (when (<> (_db-entry-type entry) 'volatile)
+      (error "Database.save-volatile" "table is not volatile" name) )
+    (let ((dt (_db-entry-dt entry)))
+      (when (not dt)
+        (error "Database.save-volatile" "volatile table has no data" name) )
+      (let ((dest-path (if rest
+                         (car rest)
+                         (if db-path
+                           (concat db-path "/tables/" name)
+                           (error "Database.save-volatile"
+                                  "no db-path set and no path given" name) ) )))
+        (columnardb-save dt dest-path)
+        ;; Update catalog: now persisted
+        (catalog name (list 'persisted dest-path dt)) ) ) ) )
+
+#? (==> <db> save-catalog)
+;; Write db-catalog.lsh to disk.  Only persisted tables are saved.
+;; Does nothing if db-path is ().
+(defmethod Database save-catalog ()
+  (when db-path
+    (let ((tbl-list ()))
+      (each ((name table-names))
+        (let ((entry (catalog name)))
+          (when entry
+            (let ((type (_db-entry-type entry))
+                  (path (_db-entry-path entry)) )
+              (when (= type 'persisted)
+                ;; Store relative path
+                (let ((rel-path (concat "tables/" name)))
+                  (setq tbl-list
+                        (nconc1 tbl-list (list name 'persisted rel-path)) ) ) ) ) ) ) )
+      (let ((sexp (list (list 'version db-version)
+                        (list 'tables tbl-list) )))
+        (let ((f (open-write (concat db-path "/db-catalog.lsh"))))
+          (writing f (print sexp))
+          (writing f (printf "\n")) ) ) ) ) )
+
+#? (==> <db> reload <name>)
+;; Drop cached DataTable for a persisted table, forcing re-load on next access.
+(defmethod Database reload (name)
+  (let ((entry (catalog name)))
+    (when (not entry)
+      (error "Database.reload" "table not found" name) )
+    (let ((type (_db-entry-type entry))
+          (path (_db-entry-path entry)) )
+      (when (<> type 'persisted)
+        (error "Database.reload" "can only reload persisted tables" name) )
+      ;; Clear the cached DataTable
+      (catalog name (list type path ())) ) ) )
+
+
+;; ============================================================
+;; Query stub
+;; ============================================================
+
+#? (==> <db> query <qstr>)
+;; Query stub.  A future query sublanguage will be built here.
+;; For now, returns a placeholder string.
+(defmethod Database query (qstr)
+  "undefined query language ... for now" )
+
+
+;; ============================================================
+;; Utility
+;; ============================================================
+
+#? (==> <db> print-info)
+;; Print a summary of the database: path, table count, per-table details.
+(defmethod Database print-info ()
+  (printf "Database: %s\n" (if db-path db-path "(in-memory)"))
+  (printf "Tables: %d\n" (length table-names))
+  (each ((name table-names))
+    (let ((entry (catalog name)))
+      (when entry
+        (let ((type (_db-entry-type entry))
+              (path (_db-entry-path entry))
+              (dt (_db-entry-dt entry)) )
+          (printf "  %-20s  %-10s" name (pname type))
+          (if dt
+            (printf "  %d rows x %d cols\n"
+                    (==> dt num-rows) (==> dt num-cols))
+            ;; Try to read metadata from disk without loading
+            (if (and path (filep (concat path "/meta.lsh")))
+              (let ((meta (columnardb-meta path)))
+                (printf "  %d rows x %d cols\n"
+                        (cadr (assoc 'nrows meta))
+                        (cadr (assoc 'ncols meta)) ) )
+              (printf "  (not loaded)\n") ) ) ) ) ) ) )

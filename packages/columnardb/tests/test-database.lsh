@@ -1,0 +1,312 @@
+;;; test-database.lsh -- Tests for the Database class
+;;;
+;;; Loaded by run-all.lsh.  Assumes the test framework and columnardb
+;;; are already loaded, and *test-dir* is set.
+
+(printf "\n=== Database Class Tests ===\n")
+
+(let ((db-test-dir (concat *test-dir* "/database")))
+  (sys (concat "rm -rf " db-test-dir))
+  (sys (concat "mkdir -p " db-test-dir))
+
+
+;; ============================================================
+;; Test 1: Construction -- empty database
+;; ============================================================
+
+(test-suite "Database: Construction"
+  (let ((db-path (concat db-test-dir "/testdb1")))
+    (let ((db (new Database db-path)))
+      (test-check "db created" (not (not db)))
+      (test-equal "empty table list" (length (==> db tables)) 0)
+      (test-check "db dir exists" (dirp db-path))
+      (test-check "tables dir exists" (dirp (concat db-path "/tables"))) ) ) )
+
+
+;; ============================================================
+;; Test 2: Attach persisted table (by path)
+;; ============================================================
+
+(test-suite "Database: Attach persisted"
+  ;; First save a table to disk the normal way
+  (let ((dt (new DataTable)))
+    (==> dt add-column "price" 'real)
+    (==> dt add-column "qty" 'int)
+    (==> dt append-row (list 10.5 100))
+    (==> dt append-row (list 20.0 200))
+    (==> dt append-row (list 30.75 300))
+
+    (let ((src-path (concat db-test-dir "/src-trades")))
+      (columnardb-save dt src-path)
+
+      ;; Now create a database and attach by path
+      (let ((db-path (concat db-test-dir "/testdb2")))
+        (let ((db (new Database db-path)))
+          (==> db attach "trades" src-path)
+
+          (test-equal "one table" (length (==> db tables)) 1)
+          (test-string-equal "table name" (car (==> db tables)) "trades")
+
+          ;; Access the table
+          (let ((t (==> db table "trades")))
+            (test-equal "rows" (==> t num-rows) 3)
+            (test-equal "cols" (==> t num-cols) 2)
+            (test-approx "price[0]" (==> t get 0 "price") 10.5 0.001)
+            (test-equal "qty[2]" (==> t get 2 "qty") 300) )
+
+          ;; Verify it was copied into database tables dir
+          (test-check "persisted in db dir"
+                      (filep (concat db-path "/tables/trades/meta.lsh"))) ) ) ) ) )
+
+
+;; ============================================================
+;; Test 3: Attach volatile (in-memory DataTable)
+;; ============================================================
+
+(test-suite "Database: Attach volatile"
+  (let ((db-path (concat db-test-dir "/testdb3")))
+    (let ((db (new Database db-path)))
+      (let ((dt (new DataTable)))
+        (==> dt add-column "name" 'string)
+        (==> dt add-column "score" 'real)
+        (==> dt append-row (list "alice" 95.0))
+        (==> dt append-row (list "bob" 87.5))
+
+        (==> db attach "students" dt)
+
+        (test-equal "one table" (length (==> db tables)) 1)
+        (test-equal "type is volatile"
+                    (==> db table-type "students") 'volatile)
+
+        (let ((t (==> db table "students")))
+          (test-equal "rows" (==> t num-rows) 2)
+          (test-string-equal "name[0]" (==> t get 0 "name") "alice")
+          (test-approx "score[1]" (==> t get 1 "score") 87.5 0.001) ) ) ) ) )
+
+
+;; ============================================================
+;; Test 4: Detach
+;; ============================================================
+
+(test-suite "Database: Detach"
+  (let ((db-path (concat db-test-dir "/testdb4")))
+    (let ((db (new Database db-path)))
+      (let ((dt1 (new DataTable)))
+        (==> dt1 add-column "a" 'int)
+        (==> dt1 append-row (list 1))
+        (==> db attach "tbl1" dt1) )
+
+      (let ((dt2 (new DataTable)))
+        (==> dt2 add-column "b" 'int)
+        (==> dt2 append-row (list 2))
+        (==> db attach "tbl2" dt2) )
+
+      (test-equal "two tables" (length (==> db tables)) 2)
+
+      (==> db detach "tbl1")
+
+      (test-equal "one table left" (length (==> db tables)) 1)
+      (test-string-equal "remaining" (car (==> db tables)) "tbl2") ) ) )
+
+
+;; ============================================================
+;; Test 5: table-meta
+;; ============================================================
+
+(test-suite "Database: table-meta"
+  ;; Persisted table: metadata from disk
+  (let ((dt (new DataTable)))
+    (==> dt add-column "x" 'real)
+    (==> dt add-column "y" 'int)
+    (==> dt add-column "z" 'real)
+    (==> dt append-row (list 1.0 10 100.0))
+    (==> dt append-row (list 2.0 20 200.0))
+
+    (let ((src-path (concat db-test-dir "/src-meta")))
+      (columnardb-save dt src-path)
+
+      (let ((db-path (concat db-test-dir "/testdb5")))
+        (let ((db (new Database db-path)))
+          (==> db attach "data" src-path)
+
+          (let ((meta (==> db table-meta "data")))
+            (test-equal "meta nrows" (cadr (assoc 'nrows meta)) 2)
+            (test-equal "meta ncols" (cadr (assoc 'ncols meta)) 3) ) ) ) ) )
+
+  ;; Volatile table: metadata from cached DataTable
+  (let ((db (new Database (concat db-test-dir "/testdb5b"))))
+    (let ((dt (new DataTable)))
+      (==> dt add-column "a" 'int)
+      (==> dt add-column "b" 'int)
+      (==> dt append-row (list 1 2))
+      (==> dt append-row (list 3 4))
+      (==> dt append-row (list 5 6))
+      (==> db attach "vol" dt)
+
+      (let ((meta (==> db table-meta "vol")))
+        (test-equal "vol meta nrows" (cadr (assoc 'nrows meta)) 3)
+        (test-equal "vol meta ncols" (cadr (assoc 'ncols meta)) 2) ) ) ) )
+
+
+;; ============================================================
+;; Test 6: save-volatile
+;; ============================================================
+
+(test-suite "Database: save-volatile"
+  (let ((db-path (concat db-test-dir "/testdb6")))
+    (let ((db (new Database db-path)))
+      (let ((dt (new DataTable)))
+        (==> dt add-column "val" 'real)
+        (==> dt append-row (list 42.0))
+        (==> dt append-row (list 99.0))
+
+        (==> db attach "temp" dt)
+        (test-equal "initially volatile"
+                    (==> db table-type "temp") 'volatile)
+
+        ;; Persist it
+        (==> db save-volatile "temp")
+
+        (test-equal "now persisted"
+                    (==> db table-type "temp") 'persisted)
+        (test-check "dir created"
+                    (filep (concat db-path "/tables/temp/meta.lsh"))) ) ) ) )
+
+
+;; ============================================================
+;; Test 7: save-catalog / reload from disk
+;; ============================================================
+
+(test-suite "Database: save-catalog and reload"
+  (let ((db-path (concat db-test-dir "/testdb7")))
+    ;; Build a database with two tables
+    (let ((db (new Database db-path)))
+      (let ((dt1 (new DataTable)))
+        (==> dt1 add-column "x" 'real)
+        (==> dt1 append-row (list 1.0))
+        (==> dt1 append-row (list 2.0))
+        (==> db attach "alpha" dt1) )
+
+      (let ((dt2 (new DataTable)))
+        (==> dt2 add-column "y" 'int)
+        (==> dt2 append-row (list 10))
+        (==> dt2 append-row (list 20))
+        (==> dt2 append-row (list 30))
+        (==> db attach "beta" dt2) )
+
+      ;; Persist both
+      (==> db save-volatile "alpha")
+      (==> db save-volatile "beta")
+      (==> db save-catalog)
+
+      (test-check "catalog file exists"
+                  (filep (concat db-path "/db-catalog.lsh"))) )
+
+    ;; Create a new Database from same path -- should restore catalog
+    (let ((db2 (new Database db-path)))
+      (test-equal "restored table count" (length (==> db2 tables)) 2)
+
+      ;; Access restored tables
+      (let ((t1 (==> db2 table "alpha")))
+        (test-equal "alpha rows" (==> t1 num-rows) 2)
+        (test-approx "alpha x[0]" (==> t1 get 0 "x") 1.0 0.001) )
+
+      (let ((t2 (==> db2 table "beta")))
+        (test-equal "beta rows" (==> t2 num-rows) 3)
+        (test-equal "beta y[2]" (==> t2 get 2 "y") 30) ) ) ) )
+
+
+;; ============================================================
+;; Test 8: query stub
+;; ============================================================
+
+(test-suite "Database: query stub"
+  (let ((db (new Database (concat db-test-dir "/testdb8"))))
+    (let ((result (==> db query "SELECT * FROM trades")))
+      (test-string-equal "query returns placeholder"
+                         result
+                         "undefined query language ... for now") ) ) )
+
+
+;; ============================================================
+;; Test 9: print-info (no errors)
+;; ============================================================
+
+(test-suite "Database: print-info"
+  (let ((db-path (concat db-test-dir "/testdb9")))
+    (let ((db (new Database db-path)))
+      ;; Add a volatile table
+      (let ((dt (new DataTable)))
+        (==> dt add-column "a" 'int)
+        (==> dt append-row (list 1))
+        (==> db attach "tbl" dt) )
+
+      ;; Just verify it runs without error
+      (==> db print-info)
+      (test-check "print-info succeeded" t) ) ) )
+
+
+;; ============================================================
+;; Test 10: In-memory-only database (path = ())
+;; ============================================================
+
+(test-suite "Database: In-memory-only"
+  (let ((db (new Database ())))
+    (test-equal "empty tables" (length (==> db tables)) 0)
+
+    ;; Attach volatile table
+    (let ((dt (new DataTable)))
+      (==> dt add-column "x" 'real)
+      (==> dt add-column "y" 'int)
+      (==> dt append-row (list 1.0 10))
+      (==> dt append-row (list 2.0 20))
+
+      (==> db attach "mem-table" dt)
+
+      (test-equal "one table" (length (==> db tables)) 1)
+      (test-equal "type volatile"
+                  (==> db table-type "mem-table") 'volatile)
+
+      (let ((t (==> db table "mem-table")))
+        (test-equal "rows" (==> t num-rows) 2)
+        (test-approx "x[1]" (==> t get 1 "x") 2.0 0.001)
+        (test-equal "y[0]" (==> t get 0 "y") 10) )
+
+      ;; table-meta on volatile
+      (let ((meta (==> db table-meta "mem-table")))
+        (test-equal "mem meta nrows" (cadr (assoc 'nrows meta)) 2)
+        (test-equal "mem meta ncols" (cadr (assoc 'ncols meta)) 2) ) ) ) )
+
+
+;; ============================================================
+;; Test 11: reload (drop cache)
+;; ============================================================
+
+(test-suite "Database: reload"
+  (let ((db-path (concat db-test-dir "/testdb11")))
+    (let ((db (new Database db-path)))
+      (let ((dt (new DataTable)))
+        (==> dt add-column "v" 'real)
+        (==> dt append-row (list 7.0))
+        (==> db attach "data" dt) )
+
+      ;; Persist it first
+      (==> db save-volatile "data")
+
+      ;; Access to cache
+      (let ((t1 (==> db table "data")))
+        (test-equal "loaded rows" (==> t1 num-rows) 1) )
+
+      ;; Reload drops cache
+      (==> db reload "data")
+
+      ;; Access again -- should lazy-load from disk
+      (let ((t2 (==> db table "data")))
+        (test-equal "reloaded rows" (==> t2 num-rows) 1)
+        (test-approx "reloaded v[0]" (==> t2 get 0 "v") 7.0 0.001) ) ) ) )
+
+
+;; Cleanup
+(sys (concat "rm -rf " db-test-dir))
+
+) ;; end let db-test-dir

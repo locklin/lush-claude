@@ -1069,3 +1069,4 @@
 (libload "columnardb/columnardb-mutate")
 (libload "columnardb/columnardb-multiindex")
 (libload "columnardb/columnardb-compress")
+(libload "columnardb/columnardb-database")
