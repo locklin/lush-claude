@@ -1,0 +1,153 @@
+;;; wire-serialize.lsh -- DataTable serialization for wire protocol
+;;;
+;;; Provides functions to pack/unpack DataTable objects for transmission
+;;; over the wire.  Default encoding is binary (bwrite/bread).
+;;; S-expression encoding is available as a cross-language fallback.
+;;;
+;;; Binary format: uses bwrite to serialize a list:
+;;;   (datatable names types nrows column-data-list)
+;;; where column-data-list is a list of idx1 (numeric) or string lists.
+;;;
+;;; bwrite natively handles idx objects, preserving exact numeric types.
+
+(libload "datatable/datatable")
+
+#? *** Wire DataTable Serialization
+
+
+;; ============================================================
+;; Binary encoding (default) -- via bwrite/bread
+;; ============================================================
+
+#? (wire-pack-datatable <dt>)
+;; Pack a DataTable into a Lush object suitable for bwrite serialization.
+;; Returns a list: ('datatable names types nrows column-data-list)
+(de wire-pack-datatable (dt)
+  (let ((names (==> dt col-names))
+        (types (==> dt col-types))
+        (nrows (==> dt num-rows))
+        (ncols (==> dt num-cols)) )
+    (let ((cols ()))
+      (for (ci 0 (1- ncols))
+        (let ((col (==> dt get-column ci))
+              (type (nth ci types)) )
+          (cond
+           ;; Real (double) column: copy valid rows into a fresh idx1
+           ((= type 'real)
+            (let ((data (double-matrix nrows)))
+              (for (r 0 (1- nrows)) (data r (col r)))
+              (setq cols (nconc1 cols data)) ) )
+           ;; Int column
+           ((= type 'int)
+            (let ((data (int-matrix nrows)))
+              (for (r 0 (1- nrows)) (data r (col r)))
+              (setq cols (nconc1 cols data)) ) )
+           ;; Float column
+           ((= type 'float)
+            (let ((data (float-matrix nrows)))
+              (for (r 0 (1- nrows)) (data r (col r)))
+              (setq cols (nconc1 cols data)) ) )
+           ;; Stamp (long) column
+           ((= type 'stamp)
+            (let ((data (long-matrix nrows)))
+              (for (r 0 (1- nrows)) (data r (col r)))
+              (setq cols (nconc1 cols data)) ) )
+           ;; String column: send as list of strings
+           ((= type 'string)
+            (let ((strings ()))
+              (for (r 0 (1- nrows))
+                (setq strings (nconc1 strings (==> dt get r ci))) )
+              (setq cols (nconc1 cols strings)) ) )
+           (t (error "wire-pack-datatable" "unknown column type" type)) ) ) )
+      (list 'datatable names types nrows cols) ) ) )
+
+
+#? (wire-unpack-datatable <packed>)
+;; Unpack a DataTable from the packed list format.
+;; Returns a new DataTable.
+(de wire-unpack-datatable (packed)
+  (when (or (not (consp packed)) (<> (car packed) 'datatable))
+    (error "wire-unpack-datatable" "not a packed datatable" ()) )
+  (let ((names (cadr packed))
+        (types (caddr packed))
+        (nrows (cadddr packed))
+        (cols (car (cddddr packed))) )
+    ;; Build column objects
+    (let ((column-list ())
+          (ci 0) )
+      (each ((col-data cols) (type types))
+        (cond
+         ;; Numeric columns: col-data is already an idx1
+         ((or (= type 'real) (= type 'int) (= type 'float) (= type 'stamp))
+          (setq column-list (nconc1 column-list col-data)) )
+         ;; String columns: col-data is a list of strings
+         ((= type 'string)
+          (let ((sc (new StringColumn (max 1 nrows))))
+            ;; Append each string (StringColumn uses dictionary encoding)
+            (each ((s col-data))
+              (==> sc append s) )
+            (setq column-list (nconc1 column-list sc)) ) )
+         (t (error "wire-unpack-datatable" "unknown column type" type)) )
+        (setq ci (1+ ci)) )
+      (datatable-from-columns names types column-list nrows) ) ) )
+
+
+;; ============================================================
+;; S-expression encoding (cross-language fallback)
+;; ============================================================
+
+#? (wire-datatable-to-sexp <dt>)
+;; Serialize a DataTable to an s-expression string.
+;; Format: ((names (...)) (types (...)) (nrows N) (data (...)))
+(de wire-datatable-to-sexp (dt)
+  (let ((packed (wire-pack-datatable dt)))
+    (let ((names (cadr packed))
+          (types (caddr packed))
+          (nrows (cadddr packed))
+          (cols (car (cddddr packed))) )
+      ;; Build the s-expression string
+      (let ((s "("))
+        ;; names
+        (setq s (concat s "(names ("))
+        (let ((first t))
+          (each ((n names))
+            (if first (setq first ()) (setq s (concat s " ")))
+            (setq s (concat s "\"" n "\"")) ) )
+        (setq s (concat s "))"))
+        ;; types
+        (setq s (concat s " (types ("))
+        (let ((first t))
+          (each ((ty types))
+            (if first (setq first ()) (setq s (concat s " ")))
+            (setq s (concat s (pname ty))) ) )
+        (setq s (concat s "))"))
+        ;; nrows
+        (setq s (concat s (sprintf " (nrows %d)" nrows)))
+        ;; data
+        (setq s (concat s " (data ("))
+        (let ((ci 0))
+          (each ((col-data cols) (type types))
+            (when (> ci 0) (setq s (concat s " ")))
+            (setq s (concat s "("))
+            (if (= type 'string)
+              ;; String column: list of quoted strings
+              (let ((first t))
+                (each ((sv col-data))
+                  (if first (setq first ()) (setq s (concat s " ")))
+                  (setq s (concat s "\"" sv "\"")) ) )
+              ;; Numeric column: list of numbers
+              (for (r 0 (1- nrows))
+                (when (> r 0) (setq s (concat s " ")))
+                (cond
+                 ((= type 'real)
+                  (setq s (concat s (sprintf "%g" (col-data r)))) )
+                 ((= type 'float)
+                  (setq s (concat s (sprintf "%g" (col-data r)))) )
+                 ((= type 'int)
+                  (setq s (concat s (sprintf "%d" (col-data r)))) )
+                 ((= type 'stamp)
+                  (setq s (concat s (sprintf "%d" (col-data r)))) ) ) ) )
+            (setq s (concat s ")"))
+            (setq ci (1+ ci)) ) )
+        (setq s (concat s ")))"))
+        s ) ) ) )

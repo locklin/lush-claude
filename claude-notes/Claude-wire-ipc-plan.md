@@ -945,17 +945,16 @@ Q's 8-byte header packs endianness, msg-type, 2 reserved bytes, and a
 
 The extra 8 bytes per message are negligible compared to payload sizes.
 
-### Why sexp as default encoding (not binary)?
+### Why binary (bwrite) as default encoding?
 
-S-expressions are:
-- Human-readable and debuggable
-- Parseable from any language (trivial to implement)
-- Already Lush's native syntax
-- Sufficient for most queries and small results
+Binary encoding via `bwrite`/`bread` is the default because:
+- Preserves exact Lush types (double, int, matrix, list, string) without parsing
+- Efficient for DataTable transfers (columnar data stays contiguous)
+- No serialization ambiguity (float precision, etc.)
 
-Binary (bwrite) is used when performance matters (large DataTable transfers
-between Lush instances).  The encoding field in the header lets the client
-choose.
+S-expression encoding is the cross-language fallback — any TCP client can send
+`"(+ 1 2)"` as a UTF-8 string.  The `wire-call` function auto-selects:
+strings → sexp encoding, objects → binary encoding.
 
 ### Why localhost-only by default?
 
@@ -1012,3 +1011,82 @@ TMPDIR=/tmp/claude bin/lush -e '
   (wire-close c)
 '
 ```
+
+---
+
+## 16. Implementation Progress
+
+### Phase 1: COMPLETE
+
+| Task | Status | Notes |
+|------|--------|-------|
+| C socket helpers (bind, accept, select, read, write, header) | Done | Inline C in wire.lsh via `dhc-make`, not separate wire-c.c file |
+| `_wire-connect-raw` (client TCP connect) | Done | Raw C socket connect, returns fd |
+| Wire protocol constants and header format | Done | 16-byte header with magic, version, msg-type, encoding, msg-id, payload-len |
+| WireServer class (event loop, callbacks) | Done | `select()`-based loop, `serve-once` for testing, `serve` for blocking |
+| Localhost-only binding (Option A) | Done | `_wire-bind-localhost` binds to `INADDR_LOOPBACK` at C level |
+| Default handlers (eval sexp / eval binary) | Done | `_wire-default-on-sync`, `_wire-default-on-async` |
+| Client API: `wire-connect`, `wire-call`, `wire-send`, `wire-close` | Done | `wire-call` auto-selects encoding: string→sexp, object→binary |
+| Binary encoding via bwrite/bread (DEFAULT) | Done | Temp file intermediary for bwrite/bread (can't use `writing`/`reading` with raw fds) |
+| S-expression encoding (fallback) | Done | `_wire-parse-sexp` via temp file + `read` |
+| DataTable serialization: `wire-pack-datatable` / `wire-unpack-datatable` | Done | Handles all column types: real, int, float, stamp, string |
+| DataTable sexp serialization: `wire-datatable-to-sexp` | Done | Cross-language fallback format |
+| argv parsing: `wire-parse-port` | Done | Scans `--port`/`-p`, falls back to `LUSH_WIRE_PORT` env |
+| Convenience: `wire-server-new`, `wire-server-start` | Done | Auto-configure from argv |
+| Test suite: 22 stages, 122 tests | Done | All passing: constants, headers, string/bytes, bwrite/bread, file I/O, argv, sockets, server construction, start/shutdown, sexp round-trip, binary round-trip, async, error handling, multiple clients, custom handlers, connection callbacks, DataTable pack/unpack, DataTable bwrite round-trip, DataTable over wire, DataTable sexp, all column types, client API |
+
+### Files Created
+
+| File | Lines | Description |
+|------|-------|-------------|
+| `packages/wire/wire.lsh` | ~900 | Main module: C helpers, protocol, server, client |
+| `packages/wire/wire-serialize.lsh` | ~156 | DataTable pack/unpack and sexp serialization |
+| `packages/wire/tests/run-all.lsh` | ~640 | 22-stage test suite |
+
+### Test Results (all clean)
+
+```
+Wire:       122 passed, 0 failed
+ColumnarDB: 615 passed, 0 failed
+DataTable:  868 passed, 0 failed
+```
+
+### Key Implementation Decisions (deviations from plan)
+
+1. **No separate wire-c.c file**: All C functions are inline in `wire.lsh`
+   via `dhc-make` with `#{ ... #}` blocks. This follows the pattern in
+   `columnardb-io.lsh` and avoids a separate compilation step.
+
+2. **Raw file descriptors throughout**: The plan suggested wrapping C fds as
+   Lush FILE* handles for `socketselect` compatibility. Instead, ALL socket
+   I/O is done through compiled C functions operating on raw fds. The
+   `_wire-select` C function directly calls `select()` on raw fds. This
+   avoids the complexity of bridging between C fds and Lush file handles.
+
+3. **bwrite/bread via temp files**: Since `bwrite`/`bread` use `writing`/
+   `reading` redirects that require Lush FILE* handles, serialization goes
+   through temp files: `bwrite` to temp file → read bytes → send over
+   socket; receive bytes → write to temp file → `bread` from temp file.
+   This is functional but not optimal for high throughput.
+
+4. **`cadddr`/`cddddr` not built-in**: Lush only provides car/cdr up to
+   3-deep (caddr, cdddr). We define `cadddr` and `cddddr` at the top of
+   wire.lsh.
+
+5. **`return` not available**: Lush doesn't have early return from functions.
+   Refactored `_wire-recv-message` to use nested `if` instead.
+
+6. **`boundp` not available**: Lush doesn't have `boundp` for checking if
+   a symbol is bound. Since `argv` is always defined by the startup function
+   (dynamic scoping), we just check `(consp argv)` directly.
+
+7. **`ubyte-matrix 0` invalid**: Lush can't create zero-size matrices.
+   All buffer allocations use `(max 1 n)` for safety.
+
+### Phases Remaining
+
+- **Phase 2**: Non-blocking incremental reads, LZ4 compression,
+  `wire-broadcast`, connection pool reconnect
+- **Phase 3**: Handshake/auth, `.wire.pw` callback, access control
+- **Phase 4**: Discovery service, gateway scatter-gather, pub/sub,
+  handler chain, process types

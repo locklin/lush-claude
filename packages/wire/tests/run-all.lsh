@@ -1,0 +1,715 @@
+;;; run-all.lsh -- Test suite for wire IPC package
+;;;
+;;; Tests: protocol helpers, serialization, server/client round-trip.
+;;;
+;;; Run with:
+;;;   lush packages/wire/tests/run-all.lsh
+
+;; Add packages path
+(let ((tests-dir (dirname file-being-loaded)))
+  (let ((pkg-dir (dirname (dirname tests-dir))))
+    (addpath pkg-dir) ) )
+
+;; Load test framework
+(load (concat (dirname file-being-loaded) "/../../datatable/tests/framework.lsh"))
+
+;; Load wire (which loads datatable via wire-serialize)
+(libload "wire/wire")
+
+(printf "=== Wire IPC Test Suite ===\n")
+
+;; Test temp directory
+(defvar *test-dir* "/tmp/claude/wire-tests")
+(sys (concat "rm -rf " *test-dir*))
+(sys (concat "mkdir -p " *test-dir*))
+
+
+;; ============================================================
+;; Stage 1: Constants and basics
+;; ============================================================
+
+(test-suite "Stage 1: Constants and basics"
+
+  (test-equal "magic is LWIR" *wire-magic* 0x4C574952)
+  (test-equal "version is 1" *wire-version* 1)
+  (test-equal "header size is 16" *wire-header-size* 16)
+  (test-equal "msg-async is 0" *wire-msg-async* 0)
+  (test-equal "msg-sync is 1" *wire-msg-sync* 1)
+  (test-equal "msg-response is 2" *wire-msg-response* 2)
+  (test-equal "msg-error is 3" *wire-msg-error* 3)
+  (test-equal "enc-sexp is 0" *wire-enc-sexp* 0)
+  (test-equal "enc-binary is 1" *wire-enc-binary* 1)
+  (test-equal "default port is 5555" *wire-default-port* 5555)
+)
+
+
+;; ============================================================
+;; Stage 2: Header build/parse round-trip
+;; ============================================================
+
+(test-suite "Stage 2: Header build/parse"
+
+  ;; Build a header
+  (let ((hdr (ubyte-matrix 16))
+        (out (int-matrix 4)) )
+
+    ;; Test with typical values
+    (_wire-build-header hdr 1 0 42 1000)
+    (let ((valid (_wire-parse-header hdr out)))
+      (test-equal "parse returns valid=1" valid 1)
+      (test-equal "msg-type=1 (sync)" (out 0) 1)
+      (test-equal "encoding=0 (sexp)" (out 1) 0)
+      (test-equal "msg-id=42" (out 2) 42)
+      (test-equal "payload-len=1000" (out 3) 1000) )
+
+    ;; Test with binary encoding
+    (_wire-build-header hdr 0 1 99 500)
+    (_wire-parse-header hdr out)
+    (test-equal "msg-type=0 (async)" (out 0) 0)
+    (test-equal "encoding=1 (binary)" (out 1) 1)
+    (test-equal "msg-id=99" (out 2) 99)
+    (test-equal "payload-len=500" (out 3) 500)
+
+    ;; Test with zero payload
+    (_wire-build-header hdr 2 0 1 0)
+    (_wire-parse-header hdr out)
+    (test-equal "msg-type=2 (response)" (out 0) 2)
+    (test-equal "payload-len=0" (out 3) 0)
+
+    ;; Test with large msg-id (endianness check)
+    (_wire-build-header hdr 1 0 65537 256)
+    (_wire-parse-header hdr out)
+    (test-equal "large msg-id=65537" (out 2) 65537)
+
+    ;; Test invalid magic detection
+    (let ((bad-hdr (ubyte-matrix 16)))
+      (bad-hdr 0 0)  ;; wrong magic
+      (test-equal "invalid magic returns 0" (_wire-parse-header bad-hdr out) 0) )
+  )
+)
+
+
+;; ============================================================
+;; Stage 3: String <-> bytes conversion
+;; ============================================================
+
+(test-suite "Stage 3: String/bytes conversion"
+
+  ;; Basic round-trip
+  (let ((s "hello world"))
+    (let ((buf (_wire-string-to-bytes s)))
+      (test-equal "string-to-bytes length" (idx-dim buf 0) 11)
+      (let ((s2 (_wire-bytes-to-string buf 11)))
+        (test-string-equal "round-trip string" s2 "hello world") ) ) )
+
+  ;; Empty string: buffer is at least 1 byte, but logical length is 0
+  (let ((s ""))
+    (let ((buf (_wire-string-to-bytes s)))
+      (test-check "empty string buf allocated" (>= (idx-dim buf 0) 1))
+      (let ((s2 (_wire-bytes-to-string buf 0)))
+        (test-string-equal "empty string round-trip" s2 "") ) ) )
+
+  ;; String with special characters
+  (let ((s "(+ 1 2)"))
+    (let ((buf (_wire-string-to-bytes s)))
+      (let ((s2 (_wire-bytes-to-string buf (idx-dim buf 0))))
+        (test-string-equal "sexp string round-trip" s2 "(+ 1 2)") ) ) )
+)
+
+
+;; ============================================================
+;; Stage 4: bwrite/bread via temp files
+;; ============================================================
+
+(test-suite "Stage 4: bwrite/bread serialization"
+
+  ;; Simple integer
+  (let ((buf (_wire-bwrite-to-bytes 42)))
+    (test-check "bwrite returns bytes" (> (idx-dim buf 0) 0))
+    (let ((result (_wire-bread-from-bytes buf (idx-dim buf 0))))
+      (test-equal "bread recovers integer" result 42) ) )
+
+  ;; String
+  (let ((buf (_wire-bwrite-to-bytes "hello")))
+    (let ((result (_wire-bread-from-bytes buf (idx-dim buf 0))))
+      (test-string-equal "bread recovers string" result "hello") ) )
+
+  ;; List
+  (let ((buf (_wire-bwrite-to-bytes '(1 2 3))))
+    (let ((result (_wire-bread-from-bytes buf (idx-dim buf 0))))
+      (test-equal "bread recovers list" result '(1 2 3)) ) )
+
+  ;; Nested list
+  (let ((buf (_wire-bwrite-to-bytes '(a (b c) d))))
+    (let ((result (_wire-bread-from-bytes buf (idx-dim buf 0))))
+      (test-equal "bread recovers nested list" result '(a (b c) d)) ) )
+
+  ;; idx (matrix)
+  (let ((m (double-matrix 3)))
+    (m 0 1.5) (m 1 2.5) (m 2 3.5)
+    (let ((buf (_wire-bwrite-to-bytes m)))
+      (let ((result (_wire-bread-from-bytes buf (idx-dim buf 0))))
+        (test-check "bread recovers idx" (indexp result))
+        (test-approx "idx value 0" (result 0) 1.5 1e-10)
+        (test-approx "idx value 1" (result 1) 2.5 1e-10)
+        (test-approx "idx value 2" (result 2) 3.5 1e-10) ) ) )
+)
+
+
+;; ============================================================
+;; Stage 5: File I/O helpers
+;; ============================================================
+
+(test-suite "Stage 5: File I/O helpers"
+
+  (let ((testf (concat *test-dir* "/test-bytes.bin"))
+        (buf (ubyte-matrix 5)) )
+    (buf 0 72) (buf 1 101) (buf 2 108) (buf 3 108) (buf 4 111)  ;; "Hello"
+    (let ((rc (_wire-write-file-bytes testf buf 5)))
+      (test-equal "write file returns 0" rc 0) )
+    (test-equal "file size" (_wire-file-size testf) 5)
+    (let ((rbuf (ubyte-matrix 10)))
+      (let ((n (_wire-read-file-bytes testf rbuf 10)))
+        (test-equal "read file returns 5 bytes" n 5)
+        (test-equal "byte 0 = H" (rbuf 0) 72)
+        (test-equal "byte 4 = o" (rbuf 4) 111) ) ) )
+)
+
+
+;; ============================================================
+;; Stage 6: argv parsing
+;; ============================================================
+
+(test-suite "Stage 6: argv parsing"
+
+  ;; With no argv or env, should return ()
+  (let ((saved-argv argv))
+    ;; Clear argv
+    (setq argv ())
+    (test-equal "no argv returns ()" (wire-parse-port) ())
+
+    ;; Set argv with --port
+    (setq argv '("--port" "6789"))
+    (test-equal "--port 6789" (wire-parse-port) 6789)
+
+    ;; Set argv with -p
+    (setq argv '("-p" "7777"))
+    (test-equal "-p 7777" (wire-parse-port) 7777)
+
+    ;; Set argv with other args before port
+    (setq argv '("--verbose" "--port" "8888" "--name" "test"))
+    (test-equal "port among other args" (wire-parse-port) 8888)
+
+    ;; Restore
+    (setq argv saved-argv) )
+)
+
+
+;; ============================================================
+;; Stage 7: Socket binding and localhost enforcement
+;; ============================================================
+
+(test-suite "Stage 7: Socket binding"
+
+  ;; Bind to a port
+  (let ((fd (_wire-bind-localhost 19876)))
+    (test-check "bind returns valid fd" (>= fd 0))
+    ;; Close it
+    (_wire-close-fd fd) )
+
+  ;; Bind to same port after close should succeed
+  (let ((fd (_wire-bind-localhost 19876)))
+    (test-check "re-bind after close succeeds" (>= fd 0))
+    (_wire-close-fd fd) )
+)
+
+
+;; ============================================================
+;; Stage 8: WireServer construction
+;; ============================================================
+
+(test-suite "Stage 8: WireServer construction"
+
+  (let ((srv (new WireServer 19877)))
+    (test-check "server created" srv)
+    (test-equal "server port" :srv:port 19877)
+    (test-equal "listen-fd initially -1" :srv:listen-fd -1)
+    (test-equal "no clients" :srv:client-count 0)
+    (test-check "not running" (not :srv:running)) )
+
+  ;; wire-server-new
+  (let ((srv (wire-server-new 19878)))
+    (test-check "wire-server-new created" srv)
+    (test-equal "wire-server-new port" :srv:port 19878) )
+)
+
+
+;; ============================================================
+;; Stage 9: Server start/shutdown
+;; ============================================================
+
+(test-suite "Stage 9: Server start/shutdown"
+
+  (let ((srv (new WireServer 19879)))
+    (==> srv start)
+    (test-check "listen-fd valid after start" (>= :srv:listen-fd 0))
+    (==> srv shutdown)
+    (test-equal "listen-fd -1 after shutdown" :srv:listen-fd -1)
+    (test-equal "no clients after shutdown" :srv:client-count 0) )
+)
+
+
+;; ============================================================
+;; Stage 10: Client-server round-trip (sexp encoding)
+;; ============================================================
+
+(test-suite "Stage 10: Client-server sexp round-trip"
+
+  ;; wire-call blocks waiting for response, so we interleave using
+  ;; raw fds: send request, serve-once (server processes), recv response.
+
+  (let ((srv (new WireServer 19881)))
+    (==> srv start)
+
+    ;; Connect raw
+    (let ((cfd (_wire-connect-raw "127.0.0.1" 19881)))
+      (test-check "raw connect succeeded" (>= cfd 0))
+
+      ;; Server accepts
+      (==> srv serve-once 500)
+      (test-equal "server accepted client" :srv:client-count 1)
+
+      ;; Send a sync sexp request: (+ 10 20)
+      (let ((payload (_wire-string-to-bytes "(+ 10 20)")))
+        (_wire-send-message cfd *wire-msg-sync* *wire-enc-sexp*
+                           1 payload (idx-dim payload 0)) )
+
+      ;; Server processes the request
+      (==> srv serve-once 500)
+
+      ;; Read the response
+      (let ((resp (_wire-recv-message cfd)))
+        (test-check "got response" (consp resp))
+        (when (consp resp)
+          (test-equal "response type" (car resp) *wire-msg-response*)
+          (test-equal "response encoding=sexp" (cadr resp) *wire-enc-sexp*)
+          (let ((result-str (_wire-bytes-to-string (cadddr resp) (idx-dim (cadddr resp) 0))))
+            (test-string-equal "sexp result = 30" result-str "30") ) ) )
+
+      (_wire-close-fd cfd) )
+    (==> srv shutdown) )
+)
+
+
+;; ============================================================
+;; Stage 11: Client-server round-trip (binary encoding)
+;; ============================================================
+
+(test-suite "Stage 11: Client-server binary round-trip"
+
+  (let ((srv (new WireServer 19882)))
+    (==> srv start)
+
+    (let ((cfd (_wire-connect-raw "127.0.0.1" 19882)))
+      (test-check "binary: raw connect" (>= cfd 0))
+
+      ;; Server accepts
+      (==> srv serve-once 500)
+
+      ;; Send a binary-encoded sync request: (+ 100 200)
+      (let ((payload (_wire-bwrite-to-bytes '(+ 100 200))))
+        (_wire-send-message cfd *wire-msg-sync* *wire-enc-binary*
+                           1 payload (idx-dim payload 0)) )
+
+      ;; Server processes
+      (==> srv serve-once 500)
+
+      ;; Read the response
+      (let ((resp (_wire-recv-message cfd)))
+        (test-check "binary: got response" (consp resp))
+        (when (consp resp)
+          (test-equal "binary: response type" (car resp) *wire-msg-response*)
+          (test-equal "binary: response encoding=binary" (cadr resp) *wire-enc-binary*)
+          (let ((result (_wire-bread-from-bytes (cadddr resp) (idx-dim (cadddr resp) 0))))
+            (test-equal "binary: result = 300" result 300) ) ) )
+
+      (_wire-close-fd cfd) )
+    (==> srv shutdown) )
+)
+
+
+;; ============================================================
+;; Stage 12: Async messages
+;; ============================================================
+
+(test-suite "Stage 12: Async messages"
+
+  ;; Async messages are fire-and-forget: server processes but doesn't respond
+  (defvar *async-test-value* 0)
+
+  (let ((srv (new WireServer 19883)))
+    ;; Set custom async handler
+    (setq :srv:on-async (lambda (fd expr encoding)
+                          (setq *async-test-value* 999) ))
+    (==> srv start)
+
+    (let ((cfd (_wire-connect-raw "127.0.0.1" 19883)))
+      (==> srv serve-once 500)  ;; accept
+
+      ;; Send async sexp
+      (let ((payload (_wire-string-to-bytes "(setq *async-test-value* 42)")))
+        (_wire-send-message cfd *wire-msg-async* *wire-enc-sexp*
+                           1 payload (idx-dim payload 0)) )
+
+      ;; Server processes
+      (==> srv serve-once 500)
+      (test-equal "async handler called" *async-test-value* 999)
+
+      (_wire-close-fd cfd) )
+    (==> srv shutdown) )
+)
+
+
+;; ============================================================
+;; Stage 13: Error handling
+;; ============================================================
+
+(test-suite "Stage 13: Error handling"
+
+  (let ((srv (new WireServer 19884)))
+    (==> srv start)
+
+    (let ((cfd (_wire-connect-raw "127.0.0.1" 19884)))
+      (==> srv serve-once 500)  ;; accept
+
+      ;; Send a request that will cause an error (undefined variable)
+      (let ((payload (_wire-string-to-bytes "undefined-variable-xyz")))
+        (_wire-send-message cfd *wire-msg-sync* *wire-enc-sexp*
+                           1 payload (idx-dim payload 0)) )
+
+      ;; Server processes
+      (==> srv serve-once 500)
+
+      ;; Should get a response (error type 3, or response type 2 with () value)
+      (let ((resp (_wire-recv-message cfd)))
+        (test-check "error: got response" (consp resp))
+        (when (consp resp)
+          (test-check "error: response or error type"
+                      (or (= (car resp) *wire-msg-error*)
+                          (= (car resp) *wire-msg-response*)) ) ) )
+
+      (_wire-close-fd cfd) )
+    (==> srv shutdown) )
+)
+
+
+;; ============================================================
+;; Stage 14: Multiple clients
+;; ============================================================
+
+(test-suite "Stage 14: Multiple clients"
+
+  (let ((srv (new WireServer 19885)))
+    (==> srv start)
+
+    ;; Connect two clients
+    (let ((cfd1 (_wire-connect-raw "127.0.0.1" 19885))
+          (cfd2 (_wire-connect-raw "127.0.0.1" 19885)) )
+      (test-check "client 1 connected" (>= cfd1 0))
+      (test-check "client 2 connected" (>= cfd2 0))
+
+      ;; Server accepts both
+      (==> srv serve-once 500)
+      (==> srv serve-once 500)
+      (test-equal "server has 2 clients" :srv:client-count 2)
+
+      ;; Client 1 sends request
+      (let ((payload (_wire-string-to-bytes "(+ 1 1)")))
+        (_wire-send-message cfd1 *wire-msg-sync* *wire-enc-sexp*
+                           1 payload (idx-dim payload 0)) )
+      (==> srv serve-once 500)
+      (let ((resp (_wire-recv-message cfd1)))
+        (test-check "client 1 got response" (consp resp))
+        (when (consp resp)
+          (let ((r (_wire-bytes-to-string (cadddr resp) (idx-dim (cadddr resp) 0))))
+            (test-string-equal "client 1 result" r "2") ) ) )
+
+      ;; Client 2 sends request
+      (let ((payload (_wire-string-to-bytes "(+ 2 2)")))
+        (_wire-send-message cfd2 *wire-msg-sync* *wire-enc-sexp*
+                           1 payload (idx-dim payload 0)) )
+      (==> srv serve-once 500)
+      (let ((resp (_wire-recv-message cfd2)))
+        (test-check "client 2 got response" (consp resp))
+        (when (consp resp)
+          (let ((r (_wire-bytes-to-string (cadddr resp) (idx-dim (cadddr resp) 0))))
+            (test-string-equal "client 2 result" r "4") ) ) )
+
+      ;; Disconnect client 1
+      (_wire-close-fd cfd1)
+      (==> srv serve-once 500)  ;; server detects disconnect
+      (test-equal "server has 1 client after disconnect" :srv:client-count 1)
+
+      (_wire-close-fd cfd2) )
+    (==> srv shutdown) )
+)
+
+
+;; ============================================================
+;; Stage 15: Custom sync handler
+;; ============================================================
+
+(test-suite "Stage 15: Custom sync handler"
+
+  (let ((srv (new WireServer 19886)))
+    ;; Custom handler that doubles the input
+    (setq :srv:on-sync (lambda (fd expr encoding)
+                         (let ((val (if (= encoding *wire-enc-binary*)
+                                     expr
+                                     (eval (_wire-parse-sexp expr)) )))
+                           (* val 2) ) ))
+    (==> srv start)
+
+    (let ((cfd (_wire-connect-raw "127.0.0.1" 19886)))
+      (==> srv serve-once 500)
+
+      ;; Send "21" as sexp
+      (let ((payload (_wire-string-to-bytes "21")))
+        (_wire-send-message cfd *wire-msg-sync* *wire-enc-sexp*
+                           1 payload (idx-dim payload 0)) )
+      (==> srv serve-once 500)
+
+      (let ((resp (_wire-recv-message cfd)))
+        (test-check "custom handler: got response" (consp resp))
+        (when (consp resp)
+          (let ((r (_wire-bytes-to-string (cadddr resp) (idx-dim (cadddr resp) 0))))
+            (test-string-equal "custom handler: 21*2=42" r "42") ) ) )
+
+      (_wire-close-fd cfd) )
+    (==> srv shutdown) )
+)
+
+
+;; ============================================================
+;; Stage 16: Connection callbacks
+;; ============================================================
+
+(test-suite "Stage 16: Connection callbacks"
+
+  (defvar *connect-log* ())
+  (defvar *disconnect-log* ())
+
+  (let ((srv (new WireServer 19887)))
+    (setq :srv:on-connect (lambda (fd)
+                            (setq *connect-log* (nconc1 *connect-log* fd)) ))
+    (setq :srv:on-disconnect (lambda (fd)
+                               (setq *disconnect-log* (nconc1 *disconnect-log* fd)) ))
+    (==> srv start)
+
+    (let ((cfd (_wire-connect-raw "127.0.0.1" 19887)))
+      (==> srv serve-once 500)
+      (test-equal "on-connect called once" (length *connect-log*) 1)
+
+      ;; Disconnect
+      (_wire-close-fd cfd)
+      (==> srv serve-once 500)
+      (test-equal "on-disconnect called once" (length *disconnect-log*) 1) )
+    (==> srv shutdown) )
+)
+
+
+;; ============================================================
+;; Stage 17: wire-serialize - DataTable pack/unpack
+;; ============================================================
+
+(test-suite "Stage 17: DataTable pack/unpack"
+
+  ;; Create a test DataTable
+  (let ((dt (new DataTable)))
+    (==> dt add-column "price" 'real)
+    (==> dt add-column "qty" 'int)
+    (==> dt add-column "sym" 'string)
+    (==> dt append-row (list 100.5 10 "AAPL"))
+    (==> dt append-row (list 200.25 20 "GOOG"))
+    (==> dt append-row (list 50.0 30 "MSFT"))
+
+    ;; Pack
+    (let ((packed (wire-pack-datatable dt)))
+      (test-equal "packed tag" (car packed) 'datatable)
+      (test-equal "packed names" (cadr packed) '("price" "qty" "sym"))
+      (test-equal "packed types" (caddr packed) '(real int string))
+      (test-equal "packed nrows" (cadddr packed) 3)
+
+      ;; Unpack
+      (let ((dt2 (wire-unpack-datatable packed)))
+        (test-equal "unpacked nrows" (==> dt2 num-rows) 3)
+        (test-equal "unpacked ncols" (==> dt2 num-cols) 3)
+        (test-equal "unpacked names" (==> dt2 col-names) '("price" "qty" "sym"))
+        (test-equal "unpacked types" (==> dt2 col-types) '(real int string))
+        ;; Check values
+        (test-approx "price[0]" (==> dt2 get 0 0) 100.5 1e-10)
+        (test-approx "price[2]" (==> dt2 get 2 0) 50.0 1e-10)
+        (test-equal "qty[1]" (==> dt2 get 1 1) 20)
+        (test-string-equal "sym[0]" (==> dt2 get 0 2) "AAPL")
+        (test-string-equal "sym[2]" (==> dt2 get 2 2) "MSFT") ) ) )
+)
+
+
+;; ============================================================
+;; Stage 18: DataTable bwrite round-trip
+;; ============================================================
+
+(test-suite "Stage 18: DataTable bwrite round-trip"
+
+  (let ((dt (new DataTable)))
+    (==> dt add-column "x" 'real)
+    (==> dt add-column "label" 'string)
+    (==> dt append-row (list 3.14 "pi"))
+    (==> dt append-row (list 2.72 "e"))
+
+    ;; Pack and serialize via bwrite
+    (let ((packed (wire-pack-datatable dt)))
+      (let ((buf (_wire-bwrite-to-bytes packed)))
+        (test-check "bwrite packed dt has bytes" (> (idx-dim buf 0) 0))
+
+        ;; Deserialize and unpack
+        (let ((packed2 (_wire-bread-from-bytes buf (idx-dim buf 0))))
+          (let ((dt2 (wire-unpack-datatable packed2)))
+            (test-equal "bwrite dt nrows" (==> dt2 num-rows) 2)
+            (test-approx "bwrite dt x[0]" (==> dt2 get 0 0) 3.14 1e-10)
+            (test-string-equal "bwrite dt label[1]" (==> dt2 get 1 1) "e") ) ) ) ) )
+)
+
+
+;; ============================================================
+;; Stage 19: DataTable over wire (binary encoding)
+;; ============================================================
+
+(test-suite "Stage 19: DataTable over wire"
+
+  ;; Create a table to query
+  (defvar *wire-test-table* (new DataTable))
+  (==> *wire-test-table* add-column "val" 'real)
+  (==> *wire-test-table* append-row (list 1.0))
+  (==> *wire-test-table* append-row (list 2.0))
+  (==> *wire-test-table* append-row (list 3.0))
+
+  (let ((srv (new WireServer 19888)))
+    ;; Custom handler that returns a packed datatable
+    (setq :srv:on-sync (lambda (fd expr encoding)
+                         (wire-pack-datatable *wire-test-table*) ))
+    (==> srv start)
+
+    (let ((cfd (_wire-connect-raw "127.0.0.1" 19888)))
+      (==> srv serve-once 500)
+
+      ;; Send binary request (content doesn't matter, handler ignores it)
+      (let ((payload (_wire-bwrite-to-bytes 'get-table)))
+        (_wire-send-message cfd *wire-msg-sync* *wire-enc-binary*
+                           1 payload (idx-dim payload 0)) )
+      (==> srv serve-once 500)
+
+      ;; Get response
+      (let ((resp (_wire-recv-message cfd)))
+        (test-check "dt wire: got response" (consp resp))
+        (when (consp resp)
+          (test-equal "dt wire: binary encoding" (cadr resp) *wire-enc-binary*)
+          (let ((packed (_wire-bread-from-bytes (cadddr resp) (idx-dim (cadddr resp) 0))))
+            (let ((dt2 (wire-unpack-datatable packed)))
+              (test-equal "dt wire: nrows=3" (==> dt2 num-rows) 3)
+              (test-approx "dt wire: val[0]=1.0" (==> dt2 get 0 0) 1.0 1e-10)
+              (test-approx "dt wire: val[2]=3.0" (==> dt2 get 2 0) 3.0 1e-10) ) ) ) )
+
+      (_wire-close-fd cfd) )
+    (==> srv shutdown) )
+)
+
+
+;; ============================================================
+;; Stage 20: S-expression DataTable serialization
+;; ============================================================
+
+(test-suite "Stage 20: DataTable sexp serialization"
+
+  (let ((dt (new DataTable)))
+    (==> dt add-column "a" 'int)
+    (==> dt add-column "b" 'real)
+    (==> dt append-row (list 1 10.5))
+    (==> dt append-row (list 2 20.5))
+
+    (let ((sexp-str (wire-datatable-to-sexp dt)))
+      (test-check "sexp string is non-empty" (> (len sexp-str) 0))
+      ;; Verify it contains expected substrings
+      (test-check "sexp contains names" (regex-match ".*names.*" sexp-str))
+      (test-check "sexp contains types" (regex-match ".*types.*" sexp-str))
+      (test-check "sexp contains nrows" (regex-match ".*nrows 2.*" sexp-str))
+      (test-check "sexp contains data" (regex-match ".*data.*" sexp-str)) ) )
+)
+
+
+;; ============================================================
+;; Stage 21: wire-serialize with all column types
+;; ============================================================
+
+(test-suite "Stage 21: All column types"
+
+  (let ((dt (new DataTable)))
+    (==> dt add-column "d" 'real)
+    (==> dt add-column "i" 'int)
+    (==> dt add-column "f" 'float)
+    (==> dt add-column "s" 'stamp)
+    (==> dt add-column "t" 'string)
+    (==> dt append-row (list 1.5 10 2.5 1000000 "hello"))
+    (==> dt append-row (list 3.5 20 4.5 2000000 "world"))
+
+    (let ((packed (wire-pack-datatable dt)))
+      (let ((dt2 (wire-unpack-datatable packed)))
+        (test-equal "all types: nrows" (==> dt2 num-rows) 2)
+        (test-equal "all types: ncols" (==> dt2 num-cols) 5)
+        (test-approx "all types: real" (==> dt2 get 0 0) 1.5 1e-10)
+        (test-equal "all types: int" (==> dt2 get 0 1) 10)
+        ;; float comparison with wider tolerance
+        (test-approx "all types: float" (==> dt2 get 0 2) 2.5 1e-5)
+        (test-equal "all types: stamp" (==> dt2 get 0 3) 1000000)
+        (test-string-equal "all types: string" (==> dt2 get 0 4) "hello") ) ) )
+)
+
+
+;; ============================================================
+;; Stage 22: Client API (wire-connect / wire-call / wire-close)
+;; ============================================================
+
+(test-suite "Stage 22: Client API wire-call"
+
+  ;; Test the high-level API by interleaving client and server operations
+  ;; We can't use wire-call directly because it blocks waiting for response.
+  ;; Instead, test wire-connect and wire-close, and the lower-level path.
+
+  (let ((srv (new WireServer 19889)))
+    (==> srv start)
+
+    ;; Test wire-connect
+    (let ((conn (wire-connect "127.0.0.1" 19889)))
+      (test-check "wire-connect returns htable" conn)
+      (test-check "conn has fd" (>= (conn "fd") 0))
+      (test-equal "conn has next-msg-id=1" (conn "next-msg-id") 1)
+
+      ;; Accept on server side
+      (==> srv serve-once 500)
+
+      ;; Test wire-close
+      (wire-close conn)
+      (test-equal "fd=-1 after close" (conn "fd") -1) )
+
+    (==> srv shutdown) )
+)
+
+
+;; ============================================================
+;; Summary
+;; ============================================================
+
+;; Cleanup
+(sys (concat "rm -rf " *test-dir*))
+
+(test-summary)

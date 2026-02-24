@@ -1,0 +1,1109 @@
+;;; wire.lsh -- Interprocess communication for Lush
+;;;
+;;; A TCP-based IPC package enabling Lush instances to communicate:
+;;; query tables, execute expressions, and exchange data.  Inspired
+;;; by Q/kdb+ IPC, TorQ, and Kerf1's wire.c.
+;;;
+;;; Features:
+;;;   - WireServer class with select()-based event loop
+;;;   - Localhost-only binding (security default)
+;;;   - Binary encoding via bwrite/bread (default)
+;;;   - S-expression text encoding (cross-language fallback)
+;;;   - Q-style callback hooks (on-sync, on-async, on-connect, on-disconnect)
+;;;   - Client API: wire-connect, wire-call, wire-send, wire-close
+;;;   - argv parsing for --port/-p
+;;;
+;;; Wire protocol: 16-byte header + payload
+;;;   Bytes  0-3:  Magic "LWIR" (0x4C574952)
+;;;   Bytes  4:    Version (1)
+;;;   Bytes  5:    MsgType (0=async, 1=sync, 2=response, 3=error)
+;;;   Bytes  6:    Encoding (0=sexp, 1=binary)
+;;;   Bytes  7:    Reserved (0)
+;;;   Bytes  8-11: MsgID (uint32 little-endian)
+;;;   Bytes 12-15: PayloadLen (uint32 little-endian)
+;;;
+;;; Usage:
+;;;   (libload "wire/wire")
+;;;   ;; Server:
+;;;   (wire-server-start 5555)
+;;;   ;; Client:
+;;;   (setq c (wire-connect "localhost" 5555))
+;;;   (wire-call c "(+ 1 2)")  ;; => 3
+;;;   (wire-close c)
+
+(libload "libc/stdio")
+(libload "libc/files")
+(libload "libc/make")
+
+;; ============================================================
+;; Compile and load wire-helpers.c (DX functions for memstream I/O)
+;; ============================================================
+
+(let ((dir (dirname file-being-loaded)))
+  (let ((lm (new lushmake)))
+    (==> lm setflags (concat " -I" dir " -I" lushdir "/include -DHAVE_CONFIG_H -O2"))
+    (==> lm rule "wire_helpers.o" '("wire_helpers.c" "wire_helpers.h"))
+    (==> lm make)
+    (==> lm load) ) )
+
+;; Lush only defines car/cdr up to 3-deep (caddr, cdddr).
+;; Define the 4-deep accessors used throughout.
+(de cadddr (x) (car (cdddr x)))
+(de cddddr (x) (cdr (cdddr x)))
+
+#? *** Wire: Interprocess Communication
+
+
+;; ============================================================
+;; Constants
+;; ============================================================
+
+(defvar *wire-magic*      0x4C574952)  ;; "LWIR"
+(defvar *wire-version*    1)
+(defvar *wire-header-size* 16)
+
+;; Message types
+(defvar *wire-msg-async*    0)
+(defvar *wire-msg-sync*     1)
+(defvar *wire-msg-response* 2)
+(defvar *wire-msg-error*    3)
+
+;; Message types (continued)
+(defvar *wire-msg-heartbeat* 4)
+
+;; Encoding types
+(defvar *wire-enc-sexp*   0)
+(defvar *wire-enc-binary* 1)
+
+;; Default port
+(defvar *wire-default-port* 5555)
+
+;; Timeout/keepalive defaults
+(defvar *wire-default-idle-timeout* 300)        ;; 5 minutes
+(defvar *wire-default-keepalive-interval* 60)   ;; 1 minute
+
+
+;; ============================================================
+;; Compiled C functions: socket operations and header I/O
+;; ============================================================
+
+;; Bind a TCP listening socket to 127.0.0.1:port.
+;; Returns the listening fd (>= 0) on success, -1 on error.
+(de _wire-bind-localhost (port)
+  ((-int-) port)
+  (let ((fd -1))
+    ((-int-) fd)
+    #{
+    {
+      struct sockaddr_in addr;
+      int sock, opt = 1;
+      sock = socket(AF_INET, SOCK_STREAM, 0);
+      if (sock < 0) { $fd = -1; }
+      else {
+        setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+        memset(&addr, 0, sizeof(addr));
+        addr.sin_family = AF_INET;
+        addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        addr.sin_port = htons((unsigned short)$port);
+        if (bind(sock, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
+          close(sock); $fd = -1;
+        } else if (listen(sock, 16) < 0) {
+          close(sock); $fd = -1;
+        } else {
+          $fd = sock;
+        }
+      }
+    }
+    #}
+    fd ) )
+
+;; Accept a connection on a listening socket.
+;; Returns the new client fd (>= 0), or -1 on error.
+(de _wire-accept (listen-fd)
+  ((-int-) listen-fd)
+  (let ((fd -1))
+    ((-int-) fd)
+    #{
+    {
+      struct sockaddr_in peer;
+      socklen_t peerlen = sizeof(peer);
+      $fd = accept($listen_fd, (struct sockaddr*)&peer, &peerlen);
+    }
+    #}
+    fd ) )
+
+;; Check if a connected socket's peer is localhost (127.0.0.1).
+;; Returns 1 if local, 0 if not, -1 on error.
+(de _wire-peer-is-local (fd)
+  ((-int-) fd)
+  (let ((result -1))
+    ((-int-) result)
+    #{
+    {
+      struct sockaddr_in peer;
+      socklen_t peerlen = sizeof(peer);
+      if (getpeername($fd, (struct sockaddr*)&peer, &peerlen) == 0) {
+        uint32_t addr = ntohl(peer.sin_addr.s_addr);
+        $result = (addr == INADDR_LOOPBACK) ? 1 : 0;
+      }
+    }
+    #}
+    result ) )
+
+;; Close a file descriptor.
+(de _wire-close-fd (fd)
+  ((-int-) fd)
+  #{ close($fd); #}
+  () )
+
+;; Select on multiple fds for readability.
+;; listen-fd: the listening socket fd (-1 to skip)
+;; client-fds: idx1 of client fds
+;; nclients: number of valid entries in client-fds
+;; timeout-ms: timeout in milliseconds (-1 for blocking)
+;; ready-out: idx1 to receive ready fd list (must be large enough)
+;; Returns number of ready fds written to ready-out.
+(de _wire-select (listen-fd client-fds nclients timeout-ms ready-out)
+  ((-int-) listen-fd nclients timeout-ms)
+  ((-idx1- (-int-)) client-fds ready-out)
+  (let ((nready 0))
+    ((-int-) nready)
+    #{
+    {
+      fd_set rset;
+      struct timeval tv, *ptv = NULL;
+      int maxfd = -1, i, status;
+
+      FD_ZERO(&rset);
+      if ($listen_fd >= 0) {
+        FD_SET($listen_fd, &rset);
+        if ($listen_fd > maxfd) maxfd = $listen_fd;
+      }
+      for (i = 0; i < $nclients; i++) {
+        int cfd = ((int*)IDX_PTR($client_fds, int))[i];
+        if (cfd >= 0) {
+          FD_SET(cfd, &rset);
+          if (cfd > maxfd) maxfd = cfd;
+        }
+      }
+      if ($timeout_ms >= 0) {
+        tv.tv_sec = $timeout_ms / 1000;
+        tv.tv_usec = ($timeout_ms % 1000) * 1000;
+        ptv = &tv;
+      }
+      status = select(maxfd + 1, &rset, NULL, NULL, ptv);
+      $nready = 0;
+      if (status > 0) {
+        if ($listen_fd >= 0 && FD_ISSET($listen_fd, &rset)) {
+          ((int*)IDX_PTR($ready_out, int))[$nready] = $listen_fd;
+          $nready++;
+        }
+        for (i = 0; i < $nclients; i++) {
+          int cfd = ((int*)IDX_PTR($client_fds, int))[i];
+          if (cfd >= 0 && FD_ISSET(cfd, &rset)) {
+            ((int*)IDX_PTR($ready_out, int))[$nready] = cfd;
+            $nready++;
+          }
+        }
+      }
+    }
+    #}
+    nready ) )
+
+;; Read exactly n bytes from fd into buf (idx1 of ubyte).
+;; Returns number of bytes read (< n means EOF or error).
+(de _wire-read-exact (fd buf n)
+  ((-int-) fd n)
+  ((-idx1- (-ubyte-)) buf)
+  (let ((total 0))
+    ((-int-) total)
+    #{
+    {
+      unsigned char *p = IDX_PTR($buf, unsigned char);
+      int remain = $n;
+      $total = 0;
+      while (remain > 0) {
+        int got = read($fd, p + $total, remain);
+        if (got <= 0) break;
+        $total += got;
+        remain -= got;
+      }
+    }
+    #}
+    total ) )
+
+;; Write exactly n bytes from buf (idx1 of ubyte) to fd.
+;; Returns 0 on success, -1 on error.
+(de _wire-write-all (fd buf n)
+  ((-int-) fd n)
+  ((-idx1- (-ubyte-)) buf)
+  (let ((rc 0))
+    ((-int-) rc)
+    #{
+    {
+      unsigned char *p = IDX_PTR($buf, unsigned char);
+      int remain = $n, sent_total = 0;
+      $rc = 0;
+      while (remain > 0) {
+        int sent = write($fd, p + sent_total, remain);
+        if (sent <= 0) { $rc = -1; break; }
+        sent_total += sent;
+        remain -= sent;
+      }
+    }
+    #}
+    rc ) )
+
+;; Build a 16-byte wire header into buf (idx1 of ubyte, length >= 16).
+(de _wire-build-header (buf msg-type encoding msg-id payload-len)
+  ((-idx1- (-ubyte-)) buf)
+  ((-int-) msg-type encoding msg-id payload-len)
+  #{
+  {
+    unsigned char *h = IDX_PTR($buf, unsigned char);
+    /* Magic: "LWIR" = 0x4C 0x57 0x49 0x52 */
+    h[0] = 0x4C; h[1] = 0x57; h[2] = 0x49; h[3] = 0x52;
+    h[4] = 1;  /* version */
+    h[5] = (unsigned char)$msg_type;
+    h[6] = (unsigned char)$encoding;
+    h[7] = 0;  /* reserved */
+    /* msg_id: little-endian uint32 */
+    h[8]  = (unsigned char)($msg_id & 0xFF);
+    h[9]  = (unsigned char)(($msg_id >> 8) & 0xFF);
+    h[10] = (unsigned char)(($msg_id >> 16) & 0xFF);
+    h[11] = (unsigned char)(($msg_id >> 24) & 0xFF);
+    /* payload_len: little-endian uint32 */
+    h[12] = (unsigned char)($payload_len & 0xFF);
+    h[13] = (unsigned char)(($payload_len >> 8) & 0xFF);
+    h[14] = (unsigned char)(($payload_len >> 16) & 0xFF);
+    h[15] = (unsigned char)(($payload_len >> 24) & 0xFF);
+  }
+  #}
+  () )
+
+;; Parse a 16-byte wire header from buf (idx1 of ubyte).
+;; Writes parsed fields into out (idx1 of int, length >= 4):
+;;   out[0] = msg_type, out[1] = encoding, out[2] = msg_id, out[3] = payload_len
+;; Returns 1 if valid (magic matches), 0 if invalid.
+(de _wire-parse-header (buf out)
+  ((-idx1- (-ubyte-)) buf)
+  ((-idx1- (-int-)) out)
+  (let ((valid 0))
+    ((-int-) valid)
+    #{
+    {
+      unsigned char *h = IDX_PTR($buf, unsigned char);
+      int *o = IDX_PTR($out, int);
+      /* Check magic */
+      if (h[0]==0x4C && h[1]==0x57 && h[2]==0x49 && h[3]==0x52) {
+        o[0] = (int)h[5]; /* msg_type */
+        o[1] = (int)h[6]; /* encoding */
+        o[2] = (int)(h[8] | (h[9]<<8) | (h[10]<<16) | (h[11]<<24)); /* msg_id */
+        o[3] = (int)(h[12] | (h[13]<<8) | (h[14]<<16) | (h[15]<<24)); /* payload_len */
+        $valid = 1;
+      }
+    }
+    #}
+    valid ) )
+
+;; Read a file into a ubyte idx1.
+;; Returns number of bytes read.
+(de _wire-read-file-bytes (filename buf maxlen)
+  ((-str-) filename)
+  ((-idx1- (-ubyte-)) buf)
+  ((-int-) maxlen)
+  (let ((nbytes 0))
+    ((-int-) nbytes)
+    #{
+    {
+      FILE *f = fopen($filename->data, "rb");
+      if (f) {
+        fseek(f, 0, SEEK_END);
+        long sz = ftell(f);
+        fseek(f, 0, SEEK_SET);
+        if (sz > $maxlen) sz = $maxlen;
+        $nbytes = (int)fread(IDX_PTR($buf, unsigned char), 1, sz, f);
+        fclose(f);
+      }
+    }
+    #}
+    nbytes ) )
+
+;; Write bytes from a ubyte idx1 to a file.
+;; Returns 0 on success, -1 on error.
+(de _wire-write-file-bytes (filename buf nbytes)
+  ((-str-) filename)
+  ((-idx1- (-ubyte-)) buf)
+  ((-int-) nbytes)
+  (let ((rc 0))
+    ((-int-) rc)
+    #{
+    {
+      FILE *f = fopen($filename->data, "wb");
+      if (!f) { $rc = -1; }
+      else {
+        size_t written = fwrite(IDX_PTR($buf, unsigned char), 1, $nbytes, f);
+        if ((int)written != $nbytes) $rc = -1;
+        fclose(f);
+      }
+    }
+    #}
+    rc ) )
+
+;; Get file size in bytes.
+(de _wire-file-size (filename)
+  ((-str-) filename)
+  (let ((sz 0))
+    ((-int-) sz)
+    #{
+    {
+      FILE *f = fopen($filename->data, "rb");
+      if (f) {
+        fseek(f, 0, SEEK_END);
+        $sz = (int)ftell(f);
+        fclose(f);
+      }
+    }
+    #}
+    sz ) )
+
+;; Connect to a remote host:port via raw C socket.
+;; Returns the fd (>= 0) on success, -1 on error.
+(de _wire-connect-raw (host port)
+  ((-str-) host)
+  ((-int-) port)
+  (let ((fd -1))
+    ((-int-) fd)
+    #{
+    {
+      struct sockaddr_in addr;
+      int sock;
+      struct hostent *he;
+      sock = socket(AF_INET, SOCK_STREAM, 0);
+      if (sock >= 0) {
+        memset(&addr, 0, sizeof(addr));
+        addr.sin_family = AF_INET;
+        addr.sin_port = htons((unsigned short)$port);
+        if (inet_aton($host->data, &addr.sin_addr) == 0) {
+          he = gethostbyname($host->data);
+          if (he) {
+            memcpy(&addr.sin_addr, he->h_addr, he->h_length);
+          } else {
+            close(sock); sock = -1;
+          }
+        }
+        if (sock >= 0) {
+          if (connect(sock, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
+            close(sock); sock = -1;
+          }
+        }
+      }
+      $fd = sock;
+    }
+    #}
+    fd ) )
+
+
+;; Compile all C functions
+(dhc-make ()
+  #{
+  #include <stdio.h>
+  #include <stdlib.h>
+  #include <string.h>
+  #include <unistd.h>
+  #include <sys/types.h>
+  #include <sys/socket.h>
+  #include <sys/select.h>
+  #include <netinet/in.h>
+  #include <arpa/inet.h>
+  #include <netdb.h>
+  #}
+  _wire-bind-localhost
+  _wire-accept
+  _wire-peer-is-local
+  _wire-close-fd
+  _wire-select
+  _wire-read-exact
+  _wire-write-all
+  _wire-build-header
+  _wire-parse-header
+  _wire-read-file-bytes
+  _wire-write-file-bytes
+  _wire-file-size
+  _wire-connect-raw
+)
+
+
+;; ============================================================
+;; Interpreted helpers
+;; ============================================================
+
+;; Send a wire message (header + payload bytes) on a raw fd.
+(de _wire-send-message (fd msg-type encoding msg-id payload-bytes payload-len)
+  (let ((hdr (ubyte-matrix *wire-header-size*)))
+    (_wire-build-header hdr msg-type encoding msg-id payload-len)
+    (when (< (_wire-write-all fd hdr *wire-header-size*) 0)
+      (error "_wire-send-message" "failed to write header" fd) )
+    (when (> payload-len 0)
+      (when (< (_wire-write-all fd payload-bytes payload-len) 0)
+        (error "_wire-send-message" "failed to write payload" fd) ) ) ) )
+
+;; Receive a wire message from a raw fd.
+;; Returns (msg-type encoding msg-id payload-bytes) or () on EOF/error.
+(de _wire-recv-message (fd)
+  (let ((hdr (ubyte-matrix *wire-header-size*))
+        (fields (int-matrix 4)) )
+    (let ((got (_wire-read-exact fd hdr *wire-header-size*)))
+      (if (< got *wire-header-size*)
+        ()
+        (if (= 0 (_wire-parse-header hdr fields))
+          ()
+          (let ((msg-type (fields 0))
+                (encoding (fields 1))
+                (msg-id (fields 2))
+                (payload-len (fields 3)) )
+            (if (= payload-len 0)
+              (list msg-type encoding msg-id (ubyte-matrix 1))
+              (let ((payload (ubyte-matrix payload-len)))
+                (let ((got2 (_wire-read-exact fd payload payload-len)))
+                  (if (< got2 payload-len)
+                    ()
+                    (list msg-type encoding msg-id payload) ) ) ) ) ) ) ) ) ) )
+
+;; Convert a string to a ubyte idx1
+(de _wire-string-to-bytes (s)
+  (let ((n (len s)))
+    (let ((buf (ubyte-matrix (max 1 n))))
+      (for (i 0 (1- n))
+        (buf i (asc (mid s (1+ i) 1))) )
+      buf ) ) )
+
+;; Convert a ubyte idx1 to a string
+(de _wire-bytes-to-string (buf n)
+  (let ((s ""))
+    (for (i 0 (1- n))
+      (setq s (concat s (chr (buf i)))) )
+    s ) )
+
+
+;; ============================================================
+;; Binary serialization via bwrite/bread using memstream
+;; ============================================================
+
+;; Serialize a Lush object to bytes via bwrite.
+;; Returns a ubyte idx1 of the serialized data.
+;; Uses open_memstream (no temp files).
+(de _wire-bwrite-to-bytes (obj)
+  (let ((memf (_wire-memstream-open)))
+    (writing memf (bwrite obj))
+    (let ((sz (_wire-memstream-get-size)))
+      (if (= sz 0)
+        (progn (_wire-memstream-close) (ubyte-matrix 1))
+        (let ((buf (ubyte-matrix sz)))
+          (_wire-memstream-get-bytes buf)
+          (_wire-memstream-close)
+          buf ) ) ) ) )
+
+;; Deserialize a Lush object from bytes via bread.
+;; Returns the deserialized object.
+;; Uses fmemopen (no temp files).
+(de _wire-bread-from-bytes (buf nbytes)
+  (let ((memf (_wire-fmemopen-read buf nbytes)))
+    (reading memf (bread)) ) )
+
+
+;; ============================================================
+;; argv parsing
+;; ============================================================
+
+#? (wire-parse-port)
+;; Scan argv for --port or -p and return the port number.
+;; Returns () if not found.  Falls back to LUSH_WIRE_PORT env var.
+(de wire-parse-port ()
+  (let ((port ())
+        (args (if (consp argv) argv ())) )
+    ;; Scan argv
+    (while (and (not port) (consp args))
+      (cond
+       ((or (= (car args) "--port") (= (car args) "-p"))
+        (when (consp (cdr args))
+          (setq port (val (cadr args)))
+          (setq args ()) ) )
+       (t (setq args (cdr args))) ) )
+    ;; Fallback to environment variable
+    (when (not port)
+      (let ((env-port (getenv "LUSH_WIRE_PORT")))
+        (when (and env-port (<> env-port ""))
+          (setq port (val env-port)) ) ) )
+    port ) )
+
+
+;; ============================================================
+;; WireServer class
+;; ============================================================
+
+(defclass WireServer object
+  port                    ;; int: listening port
+  listen-fd               ;; int: listening socket fd
+  client-fds              ;; list of int fds
+  client-count            ;; int
+  running                 ;; boolean
+  next-msg-id             ;; int: monotonic counter
+
+  ;; Per-client read state for non-blocking incremental reads
+  client-state            ;; htable: (str fd) -> state htable
+
+  ;; Timeout/keepalive
+  idle-timeout-secs       ;; int: disconnect after this many idle seconds (0=disabled)
+  keepalive-interval-secs ;; int: seconds between heartbeat checks
+
+  ;; Callback hooks
+  on-connect              ;; (lambda (fd) ...) — called on new connection
+  on-disconnect           ;; (lambda (fd) ...) — called on close
+  on-sync                 ;; (lambda (fd expr encoding) ...) — sync handler, returns result
+  on-async                ;; (lambda (fd expr encoding) ...) — async handler
+)
+
+
+;; ============================================================
+;; WireServer constructor
+;; ============================================================
+
+#? (new WireServer <port>)
+;; Create a wire server bound to localhost on <port>.
+(defmethod WireServer WireServer (p)
+  (setq port p)
+  (setq listen-fd -1)
+  (setq client-fds ())
+  (setq client-count 0)
+  (setq running ())
+  (setq next-msg-id 1)
+  (setq client-state (htable 16))
+  (setq idle-timeout-secs *wire-default-idle-timeout*)
+  (setq keepalive-interval-secs *wire-default-keepalive-interval*)
+  (setq on-connect ())
+  (setq on-disconnect ())
+  (setq on-sync ())
+  (setq on-async ()) )
+
+
+
+;; ============================================================
+;; WireServer: start listening
+;; ============================================================
+
+#? (==> <server> start)
+;; Bind and start listening.  Does not enter the event loop.
+(defmethod WireServer start ()
+  (setq listen-fd (_wire-bind-localhost port))
+  (when (< listen-fd 0)
+    (error "WireServer.start" "failed to bind localhost port" port) )
+  (printf "wire: listening on 127.0.0.1:%d\n" port) )
+
+
+;; ============================================================
+
+;; WireServer: stop
+;; ============================================================
+
+#? (==> <server> stop)
+;; Signal the event loop to stop.
+(defmethod WireServer stop ()
+  (setq running ()) )
+
+
+;; ============================================================
+
+;; WireServer: internal connection management
+;; ============================================================
+
+(defmethod WireServer _add-client (fd)
+  (setq client-fds (nconc1 client-fds fd))
+  (setq client-count (1+ client-count))
+  ;; Initialize per-client read state
+  (let ((state (htable 8)))
+    (state "phase" 0)          ;; 0=reading header, 1=reading payload
+    (state "buf" (ubyte-matrix (+ *wire-header-size* 65536)))  ;; shared buffer
+    (state "offset" 0)         ;; bytes accumulated so far in current phase
+    (state "need" *wire-header-size*)  ;; bytes needed for current phase
+    (state "header-fields" ()) ;; parsed header (msg-type encoding msg-id payload-len)
+    (state "last-activity" (_wire-time-seconds))
+    (client-state (str fd) state) )
+  (when on-connect
+    (on-connect fd) ) )
+
+(defmethod WireServer _remove-client (fd)
+  (_wire-close-fd fd)
+  ;; Clean up per-client state
+  (client-state (str fd) ())
+  (let ((new-list ()))
+    (each ((cfd client-fds))
+      (when (<> cfd fd)
+        (setq new-list (nconc1 new-list cfd)) ) )
+    (setq client-fds new-list)
+    (setq client-count (length new-list)) )
+  (when on-disconnect
+    (on-disconnect fd) ) )
+
+
+;; ============================================================
+
+;; WireServer: non-blocking incremental read
+;; ============================================================
+
+;; Try to read data from a client using non-blocking recv.
+;; Returns:
+;;   ()                                     -- partial read (need more data)
+;;   'disconnect                            -- EOF or error
+;;   (msg-type encoding msg-id payload)     -- complete message
+(defmethod WireServer _try-read-client (fd)
+  (let ((state (client-state (str fd))))
+    (when (not state)
+      'disconnect )  ;; no state = stale fd
+    (when state
+      (state "last-activity" (_wire-time-seconds))
+      (let ((phase (state "phase"))
+            (buf (state "buf"))
+            (offset (state "offset"))
+            (need (state "need"))
+            (result ()) )
+        ;; Try non-blocking recv
+        (let ((remain (- need offset)))
+          (let ((got (_wire-recv-nonblock fd buf offset remain)))
+            (cond
+             ;; EOF or error
+             ((< got 0)
+              (setq result 'disconnect) )
+             ;; EAGAIN — nothing available yet
+             ((= got 0)
+              (setq result ()) )
+             ;; Got some bytes
+             (t
+              (let ((new-offset (+ offset got)))
+                (state "offset" new-offset)
+                (if (< new-offset need)
+                  ;; Still partial
+                  (setq result ())
+                  ;; Phase complete
+                  (cond
+                   ;; Phase 0: header complete — parse and transition to payload
+                   ((= phase 0)
+                    (let ((fields (int-matrix 4)))
+                      (if (= 0 (_wire-parse-header buf fields))
+                        ;; Bad header
+                        (setq result 'disconnect)
+                        ;; Good header
+                        (let ((msg-type (fields 0))
+                              (encoding (fields 1))
+                              (msg-id (fields 2))
+                              (payload-len (fields 3)) )
+                          (state "header-fields"
+                                 (list msg-type encoding msg-id payload-len))
+                          (if (= payload-len 0)
+                            ;; No payload — message complete
+                            (progn
+                              ;; Reset state for next message
+                              (state "phase" 0)
+                              (state "offset" 0)
+                              (state "need" *wire-header-size*)
+                              (setq result
+                                    (list msg-type encoding msg-id (ubyte-matrix 1))) )
+                            ;; Need payload — ensure buffer is large enough
+                            (progn
+                              (when (> payload-len (idx-dim buf 0))
+                                (let ((new-buf (ubyte-matrix payload-len)))
+                                  (state "buf" new-buf)
+                                  (setq buf new-buf) ) )
+                              (state "phase" 1)
+                              (state "offset" 0)
+                              (state "need" payload-len) ) ) ) ) ) )
+
+                   ;; Phase 1: payload complete — deliver message
+                   ((= phase 1)
+                    (let ((hf (state "header-fields")))
+                      (let ((msg-type (car hf))
+                            (encoding (cadr hf))
+                            (msg-id (caddr hf))
+                            (payload-len (cadddr hf)) )
+                        ;; Copy payload out of shared buffer
+                        (let ((payload (ubyte-matrix payload-len)))
+                          (for (pi 0 (1- payload-len))
+                            (payload pi (buf pi)) )
+                          ;; Reset state for next message
+                          (state "phase" 0)
+                          (state "offset" 0)
+                          (state "need" *wire-header-size*)
+                          (setq result
+                                (list msg-type encoding msg-id payload)) ) ) ) )
+
+                   (t (setq result 'disconnect)) ) ) ) ) ) ) )
+        result ) ) ) )
+
+
+;; ============================================================
+
+;; WireServer: idle timeout sweep
+;; ============================================================
+
+;; Remove clients that have been idle longer than idle-timeout-secs.
+(defmethod WireServer _sweep-idle-clients ()
+  (let ((now (_wire-time-seconds))
+        (to-remove ()) )
+    (each ((cfd client-fds))
+      (let ((state (client-state (str cfd))))
+        (when state
+          (let ((last (state "last-activity")))
+            (when (> (- now last) idle-timeout-secs)
+              (setq to-remove (nconc1 to-remove cfd)) ) ) ) ) )
+    (each ((fd to-remove))
+      (==> this _remove-client fd) ) ) )
+
+
+;; ============================================================
+
+;; WireServer: handle incoming message
+;; ============================================================
+
+(defmethod WireServer _handle-message (fd msg)
+  (let ((msg-type (car msg))
+        (encoding (cadr msg))
+        (msg-id (caddr msg))
+        (payload (cadddr msg)) )
+    (let ((payload-len (idx-dim payload 0)))
+      (cond
+       ;; Sync request: evaluate and send response
+       ((= msg-type *wire-msg-sync*)
+        (let ((result ())
+              (err ()) )
+          ;; Decode the request
+          (let ((expr (if (= encoding *wire-enc-binary*)
+                       (_wire-bread-from-bytes payload payload-len)
+                       (_wire-bytes-to-string payload payload-len) )))
+            ;; Evaluate via handler or default
+            (let ((handler (or on-sync _wire-default-on-sync)))
+              (setq result
+                    (on-error (progn (setq err t) ())
+                              (handler fd expr encoding) ) ) ) )
+          ;; Send response
+          (if err
+            ;; Error response
+            (let ((err-bytes (_wire-string-to-bytes "evaluation error")))
+              (_wire-send-message fd *wire-msg-error* *wire-enc-sexp*
+                                 msg-id err-bytes (idx-dim err-bytes 0)) )
+            ;; Success response
+            (if (= encoding *wire-enc-binary*)
+              ;; Binary: bwrite the result
+              (let ((result-bytes (_wire-bwrite-to-bytes result)))
+                (_wire-send-message fd *wire-msg-response* *wire-enc-binary*
+                                   msg-id result-bytes (idx-dim result-bytes 0)) )
+              ;; Sexp: print result as string
+              (let ((result-str (sprintf "%l" result)))
+                (let ((result-bytes (_wire-string-to-bytes result-str)))
+                  (_wire-send-message fd *wire-msg-response* *wire-enc-sexp*
+                                     msg-id result-bytes (idx-dim result-bytes 0)) ) ) ) ) ) )
+
+       ;; Async: evaluate and discard
+       ((= msg-type *wire-msg-async*)
+        (let ((expr (if (= encoding *wire-enc-binary*)
+                     (_wire-bread-from-bytes payload payload-len)
+                     (_wire-bytes-to-string payload payload-len) )))
+          (let ((handler (or on-async _wire-default-on-async)))
+            (on-error () (handler fd expr encoding)) ) ) )
+
+       ;; Heartbeat: respond with a heartbeat response (zero payload)
+       ((= msg-type *wire-msg-heartbeat*)
+        (let ((empty (ubyte-matrix 1)))
+          (_wire-send-message fd *wire-msg-heartbeat* 0
+                             msg-id empty 0) ) )
+
+       ;; Ignore responses and other types
+       (t ()) ) ) ) )
+
+
+;; ============================================================
+
+;; WireServer: event loop
+;; ============================================================
+
+#? (==> <server> serve)
+;; Enter the event loop.  Blocks, handling connections and messages.
+;; Call (==> server stop) from a handler to exit.
+(defmethod WireServer serve ()
+  (when (< listen-fd 0)
+    (==> this start) )
+  (setq running t)
+  (let ((max-clients 256))
+    (let ((fd-arr (int-matrix max-clients))
+          (ready-arr (int-matrix (+ max-clients 1))) )
+      (while running
+        ;; Build fd array from client list
+        (let ((n (min client-count max-clients))
+              (i 0) )
+          (each ((cfd client-fds))
+            (when (< i max-clients)
+              (fd-arr i cfd)
+              (setq i (1+ i)) ) )
+          ;; Select with 1-second timeout
+          (let ((nready (_wire-select listen-fd fd-arr n 1000 ready-arr)))
+            (for (ri 0 (1- nready))
+              (let ((rfd (ready-arr ri)))
+                (if (= rfd listen-fd)
+                  ;; New connection
+                  (let ((new-fd (_wire-accept listen-fd)))
+                    (when (>= new-fd 0)
+                      (if (= 1 (_wire-peer-is-local new-fd))
+                        (==> this _add-client new-fd)
+                        (progn
+                          (printf "wire: rejected non-local connection\n")
+                          (_wire-close-fd new-fd) ))))
+                  ;; Data from existing client — non-blocking incremental read
+                  ;; Loop to drain all available data (may span header+payload)
+                  (let ((done ()))
+                    (while (not done)
+                      (let ((msg (==> this _try-read-client rfd)))
+                        (cond
+                         ((= msg 'disconnect)
+                          (==> this _remove-client rfd)
+                          (setq done t) )
+                         ((consp msg)
+                          (==> this _handle-message rfd msg) )
+                         (t
+                          (setq done t) )))))
+                  ) ;; close if
+                ) ;; close let rfd
+              ) ;; close for
+            ) ;; close let nready
+          ) ;; close let n,i
+        ;; Idle timeout sweep
+        (when (> idle-timeout-secs 0)
+          (==> this _sweep-idle-clients) )
+        ) ;; close while
+      ) ;; close let fd-arr
+    ) ;; close let max-clients
+  ;; Cleanup
+  (each ((cfd client-fds))
+    (_wire-close-fd cfd) )
+  (setq client-fds ())
+  (setq client-count 0)
+  (when (>= listen-fd 0)
+    (_wire-close-fd listen-fd)
+    (setq listen-fd -1) )
+  (printf "wire: server stopped\n") )
+
+
+;; ============================================================
+
+;; WireServer: one-shot serve (process one batch and return)
+;; ============================================================
+
+#? (==> <server> serve-once <timeout-ms>)
+;; Process pending connections/messages with the given timeout.
+;; Returns after one select() cycle.  Useful for testing.
+(defmethod WireServer serve-once (timeout-ms)
+  (when (< listen-fd 0)
+    (==> this start) )
+  (let ((max-clients 256))
+    (let ((fd-arr (int-matrix max-clients))
+          (ready-arr (int-matrix (+ max-clients 1))) )
+      (let ((n (min client-count max-clients))
+            (i 0) )
+        (each ((cfd client-fds))
+          (when (< i max-clients)
+            (fd-arr i cfd)
+            (setq i (1+ i)) ) )
+        (let ((nready (_wire-select listen-fd fd-arr n timeout-ms ready-arr)))
+          (for (ri 0 (1- nready))
+            (let ((rfd (ready-arr ri)))
+              (if (= rfd listen-fd)
+                (let ((new-fd (_wire-accept listen-fd)))
+                  (when (>= new-fd 0)
+                    (if (= 1 (_wire-peer-is-local new-fd))
+                      (==> this _add-client new-fd)
+                      (_wire-close-fd new-fd) )))
+                ;; Non-blocking incremental read — drain all available data
+                (let ((done ()))
+                  (while (not done)
+                    (let ((msg (==> this _try-read-client rfd)))
+                      (cond
+                       ((= msg 'disconnect)
+                        (==> this _remove-client rfd)
+                        (setq done t) )
+                       ((consp msg)
+                        (==> this _handle-message rfd msg) )
+                       (t
+                        (setq done t) )))))
+                ) ;; close if
+              ) ;; close let rfd
+            ) ;; close for
+          ) ;; close let nready
+        ) ;; close let n,i
+      ) ;; close let fd-arr
+    ) ;; close let max-clients
+  )
+
+
+;; ============================================================
+
+;; WireServer: shutdown and cleanup
+;; ============================================================
+
+#? (==> <server> shutdown)
+;; Close all connections and the listening socket.
+(defmethod WireServer shutdown ()
+  (each ((cfd client-fds))
+    (_wire-close-fd cfd) )
+  (setq client-fds ())
+  (setq client-count 0)
+  (when (>= listen-fd 0)
+    (_wire-close-fd listen-fd)
+    (setq listen-fd -1) ) )
+
+
+;; ============================================================
+;; Default handlers
+;; ============================================================
+
+;; Default sync handler: evaluate s-expression or binary-encoded expression.
+(de _wire-default-on-sync (fd expr encoding)
+  (if (= encoding *wire-enc-binary*)
+    ;; Binary: expr is already a Lush object (decoded by bread)
+    (eval expr)
+    ;; Sexp: expr is a string, parse and eval
+    (eval (_wire-parse-sexp expr)) ) )
+
+;; Default async handler: evaluate and discard result.
+(de _wire-default-on-async (fd expr encoding)
+  (if (= encoding *wire-enc-binary*)
+    (eval expr)
+    (eval (_wire-parse-sexp expr)) )
+  () )
+
+;; Parse an s-expression from a string
+(de _wire-parse-sexp (s)
+  (reading-string s (read)) )
+
+
+;; ============================================================
+;; Client API
+;; ============================================================
+
+#? (wire-connect <host> <port>)
+;; Connect to a wire server.  Returns a connection handle (htable).
+(de wire-connect (host port)
+  (let ((fd (_wire-connect-raw host port)))
+    (when (< fd 0)
+      (error "wire-connect" "failed to connect" (concat host ":" (str port))) )
+    (let ((conn (htable 8)))
+      (conn "fd" fd)
+      (conn "next-msg-id" 1)
+      conn ) ) )
+
+
+#? (wire-call <conn> <expr>)
+;; Send a synchronous request and wait for the response.
+;; <expr> can be a string (sent as sexp) or a Lush object (sent via bwrite).
+;; Returns the result value.
+(de wire-call (conn expr)
+  (let ((fd (conn "fd"))
+        (msg-id (conn "next-msg-id")) )
+    (conn "next-msg-id" (1+ msg-id))
+    ;; Determine encoding and serialize
+    (if (stringp expr)
+      ;; String: send as sexp
+      (let ((payload (_wire-string-to-bytes expr)))
+        (_wire-send-message fd *wire-msg-sync* *wire-enc-sexp*
+                           msg-id payload (idx-dim payload 0)) )
+      ;; Object: send via bwrite (binary encoding)
+      (let ((payload (_wire-bwrite-to-bytes expr)))
+        (_wire-send-message fd *wire-msg-sync* *wire-enc-binary*
+                           msg-id payload (idx-dim payload 0)) ) )
+    ;; Wait for response
+    (let ((resp (_wire-recv-message fd)))
+      (when (not resp)
+        (error "wire-call" "connection closed" ()) )
+      (let ((resp-type (car resp))
+            (resp-enc (cadr resp))
+            (resp-payload (cadddr resp)) )
+        (let ((resp-len (idx-dim resp-payload 0)))
+          (cond
+           ((= resp-type *wire-msg-response*)
+            (if (= resp-enc *wire-enc-binary*)
+              (_wire-bread-from-bytes resp-payload resp-len)
+              (_wire-bytes-to-string resp-payload resp-len) ) )
+           ((= resp-type *wire-msg-error*)
+            (error "wire-call" "remote error"
+                   (_wire-bytes-to-string resp-payload resp-len)) )
+           (t (error "wire-call" "unexpected response type" resp-type)) ) ) ) ) ) )
+
+
+#? (wire-send <conn> <expr>)
+;; Send an asynchronous message (fire-and-forget).
+;; <expr> can be a string (sexp) or a Lush object (bwrite).
+(de wire-send (conn expr)
+  (let ((fd (conn "fd"))
+        (msg-id (conn "next-msg-id")) )
+    (conn "next-msg-id" (1+ msg-id))
+    (if (stringp expr)
+      (let ((payload (_wire-string-to-bytes expr)))
+        (_wire-send-message fd *wire-msg-async* *wire-enc-sexp*
+                           msg-id payload (idx-dim payload 0)) )
+      (let ((payload (_wire-bwrite-to-bytes expr)))
+        (_wire-send-message fd *wire-msg-async* *wire-enc-binary*
+                           msg-id payload (idx-dim payload 0)) ) ) ) )
+
+
+#? (wire-close <conn>)
+;; Close a wire connection.
+(de wire-close (conn)
+  (let ((fd (conn "fd")))
+    (when (>= fd 0)
+      (_wire-close-fd fd)
+      (conn "fd" -1) ) ) )
+
+
+#? (wire-ping <conn>)
+;; Send a heartbeat and wait for response.
+;; Returns t if server responds, () on failure.
+(de wire-ping (conn)
+  (let ((fd (conn "fd"))
+        (msg-id (conn "next-msg-id")) )
+    (conn "next-msg-id" (1+ msg-id))
+    (let ((empty (ubyte-matrix 1)))
+      (on-error ()
+        (progn
+          (_wire-send-message fd *wire-msg-heartbeat* 0 msg-id empty 0)
+          (let ((resp (_wire-recv-message fd)))
+            (if (and (consp resp) (= (car resp) *wire-msg-heartbeat*))
+              t
+              () ) ) ) ) ) ) )
+
+
+;; ============================================================
+;; Convenience: start server from argv
+;; ============================================================
+
+#? (wire-server-new &optional <port>)
+;; Create a WireServer.  If <port> is not given, parses argv for
+;; --port/-p, then checks LUSH_WIRE_PORT, then uses default 5555.
+(de wire-server-new (. rest)
+  (let ((port (if rest
+                (car rest)
+                (or (wire-parse-port) *wire-default-port*) )))
+    (new WireServer port) ) )
+
+
+#? (wire-server-start &optional <port>)
+;; Create a WireServer and enter the event loop (blocking).
+;; If <port> is not given, parses argv.
+(de wire-server-start (. rest)
+  (let ((server (if rest
+                  (wire-server-new (car rest))
+                  (wire-server-new) )))
+    (==> server serve) ) )
+
+
+;; ============================================================
+;; DataTable serialization
+;; ============================================================
+
+(libload "wire/wire-serialize")
