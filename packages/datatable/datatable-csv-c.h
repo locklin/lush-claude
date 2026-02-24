@@ -2,12 +2,14 @@
  *
  * Two-phase CSV reading:
  *   Phase 1: Scan file to determine dimensions, delimiter, column types
- *   Phase 2: Read numeric data directly into pre-allocated arrays
+ *   Phase 2: Read all columns in a single pass (numeric, string, stamp)
  *
  * Type detection: sample first N rows per column.
  *   - If all non-empty values parse as integer -> DT_COL_INT
  *   - Else if all parse as double -> DT_COL_DOUBLE
  *   - Else -> DT_COL_STRING
+ *
+ * I/O: mmap for regular files, getline fallback for .gz pipes.
  */
 
 #ifndef DATATABLE_CSV_C_H
@@ -27,6 +29,12 @@
 
 /* Maximum rows to sample for type detection */
 #define DT_TYPE_SAMPLE_ROWS 200
+
+/* Microseconds per second (stamp resolution) */
+#define MICROS_PER_SEC_CSV 1000000LL
+
+/* date_fmt_indices value meaning "use hint string" */
+#define DT_FMT_HINT (-2)
 
 /* ================================================================
  * Phase 1: Scan CSV file
@@ -51,10 +59,12 @@ int dt_csv_scan(const char *filename,
                 int *col_types, int max_cols,
                 char *name_buf, int name_buf_size,
                 int *name_offsets,
-                int *date_fmt_indices);
+                int *date_fmt_indices,
+                char hint_delim,
+                const char *hint_date_fmt);
 
 /* ================================================================
- * Phase 2: Read numeric columns
+ * Phase 2: Read numeric columns (legacy, kept for compatibility)
  * ================================================================
  *
  * Reads selected columns from the CSV into a pre-allocated double matrix.
@@ -69,7 +79,7 @@ int dt_csv_read_numeric(const char *filename,
                         double *data, int nrows);
 
 /* ================================================================
- * Phase 2b: Read a string column with dictionary encoding
+ * Phase 2b: Read a string column with dictionary encoding (legacy)
  * ================================================================
  *
  * Reads one column from the CSV, building a dictionary of unique values.
@@ -88,7 +98,7 @@ int dt_csv_read_string_col(const char *filename,
                            int *out_n_unique);
 
 /* ================================================================
- * Phase 2c: Read a timestamp column
+ * Phase 2c: Read a timestamp column (legacy)
  * ================================================================
  *
  * Reads one column from the CSV, parsing each field as a timestamp
@@ -101,5 +111,35 @@ int dt_csv_read_string_col(const char *filename,
 int dt_csv_read_stamp_col(const char *filename, char delim,
                           int col_idx, int64_t *stamps, int nrows,
                           const char *fmt);
+
+/* ================================================================
+ * Phase 2 (new): Read ALL columns in a single pass
+ * ================================================================
+ *
+ * Reads numeric, string, and stamp columns in one pass through the file.
+ * Uses mmap for regular files, getline for .gz pipes.
+ *
+ * col_types[c]:       DT_COL_INT/DOUBLE/STRING/STAMP for each CSV column
+ * col_out_indices[c]: output index within the column's type group
+ *
+ * Numeric output:  num_data[row * n_num_cols + col_out_indices[c]]
+ * String output:   str_codes[row * n_str_cols + col_out_indices[c]]
+ *                  Per-string-column dictionary in concatenated buffers
+ * Stamp output:    stamp_data[row * n_stamp_cols + col_out_indices[c]]
+ *
+ * Returns 0 on success, -1 on error.
+ */
+int dt_csv_read_all(const char *filename, char delim,
+                    int ncols, int nrows,
+                    const int *col_types,
+                    const int *col_out_indices,
+                    int n_num_cols,  double *num_data,
+                    int n_str_cols,  int *str_codes,
+                    char *str_unique_bufs,  int str_buf_size_each,
+                    int *str_unique_offsets, int str_max_unique_each,
+                    int *str_n_uniques,
+                    int n_stamp_cols, int64_t *stamp_data,
+                    const int *stamp_fmt_indices,
+                    const char *hint_date_fmt);
 
 #endif /* DATATABLE_CSV_C_H */

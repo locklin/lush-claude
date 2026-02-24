@@ -2,10 +2,10 @@
 ;;;
 ;;; Reads CSV/TSV files into a DataTable with per-column type inference.
 ;;; Uses C acceleration for scanning (dimensions, type detection) and
-;;; numeric parsing (strtod).  String columns are dictionary-encoded
-;;; via StringColumn.
+;;; single-pass reading of all column types (numeric, string, stamp).
+;;; String columns are dictionary-encoded via StringColumn.
 ;;;
-;;; Inspired by kerf1's table reader and pandas' CSV parser.
+;;; Optimized: 2-pass architecture (scan + read-all) with mmap I/O.
 ;;;
 ;;; Usage:
 ;;;   (libload "datatable/datatable-csv")
@@ -32,14 +32,16 @@
 ;; name_offsets: start offset of each name in name_buf
 (de _csv-scan-inner (filename nrows-out ncols-out delim-out
                      col-types max-cols name-buf name-buf-size name-offsets
-                     date-fmt-indices)
-  ((-str-) filename)
+                     date-fmt-indices hint-delim hint-date-fmt)
+  ((-str-) filename hint-date-fmt)
   ((-idx1- (-int-)) nrows-out ncols-out delim-out col-types name-offsets date-fmt-indices)
-  ((-int-) max-cols name-buf-size)
+  ((-int-) max-cols name-buf-size hint-delim)
   ((-idx1- (-ubyte-)) name-buf)
   (let ((rc 0))
     ((-int-) rc)
     #{{
+       const char *_hdf_str = (const char *)$hint_date_fmt->data;
+       const char *hdf = (_hdf_str[0] == '\0') ? NULL : _hdf_str;
        $rc = dt_csv_scan($filename->data,
                           IDX_PTR($nrows_out, int),
                           IDX_PTR($ncols_out, int),
@@ -47,7 +49,8 @@
                           IDX_PTR($col_types, int), $max_cols,
                           (char *)IDX_PTR($name_buf, unsigned char), $name_buf_size,
                           IDX_PTR($name_offsets, int),
-                          IDX_PTR($date_fmt_indices, int));
+                          IDX_PTR($date_fmt_indices, int),
+                          (char)$hint_delim, hdf);
     }#}
     rc ) )
 
@@ -102,12 +105,62 @@
     rc ) )
 
 
-;; Compile the bridge functions (no stamp bridge — stamps parsed at Lush level)
+;; internal: read ALL columns in a single pass (numeric, string, stamp)
+;; This is the new optimized reader that replaces separate per-type passes.
+(de _csv-read-all-inner (filename delim ncols nrows
+                         col-types col-out-indices
+                         n-num-cols num-data
+                         n-str-cols str-codes
+                         str-unique-bufs str-buf-size-each
+                         str-unique-offsets str-max-unique-each
+                         str-n-uniques
+                         n-stamp-cols stamp-data
+                         stamp-fmt-indices
+                         hint-date-fmt)
+  ((-str-) filename hint-date-fmt)
+  ((-int-) delim ncols nrows n-num-cols n-str-cols
+           str-buf-size-each str-max-unique-each n-stamp-cols)
+  ((-idx1- (-int-)) col-types col-out-indices str-codes
+                     str-unique-offsets str-n-uniques stamp-fmt-indices)
+  ((-idx2- (-double-)) num-data)
+  ((-idx1- (-ubyte-)) str-unique-bufs)
+  ((-idx1- (-long-)) stamp-data)
+  (let ((rc 0))
+    ((-int-) rc)
+    #{{
+       const char *_hdf_str = (const char *)$hint_date_fmt->data;
+       const char *hdf = (_hdf_str[0] == '\0') ? NULL : _hdf_str;
+       /* Validate contiguity of num_data */
+       if ($n_num_cols > 0 && $num_data->mod[1] != 1)
+         error(NIL, "num_data must be contiguous (mod[1]=1)", NIL);
+       $rc = dt_csv_read_all($filename->data, (char)$delim,
+                              $ncols, $nrows,
+                              IDX_PTR($col_types, int),
+                              IDX_PTR($col_out_indices, int),
+                              $n_num_cols,
+                              IDX_PTR($num_data, double),
+                              $n_str_cols,
+                              IDX_PTR($str_codes, int),
+                              (char *)IDX_PTR($str_unique_bufs, unsigned char),
+                              $str_buf_size_each,
+                              IDX_PTR($str_unique_offsets, int),
+                              $str_max_unique_each,
+                              IDX_PTR($str_n_uniques, int),
+                              $n_stamp_cols,
+                              (long long *)IDX_PTR($stamp_data, long long),
+                              IDX_PTR($stamp_fmt_indices, int),
+                              hdf);
+    }#}
+    rc ) )
+
+
+;; Compile the bridge functions
 (let ((dhc-make-lushflags
        (concat dhc-make-lushflags " -I" (dirname file-being-loaded))))
   (dhc-make-with-libs () t
     #{ #include "datatable-csv-c.h" #}
-    _csv-scan-inner _csv-read-numeric-inner _csv-read-string-inner ) )
+    _csv-scan-inner _csv-read-numeric-inner _csv-read-string-inner
+    _csv-read-all-inner ) )
 
 
 ;; ============================================================
@@ -137,8 +190,9 @@
         "%Y/%m/%d %H:%M:%S"    ;; 5: slash full
         "%Y/%m/%d"              ;; 6: slash date only
         "%m/%d/%Y %H:%M:%S"    ;; 7: US full
-        "%m/%d/%Y"              ;; 8: US date only
-        "%d-%b-%Y"              ;; 9: day-abbrev-year
+        "%m/%d/%Y %H:%M"       ;; 8: US no seconds
+        "%m/%d/%Y"              ;; 9: US date only
+        "%d-%b-%Y"              ;; 10: day-abbrev-year
         ) )
 
 
@@ -146,21 +200,57 @@
 ;; Public API
 ;; ============================================================
 
-#? (csv-read <filename>)
+#? (csv-read <filename> [<options>])
 ;; Read a CSV or TSV file into a DataTable.
-;; Auto-detects delimiter (tab vs comma) and column types.
-;; Column types are inferred from the first 200 data rows:
-;;   - Integer: all values parse as integers
-;;   - Double: all values parse as floating-point numbers
-;;   - String: anything else (dictionary-encoded)
-;; Returns a DataTable object.
 ;;
-;; Example:
-;;   (setq t (csv-read "data.csv"))
-;;   (==> t head 10)
-;;   (==> t num-rows)
-;;   (==> t get-column "price")
-(de csv-read (filename)
+;; {<p> <options> is an optional alist of string-keyed settings:}
+;; {<ul>
+;;   {<li> {<b> "delim"} -- single-character delimiter string (e.g. "|", ";").
+;;     When omitted, the delimiter is auto-detected by counting tabs vs
+;;     commas in the header row (tab wins on tie when tabs > 0).}
+;;   {<li> {<b> "date-fmt"} -- explicit strptime format string to try first
+;;     when detecting date/time columns (e.g. "%m/%d/%Y %H:%M").  The hint
+;;     is tried before the built-in format list; if it matches, it is used
+;;     for that column throughout the file.  When omitted, only the built-in
+;;     formats below are tried.}
+;; }
+;;
+;; {<p> Column types are inferred from the first 200 data rows:}
+;; {<ul>
+;;   {<li> Integer -- all non-empty values parse as integers}
+;;   {<li> Double  -- all non-empty values parse as floating-point}
+;;   {<li> Stamp   -- date/datetime values (microsecond timestamps)}
+;;   {<li> String  -- anything else (dictionary-encoded)}
+;; }
+;;
+;; {<p> Built-in date formats tried in order (most-specific first):}
+;; {<ol>
+;;   {<li> %Y-%m-%dT%H:%M:%S  (ISO 8601 full)}
+;;   {<li> %Y-%m-%d %H:%M:%S  (ISO with space)}
+;;   {<li> %Y-%m-%dT%H:%M     (ISO no seconds)}
+;;   {<li> %Y-%m-%d %H:%M     (space, no seconds)}
+;;   {<li> %Y-%m-%d            (date only)}
+;;   {<li> %Y/%m/%d %H:%M:%S  (slash full)}
+;;   {<li> %Y/%m/%d            (slash date only)}
+;;   {<li> %m/%d/%Y %H:%M:%S  (US full)}
+;;   {<li> %m/%d/%Y %H:%M     (US no seconds)}
+;;   {<li> %m/%d/%Y            (US date only)}
+;;   {<li> %d-%b-%Y            (day-abbrev-year)}
+;; }
+;;
+;; {<p> Examples:}
+;; {<code>
+;;   (csv-read "data.csv")
+;;   (csv-read "data.psv" '(("delim" . "|")))
+;;   (csv-read "data.csv" '(("date-fmt" . "%m/%d/%Y %H:%M")))
+;;   (csv-read "data.csv" '(("delim" . "|") ("date-fmt" . "%d-%b-%Y")))
+;; </code>}
+(de csv-read (filename &optional options)
+  ;; Parse options alist
+  (let ((opt-delim   (cdr (assoc "delim" options)))
+        (opt-datefmt (cdr (assoc "date-fmt" options))) )
+    (let ((hint-delim    (if opt-delim (asc (mid opt-delim 1 1)) 0))
+          (hint-date-fmt (if opt-datefmt opt-datefmt "")) )
   ;; Phase 1: Scan file
   (let ((max-cols 65536)
         (name-buf-size 524288) )  ;; 512K for column names
@@ -174,7 +264,7 @@
       (let ((rc (_csv-scan-inner filename nrows-out ncols-out delim-out
                                   col-types max-cols
                                   name-buf name-buf-size name-offsets
-                                  date-fmt-indices)))
+                                  date-fmt-indices hint-delim hint-date-fmt)))
         (when (< rc 0)
           (error "csv-read" "failed to scan CSV file" filename) ) )
 
@@ -189,149 +279,118 @@
             (setq col-names (nconc1 col-names
                                      (_csv-extract-string name-buf (name-offsets i)))) )
 
-          ;; Classify columns and build type list
-          (let ((num-col-indices ())    ;; indices of numeric columns in original CSV
-                (str-col-indices ())    ;; indices of string columns
-                (stamp-col-indices ())  ;; indices of stamp columns
-                (stamp-col-fmts ())    ;; format strings for stamp columns
-                (type-list ())          ;; type per column in order
-                ;; Map from original column index to position in num-col-indices
-                (num-col-pos (int-matrix ncols)) )
-            (let ((ni 0))
-              (for (i 0 (1- ncols))
-                (let ((ct (col-types i)))
-                  (cond
-                   ((or (= ct 0) (= ct 1))  ;; int or double -> real
-                    (setq num-col-indices (nconc1 num-col-indices i))
-                    (setq type-list (nconc1 type-list 'real))
-                    (num-col-pos i ni)
-                    (setq ni (1+ ni)) )
-                   ((= ct 3)  ;; stamp
-                    (setq stamp-col-indices (nconc1 stamp-col-indices i))
-                    (let ((fmti (date-fmt-indices i)))
-                      (setq stamp-col-fmts
-                            (nconc1 stamp-col-fmts
-                                     (if (and (>= fmti 0) (< fmti (length *csv-date-formats*)))
-                                       (nth fmti *csv-date-formats*)
-                                       "%Y-%m-%d" ))) )
-                    (setq type-list (nconc1 type-list 'stamp))
-                    (num-col-pos i -1) )
-                   (t  ;; string
-                    (setq str-col-indices (nconc1 str-col-indices i))
-                    (setq type-list (nconc1 type-list 'string))
-                    (num-col-pos i -1) ) ) ) ) )
+          ;; Classify columns and build type mappings
+          (let ((col-out-indices (int-matrix ncols))  ;; output index within type group
+                (type-list ())                        ;; type per column in order
+                (n-num 0) (n-str 0) (n-stamp 0)
+                (stamp-col-fmts ())                   ;; format indices for stamp columns
+                )
 
-            (let ((n-num   (length num-col-indices))
-                  (n-str   (length str-col-indices))
-                  (n-stamp (length stamp-col-indices)) )
+            ;; First pass: count columns per type and assign output indices
+            (for (i 0 (1- ncols))
+              (let ((ct (col-types i)))
+                (cond
+                 ((or (= ct 0) (= ct 1))  ;; int or double -> real
+                  (col-out-indices i n-num)
+                  (setq type-list (nconc1 type-list 'real))
+                  (setq n-num (1+ n-num)) )
+                 ((= ct 3)  ;; stamp
+                  (col-out-indices i n-stamp)
+                  (setq type-list (nconc1 type-list 'stamp))
+                  (let ((fmti (date-fmt-indices i)))
+                    (setq stamp-col-fmts
+                          (nconc1 stamp-col-fmts
+                                   (if (or (>= fmti 0) (= fmti -2)) fmti 4))) )
+                  (setq n-stamp (1+ n-stamp)) )
+                 (t  ;; string
+                  (col-out-indices i n-str)
+                  (setq type-list (nconc1 type-list 'string))
+                  (setq n-str (1+ n-str)) ) ) ) )
 
-              ;; Phase 2a: Read numeric columns into one big matrix
-              (let ((num-data ()))
-                (when (> n-num 0)
-                  (let ((idx-arr (int-matrix n-num))
-                        (data    (double-matrix nrows n-num))
-                        (j 0) )
-                    ;; Fill index array
-                    (each ((ci num-col-indices))
-                      (idx-arr j ci)
-                      (setq j (1+ j)) )
-                    ;; Read all numeric data in one C call
-                    (let ((rc (_csv-read-numeric-inner filename delim
-                                                       idx-arr n-num data nrows)))
-                      (when (< rc 0)
-                        (error "csv-read" "failed to read numeric data" filename) ) )
-                    (setq num-data data) ) )
+            (printf "csv-read: types: %d real, %d stamp, %d string\n"
+                    n-num n-stamp n-str)
 
-                ;; Phase 2b: Read string columns (dictionary-encoded in C)
-                ;; Build a htable: col-index -> StringColumn
-                (let ((str-col-ht (htable 32)))
-                  (each ((ci str-col-indices))
-                    (let ((codes-out     (int-matrix nrows))
-                          (unique-buf    (ubyte-matrix 1048576))
-                          (unique-offs   (int-matrix 65536))
-                          (n-unique-out  (int-matrix 1)) )
-                      (let ((rc (_csv-read-string-inner filename delim ci
-                                                         codes-out nrows
-                                                         unique-buf 1048576
-                                                         unique-offs 65536
-                                                         n-unique-out)))
-                        (when (< rc 0)
-                          (error "csv-read" "failed to read string column"
-                                 (nth ci col-names)) ) )
-                      ;; Build StringColumn
-                      (let ((n-unique (n-unique-out 0))
-                            (strings ()) )
-                        (for (u 0 (1- n-unique))
-                          (setq strings
-                                (nconc1 strings
-                                         (_csv-extract-string unique-buf
-                                                               (unique-offs u)))) )
-                        (let ((sc (new StringColumn nrows)))
-                          (==> sc build-from-codes codes-out strings)
-                          (str-col-ht (sprintf "%d" ci) sc) ) ) ) )
+            ;; Phase 2: Single-pass read of ALL columns
+            (let ((str-buf-size-each 1048576)    ;; 1MB per string column
+                  (str-max-unique-each 65536) )  ;; 64K unique strings per column
 
-                  ;; Phase 2c: Read stamp columns
-                  ;; Read as strings first, then parse with timedate
-                  ;; Build a htable: col-index -> long-matrix of microseconds
-                  (let ((stamp-col-ht (htable 32)))
-                    (each ((ci stamp-col-indices) (fmt stamp-col-fmts))
-                      ;; Read the column as strings
-                      (let ((codes-out    (int-matrix nrows))
-                            (unique-buf   (ubyte-matrix 1048576))
-                            (unique-offs  (int-matrix 65536))
-                            (n-unique-out (int-matrix 1)) )
-                        (let ((rc (_csv-read-string-inner filename delim ci
-                                                           codes-out nrows
-                                                           unique-buf 1048576
-                                                           unique-offs 65536
-                                                           n-unique-out)))
-                          (when (< rc 0)
-                            (error "csv-read" "failed to read stamp column as string"
-                                   (nth ci col-names)) ) )
-                        ;; Extract unique strings
-                        (let ((n-unique (n-unique-out 0))
-                              (strings ()) )
-                          (for (u 0 (1- n-unique))
-                            (setq strings
-                                  (nconc1 strings
-                                           (_csv-extract-string unique-buf
-                                                                 (unique-offs u)))) )
-                          ;; Parse unique strings to microseconds (long)
-                          (let ((unique-micros (long-matrix n-unique)))
-                            (let ((ui 0))
-                              (each ((s strings))
-                                (_td-parse-stamp-at s fmt unique-micros ui)
-                                (setq ui (1+ ui)) ) )
-                            ;; Build stamps array by mapping codes to parsed microseconds
-                            (let ((stamps-out (long-matrix nrows)))
-                              (for (r 0 (1- nrows))
-                                (stamps-out r (unique-micros (codes-out r))) )
-                              (stamp-col-ht (sprintf "%d" ci) stamps-out) ) ) ) ) )
+              ;; Allocate output arrays
+              (let ((num-data          (double-matrix (max 1 nrows) (max 1 n-num)))
+                    (str-codes         (int-matrix (max 1 (* nrows n-str))))
+                    (str-unique-bufs   (ubyte-matrix (max 1 (* n-str str-buf-size-each))))
+                    (str-unique-offsets (int-matrix (max 1 (* n-str str-max-unique-each))))
+                    (str-n-uniques     (int-matrix (max 1 n-str)))
+                    (stamp-data        (long-matrix (max 1 (* nrows n-stamp))))
+                    (stamp-fmt-arr     (int-matrix (max 1 n-stamp))) )
 
-                    ;; Phase 3: Build the columns list in O(n) — one pass
-                    ;; Each column is either numeric, string, or stamp
-                    (let ((column-list ()))
-                      (for (i 0 (1- ncols))
-                        (let ((ct (col-types i)))
-                          (cond
-                           ((or (= ct 0) (= ct 1))
-                            ;; Numeric: extract column from the big matrix
-                            (let ((col-data (double-matrix nrows))
-                                  (j (num-col-pos i)) )
-                              (for (r 0 (1- nrows))
-                                (col-data r (num-data r j)) )
-                              (setq column-list (nconc1 column-list col-data)) ) )
-                           ((= ct 3)
-                            ;; Stamp: get from stamp htable
-                            (let ((st (stamp-col-ht (sprintf "%d" i))))
-                              (setq column-list (nconc1 column-list st)) ) )
-                           (t
-                            ;; String: get from str htable
-                            (let ((sc (str-col-ht (sprintf "%d" i))))
-                              (setq column-list (nconc1 column-list sc)) ) ) ) ) )
+                ;; Fill stamp format index array
+                (let ((si 0))
+                  (each ((fmti stamp-col-fmts))
+                    (stamp-fmt-arr si fmti)
+                    (setq si (1+ si)) ) )
 
-                      ;; Build DataTable in one shot (no O(n^2) list replacement)
-                      (printf "csv-read: types: %d real, %d stamp, %d string\n"
-                              n-num n-stamp n-str)
-                      (datatable-from-columns col-names type-list
-                                               column-list nrows) ) ) ) ) ) ) ) ) ) ) ) ) )
+                ;; Truncate col-types to ncols for the C call
+                (let ((col-types-n (int-matrix ncols))
+                      (col-out-idx-n (int-matrix ncols)) )
+                  (for (i 0 (1- ncols))
+                    (col-types-n i (col-types i))
+                    (col-out-idx-n i (col-out-indices i)) )
+
+                  ;; Call the single-pass C reader
+                  (let ((rc (_csv-read-all-inner filename delim ncols nrows
+                                                  col-types-n col-out-idx-n
+                                                  n-num num-data
+                                                  n-str str-codes
+                                                  str-unique-bufs str-buf-size-each
+                                                  str-unique-offsets str-max-unique-each
+                                                  str-n-uniques
+                                                  n-stamp stamp-data
+                                                  stamp-fmt-arr
+                                                  hint-date-fmt)))
+                    (when (< rc 0)
+                      (error "csv-read" "failed to read CSV data" filename) ) )
+
+                  ;; Phase 3: Assemble columns in original order
+                  (let ((column-list ()))
+                    (for (i 0 (1- ncols))
+                      (let ((ct (col-types i))
+                            (oi (col-out-indices i)) )
+                        (cond
+                         ((or (= ct 0) (= ct 1))
+                          ;; Numeric: extract column from the big matrix
+                          (let ((col-data (double-matrix nrows)))
+                            (for (r 0 (1- nrows))
+                              (col-data r (num-data r oi)) )
+                            (setq column-list (nconc1 column-list col-data)) ) )
+                         ((= ct 3)
+                          ;; Stamp: extract from flat stamp-data array
+                          (let ((stamps-out (long-matrix nrows)))
+                            (for (r 0 (1- nrows))
+                              (stamps-out r (stamp-data (+ (* r n-stamp) oi))) )
+                            (setq column-list (nconc1 column-list stamps-out)) ) )
+                         (t
+                          ;; String: build StringColumn from codes and unique buffer
+                          (let ((codes-out (int-matrix nrows))
+                                (ubuf-offset (* oi str-buf-size-each))
+                                (uoff-offset (* oi str-max-unique-each))
+                                (n-unique (str-n-uniques oi)) )
+                            ;; Extract per-row codes from flat array
+                            (for (r 0 (1- nrows))
+                              (codes-out r (str-codes (+ (* r n-str) oi))) )
+                            ;; Extract unique strings from buffer
+                            (let ((strings ()))
+                              (for (u 0 (1- n-unique))
+                                (setq strings
+                                      (nconc1 strings
+                                               (_csv-extract-string
+                                                str-unique-bufs
+                                                (+ ubuf-offset
+                                                   (str-unique-offsets
+                                                    (+ uoff-offset u)))))) )
+                              (let ((sc (new StringColumn nrows)))
+                                (==> sc build-from-codes codes-out strings)
+                                (setq column-list (nconc1 column-list sc)) ) ) ) ) ) ) )
+
+                    ;; Build DataTable
+                    (datatable-from-columns col-names type-list
+                                             column-list nrows) ) ) ) ) ) ) ) ) ) ) ) ) ) )

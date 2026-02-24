@@ -170,3 +170,229 @@
                     (==> recent get 0 "date") (timestamp-from-date 2024 2 20))
         (test-string-equal "date filter label[0]"
                            (==> recent get 0 "label") "bar") ) ) ) )
+
+
+;; ============================================================
+;; High-cardinality string column (>8192 unique values, exercises rehash)
+;; ============================================================
+
+(test-suite "CSV Read High-Cardinality Strings"
+  ;; Generate a CSV with 9000 unique string values (>8192 to exercise rehash)
+  (let ((fname "/tmp/claude/test-highcard.csv")
+        (n 9000) )
+    (writing fname
+      (printf "id,label\n")
+      (for (i 0 (1- n))
+        (printf "%d,str_%d\n" i i) ) )
+    (let ((dt (csv-read fname)))
+      (test-equal "highcard num-rows" (==> dt num-rows) n)
+      (test-equal "highcard num-cols" (==> dt num-cols) 2)
+      (test-equal "highcard label type" (==> dt col-type "label") 'string)
+      ;; Check first and last values
+      (test-string-equal "highcard label[0]" (==> dt get 0 "label") "str_0")
+      (test-string-equal "highcard label[8999]" (==> dt get 8999 "label") "str_8999")
+      ;; Check that unique count is correct
+      (let ((label-col (==> dt get-column "label")))
+        (test-equal "highcard unique count" (==> label-col num-unique) n) )
+      ;; Different rows should have different values
+      (let ((label-col (==> dt get-column "label")))
+        (test-check "highcard 0<>1" (not (==> label-col rows-equal 0 1))) ) ) ) )
+
+
+;; ============================================================
+;; Multi-string-column test (independent dictionary encoding)
+;; ============================================================
+
+(test-suite "CSV Read Multi-String Columns"
+  (let ((fname "/tmp/claude/test-multistr.csv"))
+    (writing fname
+      (printf "color,shape,size\n")
+      (printf "red,circle,big\n")
+      (printf "blue,square,small\n")
+      (printf "red,triangle,big\n")
+      (printf "green,circle,medium\n")
+      (printf "blue,square,small\n") )
+    (let ((dt (csv-read fname)))
+      (test-equal "multistr num-rows" (==> dt num-rows) 5)
+      (test-equal "multistr num-cols" (==> dt num-cols) 3)
+      ;; All columns should be string
+      (test-equal "multistr color type" (==> dt col-type "color") 'string)
+      (test-equal "multistr shape type" (==> dt col-type "shape") 'string)
+      (test-equal "multistr size type" (==> dt col-type "size") 'string)
+      ;; Check values
+      (test-string-equal "multistr color[0]" (==> dt get 0 "color") "red")
+      (test-string-equal "multistr shape[1]" (==> dt get 1 "shape") "square")
+      (test-string-equal "multistr size[3]" (==> dt get 3 "size") "medium")
+      ;; Check independent dictionary encoding
+      (let ((color-col (==> dt get-column "color")))
+        (test-equal "multistr color unique" (==> color-col num-unique) 3)
+        (test-check "multistr color: red=red" (==> color-col rows-equal 0 2))
+        (test-check "multistr color: blue=blue" (==> color-col rows-equal 1 4)) )
+      (let ((shape-col (==> dt get-column "shape")))
+        (test-equal "multistr shape unique" (==> shape-col num-unique) 3)
+        (test-check "multistr shape: sq=sq" (==> shape-col rows-equal 1 4)) )
+      (let ((size-col (==> dt get-column "size")))
+        (test-equal "multistr size unique" (==> size-col num-unique) 3)
+        (test-check "multistr size: big=big" (==> size-col rows-equal 0 2)) ) ) ) )
+
+
+;; ============================================================
+;; Timestamp column parsed in C matches expected values
+;; ============================================================
+
+(test-suite "CSV Read Stamp C-Parsed"
+  (let ((fname "/tmp/claude/test-stamp-c.csv"))
+    (writing fname
+      (printf "ts,val\n")
+      (printf "2024-03-15 14:30:00,1.0\n")
+      (printf "2024-06-01 00:00:00,2.0\n")
+      (printf "2024-12-31 23:59:59,3.0\n") )
+    (let ((dt (csv-read fname)))
+      (test-equal "stamp-c num-rows" (==> dt num-rows) 3)
+      (test-equal "stamp-c ts type" (==> dt col-type "ts") 'stamp)
+      (test-equal "stamp-c val type" (==> dt col-type "val") 'real)
+      ;; Verify timestamp values match expected
+      (test-equal "stamp-c ts[0]"
+                  (==> dt get 0 "ts")
+                  (timestamp-from-datetime 2024 3 15 14 30 0))
+      (test-equal "stamp-c ts[1]"
+                  (==> dt get 1 "ts")
+                  (timestamp-from-datetime 2024 6 1 0 0 0))
+      (test-equal "stamp-c ts[2]"
+                  (==> dt get 2 "ts")
+                  (timestamp-from-datetime 2024 12 31 23 59 59))
+      ;; Verify numeric values
+      (test-approx "stamp-c val[0]" (==> dt get 0 "val") 1.0 0.01)
+      (test-approx "stamp-c val[2]" (==> dt get 2 "val") 3.0 0.01) ) ) )
+
+
+;; ============================================================
+;; US datetime without seconds (auto-detected, format 8)
+;; ============================================================
+
+(test-suite "CSV Read US Datetime No Seconds"
+  (let ((fname "/tmp/claude/test-us-nosec.csv"))
+    (writing fname
+      (printf "event,ts,count\n")
+      (printf "login,01/15/2024 14:30,10\n")
+      (printf "logout,02/28/2024 09:15,20\n")
+      (printf "click,12/01/2023 00:00,5\n") )
+    (let ((dt (csv-read fname)))
+      (test-equal "us-nosec num-rows" (==> dt num-rows) 3)
+      ;; ts should be detected as stamp
+      (test-equal "us-nosec ts type" (==> dt col-type "ts") 'stamp)
+      ;; event should be string
+      (test-equal "us-nosec event type" (==> dt col-type "event") 'string)
+      ;; count should be real
+      (test-equal "us-nosec count type" (==> dt col-type "count") 'real)
+      ;; Check timestamp values preserve hour:minute
+      (test-equal "us-nosec ts[0]"
+                  (==> dt get 0 "ts")
+                  (timestamp-from-datetime 2024 1 15 14 30 0))
+      (test-equal "us-nosec ts[1]"
+                  (==> dt get 1 "ts")
+                  (timestamp-from-datetime 2024 2 28 9 15 0))
+      (test-equal "us-nosec ts[2]"
+                  (==> dt get 2 "ts")
+                  (timestamp-from-datetime 2023 12 1 0 0 0))
+      ;; Check numeric
+      (test-approx "us-nosec count[0]" (==> dt get 0 "count") 10.0 0.01) ) ) )
+
+
+;; ============================================================
+;; US datetime no-seconds with explicit date-fmt option
+;; ============================================================
+
+(test-suite "CSV Read Explicit Date Format"
+  (let ((fname "/tmp/claude/test-explicit-fmt.csv"))
+    (writing fname
+      (printf "ts,val\n")
+      (printf "01/15/2024 14:30,1.0\n")
+      (printf "02/28/2024 09:15,2.0\n") )
+    (let ((dt (csv-read fname '(("date-fmt" . "%m/%d/%Y %H:%M")))))
+      (test-equal "explicit-fmt num-rows" (==> dt num-rows) 2)
+      (test-equal "explicit-fmt ts type" (==> dt col-type "ts") 'stamp)
+      (test-equal "explicit-fmt ts[0]"
+                  (==> dt get 0 "ts")
+                  (timestamp-from-datetime 2024 1 15 14 30 0))
+      (test-equal "explicit-fmt ts[1]"
+                  (==> dt get 1 "ts")
+                  (timestamp-from-datetime 2024 2 28 9 15 0)) ) ) )
+
+
+;; ============================================================
+;; Pipe-delimited file
+;; ============================================================
+
+(test-suite "CSV Read Pipe Delimiter"
+  (let ((fname "/tmp/claude/test-pipe.csv"))
+    (writing fname
+      (printf "name|age|city\n")
+      (printf "Alice|30|New York\n")
+      (printf "Bob|25|Los Angeles\n")
+      (printf "Carol|35|Chicago\n") )
+    (let ((dt (csv-read fname '(("delim" . "|")))))
+      (test-equal "pipe num-rows" (==> dt num-rows) 3)
+      (test-equal "pipe num-cols" (==> dt num-cols) 3)
+      ;; Column names parsed correctly
+      (let ((names (==> dt col-names)))
+        (test-string-equal "pipe col[0]" (nth 0 names) "name")
+        (test-string-equal "pipe col[1]" (nth 1 names) "age")
+        (test-string-equal "pipe col[2]" (nth 2 names) "city") )
+      ;; Types
+      (test-equal "pipe name type" (==> dt col-type "name") 'string)
+      (test-equal "pipe age type" (==> dt col-type "age") 'real)
+      (test-equal "pipe city type" (==> dt col-type "city") 'string)
+      ;; Values
+      (test-string-equal "pipe name[0]" (==> dt get 0 "name") "Alice")
+      (test-approx "pipe age[1]" (==> dt get 1 "age") 25.0 0.01)
+      (test-string-equal "pipe city[2]" (==> dt get 2 "city") "Chicago") ) ) )
+
+
+;; ============================================================
+;; User date format override (ISO variant)
+;; ============================================================
+
+(test-suite "CSV Read User Date Format Override"
+  (let ((fname "/tmp/claude/test-userfmt.csv"))
+    (writing fname
+      (printf "ts,val\n")
+      (printf "2024-01-15 10:30,100\n")
+      (printf "2024-06-01 23:59,200\n") )
+    (let ((dt (csv-read fname '(("date-fmt" . "%Y-%m-%d %H:%M")))))
+      (test-equal "userfmt num-rows" (==> dt num-rows) 2)
+      (test-equal "userfmt ts type" (==> dt col-type "ts") 'stamp)
+      (test-equal "userfmt ts[0]"
+                  (==> dt get 0 "ts")
+                  (timestamp-from-datetime 2024 1 15 10 30 0))
+      (test-equal "userfmt ts[1]"
+                  (==> dt get 1 "ts")
+                  (timestamp-from-datetime 2024 6 1 23 59 0)) ) ) )
+
+
+;; ============================================================
+;; Combined: pipe delimiter + date format
+;; ============================================================
+
+(test-suite "CSV Read Pipe + Date Format Combined"
+  (let ((fname "/tmp/claude/test-combined.csv"))
+    (writing fname
+      (printf "event|ts|count\n")
+      (printf "login|01/15/2024 14:30|10\n")
+      (printf "logout|02/28/2024 09:15|20\n") )
+    (let ((dt (csv-read fname '(("delim" . "|") ("date-fmt" . "%m/%d/%Y %H:%M")))))
+      (test-equal "combined num-rows" (==> dt num-rows) 2)
+      (test-equal "combined num-cols" (==> dt num-cols) 3)
+      ;; Types
+      (test-equal "combined event type" (==> dt col-type "event") 'string)
+      (test-equal "combined ts type" (==> dt col-type "ts") 'stamp)
+      (test-equal "combined count type" (==> dt col-type "count") 'real)
+      ;; Values
+      (test-string-equal "combined event[0]" (==> dt get 0 "event") "login")
+      (test-equal "combined ts[0]"
+                  (==> dt get 0 "ts")
+                  (timestamp-from-datetime 2024 1 15 14 30 0))
+      (test-equal "combined ts[1]"
+                  (==> dt get 1 "ts")
+                  (timestamp-from-datetime 2024 2 28 9 15 0))
+      (test-approx "combined count[1]" (==> dt get 1 "count") 20.0 0.01) ) ) )
