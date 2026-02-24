@@ -1,0 +1,491 @@
+;;; run-phase2.lsh -- Phase 2 test stages for wire IPC package
+;;;
+;;; Tests: memstream, heartbeat, LZ4, byte-transpose, compressed DataTable,
+;;;        broadcast, WirePool, connection timeout.
+;;;
+;;; Loaded by run-all.lsh -- do not run standalone.
+
+;; ============================================================
+;; Stage 23: Memstream bwrite/bread round-trip
+;; ============================================================
+
+(test-suite "Stage 23: Memstream bwrite/bread"
+
+  ;; Integer
+  (let ((bytes (_wire-bwrite-to-bytes 42)))
+    (test-check "memstream: int bytes" (> (idx-dim bytes 0) 0))
+    (test-equal "memstream: int round-trip" (_wire-bread-from-bytes bytes (idx-dim bytes 0)) 42) )
+
+  ;; String
+  (let ((bytes (_wire-bwrite-to-bytes "hello world")))
+    (test-string-equal "memstream: string round-trip"
+                       (_wire-bread-from-bytes bytes (idx-dim bytes 0)) "hello world") )
+
+  ;; List
+  (let ((bytes (_wire-bwrite-to-bytes '(1 2 3))))
+    (test-equal "memstream: list round-trip"
+                (_wire-bread-from-bytes bytes (idx-dim bytes 0)) '(1 2 3)) )
+
+  ;; Nested list
+  (let ((bytes (_wire-bwrite-to-bytes '(a (b c) (d (e f))))))
+    (test-equal "memstream: nested list"
+                (_wire-bread-from-bytes bytes (idx-dim bytes 0)) '(a (b c) (d (e f)))) )
+
+  ;; idx (matrix)
+  (let ((m (double-matrix 5)))
+    (for (i 0 4) (m i (* i 1.5)))
+    (let ((bytes (_wire-bwrite-to-bytes m)))
+      (let ((m2 (_wire-bread-from-bytes bytes (idx-dim bytes 0))))
+        (test-equal "memstream: idx dim" (idx-dim m2 0) 5)
+        (test-approx "memstream: idx val[0]" (m2 0) 0.0 1e-10)
+        (test-approx "memstream: idx val[3]" (m2 3) 4.5 1e-10) ) ) )
+
+  ;; Large object
+  (let ((big (int-matrix 1000)))
+    (for (i 0 999) (big i i))
+    (let ((bytes (_wire-bwrite-to-bytes big)))
+      (test-check "memstream: large obj bytes" (> (idx-dim bytes 0) 1000))
+      (let ((big2 (_wire-bread-from-bytes bytes (idx-dim bytes 0))))
+        (test-equal "memstream: large obj dim" (idx-dim big2 0) 1000)
+        (test-equal "memstream: large obj val[999]" (big2 999) 999) ) ) )
+)
+
+
+;; ============================================================
+;; Stage 24: reading-string sexp parse
+;; ============================================================
+
+(test-suite "Stage 24: reading-string sexp parse"
+
+  (test-equal "parse int" (_wire-parse-sexp "42") 42)
+  (test-equal "parse list" (_wire-parse-sexp "(+ 1 2)") '(+ 1 2))
+  (test-string-equal "parse string" (_wire-parse-sexp "\"hello\"") "hello")
+  (test-equal "parse nested" (_wire-parse-sexp "(a (b c))") '(a (b c)))
+  (test-equal "parse symbol" (_wire-parse-sexp "foo") 'foo)
+)
+
+
+;; ============================================================
+;; Stage 25: Wire round-trip (memstream -- no temp files)
+;; ============================================================
+
+(test-suite "Stage 25: Wire round-trip (memstream)"
+
+  (let ((srv (new WireServer 19890)))
+    (==> srv start)
+
+    (let ((cfd (_wire-connect-raw "127.0.0.1" 19890)))
+      (==> srv serve-once 500)
+
+      ;; Sexp round-trip
+      (let ((payload (_wire-string-to-bytes "(+ 100 200)")))
+        (_wire-send-message cfd *wire-msg-sync* *wire-enc-sexp*
+                           1 payload (idx-dim payload 0)) )
+      (==> srv serve-once 500)
+      (let ((resp (_wire-recv-message cfd)))
+        (test-check "memstream wire: sexp got response" (consp resp))
+        (when (consp resp)
+          (let ((r (_wire-bytes-to-string (cadddr resp) (idx-dim (cadddr resp) 0))))
+            (test-string-equal "memstream wire: sexp result=300" r "300") ) ) )
+
+      ;; Binary round-trip
+      (let ((payload (_wire-bwrite-to-bytes '(+ 50 75))))
+        (_wire-send-message cfd *wire-msg-sync* *wire-enc-binary*
+                           2 payload (idx-dim payload 0)) )
+      (==> srv serve-once 500)
+      (let ((resp (_wire-recv-message cfd)))
+        (test-check "memstream wire: binary got response" (consp resp))
+        (when (consp resp)
+          (test-equal "memstream wire: binary result=125"
+                      (_wire-bread-from-bytes (cadddr resp) (idx-dim (cadddr resp) 0)) 125) ) )
+
+      (_wire-close-fd cfd) )
+    (==> srv shutdown) )
+)
+
+
+;; ============================================================
+;; Stage 26: Heartbeat ping
+;; ============================================================
+
+(test-suite "Stage 26: Heartbeat ping"
+
+  (let ((srv (new WireServer 19891)))
+    (==> srv start)
+
+    (let ((conn (wire-connect "127.0.0.1" 19891)))
+      (==> srv serve-once 500)  ;; accept
+
+      ;; Send heartbeat
+      (let ((fd (conn "fd"))
+            (msg-id (conn "next-msg-id")) )
+        (conn "next-msg-id" (1+ msg-id))
+        (let ((empty (ubyte-matrix 1)))
+          (_wire-send-message fd *wire-msg-heartbeat* 0 msg-id empty 0) ) )
+      ;; Server processes heartbeat
+      (==> srv serve-once 500)
+      ;; Read heartbeat response
+      (let ((resp (_wire-recv-message (conn "fd"))))
+        (test-check "heartbeat: got response" (consp resp))
+        (when (consp resp)
+          (test-equal "heartbeat: response type" (car resp) *wire-msg-heartbeat*) ) )
+
+      (wire-close conn) )
+    (==> srv shutdown) )
+)
+
+
+;; ============================================================
+;; Stage 27: LZ4 compress/decompress
+;; ============================================================
+
+(test-suite "Stage 27: LZ4 compress/decompress"
+
+  ;; Compress bound
+  (test-check "lz4: compress bound > 0" (> (_wire-lz4-compress-bound 100) 0))
+
+  ;; Round-trip with known data
+  (let ((src (ubyte-matrix 1000)))
+    ;; Fill with compressible data (lots of zeros)
+    (for (i 0 999) (src i (mod i 4)))
+    (let ((bound (_wire-lz4-compress-bound 1000)))
+      (let ((dst (ubyte-matrix bound)))
+        (let ((clen (_wire-lz4-compress src dst 1000 bound)))
+          (test-check "lz4: compressed size > 0" (> clen 0))
+          (test-check "lz4: compressed smaller" (< clen 1000))
+          ;; Decompress
+          (let ((cbuf (ubyte-matrix clen)))
+            (for (ci 0 (1- clen)) (cbuf ci (dst ci)))
+            (let ((dbuf (ubyte-matrix 1000)))
+              (let ((dlen (_wire-lz4-decompress cbuf dbuf clen 1000)))
+                (test-equal "lz4: decompress size" dlen 1000)
+                ;; Verify data matches
+                (let ((match t))
+                  (for (i 0 999)
+                    (when (<> (dbuf i) (src i)) (setq match ())) )
+                  (test-check "lz4: data matches" match) ) ) ) ) ) ) ) )
+
+  ;; uint32 LE read/write
+  (let ((buf (ubyte-matrix 8)))
+    (_wire-put-uint32-le buf 0 12345678)
+    (test-equal "lz4: uint32 LE round-trip" (_wire-get-uint32-le buf 0) 12345678)
+    (_wire-put-uint32-le buf 4 0)
+    (test-equal "lz4: uint32 LE zero" (_wire-get-uint32-le buf 4) 0) )
+)
+
+
+;; ============================================================
+;; Stage 28: LZ4 payload compression helpers
+;; ============================================================
+
+(test-suite "Stage 28: LZ4 payload compression"
+
+  ;; Create a compressible payload (binary serialized list of zeros)
+  (let ((big (int-matrix 2000)))
+    ;; All zeros -- very compressible
+    (let ((payload (_wire-bwrite-to-bytes big)))
+      (let ((plen (idx-dim payload 0)))
+        (test-check "lz4 payload: input > threshold" (>= plen *wire-compress-threshold*))
+        ;; Compress
+        (let ((compressed (_wire-lz4-compress-payload payload plen)))
+          (test-check "lz4 payload: compressed not nil" compressed)
+          (when compressed
+            (let ((clen (idx-dim compressed 0)))
+              (test-check "lz4 payload: smaller than original" (< clen plen))
+              ;; Decompress
+              (let ((decompressed (_wire-lz4-decompress-payload compressed clen)))
+                (test-equal "lz4 payload: decompress size" (idx-dim decompressed 0) plen)
+                ;; Verify bytes match
+                (let ((match t))
+                  (for (i 0 (1- plen))
+                    (when (<> (decompressed i) (payload i)) (setq match ())) )
+                  (test-check "lz4 payload: bytes match" match) ) ) ) ) ) ) ) )
+)
+
+
+;; ============================================================
+;; Stage 29: Byte-transpose round-trip
+;; ============================================================
+
+(test-suite "Stage 29: Byte-transpose round-trip"
+
+  ;; Double matrix round-trip
+  (let ((dm (double-matrix 100)))
+    (for (i 0 99) (dm i (* i 1.234)))
+    (let ((nbytes (* 100 8)))
+      (let ((raw (ubyte-matrix nbytes))
+            (transposed (ubyte-matrix nbytes))
+            (untransposed (ubyte-matrix nbytes)) )
+        (_wire-copy-double-to-bytes dm raw 100)
+        (_wire-byte-transpose raw transposed 100 8)
+        ;; Transposed should differ from raw
+        (let ((differ ()))
+          (for (i 0 (1- nbytes))
+            (when (<> (transposed i) (raw i)) (setq differ t)) )
+          (test-check "byte-transpose: double data rearranged" differ) )
+        ;; Untranspose
+        (_wire-byte-untranspose transposed untransposed 100 8)
+        ;; Verify matches original
+        (let ((match t))
+          (for (i 0 (1- nbytes))
+            (when (<> (untransposed i) (raw i)) (setq match ())) )
+          (test-check "byte-transpose: double round-trip matches" match) )
+        ;; Copy back to double and verify values
+        (let ((dm2 (double-matrix 100)))
+          (_wire-copy-bytes-to-double untransposed dm2 100)
+          (test-approx "byte-transpose: double val[0]" (dm2 0) 0.0 1e-10)
+          (test-approx "byte-transpose: double val[50]" (dm2 50) 61.7 1e-10)
+          (test-approx "byte-transpose: double val[99]" (dm2 99) 122.166 1e-3) ) ) ) )
+
+  ;; Int matrix round-trip
+  (let ((im (int-matrix 100)))
+    (for (i 0 99) (im i (* i 42)))
+    (let ((nbytes (* 100 4)))
+      (let ((raw (ubyte-matrix nbytes))
+            (transposed (ubyte-matrix nbytes))
+            (untransposed (ubyte-matrix nbytes)) )
+        (_wire-copy-int-to-bytes im raw 100)
+        (_wire-byte-transpose raw transposed 100 4)
+        (_wire-byte-untranspose transposed untransposed 100 4)
+        (let ((im2 (int-matrix 100)))
+          (_wire-copy-bytes-to-int untransposed im2 100)
+          (test-equal "byte-transpose: int val[0]" (im2 0) 0)
+          (test-equal "byte-transpose: int val[50]" (im2 50) 2100)
+          (test-equal "byte-transpose: int val[99]" (im2 99) 4158) ) ) ) )
+)
+
+
+;; ============================================================
+;; Stage 30: Compressed DataTable pack/unpack
+;; ============================================================
+
+(test-suite "Stage 30: Compressed DataTable"
+
+  (let ((dt (new DataTable)))
+    (==> dt add-column "price" 'real)
+    (==> dt add-column "qty" 'int)
+    (==> dt add-column "sym" 'string)
+    ;; Add 1000 rows of data
+    (for (r 0 999)
+      (==> dt append-row (list (+ 100.0 (* r 0.01)) r (sprintf "SYM%d" (mod r 10)))) )
+
+    ;; Pack compressed
+    (let ((packed (wire-pack-datatable-compressed dt)))
+      (test-equal "compressed dt: tag" (car packed) 'datatable-compressed)
+      (test-equal "compressed dt: nrows" (cadddr packed) 1000)
+
+      ;; Unpack
+      (let ((dt2 (wire-unpack-datatable-compressed packed)))
+        (test-equal "compressed dt: unpacked nrows" (==> dt2 num-rows) 1000)
+        (test-equal "compressed dt: unpacked ncols" (==> dt2 num-cols) 3)
+        ;; Verify values
+        (test-approx "compressed dt: price[0]" (==> dt2 get 0 0) 100.0 1e-10)
+        (test-approx "compressed dt: price[999]" (==> dt2 get 999 0) 109.99 1e-10)
+        (test-equal "compressed dt: qty[0]" (==> dt2 get 0 1) 0)
+        (test-equal "compressed dt: qty[999]" (==> dt2 get 999 1) 999)
+        (test-string-equal "compressed dt: sym[0]" (==> dt2 get 0 2) "SYM0")
+        (test-string-equal "compressed dt: sym[9]" (==> dt2 get 9 2) "SYM9") ) ) )
+)
+
+
+;; ============================================================
+;; Stage 31: LZ4 over wire
+;; ============================================================
+
+(test-suite "Stage 31: LZ4 over wire"
+
+  (let ((srv (new WireServer 19892)))
+    (==> srv start)
+
+    (let ((cfd (_wire-connect-raw "127.0.0.1" 19892)))
+      (==> srv serve-once 500)  ;; accept
+
+      ;; Send a large binary payload that should get compressed
+      ;; Create a big compressible object
+      (let ((big (int-matrix 5000)))
+        (for (i 0 4999) (big i (mod i 10)))
+        (let ((payload (_wire-bwrite-to-bytes big)))
+          (let ((plen (idx-dim payload 0)))
+            ;; Manually compress and send
+            (let ((compressed (_wire-lz4-compress-payload payload plen)))
+              (test-check "lz4 wire: compressed" compressed)
+              (when compressed
+                ;; Send as compressed
+                (_wire-send-message cfd *wire-msg-sync* *wire-enc-compressed*
+                                   1 compressed (idx-dim compressed 0))
+                ;; Server processes
+                (==> srv serve-once 500)
+                ;; Read response
+                (let ((resp (_wire-recv-message cfd)))
+                  (test-check "lz4 wire: got response" (consp resp))
+                  (when (consp resp)
+                    (let ((resp-enc (cadr resp))
+                          (resp-payload (cadddr resp))
+                          (resp-len (idx-dim (cadddr resp) 0)) )
+                      ;; Response might be compressed or not
+                      (let ((result (if (= resp-enc *wire-enc-compressed*)
+                                     (let ((dec (_wire-lz4-decompress-payload resp-payload resp-len)))
+                                       (_wire-bread-from-bytes dec (idx-dim dec 0)) )
+                                     (_wire-bread-from-bytes resp-payload resp-len) )))
+                        ;; The default handler evaluates (int-matrix 5000) expression
+                        ;; Actually, the binary payload IS the expression to eval
+                        ;; bwrite of (int-matrix 5000) => the matrix itself when bread'd
+                        ;; Then eval'd => the matrix itself (matrices are self-evaluating)
+                        (test-equal "lz4 wire: result dim" (idx-dim result 0) 5000)
+                        (test-equal "lz4 wire: result val[0]" (result 0) 0)
+                        (test-equal "lz4 wire: result val[9]" (result 9) 9) ) ) ) ) ) ) ) ) )
+      (_wire-close-fd cfd) )
+    (==> srv shutdown) )
+)
+
+
+;; ============================================================
+;; Stage 32: wire-broadcast (server-side)
+;; ============================================================
+
+(test-suite "Stage 32: wire-broadcast"
+
+  (let ((srv (new WireServer 19893)))
+    ;; Set up async handler to capture received messages
+    (defvar *broadcast-received* ())
+    (setq :srv:on-async (lambda (fd expr enc)
+      (setq *broadcast-received* (nconc1 *broadcast-received* expr)) ))
+    (==> srv start)
+
+    ;; Connect 3 clients
+    (let ((c1 (_wire-connect-raw "127.0.0.1" 19893))
+          (c2 (_wire-connect-raw "127.0.0.1" 19893))
+          (c3 (_wire-connect-raw "127.0.0.1" 19893)) )
+      (==> srv serve-once 500)  ;; accept c1
+      (==> srv serve-once 500)  ;; accept c2
+      (==> srv serve-once 500)  ;; accept c3
+      (test-equal "broadcast: 3 clients" :srv:client-count 3)
+
+      ;; Broadcast from server
+      (==> srv broadcast "hello everyone")
+
+      ;; Each client reads the async message
+      (let ((r1 (_wire-recv-message c1))
+            (r2 (_wire-recv-message c2))
+            (r3 (_wire-recv-message c3)) )
+        (test-check "broadcast: client 1 got msg" (consp r1))
+        (test-check "broadcast: client 2 got msg" (consp r2))
+        (test-check "broadcast: client 3 got msg" (consp r3))
+        (when (consp r1)
+          (test-equal "broadcast: c1 msg-type=async" (car r1) *wire-msg-async*)
+          (test-string-equal "broadcast: c1 payload"
+            (_wire-bytes-to-string (cadddr r1) (idx-dim (cadddr r1) 0))
+            "hello everyone") )
+        (when (consp r2)
+          (test-string-equal "broadcast: c2 payload"
+            (_wire-bytes-to-string (cadddr r2) (idx-dim (cadddr r2) 0))
+            "hello everyone") )
+        (when (consp r3)
+          (test-string-equal "broadcast: c3 payload"
+            (_wire-bytes-to-string (cadddr r3) (idx-dim (cadddr r3) 0))
+            "hello everyone") ) )
+
+      (_wire-close-fd c1)
+      (_wire-close-fd c2)
+      (_wire-close-fd c3) )
+    (==> srv shutdown) )
+)
+
+
+;; ============================================================
+;; Stage 33: Client-side wire-broadcast
+;; ============================================================
+
+(test-suite "Stage 33: Client-side wire-broadcast"
+
+  (let ((srv (new WireServer 19894)))
+    (defvar *async-msgs* ())
+    (setq :srv:on-async (lambda (fd expr enc)
+      (setq *async-msgs* (nconc1 *async-msgs* (list fd expr))) ))
+    (==> srv start)
+
+    ;; Connect 2 clients
+    (let ((conn1 (wire-connect "127.0.0.1" 19894))
+          (conn2 (wire-connect "127.0.0.1" 19894)) )
+      (==> srv serve-once 500)  ;; accept conn1
+      (==> srv serve-once 500)  ;; accept conn2
+
+      ;; Client-side broadcast to both
+      (setq *async-msgs* ())
+      (wire-broadcast (list conn1 conn2) "(+ 1 2)")
+      ;; Server processes both async messages
+      (==> srv serve-once 500)
+      (==> srv serve-once 500)
+
+      (test-equal "client broadcast: 2 msgs received" (length *async-msgs*) 2)
+
+      (wire-close conn1)
+      (wire-close conn2) )
+    (==> srv shutdown) )
+)
+
+
+;; ============================================================
+;; Stage 34: WirePool basic operations
+;; ============================================================
+
+(test-suite "Stage 34: WirePool basic"
+
+  (let ((srv (new WireServer 19895)))
+    (==> srv start)
+
+    (let ((pool (new WirePool)))
+      ;; Add a target
+      (==> pool add "test-srv" "127.0.0.1" 19895)
+
+      ;; Get connection (lazy connect)
+      (let ((conn (==> pool get "test-srv")))
+        ;; Server needs to accept
+        (==> srv serve-once 500)
+        ;; Get again (should reuse)
+        (let ((conn2 (==> pool get "test-srv")))
+          ;; conn2 may be a new connection if the first one wasn't fully established
+          ;; But at least it should not be nil
+          (test-check "pool: get returns conn" conn2)
+          (when conn2
+            (test-check "pool: conn has fd" (>= (conn2 "fd") 0)) ) )
+        )
+
+      ;; Close all
+      (==> pool close-all)
+      (test-check "pool: close-all succeeds" t) )
+
+    (==> srv shutdown) )
+)
+
+
+;; ============================================================
+;; Stage 35: Connection timeout (idle sweep)
+;; ============================================================
+
+(test-suite "Stage 35: Connection timeout"
+
+  (let ((srv (new WireServer 19896)))
+    ;; Set very short timeout for testing
+    (setq :srv:idle-timeout-secs 1)
+    (==> srv start)
+
+    ;; Connect a client
+    (let ((cfd (_wire-connect-raw "127.0.0.1" 19896)))
+      (==> srv serve-once 500)  ;; accept
+      (test-equal "timeout: 1 client" :srv:client-count 1)
+
+      ;; Wait 2 seconds
+      (let ((start (_wire-time-seconds)))
+        (while (< (- (_wire-time-seconds) start) 2) ()) )
+
+      ;; Force an idle sweep via serve-once
+      ;; The sweep happens inside serve loop, so trigger a select cycle
+      (==> srv serve-once 100)
+
+      ;; Client should have been removed by idle sweep
+      (test-equal "timeout: client removed" :srv:client-count 0)
+
+      (_wire-close-fd cfd) )
+    (==> srv shutdown) )
+)

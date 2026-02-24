@@ -1083,10 +1083,66 @@ DataTable:  868 passed, 0 failed
 7. **`ubyte-matrix 0` invalid**: Lush can't create zero-size matrices.
    All buffer allocations use `(max 1 n)` for safety.
 
+### Phase 2: COMPLETE
+
+| Task | Status | Notes |
+|------|--------|-------|
+| Eliminate temp-file serialization (Step A) | Done | DX memstream functions in wire_helpers.c (`open_memstream`/`fmemopen`). `_wire-bwrite-to-bytes` and `_wire-bread-from-bytes` now use in-memory streams. `_wire-parse-sexp` uses `reading-string`. |
+| Non-blocking incremental reads (Step B) | Done | Per-client state machine in `_try-read-client`: phase 0 (header) → phase 1 (payload). Uses `_wire-recv-nonblock` (DX, `MSG_DONTWAIT`). `serve-once` drain loop. |
+| Connection timeout and keepalive (Step C) | Done | `idle-timeout-secs`, `keepalive-interval-secs` slots. `_sweep-idle-clients` in `serve`/`serve-once`. Heartbeat msg-type=4 handler. |
+| LZ4 compression (Step D) | Done | Bundled `lz4.c`/`lz4.h` (BSD-2-Clause) compiled via LushMake. dhc wrappers in `wire_lz4` compilation unit. `*wire-enc-compressed*`=2 encoding. `_wire-send-message-maybe-compress` for transparent compression. |
+| Byte-transpose preprocessing (Step E) | Done | `_wire-byte-transpose`/`_wire-byte-untranspose` dhc functions. `wire-pack-datatable-compressed`/`wire-unpack-datatable-compressed` in wire-serialize.lsh. |
+| wire-broadcast (Step F) | Done | Server-side `broadcast` method (serialize once, send async to all). Client-side `wire-broadcast` function. |
+| Connection pool / reconnect (Step G) | Done | `WirePool` class with `add`/`get`/`call`/`send`/`close-all`. Auto-reconnect on failure. |
+| Combined header+payload send | Done | `_wire-send-message` now combines header and payload into a single `_wire-write-all` call to avoid TCP fragmentation with non-blocking reads. |
+| Test suite: 35 stages, 193 tests | Done | Phase 2 tests in separate `run-phase2.lsh` file (stages 23-35) |
+
+### Files Created/Modified (Phase 2)
+
+| File | Lines | Description |
+|------|-------|-------------|
+| `packages/wire/wire.lsh` | ~1400 | Updated: memstream, non-blocking reads, timeout, LZ4 wrappers, broadcast, WirePool |
+| `packages/wire/wire-serialize.lsh` | ~280 | Added: compressed DataTable pack/unpack with byte-transpose |
+| `packages/wire/wire_helpers.c` | ~248 | New: DX memstream, recv-nonblock, time-seconds functions |
+| `packages/wire/wire_helpers.h` | ~8 | New: header for wire_helpers.c |
+| `packages/wire/lz4.c` | ~3500 | New: Bundled LZ4 source (BSD-2-Clause, Yann Collet) |
+| `packages/wire/lz4.h` | ~700 | New: LZ4 public API header |
+| `packages/wire/tests/run-all.lsh` | ~724 | Updated: stages 1-22, loads run-phase2.lsh |
+| `packages/wire/tests/run-phase2.lsh` | ~485 | New: stages 23-35 |
+
+### Test Results (all clean, Phase 2)
+
+```
+Wire:       193 passed, 0 failed
+ColumnarDB: 603 passed, 0 failed
+DataTable:  868 passed, 0 failed
+```
+
+### Key Implementation Decisions (Phase 2)
+
+1. **DX functions for memstream**: Used `init_wire_helpers()` DX registration
+   (not dhc) because memstream requires `new_extern(&file_W_class, f)` which
+   is only available from C-level DX code, not dhc-compiled code.
+
+2. **Separate dhc-make name for LZ4**: The second `dhc-make-with-libs` block
+   must use a unique name (`"wire_lz4"`) to avoid overwriting the first
+   dhc-make output (`"wire"`).
+
+3. **Combined header+payload send**: The non-blocking read state machine
+   exposed a TCP fragmentation issue: separate `send()` calls for header and
+   payload could leave the payload undelivered when the receiver does a
+   non-blocking `recv()` immediately after reading the header. Fixed by
+   combining into a single `send()`.
+
+4. **Test file split**: Phase 2 tests (stages 23-35) are in a separate file
+   (`run-phase2.lsh`) loaded from `run-all.lsh` to avoid Lush reader issues
+   with large single files.
+
+5. **No `each-htable`**: Lush doesn't have `each-htable`. Used
+   `(htable-keys ht)` to iterate over htable entries in `WirePool.close-all`.
+
 ### Phases Remaining
 
-- **Phase 2**: Non-blocking incremental reads, LZ4 compression,
-  `wire-broadcast`, connection pool reconnect
 - **Phase 3**: Handshake/auth, `.wire.pw` callback, access control
 - **Phase 4**: Discovery service, gateway scatter-gather, pub/sub,
   handler chain, process types

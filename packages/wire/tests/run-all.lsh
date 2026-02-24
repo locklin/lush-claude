@@ -706,6 +706,14 @@
 
 
 ;; ============================================================
+;; Phase 2 tests (stages 23-35) -- loaded from separate file
+;; to avoid Lush reader issues with large single files.
+;; ============================================================
+
+(load (concat (dirname file-being-loaded) "/run-phase2.lsh"))
+
+
+;; ============================================================
 ;; Summary
 ;; ============================================================
 

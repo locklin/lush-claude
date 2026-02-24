@@ -43,6 +43,7 @@
   (let ((lm (new lushmake)))
     (==> lm setflags (concat " -I" dir " -I" lushdir "/include -DHAVE_CONFIG_H -O2"))
     (==> lm rule "wire_helpers.o" '("wire_helpers.c" "wire_helpers.h"))
+    (==> lm rule "lz4.o" '("lz4.c" "lz4.h"))
     (==> lm make)
     (==> lm load) ) )
 
@@ -81,6 +82,10 @@
 ;; Timeout/keepalive defaults
 (defvar *wire-default-idle-timeout* 300)        ;; 5 minutes
 (defvar *wire-default-keepalive-interval* 60)   ;; 1 minute
+
+;; Compressed encoding (LZ4)
+(defvar *wire-enc-compressed* 2)
+(defvar *wire-compress-threshold* 1024)  ;; don't compress below this
 
 
 ;; ============================================================
@@ -435,18 +440,183 @@
 
 
 ;; ============================================================
+;; LZ4 compression and byte-transpose (compiled via dhc)
+;; ============================================================
+
+;; LZ4 compress: returns compressed size, or 0 on failure
+(de _wire-lz4-compress (src dest src-len dest-capacity)
+  ((-idx1- (-ubyte-)) src dest)
+  ((-int-) src-len dest-capacity)
+  (let ((result 0))
+    ((-int-) result)
+    #{ $result = LZ4_compress_default(
+         (const char*)IDX_PTR($src, unsigned char),
+         (char*)IDX_PTR($dest, unsigned char),
+         $src_len, $dest_capacity); #}
+    result ) )
+
+;; LZ4 decompress: returns decompressed size, or negative on failure
+(de _wire-lz4-decompress (src dest src-len dest-capacity)
+  ((-idx1- (-ubyte-)) src dest)
+  ((-int-) src-len dest-capacity)
+  (let ((result 0))
+    ((-int-) result)
+    #{ $result = LZ4_decompress_safe(
+         (const char*)IDX_PTR($src, unsigned char),
+         (char*)IDX_PTR($dest, unsigned char),
+         $src_len, $dest_capacity); #}
+    result ) )
+
+;; LZ4 compress bound: max output size for given input
+(de _wire-lz4-compress-bound (input-size)
+  ((-int-) input-size)
+  (let ((result 0))
+    ((-int-) result)
+    #{ $result = LZ4_compressBound($input_size); #}
+    result ) )
+
+;; Write uint32 little-endian to buffer at offset
+(de _wire-put-uint32-le (buf offset val)
+  ((-idx1- (-ubyte-)) buf)
+  ((-int-) offset val)
+  #{
+  {
+    unsigned char *p = IDX_PTR($buf, unsigned char) + $offset;
+    unsigned int v = (unsigned int)$val;
+    p[0] = v & 0xFF;
+    p[1] = (v >> 8) & 0xFF;
+    p[2] = (v >> 16) & 0xFF;
+    p[3] = (v >> 24) & 0xFF;
+  }
+  #}
+  () )
+
+;; Read uint32 little-endian from buffer at offset
+(de _wire-get-uint32-le (buf offset)
+  ((-idx1- (-ubyte-)) buf)
+  ((-int-) offset)
+  (let ((result 0))
+    ((-int-) result)
+    #{
+    {
+      unsigned char *p = IDX_PTR($buf, unsigned char) + $offset;
+      $result = (int)(p[0] | (p[1]<<8) | (p[2]<<16) | ((unsigned int)p[3]<<24));
+    }
+    #}
+    result ) )
+
+;; Byte-transpose: reorder bytes for better compression
+;; src[nelem*width] -> dest[nelem*width] transposed
+(de _wire-byte-transpose (src dest nelem width)
+  ((-idx1- (-ubyte-)) src dest)
+  ((-int-) nelem width)
+  #{
+  {
+    unsigned char *s = IDX_PTR($src, unsigned char);
+    unsigned char *d = IDX_PTR($dest, unsigned char);
+    int i, j;
+    for (i = 0; i < $nelem; i++)
+      for (j = 0; j < $width; j++)
+        d[j * $nelem + i] = s[i * $width + j];
+  }
+  #}
+  () )
+
+;; Byte-untranspose: reverse of byte-transpose
+(de _wire-byte-untranspose (src dest nelem width)
+  ((-idx1- (-ubyte-)) src dest)
+  ((-int-) nelem width)
+  #{
+  {
+    unsigned char *s = IDX_PTR($src, unsigned char);
+    unsigned char *d = IDX_PTR($dest, unsigned char);
+    int i, j;
+    for (i = 0; i < $nelem; i++)
+      for (j = 0; j < $width; j++)
+        d[i * $width + j] = s[j * $nelem + i];
+  }
+  #}
+  () )
+
+;; Copy double matrix to ubyte buffer (raw bytes)
+(de _wire-copy-double-to-bytes (src dest n)
+  ((-idx1- (-double-)) src)
+  ((-idx1- (-ubyte-)) dest)
+  ((-int-) n)
+  #{ memcpy(IDX_PTR($dest, unsigned char),
+            IDX_PTR($src, double),
+            $n * sizeof(double)); #}
+  () )
+
+;; Copy ubyte buffer back to double matrix (raw bytes)
+(de _wire-copy-bytes-to-double (src dest n)
+  ((-idx1- (-ubyte-)) src)
+  ((-idx1- (-double-)) dest)
+  ((-int-) n)
+  #{ memcpy(IDX_PTR($dest, double),
+            IDX_PTR($src, unsigned char),
+            $n * sizeof(double)); #}
+  () )
+
+;; Copy int matrix to ubyte buffer (raw bytes)
+(de _wire-copy-int-to-bytes (src dest n)
+  ((-idx1- (-int-)) src)
+  ((-idx1- (-ubyte-)) dest)
+  ((-int-) n)
+  #{ memcpy(IDX_PTR($dest, unsigned char),
+            IDX_PTR($src, int),
+            $n * sizeof(int)); #}
+  () )
+
+;; Copy ubyte buffer back to int matrix (raw bytes)
+(de _wire-copy-bytes-to-int (src dest n)
+  ((-idx1- (-ubyte-)) src)
+  ((-idx1- (-int-)) dest)
+  ((-int-) n)
+  #{ memcpy(IDX_PTR($dest, int),
+            IDX_PTR($src, unsigned char),
+            $n * sizeof(int)); #}
+  () )
+
+;; Compile LZ4 and byte-transpose functions
+;; Uses dhc-make-with-libs with t to resolve LZ4 symbols from RTLD_GLOBAL
+(let ((dhc-make-lushflags
+       (concat dhc-make-lushflags " -I" (dirname file-being-loaded))))
+  (dhc-make-with-libs "wire_lz4" t
+    #{
+    #include "lz4.h"
+    #include <string.h>
+    #}
+    _wire-lz4-compress
+    _wire-lz4-decompress
+    _wire-lz4-compress-bound
+    _wire-put-uint32-le
+    _wire-get-uint32-le
+    _wire-byte-transpose
+    _wire-byte-untranspose
+    _wire-copy-double-to-bytes
+    _wire-copy-bytes-to-double
+    _wire-copy-int-to-bytes
+    _wire-copy-bytes-to-int
+  ) )
+
+
+;; ============================================================
 ;; Interpreted helpers
 ;; ============================================================
 
 ;; Send a wire message (header + payload bytes) on a raw fd.
 (de _wire-send-message (fd msg-type encoding msg-id payload-bytes payload-len)
-  (let ((hdr (ubyte-matrix *wire-header-size*)))
-    (_wire-build-header hdr msg-type encoding msg-id payload-len)
-    (when (< (_wire-write-all fd hdr *wire-header-size*) 0)
-      (error "_wire-send-message" "failed to write header" fd) )
-    (when (> payload-len 0)
-      (when (< (_wire-write-all fd payload-bytes payload-len) 0)
-        (error "_wire-send-message" "failed to write payload" fd) ) ) ) )
+  ;; Combine header + payload into a single write to avoid TCP
+  ;; fragmentation issues with non-blocking reads on the receiver.
+  (let ((total (+ *wire-header-size* payload-len)))
+    (let ((combined (ubyte-matrix total)))
+      (_wire-build-header combined msg-type encoding msg-id payload-len)
+      (when (> payload-len 0)
+        (for (i 0 (1- payload-len))
+          (combined (+ *wire-header-size* i) (payload-bytes i)) ) )
+      (when (< (_wire-write-all fd combined total) 0)
+        (error "_wire-send-message" "failed to write message" fd) ) ) ) )
 
 ;; Receive a wire message from a raw fd.
 ;; Returns (msg-type encoding msg-id payload-bytes) or () on EOF/error.
@@ -510,6 +680,59 @@
 (de _wire-bread-from-bytes (buf nbytes)
   (let ((memf (_wire-fmemopen-read buf nbytes)))
     (reading memf (bread)) ) )
+
+
+;; ============================================================
+;; LZ4 compression helpers (interpreted)
+;; ============================================================
+
+;; Compress payload bytes with LZ4.
+;; Returns compressed bytes with 4-byte original-size prefix, or () if
+;; compression doesn't reduce size below original.
+(de _wire-lz4-compress-payload (payload payload-len)
+  (if (< payload-len *wire-compress-threshold*)
+    ()
+    (let ((bound (_wire-lz4-compress-bound payload-len)))
+      (let ((cbuf (ubyte-matrix (+ 4 bound))))
+        ;; Write original size as LE uint32 at offset 0
+        (_wire-put-uint32-le cbuf 0 payload-len)
+        ;; Compress into cbuf starting at offset 4
+        (let ((csrc payload)
+              (cdst (ubyte-matrix bound)) )
+          (let ((clen (_wire-lz4-compress csrc cdst payload-len bound)))
+            (if (or (<= clen 0) (>= (+ clen 4) payload-len))
+              ()  ;; compression didn't help
+              (let ((result (ubyte-matrix (+ 4 clen))))
+                (_wire-put-uint32-le result 0 payload-len)
+                ;; Copy compressed data after the 4-byte prefix
+                (for (ci 0 (1- clen))
+                  (result (+ 4 ci) (cdst ci)) )
+                result ) ) ) ) ) ) ) )
+
+;; Decompress LZ4 payload (with 4-byte original-size prefix).
+;; Returns decompressed bytes.
+(de _wire-lz4-decompress-payload (compressed compressed-len)
+  (let ((orig-size (_wire-get-uint32-le compressed 0)))
+    (let ((dbuf (ubyte-matrix orig-size))
+          (csrc (ubyte-matrix (- compressed-len 4))) )
+      ;; Copy compressed data (skip 4-byte prefix)
+      (for (ci 0 (1- (- compressed-len 4)))
+        (csrc ci (compressed (+ 4 ci))) )
+      (let ((dlen (_wire-lz4-decompress csrc dbuf (- compressed-len 4) orig-size)))
+        (if (< dlen 0)
+          (error "_wire-lz4-decompress-payload" "decompression failed" dlen)
+          dbuf ) ) ) ) )
+
+;; Send a message, compressing with LZ4 if beneficial.
+;; Transparent to receiver: uses *wire-enc-compressed* encoding.
+(de _wire-send-message-maybe-compress (fd msg-type encoding msg-id payload-bytes payload-len)
+  (if (and (= encoding *wire-enc-binary*) (>= payload-len *wire-compress-threshold*))
+    (let ((compressed (_wire-lz4-compress-payload payload-bytes payload-len)))
+      (if compressed
+        (_wire-send-message fd msg-type *wire-enc-compressed* msg-id
+                           compressed (idx-dim compressed 0))
+        (_wire-send-message fd msg-type encoding msg-id payload-bytes payload-len) ) )
+    (_wire-send-message fd msg-type encoding msg-id payload-bytes payload-len) ) )
 
 
 ;; ============================================================
@@ -656,88 +879,93 @@
 ;;   ()                                     -- partial read (need more data)
 ;;   'disconnect                            -- EOF or error
 ;;   (msg-type encoding msg-id payload)     -- complete message
+;;
+;; Loops internally across phase transitions (header -> payload) so that
+;; a single call can complete an entire message if all bytes are available.
 (defmethod WireServer _try-read-client (fd)
   (let ((state (client-state (str fd))))
-    (when (not state)
-      'disconnect )  ;; no state = stale fd
-    (when state
-      (state "last-activity" (_wire-time-seconds))
-      (let ((phase (state "phase"))
-            (buf (state "buf"))
-            (offset (state "offset"))
-            (need (state "need"))
-            (result ()) )
-        ;; Try non-blocking recv
-        (let ((remain (- need offset)))
-          (let ((got (_wire-recv-nonblock fd buf offset remain)))
-            (cond
-             ;; EOF or error
-             ((< got 0)
-              (setq result 'disconnect) )
-             ;; EAGAIN — nothing available yet
-             ((= got 0)
-              (setq result ()) )
-             ;; Got some bytes
-             (t
-              (let ((new-offset (+ offset got)))
-                (state "offset" new-offset)
-                (if (< new-offset need)
-                  ;; Still partial
-                  (setq result ())
-                  ;; Phase complete
+    (if (not state)
+      'disconnect
+      ;; Main read loop — continues across phase transitions
+      (progn
+        (state "last-activity" (_wire-time-seconds))
+        (let ((result ())
+              (keep-going t) )
+          (while keep-going
+            (let ((buf (state "buf"))
+                  (offset (state "offset"))
+                  (need (state "need")) )
+              (let ((remain (- need offset)))
+                (let ((got (_wire-recv-nonblock fd buf offset remain)))
                   (cond
-                   ;; Phase 0: header complete — parse and transition to payload
-                   ((= phase 0)
-                    (let ((fields (int-matrix 4)))
-                      (if (= 0 (_wire-parse-header buf fields))
-                        ;; Bad header
-                        (setq result 'disconnect)
-                        ;; Good header
-                        (let ((msg-type (fields 0))
-                              (encoding (fields 1))
-                              (msg-id (fields 2))
-                              (payload-len (fields 3)) )
-                          (state "header-fields"
-                                 (list msg-type encoding msg-id payload-len))
-                          (if (= payload-len 0)
-                            ;; No payload — message complete
-                            (progn
-                              ;; Reset state for next message
-                              (state "phase" 0)
-                              (state "offset" 0)
-                              (state "need" *wire-header-size*)
-                              (setq result
-                                    (list msg-type encoding msg-id (ubyte-matrix 1))) )
-                            ;; Need payload — ensure buffer is large enough
-                            (progn
-                              (when (> payload-len (idx-dim buf 0))
-                                (let ((new-buf (ubyte-matrix payload-len)))
-                                  (state "buf" new-buf)
-                                  (setq buf new-buf) ) )
-                              (state "phase" 1)
-                              (state "offset" 0)
-                              (state "need" payload-len) ) ) ) ) ) )
+                   ;; EOF or error
+                   ((< got 0)
+                    (setq result 'disconnect)
+                    (setq keep-going ()) )
+                   ;; EAGAIN — no data available
+                   ((= got 0)
+                    (setq keep-going ()) )
+                   ;; Got some bytes
+                   (t
+                    (let ((new-offset (+ offset got)))
+                      (state "offset" new-offset)
+                      (if (< new-offset need)
+                        ;; Still partial — stop looping
+                        (setq keep-going ())
+                        ;; Phase complete
+                        (let ((phase (state "phase")))
+                          (cond
+                           ;; Phase 0: header complete
+                           ((= phase 0)
+                            (let ((fields (int-matrix 4)))
+                              (if (= 0 (_wire-parse-header buf fields))
+                                (progn
+                                  (setq result 'disconnect)
+                                  (setq keep-going ()) )
+                                (let ((msg-type (fields 0))
+                                      (encoding (fields 1))
+                                      (msg-id (fields 2))
+                                      (payload-len (fields 3)) )
+                                  (state "header-fields"
+                                         (list msg-type encoding msg-id payload-len))
+                                  (if (= payload-len 0)
+                                    ;; No payload — message complete
+                                    (progn
+                                      (state "phase" 0)
+                                      (state "offset" 0)
+                                      (state "need" *wire-header-size*)
+                                      (setq result
+                                            (list msg-type encoding msg-id (ubyte-matrix 1)))
+                                      (setq keep-going ()) )
+                                    ;; Need payload — transition to phase 1 and loop
+                                    (progn
+                                      (when (> payload-len (idx-dim buf 0))
+                                        (state "buf" (ubyte-matrix payload-len)) )
+                                      (state "phase" 1)
+                                      (state "offset" 0)
+                                      (state "need" payload-len)
+                                      ;; keep-going stays t — loop to read payload
+                                      ) ) ) ) ) )
 
-                   ;; Phase 1: payload complete — deliver message
-                   ((= phase 1)
-                    (let ((hf (state "header-fields")))
-                      (let ((msg-type (car hf))
-                            (encoding (cadr hf))
-                            (msg-id (caddr hf))
-                            (payload-len (cadddr hf)) )
-                        ;; Copy payload out of shared buffer
-                        (let ((payload (ubyte-matrix payload-len)))
-                          (for (pi 0 (1- payload-len))
-                            (payload pi (buf pi)) )
-                          ;; Reset state for next message
-                          (state "phase" 0)
-                          (state "offset" 0)
-                          (state "need" *wire-header-size*)
-                          (setq result
-                                (list msg-type encoding msg-id payload)) ) ) ) )
+                           ;; Phase 1: payload complete — deliver message
+                           ((= phase 1)
+                            (let ((hf (state "header-fields")))
+                              (let ((payload-len (cadddr hf)))
+                                (let ((payload (ubyte-matrix payload-len))
+                                      (pbuf (state "buf")) )
+                                  (for (pi 0 (1- payload-len))
+                                    (payload pi (pbuf pi)) )
+                                  (state "phase" 0)
+                                  (state "offset" 0)
+                                  (state "need" *wire-header-size*)
+                                  (setq result
+                                        (list (car hf) (cadr hf) (caddr hf) payload))
+                                  (setq keep-going ()) ) ) ) )
 
-                   (t (setq result 'disconnect)) ) ) ) ) ) ) )
-        result ) ) ) )
+                           (t
+                            (setq result 'disconnect)
+                            (setq keep-going ()) ) ) ) ) ) ) ) ) ) )
+          result ) ) ) ) ) )
 
 
 ;; ============================================================
@@ -770,54 +998,66 @@
         (msg-id (caddr msg))
         (payload (cadddr msg)) )
     (let ((payload-len (idx-dim payload 0)))
-      (cond
-       ;; Sync request: evaluate and send response
-       ((= msg-type *wire-msg-sync*)
-        (let ((result ())
-              (err ()) )
-          ;; Decode the request
-          (let ((expr (if (= encoding *wire-enc-binary*)
-                       (_wire-bread-from-bytes payload payload-len)
-                       (_wire-bytes-to-string payload payload-len) )))
-            ;; Evaluate via handler or default
-            (let ((handler (or on-sync _wire-default-on-sync)))
-              (setq result
-                    (on-error (progn (setq err t) ())
-                              (handler fd expr encoding) ) ) ) )
-          ;; Send response
-          (if err
-            ;; Error response
-            (let ((err-bytes (_wire-string-to-bytes "evaluation error")))
-              (_wire-send-message fd *wire-msg-error* *wire-enc-sexp*
-                                 msg-id err-bytes (idx-dim err-bytes 0)) )
-            ;; Success response
-            (if (= encoding *wire-enc-binary*)
-              ;; Binary: bwrite the result
-              (let ((result-bytes (_wire-bwrite-to-bytes result)))
-                (_wire-send-message fd *wire-msg-response* *wire-enc-binary*
-                                   msg-id result-bytes (idx-dim result-bytes 0)) )
-              ;; Sexp: print result as string
-              (let ((result-str (sprintf "%l" result)))
-                (let ((result-bytes (_wire-string-to-bytes result-str)))
-                  (_wire-send-message fd *wire-msg-response* *wire-enc-sexp*
-                                     msg-id result-bytes (idx-dim result-bytes 0)) ) ) ) ) ) )
+      ;; Decompress if needed — treat as binary after decompression
+      (let ((was-compressed (= encoding *wire-enc-compressed*))
+            (eff-encoding encoding)
+            (eff-payload payload)
+            (eff-payload-len payload-len) )
+        (when was-compressed
+          (setq eff-payload (_wire-lz4-decompress-payload payload payload-len))
+          (setq eff-payload-len (idx-dim eff-payload 0))
+          (setq eff-encoding *wire-enc-binary*) )
+        (cond
+         ;; Sync request: evaluate and send response
+         ((= msg-type *wire-msg-sync*)
+          (let ((result ())
+                (err ()) )
+            ;; Decode the request
+            (let ((expr (if (= eff-encoding *wire-enc-binary*)
+                         (_wire-bread-from-bytes eff-payload eff-payload-len)
+                         (_wire-bytes-to-string eff-payload eff-payload-len) )))
+              ;; Evaluate via handler or default
+              (let ((handler (or on-sync _wire-default-on-sync)))
+                (setq result
+                      (on-error (progn (setq err t) ())
+                                (handler fd expr eff-encoding) ) ) ) )
+            ;; Send response
+            (if err
+              ;; Error response
+              (let ((err-bytes (_wire-string-to-bytes "evaluation error")))
+                (_wire-send-message fd *wire-msg-error* *wire-enc-sexp*
+                                   msg-id err-bytes (idx-dim err-bytes 0)) )
+              ;; Success response
+              (if (= eff-encoding *wire-enc-binary*)
+                ;; Binary: bwrite the result, maybe compress response
+                (let ((result-bytes (_wire-bwrite-to-bytes result)))
+                  (if was-compressed
+                    (_wire-send-message-maybe-compress fd *wire-msg-response*
+                      *wire-enc-binary* msg-id result-bytes (idx-dim result-bytes 0))
+                    (_wire-send-message fd *wire-msg-response* *wire-enc-binary*
+                                       msg-id result-bytes (idx-dim result-bytes 0)) ) )
+                ;; Sexp: print result as string
+                (let ((result-str (sprintf "%l" result)))
+                  (let ((result-bytes (_wire-string-to-bytes result-str)))
+                    (_wire-send-message fd *wire-msg-response* *wire-enc-sexp*
+                                       msg-id result-bytes (idx-dim result-bytes 0)) ) ) ) ) ) )
 
-       ;; Async: evaluate and discard
-       ((= msg-type *wire-msg-async*)
-        (let ((expr (if (= encoding *wire-enc-binary*)
-                     (_wire-bread-from-bytes payload payload-len)
-                     (_wire-bytes-to-string payload payload-len) )))
-          (let ((handler (or on-async _wire-default-on-async)))
-            (on-error () (handler fd expr encoding)) ) ) )
+         ;; Async: evaluate and discard
+         ((= msg-type *wire-msg-async*)
+          (let ((expr (if (= eff-encoding *wire-enc-binary*)
+                       (_wire-bread-from-bytes eff-payload eff-payload-len)
+                       (_wire-bytes-to-string eff-payload eff-payload-len) )))
+            (let ((handler (or on-async _wire-default-on-async)))
+              (on-error () (handler fd expr eff-encoding)) ) ) )
 
-       ;; Heartbeat: respond with a heartbeat response (zero payload)
-       ((= msg-type *wire-msg-heartbeat*)
-        (let ((empty (ubyte-matrix 1)))
-          (_wire-send-message fd *wire-msg-heartbeat* 0
-                             msg-id empty 0) ) )
+         ;; Heartbeat: respond with a heartbeat response (zero payload)
+         ((= msg-type *wire-msg-heartbeat*)
+          (let ((empty (ubyte-matrix 1)))
+            (_wire-send-message fd *wire-msg-heartbeat* 0
+                               msg-id empty 0) ) )
 
-       ;; Ignore responses and other types
-       (t ()) ) ) ) )
+         ;; Ignore responses and other types
+         (t ()) ) ) ) ) )
 
 
 ;; ============================================================
@@ -939,6 +1179,9 @@
         ) ;; close let n,i
       ) ;; close let fd-arr
     ) ;; close let max-clients
+  ;; Idle timeout sweep
+  (when (> idle-timeout-secs 0)
+    (==> this _sweep-idle-clients) )
   )
 
 
@@ -957,6 +1200,32 @@
   (when (>= listen-fd 0)
     (_wire-close-fd listen-fd)
     (setq listen-fd -1) ) )
+
+
+;; ============================================================
+
+;; WireServer: broadcast to all clients
+;; ============================================================
+
+#? (==> <server> broadcast <expr>)
+;; Serialize payload once, send as async to all connected clients.
+;; Silently skips clients that fail.
+(defmethod WireServer broadcast (expr)
+  (let ((payload ())
+        (payload-len 0)
+        (encoding *wire-enc-binary*) )
+    (if (stringp expr)
+      (progn
+        (setq payload (_wire-string-to-bytes expr))
+        (setq payload-len (idx-dim payload 0))
+        (setq encoding *wire-enc-sexp*) )
+      (progn
+        (setq payload (_wire-bwrite-to-bytes expr))
+        (setq payload-len (idx-dim payload 0)) ) )
+    (each ((cfd client-fds))
+      (on-error ()
+        (_wire-send-message cfd *wire-msg-async* encoding
+                           0 payload payload-len) ) ) ) )
 
 
 ;; ============================================================
@@ -1027,9 +1296,13 @@
         (let ((resp-len (idx-dim resp-payload 0)))
           (cond
            ((= resp-type *wire-msg-response*)
-            (if (= resp-enc *wire-enc-binary*)
-              (_wire-bread-from-bytes resp-payload resp-len)
-              (_wire-bytes-to-string resp-payload resp-len) ) )
+            (cond
+             ((= resp-enc *wire-enc-compressed*)
+              (let ((decompressed (_wire-lz4-decompress-payload resp-payload resp-len)))
+                (_wire-bread-from-bytes decompressed (idx-dim decompressed 0)) ) )
+             ((= resp-enc *wire-enc-binary*)
+              (_wire-bread-from-bytes resp-payload resp-len) )
+             (t (_wire-bytes-to-string resp-payload resp-len)) ) )
            ((= resp-type *wire-msg-error*)
             (error "wire-call" "remote error"
                    (_wire-bytes-to-string resp-payload resp-len)) )
@@ -1076,6 +1349,120 @@
             (if (and (consp resp) (= (car resp) *wire-msg-heartbeat*))
               t
               () ) ) ) ) ) ) )
+
+
+#? (wire-broadcast <conn-list> <expr>)
+;; Client-side broadcast: serialize once, send to each connection in list.
+(de wire-broadcast (conn-list expr)
+  (let ((payload ())
+        (payload-len 0)
+        (encoding *wire-enc-binary*) )
+    (if (stringp expr)
+      (progn
+        (setq payload (_wire-string-to-bytes expr))
+        (setq payload-len (idx-dim payload 0))
+        (setq encoding *wire-enc-sexp*) )
+      (progn
+        (setq payload (_wire-bwrite-to-bytes expr))
+        (setq payload-len (idx-dim payload 0)) ) )
+    (each ((conn conn-list))
+      (let ((fd (conn "fd")))
+        (when (>= fd 0)
+          (let ((msg-id (conn "next-msg-id")))
+            (conn "next-msg-id" (1+ msg-id))
+            (on-error ()
+              (_wire-send-message fd *wire-msg-async* encoding
+                                 msg-id payload payload-len) ) ) ) ) ) ) )
+
+
+;; ============================================================
+;; WirePool: connection pool with auto-reconnect
+;; ============================================================
+
+(defclass WirePool object
+  connections       ;; htable: name -> htable with host, port, conn, retries
+  auto-reconnect    ;; boolean: reconnect on failure
+)
+
+(defmethod WirePool WirePool ()
+  (setq connections (htable 16))
+  (setq auto-reconnect t) )
+
+#? (==> <pool> add <name> <host> <port>)
+;; Register a named target (lazy — no connection yet).
+(defmethod WirePool add (name host port)
+  (let ((info (htable 8)))
+    (info "host" host)
+    (info "port" port)
+    (info "conn" ())
+    (info "retries" 0)
+    (connections name info) ) )
+
+#? (==> <pool> get <name>)
+;; Return a live connection, connecting/reconnecting if needed.
+;; Returns the connection htable or () on failure.
+;; Does not validate the connection (use pool.call which retries on failure).
+(defmethod WirePool get (name)
+  (let ((info (connections name)))
+    (when (not info)
+      (error "WirePool.get" "unknown target" name) )
+    (let ((conn (info "conn")))
+      ;; Check if we have a connection with a valid fd
+      (when (and conn (< (conn "fd") 0))
+        (info "conn" ())
+        (setq conn ()) )
+      ;; Connect if needed
+      (when (not conn)
+        (setq conn
+              (on-error ()
+                (wire-connect (info "host") (info "port")) ) )
+        (if conn
+          (progn
+            (info "conn" conn)
+            (info "retries" 0) )
+          (info "retries" (1+ (info "retries"))) ) )
+      (info "conn") ) ) )
+
+#? (==> <pool> call <name> <expr>)
+;; Call through pool with auto-reconnect on failure.
+(defmethod WirePool call (name expr)
+  (let ((conn (==> this get name)))
+    (when (not conn)
+      (error "WirePool.call" "cannot connect" name) )
+    (let ((result (on-error ()
+                    (wire-call conn expr) )))
+      (if result
+        result
+        ;; Retry once if auto-reconnect
+        (if auto-reconnect
+          (progn
+            (let ((info (connections name)))
+              (on-error () (wire-close (info "conn")))
+              (info "conn" ()) )
+            (let ((conn2 (==> this get name)))
+              (when (not conn2)
+                (error "WirePool.call" "reconnect failed" name) )
+              (wire-call conn2 expr) ) )
+          (error "WirePool.call" "call failed" name) ) ) ) ) )
+
+#? (==> <pool> send <name> <expr>)
+;; Async send through pool.
+(defmethod WirePool send (name expr)
+  (let ((conn (==> this get name)))
+    (when (not conn)
+      (error "WirePool.send" "cannot connect" name) )
+    (wire-send conn expr) ) )
+
+#? (==> <pool> close-all)
+;; Close all connections in the pool.
+(defmethod WirePool close-all ()
+  (each ((name (htable-keys connections)))
+    (let ((info (connections name)))
+      (when info
+        (let ((conn (info "conn")))
+          (when conn
+            (on-error () (wire-close conn))
+            (info "conn" ()) ) ) ) ) ) )
 
 
 ;; ============================================================
