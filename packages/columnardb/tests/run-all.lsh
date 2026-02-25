@@ -2481,6 +2481,139 @@
 
 
 ;; ============================================================
+;; Stage 26: LZ4 Column Compression
+;; ============================================================
+
+(test-suite "Stage 26: LZ4 Column Compression"
+
+  ;; --- Round-trip: double column ---
+  (let ((dt (new DataTable)))
+    (==> dt add-column "val" 'real)
+    (for (i 0 99)
+      (==> dt append-row (list (* i 3.14159))) )
+    (let ((path (concat *test-dir* "/lz4-doubles")))
+      (columnardb-save-lz4 dt path)
+      ;; Load with mem
+      (let ((dt2 (columnardb-load-mem path)))
+        (test-equal "lz4 dbl mem rows" (==> dt2 num-rows) 100)
+        (test-approx "lz4 dbl mem[0]" (==> dt2 get 0 "val") 0.0 0.001)
+        (test-approx "lz4 dbl mem[1]" (==> dt2 get 1 "val") 3.14159 0.001)
+        (test-approx "lz4 dbl mem[99]" (==> dt2 get 99 "val") (* 99 3.14159) 0.001) )
+      ;; Load with mmap
+      (let ((dt3 (columnardb-load path)))
+        (test-equal "lz4 dbl mmap rows" (==> dt3 num-rows) 100)
+        (test-approx "lz4 dbl mmap[0]" (==> dt3 get 0 "val") 0.0 0.001)
+        (test-approx "lz4 dbl mmap[50]" (==> dt3 get 50 "val") (* 50 3.14159) 0.001)
+        (test-approx "lz4 dbl mmap[99]" (==> dt3 get 99 "val") (* 99 3.14159) 0.001) ) ) )
+
+  ;; --- Round-trip: int column ---
+  (let ((dt (new DataTable)))
+    (==> dt add-column "id" 'int)
+    (for (i 0 99)
+      (==> dt append-row (list (* i 7))) )
+    (let ((path (concat *test-dir* "/lz4-ints")))
+      (columnardb-save-lz4 dt path)
+      (let ((dt2 (columnardb-load-mem path)))
+        (test-equal "lz4 int mem rows" (==> dt2 num-rows) 100)
+        (test-equal "lz4 int mem[0]" (==> dt2 get 0 "id") 0)
+        (test-equal "lz4 int mem[1]" (==> dt2 get 1 "id") 7)
+        (test-equal "lz4 int mem[99]" (==> dt2 get 99 "id") (* 99 7)) )
+      (let ((dt3 (columnardb-load path)))
+        (test-equal "lz4 int mmap rows" (==> dt3 num-rows) 100)
+        (test-equal "lz4 int mmap[0]" (==> dt3 get 0 "id") 0)
+        (test-equal "lz4 int mmap[50]" (==> dt3 get 50 "id") (* 50 7))
+        (test-equal "lz4 int mmap[99]" (==> dt3 get 99 "id") (* 99 7)) ) ) )
+
+  ;; --- Round-trip: float column ---
+  (let ((dt (new DataTable)))
+    (==> dt add-column "fval" 'float)
+    (for (i 0 99)
+      (==> dt append-row (list (* i 2.5))) )
+    (let ((path (concat *test-dir* "/lz4-floats")))
+      (columnardb-save-lz4 dt path)
+      (let ((dt2 (columnardb-load-mem path)))
+        (test-equal "lz4 flt mem rows" (==> dt2 num-rows) 100)
+        (test-approx "lz4 flt mem[0]" (==> dt2 get 0 "fval") 0.0 0.01)
+        (test-approx "lz4 flt mem[1]" (==> dt2 get 1 "fval") 2.5 0.01)
+        (test-approx "lz4 flt mem[99]" (==> dt2 get 99 "fval") (* 99 2.5) 0.5) )
+      (let ((dt3 (columnardb-load path)))
+        (test-equal "lz4 flt mmap rows" (==> dt3 num-rows) 100)
+        (test-approx "lz4 flt mmap[0]" (==> dt3 get 0 "fval") 0.0 0.01)
+        (test-approx "lz4 flt mmap[50]" (==> dt3 get 50 "fval") (* 50 2.5) 0.5)
+        (test-approx "lz4 flt mmap[99]" (==> dt3 get 99 "fval") (* 99 2.5) 0.5) ) ) )
+
+  ;; --- Round-trip: stamp (long) column ---
+  (let ((dt (new DataTable))
+        (base-ts (timestamp-from-datetime 2024 1 1 0 0 0)) )
+    (==> dt add-column "ts" 'stamp)
+    (for (i 0 99)
+      (==> dt append-row (list (+ base-ts (* i 1000000)))) )
+    (let ((path (concat *test-dir* "/lz4-longs")))
+      (columnardb-save-lz4 dt path)
+      (let ((dt2 (columnardb-load-mem path)))
+        (test-equal "lz4 long mem rows" (==> dt2 num-rows) 100)
+        (test-equal "lz4 long mem[0]" (==> dt2 get 0 "ts") base-ts)
+        (test-equal "lz4 long mem[1]" (==> dt2 get 1 "ts") (+ base-ts 1000000))
+        (test-equal "lz4 long mem[99]" (==> dt2 get 99 "ts") (+ base-ts 99000000)) )
+      (let ((dt3 (columnardb-load path)))
+        (test-equal "lz4 long mmap rows" (==> dt3 num-rows) 100)
+        (test-equal "lz4 long mmap[0]" (==> dt3 get 0 "ts") base-ts)
+        (test-equal "lz4 long mmap[50]" (==> dt3 get 50 "ts") (+ base-ts 50000000))
+        (test-equal "lz4 long mmap[99]" (==> dt3 get 99 "ts") (+ base-ts 99000000)) ) ) )
+
+  ;; --- Mixed table: real + int + string with columnardb-save-lz4 ---
+  (let ((dt (new DataTable)))
+    (==> dt add-column "price" 'real)
+    (==> dt add-column "qty" 'int)
+    (==> dt add-column "sym" 'string)
+    (let ((syms (list "AAPL" "GOOG" "MSFT")))
+      (for (i 0 49)
+        (==> dt append-row (list (* i 1.5) (* i 10) (nth (mod i 3) syms))) ) )
+    (let ((path (concat *test-dir* "/lz4-mixed")))
+      (columnardb-save-lz4 dt path)
+      ;; Load with columnardb-load
+      (let ((dt2 (columnardb-load path)))
+        (test-equal "lz4 mixed mmap rows" (==> dt2 num-rows) 50)
+        (test-approx "lz4 mixed mmap price[0]" (==> dt2 get 0 "price") 0.0 0.001)
+        (test-approx "lz4 mixed mmap price[49]" (==> dt2 get 49 "price") (* 49 1.5) 0.001)
+        (test-equal "lz4 mixed mmap qty[0]" (==> dt2 get 0 "qty") 0)
+        (test-equal "lz4 mixed mmap qty[49]" (==> dt2 get 49 "qty") 490)
+        (test-string-equal "lz4 mixed mmap sym[0]" (==> dt2 get 0 "sym") "AAPL")
+        (test-string-equal "lz4 mixed mmap sym[1]" (==> dt2 get 1 "sym") "GOOG")
+        (test-string-equal "lz4 mixed mmap sym[2]" (==> dt2 get 2 "sym") "MSFT")
+        (test-string-equal "lz4 mixed mmap sym[49]" (==> dt2 get 49 "sym") "GOOG") )
+      ;; Load with columnardb-load-mem
+      (let ((dt3 (columnardb-load-mem path)))
+        (test-equal "lz4 mixed mem rows" (==> dt3 num-rows) 50)
+        (test-approx "lz4 mixed mem price[0]" (==> dt3 get 0 "price") 0.0 0.001)
+        (test-approx "lz4 mixed mem price[49]" (==> dt3 get 49 "price") (* 49 1.5) 0.001)
+        (test-equal "lz4 mixed mem qty[0]" (==> dt3 get 0 "qty") 0)
+        (test-equal "lz4 mixed mem qty[49]" (==> dt3 get 49 "qty") 490)
+        (test-string-equal "lz4 mixed mem sym[0]" (==> dt3 get 0 "sym") "AAPL")
+        (test-string-equal "lz4 mixed mem sym[49]" (==> dt3 get 49 "sym") "GOOG") ) ) )
+
+  ;; --- Backward compat: old uncompressed format still loads ---
+  (let ((dt (new DataTable)))
+    (==> dt add-column "x" 'real)
+    (==> dt add-column "y" 'int)
+    (==> dt append-row (list 1.0 10))
+    (==> dt append-row (list 2.0 20))
+    (let ((path (concat *test-dir* "/lz4-compat")))
+      ;; Save uncompressed
+      (columnardb-save dt path)
+      ;; Load still works
+      (let ((dt2 (columnardb-load path)))
+        (test-equal "lz4 compat rows" (==> dt2 num-rows) 2)
+        (test-approx "lz4 compat x[0]" (==> dt2 get 0 "x") 1.0 0.001)
+        (test-equal "lz4 compat y[1]" (==> dt2 get 1 "y") 20) )
+      (let ((dt3 (columnardb-load-mem path)))
+        (test-equal "lz4 compat mem rows" (==> dt3 num-rows) 2)
+        (test-approx "lz4 compat mem x[0]" (==> dt3 get 0 "x") 1.0 0.001)
+        (test-equal "lz4 compat mem y[1]" (==> dt3 get 1 "y") 20) ) ) )
+)
+
+
+;; ============================================================
 ;; Stage 9: Database class
 ;; ============================================================
 

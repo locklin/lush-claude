@@ -161,6 +161,46 @@
             $n * sizeof(int)); #}
   () )
 
+;; Copy float matrix to ubyte buffer (raw bytes)
+(de _lz4-copy-float-to-bytes (src dest n)
+  ((-idx1- (-float-)) src)
+  ((-idx1- (-ubyte-)) dest)
+  ((-int-) n)
+  #{ memcpy(IDX_PTR($dest, unsigned char),
+            IDX_PTR($src, float),
+            $n * sizeof(float)); #}
+  () )
+
+;; Copy ubyte buffer back to float matrix (raw bytes)
+(de _lz4-copy-bytes-to-float (src dest n)
+  ((-idx1- (-ubyte-)) src)
+  ((-idx1- (-float-)) dest)
+  ((-int-) n)
+  #{ memcpy(IDX_PTR($dest, float),
+            IDX_PTR($src, unsigned char),
+            $n * sizeof(float)); #}
+  () )
+
+;; Copy long matrix to ubyte buffer (raw bytes)
+(de _lz4-copy-long-to-bytes (src dest n)
+  ((-idx1- (-long-)) src)
+  ((-idx1- (-ubyte-)) dest)
+  ((-int-) n)
+  #{ memcpy(IDX_PTR($dest, unsigned char),
+            IDX_PTR($src, long long),
+            $n * sizeof(long long)); #}
+  () )
+
+;; Copy ubyte buffer back to long matrix (raw bytes)
+(de _lz4-copy-bytes-to-long (src dest n)
+  ((-idx1- (-ubyte-)) src)
+  ((-idx1- (-long-)) dest)
+  ((-int-) n)
+  #{ memcpy(IDX_PTR($dest, long long),
+            IDX_PTR($src, unsigned char),
+            $n * sizeof(long long)); #}
+  () )
+
 ;; Compile LZ4 and byte-transpose functions
 ;; Uses dhc-make-with-libs with t to resolve LZ4 symbols from RTLD_GLOBAL
 (let ((dhc-make-lushflags
@@ -181,6 +221,10 @@
     _lz4-copy-bytes-to-double
     _lz4-copy-int-to-bytes
     _lz4-copy-bytes-to-int
+    _lz4-copy-float-to-bytes
+    _lz4-copy-bytes-to-float
+    _lz4-copy-long-to-bytes
+    _lz4-copy-bytes-to-long
   ) )
 
 

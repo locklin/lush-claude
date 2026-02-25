@@ -256,15 +256,20 @@
                 (let ((cnt-chk (double-matrix 1))
                       (typ-chk (int-matrix 1)) )
                   (_cdb-read-header fname cnt-chk typ-chk)
-                  (if (= (typ-chk 0) *cdb-type-delta-double*)
+                  (cond
+                   ((= (typ-chk 0) *cdb-type-delta-double*)
                     ;; Delta-encoded: read deltas then decode
                     (let ((deltas (double-matrix nrows)))
                       (_cdb-read-doubles fname deltas nrows)
-                      (_cdb-d1delta-decode deltas data nrows) )
+                      (_cdb-d1delta-decode deltas data nrows) ) )
+                   ((= (typ-chk 0) *cdb-type-lz4-double*)
+                    ;; LZ4+byte-transpose
+                    (_cdb-read-lz4-doubles fname data nrows) )
+                   (t
                     ;; Raw doubles
                     (let ((rc (_cdb-read-doubles fname data nrows)))
                       (when (< rc 0)
-                        (error "columnardb-load-mem" "failed to read column" name) ) ) ) )
+                        (error "columnardb-load-mem" "failed to read column" name) ) ) ) ) )
                 (setq column-list (nconc1 column-list data)) ) )
 
              ;; Stamp column (stored as longs/int64)
@@ -275,15 +280,20 @@
                 (let ((cnt-chk (double-matrix 1))
                       (typ-chk (int-matrix 1)) )
                   (_cdb-read-header fname cnt-chk typ-chk)
-                  (if (= (typ-chk 0) *cdb-type-delta-long*)
+                  (cond
+                   ((= (typ-chk 0) *cdb-type-delta-long*)
                     ;; Delta-encoded: read deltas then decode
                     (let ((deltas (long-matrix nrows)))
                       (_cdb-read-longs fname deltas nrows)
-                      (_cdb-l1delta-decode deltas data nrows) )
+                      (_cdb-l1delta-decode deltas data nrows) ) )
+                   ((= (typ-chk 0) *cdb-type-lz4-long*)
+                    ;; LZ4+byte-transpose
+                    (_cdb-read-lz4-longs fname data nrows) )
+                   (t
                     ;; Raw longs
                     (let ((rc (_cdb-read-longs fname data nrows)))
                       (when (< rc 0)
-                        (error "columnardb-load-mem" "failed to read column" name) ) ) ) )
+                        (error "columnardb-load-mem" "failed to read column" name) ) ) ) ) )
                 (setq column-list (nconc1 column-list data)) ) )
 
              ;; Float column
@@ -294,15 +304,20 @@
                 (let ((cnt-chk (double-matrix 1))
                       (typ-chk (int-matrix 1)) )
                   (_cdb-read-header fname cnt-chk typ-chk)
-                  (if (= (typ-chk 0) *cdb-type-delta-float*)
+                  (cond
+                   ((= (typ-chk 0) *cdb-type-delta-float*)
                     ;; Delta-encoded: read deltas then decode
                     (let ((deltas (float-matrix nrows)))
                       (_cdb-read-floats fname deltas nrows)
-                      (_cdb-f1delta-decode deltas data nrows) )
+                      (_cdb-f1delta-decode deltas data nrows) ) )
+                   ((= (typ-chk 0) *cdb-type-lz4-float*)
+                    ;; LZ4+byte-transpose
+                    (_cdb-read-lz4-floats fname data nrows) )
+                   (t
                     ;; Raw floats
                     (let ((rc (_cdb-read-floats fname data nrows)))
                       (when (< rc 0)
-                        (error "columnardb-load-mem" "failed to read column" name) ) ) ) )
+                        (error "columnardb-load-mem" "failed to read column" name) ) ) ) ) )
                 (setq column-list (nconc1 column-list data)) ) )
 
              ;; Integer column
@@ -313,13 +328,18 @@
                 (let ((cnt-chk (double-matrix 1))
                       (typ-chk (int-matrix 1)) )
                   (_cdb-read-header fname cnt-chk typ-chk)
-                  (if (= (typ-chk 0) *cdb-type-rle-int32*)
+                  (cond
+                   ((= (typ-chk 0) *cdb-type-rle-int32*)
                     ;; RLE-encoded: read and decode
-                    (_cdb-read-rle-ints fname data nrows)
+                    (_cdb-read-rle-ints fname data nrows) )
+                   ((= (typ-chk 0) *cdb-type-lz4-int32*)
+                    ;; LZ4+byte-transpose
+                    (_cdb-read-lz4-ints fname data nrows) )
+                   (t
                     ;; Raw ints
                     (let ((rc (_cdb-read-ints fname data nrows)))
                       (when (< rc 0)
-                        (error "columnardb-load-mem" "failed to read column" name) ) ) ) )
+                        (error "columnardb-load-mem" "failed to read column" name) ) ) ) ) )
                 (setq column-list (nconc1 column-list data)) ) )
 
              ;; String column
@@ -332,11 +352,15 @@
                   (let ((cnt-chk (double-matrix 1))
                         (typ-chk (int-matrix 1)) )
                     (_cdb-read-header codes-fname cnt-chk typ-chk)
-                    (if (= (typ-chk 0) *cdb-type-rle-int32*)
-                      (_cdb-read-rle-ints codes-fname codes nrows)
+                    (cond
+                     ((= (typ-chk 0) *cdb-type-rle-int32*)
+                      (_cdb-read-rle-ints codes-fname codes nrows) )
+                     ((= (typ-chk 0) *cdb-type-lz4-int32*)
+                      (_cdb-read-lz4-ints codes-fname codes nrows) )
+                     (t
                       (let ((rc (_cdb-read-ints codes-fname codes nrows)))
                         (when (< rc 0)
-                          (error "columnardb-load-mem" "failed to read string codes" name) ) ) ) )
+                          (error "columnardb-load-mem" "failed to read string codes" name) ) ) ) ) )
                   ;; Build StringColumn from codes and pool
                   (let ((sc (new StringColumn nrows)))
                     (==> sc build-from-codes codes pool)
@@ -406,83 +430,111 @@
              (t (error "columnardb-load" "unknown column type" type)) )
             ;; Non-empty: mmap from files (with compressed fallback)
             (cond
-             ;; Real column -> mmap as double (or decode delta)
+             ;; Real column -> mmap as double (or decode delta/LZ4)
              ((= type 'real)
               (let ((fname (concat path "/col-" (str ci) ".col")))
                 ;; Check typecode
                 (let ((cnt-chk (double-matrix 1))
                       (typ-chk (int-matrix 1)) )
                   (_cdb-read-header fname cnt-chk typ-chk)
-                  (if (= (typ-chk 0) *cdb-type-delta-double*)
+                  (cond
+                   ((= (typ-chk 0) *cdb-type-delta-double*)
                     ;; Compressed: read and decode (cannot mmap deltas)
                     (let ((data (double-matrix nrows))
                           (deltas (double-matrix nrows)) )
                       (_cdb-read-doubles fname deltas nrows)
                       (_cdb-d1delta-decode deltas data nrows)
-                      (setq column-list (nconc1 column-list data)) )
+                      (setq column-list (nconc1 column-list data)) ) )
+                   ((= (typ-chk 0) *cdb-type-lz4-double*)
+                    ;; LZ4: decompress into memory
+                    (let ((data (double-matrix nrows)))
+                      (_cdb-read-lz4-doubles fname data nrows)
+                      (setq column-list (nconc1 column-list data)) ) )
+                   (t
                     ;; Raw: mmap
                     (let ((stor (double-storage)))
                       (storage-mmap stor fname *cdb-header-size*)
                       (let ((col (new-index stor (list nrows))))
-                        (setq column-list (nconc1 column-list col)) ) ) ) ) ) )
+                        (setq column-list (nconc1 column-list col)) ) ) ) ) ) ) )
 
-             ;; Stamp column -> mmap as long (or decode delta-long)
+             ;; Stamp column -> mmap as long (or decode delta-long/LZ4)
              ((= type 'stamp)
               (let ((fname (concat path "/col-" (str ci) ".col")))
                 (let ((cnt-chk (double-matrix 1))
                       (typ-chk (int-matrix 1)) )
                   (_cdb-read-header fname cnt-chk typ-chk)
-                  (if (= (typ-chk 0) *cdb-type-delta-long*)
+                  (cond
+                   ((= (typ-chk 0) *cdb-type-delta-long*)
                     ;; Compressed: read and decode
                     (let ((data (long-matrix nrows))
                           (deltas (long-matrix nrows)) )
                       (_cdb-read-longs fname deltas nrows)
                       (_cdb-l1delta-decode deltas data nrows)
-                      (setq column-list (nconc1 column-list data)) )
+                      (setq column-list (nconc1 column-list data)) ) )
+                   ((= (typ-chk 0) *cdb-type-lz4-long*)
+                    ;; LZ4: decompress into memory
+                    (let ((data (long-matrix nrows)))
+                      (_cdb-read-lz4-longs fname data nrows)
+                      (setq column-list (nconc1 column-list data)) ) )
+                   (t
                     ;; Raw: mmap
                     (let ((stor (long-storage)))
                       (storage-mmap stor fname *cdb-header-size*)
                       (let ((col (new-index stor (list nrows))))
-                        (setq column-list (nconc1 column-list col)) ) ) ) ) ) )
+                        (setq column-list (nconc1 column-list col)) ) ) ) ) ) ) )
 
-             ;; Float column -> mmap as float (or decode delta)
+             ;; Float column -> mmap as float (or decode delta/LZ4)
              ((= type 'float)
               (let ((fname (concat path "/col-" (str ci) ".col")))
                 (let ((cnt-chk (double-matrix 1))
                       (typ-chk (int-matrix 1)) )
                   (_cdb-read-header fname cnt-chk typ-chk)
-                  (if (= (typ-chk 0) *cdb-type-delta-float*)
+                  (cond
+                   ((= (typ-chk 0) *cdb-type-delta-float*)
                     ;; Compressed: decode
                     (let ((data (float-matrix nrows))
                           (deltas (float-matrix nrows)) )
                       (_cdb-read-floats fname deltas nrows)
                       (_cdb-f1delta-decode deltas data nrows)
-                      (setq column-list (nconc1 column-list data)) )
+                      (setq column-list (nconc1 column-list data)) ) )
+                   ((= (typ-chk 0) *cdb-type-lz4-float*)
+                    ;; LZ4: decompress into memory
+                    (let ((data (float-matrix nrows)))
+                      (_cdb-read-lz4-floats fname data nrows)
+                      (setq column-list (nconc1 column-list data)) ) )
+                   (t
                     ;; Raw: mmap
                     (let ((stor (float-storage)))
                       (storage-mmap stor fname *cdb-header-size*)
                       (let ((col (new-index stor (list nrows))))
-                        (setq column-list (nconc1 column-list col)) ) ) ) ) ) )
+                        (setq column-list (nconc1 column-list col)) ) ) ) ) ) ) )
 
-             ;; Integer column -> mmap as int (or decode RLE)
+             ;; Integer column -> mmap as int (or decode RLE/LZ4)
              ((= type 'int)
               (let ((fname (concat path "/col-" (str ci) ".col")))
                 ;; Check typecode
                 (let ((cnt-chk (double-matrix 1))
                       (typ-chk (int-matrix 1)) )
                   (_cdb-read-header fname cnt-chk typ-chk)
-                  (if (= (typ-chk 0) *cdb-type-rle-int32*)
+                  (cond
+                   ((= (typ-chk 0) *cdb-type-rle-int32*)
                     ;; Compressed: read and decode
                     (let ((data (int-matrix nrows)))
                       (_cdb-read-rle-ints fname data nrows)
-                      (setq column-list (nconc1 column-list data)) )
+                      (setq column-list (nconc1 column-list data)) ) )
+                   ((= (typ-chk 0) *cdb-type-lz4-int32*)
+                    ;; LZ4: decompress into memory
+                    (let ((data (int-matrix nrows)))
+                      (_cdb-read-lz4-ints fname data nrows)
+                      (setq column-list (nconc1 column-list data)) ) )
+                   (t
                     ;; Raw: mmap
                     (let ((stor (int-storage)))
                       (storage-mmap stor fname *cdb-header-size*)
                       (let ((col (new-index stor (list nrows))))
-                        (setq column-list (nconc1 column-list col)) ) ) ) ) ) )
+                        (setq column-list (nconc1 column-list col)) ) ) ) ) ) ) )
 
-             ;; String column -> codes mmap'd (or RLE decode), pool via binary mmap or lazy text
+             ;; String column -> codes mmap'd (or RLE/LZ4 decode), pool via binary mmap or lazy text
              ((= type 'string)
               (let ((codes-fname (concat path "/col-" (str ci) "-codes.col"))
                     (pool-fname (concat path "/col-" (str ci) "-pool.lsh"))
@@ -493,14 +545,20 @@
                       (typ-chk (int-matrix 1)) )
                   (_cdb-read-header codes-fname cnt-chk typ-chk)
                   (let ((codes
-                         (if (= (typ-chk 0) *cdb-type-rle-int32*)
+                         (cond
+                          ((= (typ-chk 0) *cdb-type-rle-int32*)
                            ;; RLE compressed codes: read and decode
                            (let ((c (int-matrix nrows)))
-                             (_cdb-read-rle-ints codes-fname c nrows) c)
+                             (_cdb-read-rle-ints codes-fname c nrows) c) )
+                          ((= (typ-chk 0) *cdb-type-lz4-int32*)
+                           ;; LZ4 compressed codes: decompress
+                           (let ((c (int-matrix nrows)))
+                             (_cdb-read-lz4-ints codes-fname c nrows) c) )
+                          (t
                            ;; Raw codes: mmap
                            (let ((stor (int-storage)))
                              (storage-mmap stor codes-fname *cdb-header-size*)
-                             (new-index stor (list nrows)) ) ) ))
+                             (new-index stor (list nrows)) ) ) ) ))
                     (let ((sc (new StringColumn nrows)))
                       (if (and (filep pool-idx-fname) (filep pool-str-fname))
                         ;; Binary pool exists: mmap offsets and string data
