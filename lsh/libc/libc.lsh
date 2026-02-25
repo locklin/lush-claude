@@ -120,7 +120,7 @@
     (let ((s "(nil)"))
       (when g
 	#{{
-	   int len = strlen((char*)$g);
+	   size_t len = strlen((char*)$g);
 	   Msrg_resize($s, len+1);
 	   memcpy($s->data, $g, len);
            ((char*)($s->data))[len] = 0;

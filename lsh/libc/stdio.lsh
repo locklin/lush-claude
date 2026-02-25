@@ -432,10 +432,12 @@
   (cheader "#include <stdio.h>\n")
   (let ((val 0))
     ((-int-) val)
-    #{ 
-      fread((char *)&$val, sizeof(int), 1, (FILE *)$file);
-      if (little_endian_p) C_reverse_n(&$val, sizeof(int), 1);
-    #} 
+    #{{
+      int s = 0;
+      fread((char *)&s, sizeof(int), 1, (FILE *)$file);
+      if (little_endian_p) C_reverse_n(&s, sizeof(int), 1);
+      $val = s;
+    }#}
   val ))
 
 #? (fwrite-int <file-pointer> <val>)
@@ -606,7 +608,7 @@
   ((-gptr- "FILE *") fp)
   (let*((result 0))
     ((-int-) result)
-    #{ fscanf($fp,"%d",&$result); #}
+    #{ fscanf($fp,"%ld",&$result); #}
     result))
   
 

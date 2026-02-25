@@ -525,7 +525,7 @@
       (dhc-add-c-externs 
        "extern_c gptr C_allocidx_C_pool(struct CClass_pool*, intg);")
       (dhc-add-c-statements 
-       (sprintf "%s = C_allocidx_C_pool(%s,%d);" name obst ndim) ) ) )
+       (sprintf "%s = C_allocidx_C_pool(%s,%ld);" name obst ndim) ) ) )
    
    ((==> type is-an-obj)
     (let* ((ctype (dhu-type type))
@@ -542,7 +542,7 @@
       (dhc-add-c-declarations 
        (sprintf "%s *%s;" (dhc-type-to-c-decl type) name))
       (dhc-add-c-externs 
-       "extern_c gptr C_allocobj_C_pool(struct CClass_pool*, int, gptr);") 
+       "extern_c gptr C_allocobj_C_pool(struct CClass_pool*, size_t, gptr);") 
       (dhc-add-c-statements 
        (sprintf "%s = C_allocobj_C_pool(%s,sizeof(%s),&Vt_%s);"
                 name obst (dhc-type-to-c-decl type) cname ) ) ) )
