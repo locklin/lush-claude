@@ -142,22 +142,22 @@
 (test-suite "Stage 27: LZ4 compress/decompress"
 
   ;; Compress bound
-  (test-check "lz4: compress bound > 0" (> (_wire-lz4-compress-bound 100) 0))
+  (test-check "lz4: compress bound > 0" (> (_lz4-compress-bound 100) 0))
 
   ;; Round-trip with known data
   (let ((src (ubyte-matrix 1000)))
     ;; Fill with compressible data (lots of zeros)
     (for (i 0 999) (src i (mod i 4)))
-    (let ((bound (_wire-lz4-compress-bound 1000)))
+    (let ((bound (_lz4-compress-bound 1000)))
       (let ((dst (ubyte-matrix bound)))
-        (let ((clen (_wire-lz4-compress src dst 1000 bound)))
+        (let ((clen (_lz4-compress src dst 1000 bound)))
           (test-check "lz4: compressed size > 0" (> clen 0))
           (test-check "lz4: compressed smaller" (< clen 1000))
           ;; Decompress
           (let ((cbuf (ubyte-matrix clen)))
             (for (ci 0 (1- clen)) (cbuf ci (dst ci)))
             (let ((dbuf (ubyte-matrix 1000)))
-              (let ((dlen (_wire-lz4-decompress cbuf dbuf clen 1000)))
+              (let ((dlen (_lz4-decompress cbuf dbuf clen 1000)))
                 (test-equal "lz4: decompress size" dlen 1000)
                 ;; Verify data matches
                 (let ((match t))
@@ -167,10 +167,10 @@
 
   ;; uint32 LE read/write
   (let ((buf (ubyte-matrix 8)))
-    (_wire-put-uint32-le buf 0 12345678)
-    (test-equal "lz4: uint32 LE round-trip" (_wire-get-uint32-le buf 0) 12345678)
-    (_wire-put-uint32-le buf 4 0)
-    (test-equal "lz4: uint32 LE zero" (_wire-get-uint32-le buf 4) 0) )
+    (_lz4-put-uint32-le buf 0 12345678)
+    (test-equal "lz4: uint32 LE round-trip" (_lz4-get-uint32-le buf 0) 12345678)
+    (_lz4-put-uint32-le buf 4 0)
+    (test-equal "lz4: uint32 LE zero" (_lz4-get-uint32-le buf 4) 0) )
 )
 
 
@@ -185,15 +185,15 @@
     ;; All zeros -- very compressible
     (let ((payload (_wire-bwrite-to-bytes big)))
       (let ((plen (idx-dim payload 0)))
-        (test-check "lz4 payload: input > threshold" (>= plen *wire-compress-threshold*))
+        (test-check "lz4 payload: input > threshold" (>= plen *lz4-compress-threshold*))
         ;; Compress
-        (let ((compressed (_wire-lz4-compress-payload payload plen)))
+        (let ((compressed (_lz4-compress-payload payload plen)))
           (test-check "lz4 payload: compressed not nil" compressed)
           (when compressed
             (let ((clen (idx-dim compressed 0)))
               (test-check "lz4 payload: smaller than original" (< clen plen))
               ;; Decompress
-              (let ((decompressed (_wire-lz4-decompress-payload compressed clen)))
+              (let ((decompressed (_lz4-decompress-payload compressed clen)))
                 (test-equal "lz4 payload: decompress size" (idx-dim decompressed 0) plen)
                 ;; Verify bytes match
                 (let ((match t))
@@ -216,15 +216,15 @@
       (let ((raw (ubyte-matrix nbytes))
             (transposed (ubyte-matrix nbytes))
             (untransposed (ubyte-matrix nbytes)) )
-        (_wire-copy-double-to-bytes dm raw 100)
-        (_wire-byte-transpose raw transposed 100 8)
+        (_lz4-copy-double-to-bytes dm raw 100)
+        (_lz4-byte-transpose raw transposed 100 8)
         ;; Transposed should differ from raw
         (let ((differ ()))
           (for (i 0 (1- nbytes))
             (when (<> (transposed i) (raw i)) (setq differ t)) )
           (test-check "byte-transpose: double data rearranged" differ) )
         ;; Untranspose
-        (_wire-byte-untranspose transposed untransposed 100 8)
+        (_lz4-byte-untranspose transposed untransposed 100 8)
         ;; Verify matches original
         (let ((match t))
           (for (i 0 (1- nbytes))
@@ -232,7 +232,7 @@
           (test-check "byte-transpose: double round-trip matches" match) )
         ;; Copy back to double and verify values
         (let ((dm2 (double-matrix 100)))
-          (_wire-copy-bytes-to-double untransposed dm2 100)
+          (_lz4-copy-bytes-to-double untransposed dm2 100)
           (test-approx "byte-transpose: double val[0]" (dm2 0) 0.0 1e-10)
           (test-approx "byte-transpose: double val[50]" (dm2 50) 61.7 1e-10)
           (test-approx "byte-transpose: double val[99]" (dm2 99) 122.166 1e-3) ) ) ) )
@@ -244,11 +244,11 @@
       (let ((raw (ubyte-matrix nbytes))
             (transposed (ubyte-matrix nbytes))
             (untransposed (ubyte-matrix nbytes)) )
-        (_wire-copy-int-to-bytes im raw 100)
-        (_wire-byte-transpose raw transposed 100 4)
-        (_wire-byte-untranspose transposed untransposed 100 4)
+        (_lz4-copy-int-to-bytes im raw 100)
+        (_lz4-byte-transpose raw transposed 100 4)
+        (_lz4-byte-untranspose transposed untransposed 100 4)
         (let ((im2 (int-matrix 100)))
-          (_wire-copy-bytes-to-int untransposed im2 100)
+          (_lz4-copy-bytes-to-int untransposed im2 100)
           (test-equal "byte-transpose: int val[0]" (im2 0) 0)
           (test-equal "byte-transpose: int val[50]" (im2 50) 2100)
           (test-equal "byte-transpose: int val[99]" (im2 99) 4158) ) ) ) )
@@ -307,7 +307,7 @@
         (let ((payload (_wire-bwrite-to-bytes big)))
           (let ((plen (idx-dim payload 0)))
             ;; Manually compress and send
-            (let ((compressed (_wire-lz4-compress-payload payload plen)))
+            (let ((compressed (_lz4-compress-payload payload plen)))
               (test-check "lz4 wire: compressed" compressed)
               (when compressed
                 ;; Send as compressed
@@ -324,7 +324,7 @@
                           (resp-len (idx-dim (cadddr resp) 0)) )
                       ;; Response might be compressed or not
                       (let ((result (if (= resp-enc *wire-enc-compressed*)
-                                     (let ((dec (_wire-lz4-decompress-payload resp-payload resp-len)))
+                                     (let ((dec (_lz4-decompress-payload resp-payload resp-len)))
                                        (_wire-bread-from-bytes dec (idx-dim dec 0)) )
                                      (_wire-bread-from-bytes resp-payload resp-len) )))
                         ;; The default handler evaluates (int-matrix 5000) expression

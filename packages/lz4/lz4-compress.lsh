@@ -1,0 +1,228 @@
+;;; lz4-compress.lsh -- LZ4 compression, byte-transpose, and type-copy
+;;;
+;;; Shared package providing LZ4 compression primitives, byte-transpose
+;;; for improving compression ratios on typed columnar data, and raw
+;;; memcpy helpers for double/int arrays.
+;;;
+;;; Used by: wire/wire.lsh, wire/wire-serialize.lsh, columnardb
+;;;
+;;; LZ4 source (lz4.c/lz4.h) is BSD-2-Clause, Yann Collet.
+
+(libload "libc/make")
+
+;; ============================================================
+;; Compile and load lz4.c
+;; ============================================================
+
+(let ((dir (dirname file-being-loaded)))
+  (let ((lm (new lushmake)))
+    (==> lm setflags (concat " -I" dir " -I" lushdir "/include -DHAVE_CONFIG_H -O2"))
+    (==> lm rule "lz4.o" '("lz4.c" "lz4.h"))
+    (==> lm make)
+    (==> lm load) ) )
+
+
+;; ============================================================
+;; LZ4 compression and byte-transpose (compiled via dhc)
+;; ============================================================
+
+;; LZ4 compress: returns compressed size, or 0 on failure
+(de _lz4-compress (src dest src-len dest-capacity)
+  ((-idx1- (-ubyte-)) src dest)
+  ((-int-) src-len dest-capacity)
+  (let ((result 0))
+    ((-int-) result)
+    #{ $result = LZ4_compress_default(
+         (const char*)IDX_PTR($src, unsigned char),
+         (char*)IDX_PTR($dest, unsigned char),
+         $src_len, $dest_capacity); #}
+    result ) )
+
+;; LZ4 decompress: returns decompressed size, or negative on failure
+(de _lz4-decompress (src dest src-len dest-capacity)
+  ((-idx1- (-ubyte-)) src dest)
+  ((-int-) src-len dest-capacity)
+  (let ((result 0))
+    ((-int-) result)
+    #{ $result = LZ4_decompress_safe(
+         (const char*)IDX_PTR($src, unsigned char),
+         (char*)IDX_PTR($dest, unsigned char),
+         $src_len, $dest_capacity); #}
+    result ) )
+
+;; LZ4 compress bound: max output size for given input
+(de _lz4-compress-bound (input-size)
+  ((-int-) input-size)
+  (let ((result 0))
+    ((-int-) result)
+    #{ $result = LZ4_compressBound($input_size); #}
+    result ) )
+
+;; Write uint32 little-endian to buffer at offset
+(de _lz4-put-uint32-le (buf offset val)
+  ((-idx1- (-ubyte-)) buf)
+  ((-int-) offset val)
+  #{
+  {
+    unsigned char *p = IDX_PTR($buf, unsigned char) + $offset;
+    unsigned int v = (unsigned int)$val;
+    p[0] = v & 0xFF;
+    p[1] = (v >> 8) & 0xFF;
+    p[2] = (v >> 16) & 0xFF;
+    p[3] = (v >> 24) & 0xFF;
+  }
+  #}
+  () )
+
+;; Read uint32 little-endian from buffer at offset
+(de _lz4-get-uint32-le (buf offset)
+  ((-idx1- (-ubyte-)) buf)
+  ((-int-) offset)
+  (let ((result 0))
+    ((-int-) result)
+    #{
+    {
+      unsigned char *p = IDX_PTR($buf, unsigned char) + $offset;
+      $result = (int)(p[0] | (p[1]<<8) | (p[2]<<16) | ((unsigned int)p[3]<<24));
+    }
+    #}
+    result ) )
+
+;; Byte-transpose: reorder bytes for better compression
+;; src[nelem*width] -> dest[nelem*width] transposed
+(de _lz4-byte-transpose (src dest nelem width)
+  ((-idx1- (-ubyte-)) src dest)
+  ((-int-) nelem width)
+  #{
+  {
+    unsigned char *s = IDX_PTR($src, unsigned char);
+    unsigned char *d = IDX_PTR($dest, unsigned char);
+    int i, j;
+    for (i = 0; i < $nelem; i++)
+      for (j = 0; j < $width; j++)
+        d[j * $nelem + i] = s[i * $width + j];
+  }
+  #}
+  () )
+
+;; Byte-untranspose: reverse of byte-transpose
+(de _lz4-byte-untranspose (src dest nelem width)
+  ((-idx1- (-ubyte-)) src dest)
+  ((-int-) nelem width)
+  #{
+  {
+    unsigned char *s = IDX_PTR($src, unsigned char);
+    unsigned char *d = IDX_PTR($dest, unsigned char);
+    int i, j;
+    for (i = 0; i < $nelem; i++)
+      for (j = 0; j < $width; j++)
+        d[i * $width + j] = s[j * $nelem + i];
+  }
+  #}
+  () )
+
+;; Copy double matrix to ubyte buffer (raw bytes)
+(de _lz4-copy-double-to-bytes (src dest n)
+  ((-idx1- (-double-)) src)
+  ((-idx1- (-ubyte-)) dest)
+  ((-int-) n)
+  #{ memcpy(IDX_PTR($dest, unsigned char),
+            IDX_PTR($src, double),
+            $n * sizeof(double)); #}
+  () )
+
+;; Copy ubyte buffer back to double matrix (raw bytes)
+(de _lz4-copy-bytes-to-double (src dest n)
+  ((-idx1- (-ubyte-)) src)
+  ((-idx1- (-double-)) dest)
+  ((-int-) n)
+  #{ memcpy(IDX_PTR($dest, double),
+            IDX_PTR($src, unsigned char),
+            $n * sizeof(double)); #}
+  () )
+
+;; Copy int matrix to ubyte buffer (raw bytes)
+(de _lz4-copy-int-to-bytes (src dest n)
+  ((-idx1- (-int-)) src)
+  ((-idx1- (-ubyte-)) dest)
+  ((-int-) n)
+  #{ memcpy(IDX_PTR($dest, unsigned char),
+            IDX_PTR($src, int),
+            $n * sizeof(int)); #}
+  () )
+
+;; Copy ubyte buffer back to int matrix (raw bytes)
+(de _lz4-copy-bytes-to-int (src dest n)
+  ((-idx1- (-ubyte-)) src)
+  ((-idx1- (-int-)) dest)
+  ((-int-) n)
+  #{ memcpy(IDX_PTR($dest, int),
+            IDX_PTR($src, unsigned char),
+            $n * sizeof(int)); #}
+  () )
+
+;; Compile LZ4 and byte-transpose functions
+;; Uses dhc-make-with-libs with t to resolve LZ4 symbols from RTLD_GLOBAL
+(let ((dhc-make-lushflags
+       (concat dhc-make-lushflags " -I" (dirname file-being-loaded))))
+  (dhc-make-with-libs "lz4_compress" t
+    #{
+    #include "lz4.h"
+    #include <string.h>
+    #}
+    _lz4-compress
+    _lz4-decompress
+    _lz4-compress-bound
+    _lz4-put-uint32-le
+    _lz4-get-uint32-le
+    _lz4-byte-transpose
+    _lz4-byte-untranspose
+    _lz4-copy-double-to-bytes
+    _lz4-copy-bytes-to-double
+    _lz4-copy-int-to-bytes
+    _lz4-copy-bytes-to-int
+  ) )
+
+
+;; ============================================================
+;; LZ4 compression helpers (interpreted)
+;; ============================================================
+
+(defvar *lz4-compress-threshold* 1024)  ;; don't compress below this
+
+;; Compress payload bytes with LZ4.
+;; Returns compressed bytes with 4-byte original-size prefix, or () if
+;; compression doesn't reduce size below original.
+(de _lz4-compress-payload (payload payload-len)
+  (if (< payload-len *lz4-compress-threshold*)
+    ()
+    (let ((bound (_lz4-compress-bound payload-len)))
+      (let ((cbuf (ubyte-matrix (+ 4 bound))))
+        ;; Write original size as LE uint32 at offset 0
+        (_lz4-put-uint32-le cbuf 0 payload-len)
+        ;; Compress into cbuf starting at offset 4
+        (let ((csrc payload)
+              (cdst (ubyte-matrix bound)) )
+          (let ((clen (_lz4-compress csrc cdst payload-len bound)))
+            (if (or (<= clen 0) (>= (+ clen 4) payload-len))
+              ()  ;; compression didn't help
+              (let ((result (ubyte-matrix (+ 4 clen))))
+                (_lz4-put-uint32-le result 0 payload-len)
+                ;; Copy compressed data after the 4-byte prefix
+                (for (ci 0 (1- clen))
+                  (result (+ 4 ci) (cdst ci)) )
+                result ) ) ) ) ) ) ) )
+
+;; Decompress LZ4 payload (with 4-byte original-size prefix).
+;; Returns decompressed bytes.
+(de _lz4-decompress-payload (compressed compressed-len)
+  (let ((orig-size (_lz4-get-uint32-le compressed 0)))
+    (let ((dbuf (ubyte-matrix orig-size))
+          (csrc (ubyte-matrix (- compressed-len 4))) )
+      ;; Copy compressed data (skip 4-byte prefix)
+      (for (ci 0 (1- (- compressed-len 4)))
+        (csrc ci (compressed (+ 4 ci))) )
+      (let ((dlen (_lz4-decompress csrc dbuf (- compressed-len 4) orig-size)))
+        (if (< dlen 0)
+          (error "_lz4-decompress-payload" "decompression failed" dlen)
+          dbuf ) ) ) ) )
