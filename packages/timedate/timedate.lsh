@@ -14,6 +14,32 @@
 (libload "timedate/timedate-config")
 
 #? *** TimeDate: UTC Timestamps for Lush (microsecond long integers)
+;; Microsecond-precision UTC timestamp library for Lush.
+;; Timestamps are represented as int64 (long) microseconds since the
+;; Unix epoch (1970-01-01T00:00:00Z), giving exact integer arithmetic
+;; with no floating-point rounding.
+;;.PP
+;; Provides functions for getting the current time, parsing date/time
+;; strings via {<b> strptime} formats, formatting timestamps back to
+;; strings, decomposing into components, and simple arithmetic.
+;;.PP
+;; The column type symbol {<b> 'stamp} is used by the DataTable and
+;; ColumnarDB packages for timestamp columns.
+;;.VP
+;; Example:
+;;.CODE
+;;  (libload "timedate/timedate")
+;;  (let ((now (timestamp-now)))
+;;    (printf "%s\n" (timestamp-to-string now))
+;;    (let ((parts (timestamp-components now)))
+;;      (printf "Year: %d  Month: %d\n" (car parts) (cadr parts))))
+;;.P
+;;.VP
+;; Parsing:
+;;.CODE
+;;  (timestamp-parse "2024-03-15" "%Y-%m-%d")
+;;  (timestamp-parse "2024-03-15T10:30:00.123456" "%Y-%m-%dT%H:%M:%S")
+;;.P
 
 
 ;; ============================================================

@@ -13,6 +13,24 @@
 (libload "csvread/csvread")
 
 #? *** Mapper: Visualization Server
+;; HTTP-based interactive visualization server for Mapper graphs.
+;; Wires together the HTTPD server, SQLite database ({<b> mapper-db}),
+;; and a Cytoscape.js browser UI for multi-graph exploration.
+;;.PP
+;; Features:
+;;.LI Browse and compare multiple Mapper graphs from a project database.
+;;.LI Upload CSV datasets and launch Mapper runs from the browser.
+;;.LI Background worker processes for long-running computations.
+;;.LI REST API for graphs, datasets, runs, labels, and column data.
+;;.PP
+;; Example:
+;;.CODE
+;;   (mapper-viz-start "/tmp/claude/project.db")
+;;   ;; Opens browser at http://localhost:8765
+;;.END
+;;.SEE (mapper-viz-start <db-path> [<port>])
+;;.SEE (mapper-viz-setup <db-path> [<port>])
+;;.SEE Mapper: SQLite Database Integration
 
 ;; Capture the viz directory path at load time
 (defvar *viz-root* (concat (dirname file-being-loaded) "/viz"))

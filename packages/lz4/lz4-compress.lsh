@@ -10,6 +10,28 @@
 
 (libload "libc/make")
 
+#? *** LZ4: Compression Library
+;; Shared LZ4 compression primitives for Lush.
+;; Provides fast byte-level compression/decompression, byte-transpose
+;; for improving compression ratios on typed columnar data (doubles,
+;; floats, ints, longs), and raw memcpy helpers for typed arrays.
+;;.PP
+;; This package is used internally by the Wire and ColumnarDB packages.
+;; All functions are prefixed with {<b> _lz4-} as they form a low-level
+;; API intended for use by other packages rather than end-user code.
+;;.PP
+;; The underlying LZ4 library (lz4.c/lz4.h) is BSD-2-Clause, by Yann Collet.
+;;.VP
+;; Example (compress and decompress a payload):
+;;.CODE
+;;  (let* ((data (ubyte-matrix 1000))
+;;         (compressed (_lz4-compress-payload data 1000)))
+;;    (when compressed
+;;      (let ((orig (_lz4-decompress-payload compressed
+;;                    (idx-dim compressed 0))))
+;;        (assert (= (idx-dim orig 0) 1000)) )))
+;;.P
+
 ;; ============================================================
 ;; Compile and load lz4.c
 ;; ============================================================
@@ -232,9 +254,22 @@
 ;; LZ4 compression helpers (interpreted)
 ;; ============================================================
 
+#? *lz4-compress-threshold*
+;; Minimum payload size in bytes before LZ4 compression is attempted.
+;; Payloads smaller than this threshold are returned uncompressed.
+;; Default: 1024.
+
 (defvar *lz4-compress-threshold* 1024)  ;; don't compress below this
 
-;; Compress payload bytes with LZ4.
+#? (_lz4-compress-payload <payload> <payload-len>)
+;; Compress a ubyte payload with LZ4.
+;; <payload> is an idx1 of ubyte containing the raw bytes.
+;; <payload-len> is the number of bytes to compress.
+;; Returns an idx1 of ubyte with a 4-byte little-endian original-size
+;; prefix followed by the compressed data, or {<b> ()} if compression
+;; does not reduce the size (or payload is below {<b> *lz4-compress-threshold*}).
+;;.SEE (_lz4-decompress-payload <compressed> <compressed-len>)
+;;.SEE *lz4-compress-threshold*
 ;; Returns compressed bytes with 4-byte original-size prefix, or () if
 ;; compression doesn't reduce size below original.
 (de _lz4-compress-payload (payload payload-len)
@@ -257,8 +292,15 @@
                   (result (+ 4 ci) (cdst ci)) )
                 result ) ) ) ) ) ) ) )
 
-;; Decompress LZ4 payload (with 4-byte original-size prefix).
-;; Returns decompressed bytes.
+#? (_lz4-decompress-payload <compressed> <compressed-len>)
+;; Decompress an LZ4 payload that was compressed by {<b> _lz4-compress-payload}.
+;; <compressed> is an idx1 of ubyte starting with a 4-byte little-endian
+;; original-size prefix followed by compressed data.
+;; <compressed-len> is the total length including the prefix.
+;; Returns an idx1 of ubyte containing the decompressed data.
+;; Signals an error if decompression fails.
+;;.SEE (_lz4-compress-payload <payload> <payload-len>)
+
 (de _lz4-decompress-payload (compressed compressed-len)
   (let ((orig-size (_lz4-get-uint32-le compressed 0)))
     (let ((dbuf (ubyte-matrix orig-size))

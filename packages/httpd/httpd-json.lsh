@@ -9,6 +9,16 @@
 ;;;   htable    -> object
 
 #? *** HTTPD: JSON Serialization
+;; JSON serialization helpers for the HTTPD server.
+;; Converts Lush values to JSON strings:
+;;.LI {<b> ()} maps to {<b> null}.
+;;.LI {<b> t} maps to {<b> true}.
+;;.LI Numbers map to JSON numbers.
+;;.LI Strings map to quoted, escaped JSON strings.
+;;.LI Lists map to JSON arrays (or objects if the list is an alist).
+;;.LI Htables map to JSON objects.
+;;.SEE (json-encode <value>)
+;;.SEE (json-object . <pairs>)
 
 ;; ============================================================
 ;; JSON string escaping

@@ -18,6 +18,20 @@
 (libload "libc/stdio")
 
 #? *** ColumnarDB Native Binary I/O
+;; Compiled C functions for reading and writing column data as
+;; native-endian binary files.  Unlike the standard IDX format
+;; (big-endian), these files use the machine's native byte order
+;; so they can be memory-mapped directly with no byte swapping.
+;;.PP
+;; File format (LCDB): 24-byte header + raw element data.
+;;.LI Bytes 0-3: magic "LCDB" (0x4C434442).
+;;.LI Bytes 4-7: version (uint32, currently 1).
+;;.LI Bytes 8-15: element count (int64).
+;;.LI Bytes 16-19: type code (uint32): 1=double, 2=int32, 5=float, 7=long.
+;;.LI Bytes 20-23: reserved (zeros).
+;;.LI Bytes 24+: raw element data in native byte order.
+;;.SEE ColumnarDB: Persistent Columnar Storage
+;;.SEE ColumnarDB Column Compression
 
 ;; Header constants
 (defvar *cdb-magic* 0x4C434442)   ;; "LCDB" in hex

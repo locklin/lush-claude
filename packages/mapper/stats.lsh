@@ -76,6 +76,19 @@
 ;; ============================================================
 
 #? *** Mapper: Statistical Tests
+;; Two-sample statistical tests and multiple-testing correction for
+;; differential analysis between groups of data points in Mapper graphs.
+;;.PP
+;; Available tests:
+;;.LI Welch's t-test ({<b> mapper-welch-ttest}): unequal-variance two-sample test.
+;;.LI Mann-Whitney U ({<b> mapper-mann-whitney-u}): non-parametric rank test.
+;;.LI Kolmogorov-Smirnov ({<b> mapper-ks-test}): distribution comparison.
+;;.LI Hypergeometric ({<b> mapper-hypergeometric-test}): categorical enrichment.
+;;.LI Benjamini-Hochberg FDR ({<b> mapper-benjamini-hochberg}): multiple testing correction.
+;;.PP
+;; Math helpers (log-gamma, regularized incomplete beta, Student's t CDF,
+;; normal CDF) are compiled for performance.
+;;.SEE Mapper: Visualization
 
 #? (mapper-lgamma <x>)
 ;; Log-gamma function via Lanczos approximation (6 coefficients).

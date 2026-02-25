@@ -8,6 +8,15 @@
 ;;;   (columnardb-group-by dt "symbol" () 'count)
 
 #? *** ColumnarDB Grouped Aggregation
+;; Per-group aggregation on DataTable columns.  Groups by a string
+;; or integer column and computes count, sum, mean, min, or max
+;; over a numeric aggregation column.
+;;.PP
+;; When the group column is a StringColumn with a CSR inverted index,
+;; grouping is O(n) via direct index traversal.  Otherwise falls back
+;; to a hash-table-based grouping path.
+;;.SEE (columnardb-group-by <dt> <group-col> <agg-col> <op>)
+;;.SEE ColumnarDB Compiled Hot Paths
 
 
 ;; ============================================================

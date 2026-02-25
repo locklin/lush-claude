@@ -23,6 +23,32 @@
 (libload "libidx/idx-sort")
 
 #? *** DataTable: Typed Columnar Table
+;; A table of typed columns inspired by Kerf1's table type and pandas
+;; DataFrames.  Pure columnar storage with no row objects.
+;;.PP
+;; Supported column types:
+;;.LI {<b> 'real} -- double-precision floating point (NaN = NULL).
+;;.LI {<b> 'int} -- 32-bit integer (INT_MIN = NULL).
+;;.LI {<b> 'float} -- single-precision floating point (NaN = NULL).
+;;.LI {<b> 'stamp} -- int64 microseconds since epoch (INT64_MIN = NULL).
+;;.LI {<b> 'string} -- dictionary-encoded via StringColumn ("" = NULL).
+;;.PP
+;; Includes column management, row append/access, filtering ({<b> where}),
+;; selection ({<b> select-columns}, {<b> select-rows}), sorting ({<b> sort-by}),
+;; and pretty-printing ({<b> print-table}).
+;;.VP
+;; Example:
+;;.CODE
+;;  (libload "datatable/datatable")
+;;  (setq dt (new DataTable))
+;;  (==> dt add-column "price" 'real)
+;;  (==> dt add-column "symbol" 'string)
+;;  (==> dt append-row (list 150.25 "AAPL"))
+;;  (==> dt append-row (list 187.50 "GOOG"))
+;;  (==> dt print-table 10)
+;;.P
+;;.SEE (new DataTable)
+;;.SEE (csv-read <filename> [<options>])
 
 ;; Column type symbols: 'real 'int 'float 'string 'stamp
 ;; 'stamp columns use long-matrix (int64 microseconds since Unix epoch)

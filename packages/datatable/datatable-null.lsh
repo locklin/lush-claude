@@ -7,6 +7,11 @@
 ;;;   string: "" (empty string)
 
 #? *** DataTable NULL Sentinels
+;; Sentinel values for representing missing data in DataTable columns.
+;;.LI {<b> real/float}: IEEE 754 NaN (tested with {<b> nanp}).
+;;.LI {<b> int}: INT_MIN (-2147483648).
+;;.LI {<b> stamp}: INT64_MIN ({<b> *td-stamp-null*} from timedate).
+;;.LI {<b> string}: empty string "".
 
 (defvar *dt-null-int* -2147483648)  ;; INT_MIN
 

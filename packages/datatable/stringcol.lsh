@@ -19,6 +19,22 @@
 ;;;   (==> sc num-unique)               ;; => 2
 
 #? *** StringColumn: Dictionary-Encoded String Column
+;; Dictionary-encoded string column for DataTable.
+;; Stores string data efficiently using per-column string interning:
+;; a string pool (unique strings indexed by integer code) and an
+;; int-matrix of per-row codes.
+;;.PP
+;; Typical datasets with repeated string values (e.g. stock symbols,
+;; categories) see ~12x memory savings compared to storing individual
+;; string objects.  Inspired by Kerf1's HASH type.
+;;.PP
+;; Features:
+;;.LI O(1) append and get via dictionary codes.
+;;.LI O(1) equality test between rows ({<b> rows-equal}).
+;;.LI Optional CSR inverted index for O(1) {<b> where-eq} lookups.
+;;.LI Lazy pool loading from file or mmap'd binary pool.
+;;.LI Bulk initialization from pre-computed codes ({<b> build-from-codes}).
+;;.SEE (new StringColumn <initial-capacity>)
 
 
 ;; ============================================================

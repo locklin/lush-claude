@@ -6,6 +6,12 @@
 (libload "libidx/idx-int")
 
 #? *** Mapper: Graph and Nerve
+;; The MapperGraph data structure and nerve computation.
+;; After the cover and clustering steps, the nerve functor builds
+;; a graph whose nodes are clusters and whose edges connect clusters
+;; sharing at least {<b> min-intersection} data points.
+;;.SEE * MapperGraph
+;;.SEE (==> <MapperGraph> build-nerve <cover-clusters> <min-intersection>)
 
 #? * MapperGraph
 ;; The output of the Mapper algorithm.

@@ -10,6 +10,20 @@
 ;;;     (print (cadr result)))  ;; ("x" "y" "z")
 
 #? *** CSV/TSV Parser
+;; Simple CSV and TSV text parser for Lush.
+;; Parses delimited text into a numeric double-matrix with column names.
+;; The delimiter (tab or comma) is auto-detected from the header line.
+;;.PP
+;; The first line is always treated as a column header.
+;; All data values are parsed as doubles via {<b> val}.
+;;.VP
+;; Example:
+;;.CODE
+;;  (libload "csvread/csvread")
+;;  (let ((result (csvread-parse "x,y,z\n1,2,3\n4,5,6")))
+;;    (print (car result))    ;; 2x3 double-matrix
+;;    (print (cadr result)))  ;; ("x" "y" "z")
+;;.P
 
 ;; ============================================================
 ;; Internal helpers

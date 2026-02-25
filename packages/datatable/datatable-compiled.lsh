@@ -3,6 +3,9 @@
 ;;; Provides long (int64) heapsort for stamp column grading.
 
 #? *** DataTable Compiled Utilities
+;; C-compiled utility functions for DataTable operations.
+;; Provides int64 (long) heapsort with integer permutation tracking,
+;; used for grading/sorting stamp (timestamp) columns.
 
 ;; Heapsort for long key with int permutation (ascending)
 (de _dt-l1i1sortup (key perm n)

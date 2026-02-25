@@ -6,6 +6,14 @@
 (libload "graph")
 
 #? *** Mapper: Visualization
+;; Self-contained HTML visualization of MapperGraph objects using
+;; D3 v7 force-directed layout.  Generates a single HTML file
+;; with embedded JavaScript for interactive graph exploration.
+;;.PP
+;; Supports two modes: simple (single selection) and comparison
+;; (two-group differential analysis with statistical tests).
+;;.SEE (==> <MapperGraph> visualize <filename> <title> . <kwargs>)
+;;.SEE (==> <MapperGraph> write-json)
 
 #? (==> <MapperGraph> visualize <filename> <title> . <kwargs>)
 ;; Write a self-contained HTML file with a D3 v7 force-directed

@@ -15,7 +15,25 @@
 (libload "httpd-static")
 
 #? *** HTTPD: Minimal HTTP Server
-
+;; A minimal HTTP/1.0 server for Lush, designed for single-user tools
+;; such as the Mapper visualization server.
+;;.PP
+;; Serves localhost requests: parses HTTP requests, dispatches to
+;; route handlers via regex pattern matching, and sends responses.
+;; Includes sub-modules for JSON serialization, form parsing, and
+;; static file serving.
+;;.VP
+;; Example:
+;;.CODE
+;;  (libload "httpd/httpd")
+;;  (setq server (httpd-new 8765))
+;;  (httpd-add-route server "GET" "/"
+;;    (lambda (req) (list 200 "text/html" "<h1>Hello</h1>")))
+;;  (httpd-serve server)
+;;.P
+;;.SEE (httpd-new <port>)
+;;.SEE (httpd-add-route <server> <method> <pattern> <handler>)
+;;.SEE (httpd-serve <server>)
 
 ;; ============================================================
 ;; Server object: an htable holding port, socket, routes

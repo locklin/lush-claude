@@ -4,6 +4,12 @@
 ;;; Provides httpd-send-file, httpd-mime-type, and a route handler factory.
 
 #? *** HTTPD: Static File Serving
+;; Static file serving for the HTTPD server.
+;; Serves files from a document root directory with automatic MIME type
+;; detection based on file extension.
+;; Includes path traversal protection (rejects ".." in paths).
+;;.SEE (httpd-make-static-handler <docroot>)
+;;.SEE (httpd-serve-directory <port> <docroot>)
 
 ;; ============================================================
 ;; MIME type detection

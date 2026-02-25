@@ -7,6 +7,9 @@
 ;;;   ;; => (("name" . "hello world") ("count" . "42"))
 
 #? *** HTTPD: Form Parsing
+;; URL decoding and form body parsing for the HTTPD server.
+;; Handles {<b> application/x-www-form-urlencoded} POST bodies
+;; and query string parameter extraction.
 
 ;; ============================================================
 ;; URL decoding

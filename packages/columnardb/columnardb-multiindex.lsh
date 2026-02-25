@@ -10,6 +10,18 @@
 ;;;   (columnardb-where-multi-rows dt '((= "symbol" "AAPL") (> "price" 100.0)))
 
 #? *** ColumnarDB Multi-Column Index
+;; Multi-condition filtering by intersecting per-condition row-index
+;; arrays.  Each condition is resolved independently using the best
+;; available method (CSR index for string equality, binary search
+;; for sorted ranges, linear scan otherwise), then results are
+;; intersected via compiled C sorted-merge.
+;;.PP
+;; Example:
+;;.CODE
+;;   (columnardb-where-multi dt '((= "symbol" "AAPL") (> "price" 100.0)))
+;;.END
+;;.SEE (columnardb-where-multi <dt> <conditions> [<meta>])
+;;.SEE ColumnarDB Compiled Hot Paths
 
 
 ;; ============================================================

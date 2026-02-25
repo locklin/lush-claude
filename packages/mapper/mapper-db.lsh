@@ -17,6 +17,23 @@
 (libload "sqlite/sqlite")
 
 #? *** Mapper: SQLite Database Integration
+;; Persistence layer for Mapper projects using SQLite.  Stores datasets
+;; (row-major in {<b> dataset_values}), run configurations, graph results
+;; (nodes, edges, display state), and user-defined node labels.
+;;.PP
+;; All tables use auto-increment primary keys and foreign key constraints.
+;; WAL mode is enabled for concurrent reader/writer access.
+;;.PP
+;; Example:
+;;.CODE
+;;   (setq db (mapper-db-open "/tmp/claude/project.db"))
+;;   (mapper-db-run db data col-names "my run" lens 10 0.5
+;;                  'metric "euclidean" 'color-col 0)
+;;   (mapper-db-close db)
+;;.END
+;;.SEE (mapper-db-open <path>)
+;;.SEE (mapper-db-run <db> <data> <col-names> <name> <lens> <n-cubes> <overlap> . <kwargs>)
+;;.SEE Mapper: Visualization Server
 
 
 ;; ============================================================

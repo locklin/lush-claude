@@ -22,6 +22,21 @@
 ;;;           _cdb-write-sexp, _cdb-read-sexp, DataTable, StringColumn
 
 #? *** ColumnarDB: Partitioned Tables
+;; Row-count-based table partitioning for large time-series datasets.
+;; Splits a DataTable into fixed-size sub-tables stored as standard
+;; columnardb directories under {<b> p-N/} subdirectories.
+;;.PP
+;; Partition boundaries are tracked in {<b> partition-meta.lsh}, enabling
+;; partition pruning on range queries: only partitions overlapping the
+;; query range are loaded from disk.
+;;.PP
+;; Operations:
+;;.LI {<b> columnardb-partition-save}: initial partitioned save.
+;;.LI {<b> columnardb-partition-range}: pruned range query.
+;;.LI {<b> columnardb-partition-append}: append rows to last partition.
+;;.LI {<b> columnardb-partition-sorted-insert}: insert maintaining sort order.
+;;.SEE (columnardb-partition-save <dt> <path> <col-name> <max-rows>)
+;;.SEE (columnardb-partition-range <path> <col-name> <lo> <hi>)
 
 
 ;; ============================================================

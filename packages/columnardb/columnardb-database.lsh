@@ -24,6 +24,26 @@
 ;;;   (==> db save-catalog)
 
 #? *** Database: Named Collection of Tables
+;; A Database groups multiple persisted and/or volatile DataTables
+;; under a single directory with a shared catalog.  Each persisted
+;; table lives in its own splayed subdirectory ({<b> tables/<name>/}).
+;;.PP
+;; Features:
+;;.LI Attach DataTable objects (volatile) or import from columnardb paths (persisted).
+;;.LI Lazy-load persisted tables on first access.
+;;.LI Persist volatile tables with {<b> save-volatile}.
+;;.LI Write/read catalog ({<b> db-catalog.lsh}) for session recovery.
+;;.PP
+;; Example:
+;;.CODE
+;;   (setq db (new Database "/tmp/mydb"))
+;;   (==> db attach "trades" some-datatable)
+;;   (==> db save-volatile "trades")
+;;   (==> db save-catalog)
+;;   (==> db table "trades")   ;; lazy-loads from disk
+;;.END
+;;.SEE (new Database <path>)
+;;.SEE ColumnarDB: Persistent Columnar Storage
 
 
 ;; ============================================================

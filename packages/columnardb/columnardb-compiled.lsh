@@ -7,6 +7,13 @@
 (libload "libc/stdio")
 
 #? *** ColumnarDB Compiled Hot Paths
+;; C-compiled inner loops for performance-critical ColumnarDB operations.
+;; Includes aggregation primitives (sum, min, max via permutation),
+;; CSR inverted index construction (code counting + fill),
+;; gather operations, sorted-array intersection for multi-index,
+;; and sorted-check functions for column compression detection.
+;;.SEE ColumnarDB Grouped Aggregation
+;;.SEE ColumnarDB Multi-Column Index
 
 
 ;; ============================================================

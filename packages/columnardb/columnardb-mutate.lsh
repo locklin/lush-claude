@@ -7,6 +7,16 @@
 ;;; String column cell-level set is not supported by DataTable.
 
 #? *** ColumnarDB Delete/Update Operations
+;; Atomic delete and update operations on persisted tables.
+;; All mutations use exclusive file locks for concurrent safety.
+;;.PP
+;; Delete operations remove rows by index or by a where condition.
+;; Update operations modify numeric column values by index or condition.
+;; String column cell-level update is not supported.
+;;.SEE (columnardb-delete-rows <path> <row-indices>)
+;;.SEE (columnardb-delete-where <path> <op> <col-name> <value>)
+;;.SEE (columnardb-update-rows <path> <row-indices> <col-name> <value>)
+;;.SEE (columnardb-update-where <path> <cond-op> <cond-col> <cond-val> <update-col> <update-val>)
 
 
 ;; ============================================================

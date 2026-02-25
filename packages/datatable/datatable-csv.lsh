@@ -19,6 +19,17 @@
 (libload "libidx/idx-int")
 
 #? *** Fast CSV/TSV Reader
+;; C-accelerated CSV/TSV file reader that loads data into a DataTable.
+;; Uses a 2-pass architecture: scan (for dimensions and type inference)
+;; then a single-pass read of all column types simultaneously.
+;;.PP
+;; Type inference examines the first 200 data rows to classify each
+;; column as integer, double, timestamp, or string.  String columns
+;; are dictionary-encoded via StringColumn.
+;;.PP
+;; Timestamp columns are auto-detected from 11 built-in date formats
+;; (ISO 8601, US, slash, etc.) with an optional user-specified hint.
+;;.SEE (csv-read <filename> [<options>])
 
 
 ;; ============================================================

@@ -15,6 +15,16 @@
 (libload "libidx/idx-int")
 
 #? *** Mapper: Clustering Algorithms
+;; Clustering algorithms for the Mapper pipeline.
+;;.LI SLINK single-linkage (Sibson 1973): O(N^2) time, O(N) space.
+;;.LI DBSCAN (Ester et al. 1996): density-based clustering with
+;;   O(N^2) brute-force or O(N log N) KD-tree for Euclidean metric.
+;;.PP
+;; Both algorithms operate on the pairwise distance matrix and
+;; return cluster labels as an idx1-of-int.
+;;.SEE (mapper-slink <data> <metric> <eps>)
+;;.SEE (mapper-dbscan <data> <metric> <eps> <min-pts>)
+;;.SEE Mapper: Distance Metrics
 
 ;; ============================================================
 ;; Compiled inner functions (receive pre-allocated matrices)

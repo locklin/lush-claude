@@ -13,7 +13,21 @@
 (libload "datatable/datatable")
 
 #? *** Wire DataTable Serialization
-
+;; Serialization functions for packing and unpacking DataTable objects
+;; for transmission over the wire protocol.
+;;.PP
+;; Three encoding modes are supported:
+;;.LI {<b> Binary} (default) -- uses {<b> bwrite/bread} for exact Lush-native serialization.
+;;.LI {<b> S-expression} -- text format for cross-language compatibility.
+;;.LI {<b> Compressed} -- LZ4 compression with byte-transpose preprocessing for numeric columns.
+;;.PP
+;; Binary format packs a DataTable as:
+;;.VP
+;;   (datatable names types nrows column-data-list)
+;;.PP
+;; where column-data-list contains idx1 arrays (numeric) or string lists.
+;;.SEE (wire-pack-datatable <dt>)
+;;.SEE (wire-pack-datatable-compressed <dt>)
 
 ;; ============================================================
 ;; Binary encoding (default) -- via bwrite/bread

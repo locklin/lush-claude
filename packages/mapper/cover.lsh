@@ -7,6 +7,11 @@
 (libload "libidx/idx-int")
 
 #? *** Mapper: Cover
+;; Overlapping cover construction for the Mapper pipeline.
+;; Implements the KeplerMapper cover scheme: evenly-spaced hypercubes
+;; with configurable overlap, supporting 1D and 2D lens spaces.
+;;.SEE (mapper-cover-fit <lens> <n-cubes> <perc-overlap>)
+;;.SEE (mapper-cover-assign <lens> <centers> <radii>)
 
 #? (mapper-cover-fit <lens> <n-cubes> <perc-overlap>)
 ;; Fit a cover to the lens values.
