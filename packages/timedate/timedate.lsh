@@ -9,7 +9,7 @@
 ;;;   (timestamp-now)                              ;; current time as long microseconds
 ;;;   (timestamp-to-string (timestamp-now))         ;; formatted string
 ;;;   (timestamp-parse "2024-01-15" "%Y-%m-%d")     ;; parse to microseconds
-;;;   (timestamp-components (timestamp-now))         ;; (y m d H M S)
+;;;   (timestamp-components (timestamp-now))         ;; (y m d H M S us)
 
 (libload "timedate/timedate-config")
 
@@ -19,12 +19,29 @@
 ;; Unix epoch (1970-01-01T00:00:00Z), giving exact integer arithmetic
 ;; with no floating-point rounding.
 ;;.PP
-;; Provides functions for getting the current time, parsing date/time
-;; strings via {<b> strptime} formats, formatting timestamps back to
-;; strings, decomposing into components, and simple arithmetic.
+;; Provides functions for:
+;;.LI Getting the current time ({<b> timestamp-now}).
+;;.LI Parsing date/time strings via {<b> strptime} formats
+;; ({<b> timestamp-parse}).
+;;.LI Building timestamps from components ({<b> timestamp-from-date},
+;; {<b> timestamp-from-datetime}).
+;;.LI Formatting timestamps to strings ({<b> timestamp-to-string}).
+;;.LI Decomposing into components ({<b> timestamp-components}).
+;;.LI Int64-safe arithmetic: adding seconds, minutes, hours, days
+;; ({<b> timestamp-add-seconds}, {<b> timestamp-add-minutes},
+;; {<b> timestamp-add-hours}, {<b> timestamp-add-days}).
+;;.LI Truncation to time boundaries for bar aggregation
+;; ({<b> timestamp-truncate-seconds}, {<b> timestamp-truncate-minutes},
+;; {<b> timestamp-truncate-hours}, {<b> timestamp-truncate-days}).
 ;;.PP
-;; The column type symbol {<b> 'stamp} is used by the DataTable and
+;; The column type symbol <'stamp> is used by the DataTable and
 ;; ColumnarDB packages for timestamp columns.
+;;.PP
+;; {<b> Important:} All arithmetic functions use int64 internally
+;; (via DHC-compiled C code), avoiding the double-precision limit
+;; of 2^53 (~9.0e15 microseconds, year 2255).  Do not use raw
+;; Lush <+> or <-> on timestamps if you need precision beyond the
+;; current era.
 ;;.VP
 ;; Example:
 ;;.CODE
@@ -39,6 +56,13 @@
 ;;.CODE
 ;;  (timestamp-parse "2024-03-15" "%Y-%m-%d")
 ;;  (timestamp-parse "2024-03-15T10:30:00.123456" "%Y-%m-%dT%H:%M:%S")
+;;.P
+;;.VP
+;; Duration arithmetic:
+;;.CODE
+;;  (timestamp-add-hours ts -1)          ;; 1 hour ago
+;;  (timestamp-add-minutes ts 30)        ;; 30 minutes from now
+;;  (timestamp-truncate-hours ts)        ;; floor to hour boundary
 ;;.P
 
 
@@ -197,6 +221,43 @@
   #{ IDX_PTR($out, long long)[0] = (-9223372036854775807LL - 1LL); #}
   () )
 
+;; internal: int64 arithmetic: out = base + count * multiplier
+;; All operations in 64-bit integer, no double coercion.
+(de _td-long-add-scaled (base-arr count-val multiplier-val out)
+  ((-idx1- (-long-)) base-arr out)
+  ((-int-) count-val multiplier-val)
+  #{
+    IDX_PTR($out, long long)[0] =
+      IDX_PTR($base_arr, long long)[0]
+      + (long long)$count_val * (long long)$multiplier_val;
+  #}
+  () )
+
+;; internal: int64 difference: out = a - b
+(de _td-long-diff (a-arr b-arr out)
+  ((-idx1- (-long-)) a-arr b-arr out)
+  #{
+    IDX_PTR($out, long long)[0] =
+      IDX_PTR($a_arr, long long)[0] - IDX_PTR($b_arr, long long)[0];
+  #}
+  () )
+
+;; internal: truncate timestamp down to a unit boundary
+;; out = base - (base % divisor), handling negative values correctly
+;; divisor is passed as a long-matrix to support values > 2^31
+(de _td-long-truncate (base-arr divisor-arr out)
+  ((-idx1- (-long-)) base-arr divisor-arr out)
+  #{
+  {
+    long long b = IDX_PTR($base_arr, long long)[0];
+    long long d = IDX_PTR($divisor_arr, long long)[0];
+    long long rem = b % d;
+    if (rem < 0) rem += d;
+    IDX_PTR($out, long long)[0] = b - rem;
+  }
+  #}
+  () )
+
 
 ;; Compile all bridge functions in a single dhc-make
 (let ((dhc-make-lushflags
@@ -208,7 +269,8 @@
     #}
     _td-timestamp-now-out _td-strptime-to-micros-out _td-micros-to-string
     _td-components _td-make-timestamp-out _td-parse-stamp-at
-    _td-get-long-min ) )
+    _td-get-long-min _td-long-add-scaled _td-long-diff
+    _td-long-truncate ) )
 
 
 ;; ============================================================
@@ -229,6 +291,13 @@
 ;; Null sentinel for long stamps (INT64_MIN)
 ;; ============================================================
 
+#? ** Core API
+
+#? *td-stamp-null*
+;;.TYPE VAR
+;; Null sentinel value for timestamp columns (INT64_MIN).
+;; Used to represent missing or invalid timestamps in
+;; <'stamp>-typed DataTable columns.
 (defvar *td-stamp-null* ())  ;; set below via compiled function
 
 ;; Initialize *td-stamp-null* to LONG_MIN
@@ -242,7 +311,15 @@
 ;; ============================================================
 
 #? (timestamp-now)
-;; Return the current UTC time as microseconds since epoch.
+;; Return the current UTC time as int64 microseconds since epoch.
+;; Uses <clock_gettime(CLOCK_REALTIME)> for nanosecond kernel
+;; resolution, truncated to microseconds.
+;;.VP
+;; Example:
+;;.CODE
+;;  (timestamp-to-string (timestamp-now))
+;;    => "2024-06-15 14:30:00"
+;;.P
 (de timestamp-now ()
   (let ((out (long-matrix 1)))
     (_td-timestamp-now-out out)
@@ -251,8 +328,19 @@
 
 #? (timestamp-from-date <y> <m> <d>)
 ;; Build a timestamp for midnight UTC on the given date.
-;; y=year, m=month(1-12), d=day(1-31).
-;; Returns microseconds since epoch.
+;;.PP
+;; <y> is the 4-digit year, <m> is the month (1-12),
+;; <d> is the day of month (1-31).
+;; Returns int64 microseconds since epoch.
+;;.VP
+;; Example:
+;;.CODE
+;;  (timestamp-from-date 2024 6 15)
+;;  (timestamp-to-string (timestamp-from-date 2024 1 1))
+;;    => "2024-01-01 00:00:00"
+;;.P
+;;.SEE (timestamp-from-datetime <y> <m> <d> <H> <M> <S>)
+;;.SEE (timestamp-parse <str> <fmt>)
 (de timestamp-from-date (y m d)
   (let ((out (long-matrix 1)))
     (_td-make-timestamp-out y m d 0 0 0 out)
@@ -261,7 +349,20 @@
 
 #? (timestamp-from-datetime <y> <m> <d> <H> <M> <S>)
 ;; Build a timestamp from date and time components.
-;; Returns microseconds since epoch.
+;;.PP
+;; <y> is the 4-digit year, <m> is the month (1-12),
+;; <d> is the day (1-31), <H> is the hour (0-23),
+;; <M> is the minute (0-59), <S> is the second (0-59).
+;; Returns int64 microseconds since epoch.
+;;.VP
+;; Example:
+;;.CODE
+;;  (timestamp-from-datetime 2024 6 15 14 30 0)
+;;  (timestamp-to-string (timestamp-from-datetime 2024 12 31 23 59 59))
+;;    => "2024-12-31 23:59:59"
+;;.P
+;;.SEE (timestamp-from-date <y> <m> <d>)
+;;.SEE (timestamp-parse <str> <fmt>)
 (de timestamp-from-datetime (y m d hh mm ss)
   (let ((out (long-matrix 1)))
     (_td-make-timestamp-out y m d hh mm ss out)
@@ -269,15 +370,28 @@
 
 
 #? (timestamp-parse <str> <fmt>)
-;; Parse a date/time string using strptime format.
-;; Returns microseconds since epoch.  Signals error on parse failure.
-;; Handles trailing fractional seconds (.123456) automatically.
-;;
+;; Parse a date/time string using a {<b> strptime} format string.
+;; Returns int64 microseconds since epoch.
+;; Signals an error on parse failure.
+;;.PP
+;; Handles trailing fractional seconds (<.123456>) automatically
+;; after the format string has been consumed by strptime.
+;; Fractional digits are parsed up to microsecond (6-digit) precision.
+;;.PP
 ;; Common formats:
-;;   "%Y-%m-%d %H:%M:%S"   ISO datetime with space
-;;   "%Y-%m-%dT%H:%M:%S"   ISO datetime with T
-;;   "%Y-%m-%d"             ISO date only
-;;   "%m/%d/%Y"             US date
+;;.LI <"%Y-%m-%d %H:%M:%S"> -- ISO datetime with space separator
+;;.LI <"%Y-%m-%dT%H:%M:%S"> -- ISO datetime with T separator
+;;.LI <"%Y-%m-%d"> -- ISO date only (time defaults to 00:00:00)
+;;.LI <"%m/%d/%Y"> -- US date format
+;;.VP
+;; Examples:
+;;.CODE
+;;  (timestamp-parse "2024-06-15" "%Y-%m-%d")
+;;  (timestamp-parse "2024-06-15T14:30:00" "%Y-%m-%dT%H:%M:%S")
+;;  (timestamp-parse "2024-06-15T14:30:00.123456" "%Y-%m-%dT%H:%M:%S")
+;;.P
+;;.SEE (timestamp-to-string <micros> [<fmt>])
+;;.SEE (timestamp-from-datetime <y> <m> <d> <H> <M> <S>)
 (de timestamp-parse (str fmt)
   (let ((out (long-matrix 1)))
     (_td-strptime-to-micros-out str fmt out)
@@ -288,8 +402,23 @@
 
 
 #? (timestamp-to-string <micros> [<fmt>])
-;; Format a timestamp (microseconds since epoch) as a string.
-;; Default format: "%Y-%m-%d %H:%M:%S".
+;; Format a timestamp as a UTC string.
+;;.PP
+;; <micros> is int64 microseconds since epoch.
+;; <fmt> is an optional {<b> strftime} format string.
+;; Default format: <"%Y-%m-%d %H:%M:%S">.
+;;.VP
+;; Examples:
+;;.CODE
+;;  (timestamp-to-string (timestamp-now))
+;;    => "2024-06-15 14:30:00"
+;;  (timestamp-to-string ts "%Y-%m-%dT%H:%M:%SZ")
+;;    => "2024-06-15T14:30:00Z"
+;;  (timestamp-to-string ts "%H:%M")
+;;    => "14:30"
+;;.P
+;;.SEE (timestamp-parse <str> <fmt>)
+;;.SEE (timestamp-components <micros>)
 (de timestamp-to-string (micros &optional fmt)
   (when (not fmt) (setq fmt "%Y-%m-%d %H:%M:%S"))
   (let ((micros-arr (long-matrix 1))
@@ -302,8 +431,22 @@
 
 
 #? (timestamp-components <micros>)
-;; Decompose a timestamp into a list:
-;;   (year month day hour minute second microsecond)
+;; Decompose a timestamp into a list of 7 integer components:
+;;.CODE
+;;  (year month day hour minute second microsecond)
+;;.P
+;; All values are integers.  Month is 1-12, day is 1-31,
+;; hour is 0-23, minute is 0-59, second is 0-59,
+;; microsecond is 0-999999.
+;;.VP
+;; Example:
+;;.CODE
+;;  (timestamp-components (timestamp-parse "2024-06-15T14:30:00.123456"
+;;                                         "%Y-%m-%dT%H:%M:%S"))
+;;    => (2024 6 15 14 30 0 123456)
+;;.P
+;;.SEE (timestamp-from-datetime <y> <m> <d> <H> <M> <S>)
+;;.SEE (timestamp-to-string <micros> [<fmt>])
 (de timestamp-components (micros)
   (let ((micros-arr (long-matrix 1))
         (out (int-matrix 7)) )
@@ -312,13 +455,280 @@
     (list (out 0) (out 1) (out 2) (out 3) (out 4) (out 5) (out 6)) ) )
 
 
+#? ** Basic Arithmetic
+
 #? (timestamp-diff <a> <b>)
-;; Return the difference (a - b) in microseconds.
+;; Return the difference <(a - b)> in microseconds, using int64
+;; arithmetic internally to avoid double-precision rounding.
+;;.VP
+;; Example:
+;;.CODE
+;;  (let ((t1 (timestamp-parse "2024-06-15T14:30:00" "%Y-%m-%dT%H:%M:%S"))
+;;        (t2 (timestamp-parse "2024-06-15T13:30:00" "%Y-%m-%dT%H:%M:%S")))
+;;    (timestamp-diff t1 t2))
+;;    => 3600000000    ;; 1 hour in microseconds
+;;.P
+;;.SEE (timestamp-add <micros> <delta-micros>)
 (de timestamp-diff (a b)
-  (- a b) )
+  (let ((a-arr (long-matrix 1))
+        (b-arr (long-matrix 1))
+        (out (long-matrix 1)) )
+    (a-arr 0 a)
+    (b-arr 0 b)
+    (_td-long-diff a-arr b-arr out)
+    (out 0) ) )
 
 
 #? (timestamp-add <micros> <delta-micros>)
-;; Add delta microseconds to a timestamp.
+;; Add <delta-micros> microseconds to a timestamp, using int64
+;; arithmetic internally to avoid double-precision rounding.
+;;.PP
+;; For adding whole seconds, minutes, hours, or days, prefer
+;; the named convenience functions which are clearer and avoid
+;; manual multiplication.
+;;.SEE (timestamp-add-seconds <micros> <n>)
+;;.SEE (timestamp-add-minutes <micros> <n>)
+;;.SEE (timestamp-add-hours <micros> <n>)
+;;.SEE (timestamp-add-days <micros> <n>)
+;;.SEE (timestamp-diff <a> <b>)
 (de timestamp-add (micros delta-micros)
-  (+ micros delta-micros) )
+  (let ((base (long-matrix 1))
+        (out (long-matrix 1)) )
+    (base 0 micros)
+    (_td-long-add-scaled base delta-micros 1 out)
+    (out 0) ) )
+
+
+;; ============================================================
+;; Duration constants (microseconds per unit)
+;; ============================================================
+
+#? ** Duration Constants
+;; Named constants for common time durations in microseconds.
+;; These are provided for readability and reference.  For
+;; arithmetic, use the named functions ({<b> timestamp-add-seconds},
+;; etc.) which perform int64 arithmetic internally.
+;;.PP
+;; {<b> Warning:} <*td-hour*> and <*td-day*> exceed the 32-bit
+;; integer range.  Do not pass them to raw Lush <+> on timestamps
+;; if you need exact microsecond precision beyond year 2255.
+
+#? *td-microsecond*
+;;.TYPE VAR
+;; 1 microsecond expressed in microseconds (i.e., 1).
+(defvar *td-microsecond* 1)
+
+#? *td-millisecond*
+;;.TYPE VAR
+;; 1 millisecond expressed in microseconds (1000).
+(defvar *td-millisecond* 1000)
+
+#? *td-second*
+;;.TYPE VAR
+;; 1 second expressed in microseconds (1000000).
+(defvar *td-second* 1000000)
+
+#? *td-minute*
+;;.TYPE VAR
+;; 1 minute expressed in microseconds (60000000).
+(defvar *td-minute* 60000000)
+
+#? *td-hour*
+;;.TYPE VAR
+;; 1 hour expressed in microseconds (3600000000).
+;; Exceeds the 32-bit int range (2^31 ~ 2.1e9).
+(defvar *td-hour* 3600000000)
+
+#? *td-day*
+;;.TYPE VAR
+;; 1 day (24 hours) expressed in microseconds (86400000000).
+;; Exceeds the 32-bit int range.
+(defvar *td-day* 86400000000)
+
+
+;; ============================================================
+;; Named duration arithmetic
+;; ============================================================
+
+#? ** Duration Arithmetic
+;; Functions for adding or subtracting whole time units from
+;; timestamps.  All use int64 arithmetic internally (via
+;; DHC-compiled C code), so they are safe for timestamps in
+;; any era.  Pass negative <n> to subtract.
+
+#? (timestamp-add-seconds <micros> <n>)
+;; Add <n> seconds to a timestamp.  <n> is an integer and
+;; may be negative to subtract.  Uses int64 arithmetic.
+;;.VP
+;; Example:
+;;.CODE
+;;  (timestamp-add-seconds (timestamp-now) 30)   ;; 30 seconds from now
+;;  (timestamp-add-seconds ts -60)               ;; 1 minute ago
+;;.P
+;;.SEE (timestamp-add-minutes <micros> <n>)
+;;.SEE (timestamp-add-hours <micros> <n>)
+;;.SEE (timestamp-add-days <micros> <n>)
+(de timestamp-add-seconds (micros n)
+  (let ((base (long-matrix 1))
+        (out (long-matrix 1)) )
+    (base 0 micros)
+    (_td-long-add-scaled base n 1000000 out)
+    (out 0) ) )
+
+
+#? (timestamp-add-minutes <micros> <n>)
+;; Add <n> minutes to a timestamp.  <n> is an integer and
+;; may be negative to subtract.  Uses int64 arithmetic.
+;;.VP
+;; Example:
+;;.CODE
+;;  (timestamp-add-minutes (timestamp-now) 5)    ;; 5 minutes from now
+;;  (timestamp-add-minutes ts -15)               ;; 15 minutes ago
+;;.P
+;;.SEE (timestamp-add-seconds <micros> <n>)
+;;.SEE (timestamp-add-hours <micros> <n>)
+;;.SEE (timestamp-add-days <micros> <n>)
+(de timestamp-add-minutes (micros n)
+  (let ((base (long-matrix 1))
+        (out (long-matrix 1)) )
+    (base 0 micros)
+    (_td-long-add-scaled base n 60000000 out)
+    (out 0) ) )
+
+
+#? (timestamp-add-hours <micros> <n>)
+;; Add <n> hours to a timestamp.  <n> is an integer and
+;; may be negative to subtract.  Uses int64 arithmetic.
+;;.VP
+;; Example:
+;;.CODE
+;;  (timestamp-add-hours ts -1)    ;; 1 hour ago
+;;  (timestamp-add-hours ts 24)    ;; same as adding 1 day
+;;.P
+;;.SEE (timestamp-add-seconds <micros> <n>)
+;;.SEE (timestamp-add-minutes <micros> <n>)
+;;.SEE (timestamp-add-days <micros> <n>)
+(de timestamp-add-hours (micros n)
+  (let ((base (long-matrix 1))
+        (out (long-matrix 1)) )
+    (base 0 micros)
+    ;; n hours = (n*3600) seconds, multiplied by 1000000 us/s
+    ;; Split to keep the multiplier within int32 range.
+    (_td-long-add-scaled base (* n 3600) 1000000 out)
+    (out 0) ) )
+
+
+#? (timestamp-add-days <micros> <n>)
+;; Add <n> days (24-hour periods) to a timestamp.  <n> is an
+;; integer and may be negative to subtract.
+;; Uses int64 arithmetic.
+;;.VP
+;; Example:
+;;.CODE
+;;  (timestamp-add-days (timestamp-now) 7)   ;; 1 week from now
+;;  (timestamp-add-days ts -1)               ;; yesterday same time
+;;.P
+;;.SEE (timestamp-add-hours <micros> <n>)
+;;.SEE (timestamp-add-seconds <micros> <n>)
+(de timestamp-add-days (micros n)
+  (let ((base (long-matrix 1))
+        (out (long-matrix 1)) )
+    (base 0 micros)
+    ;; n days = (n*86400) seconds, multiplied by 1000000 us/s
+    (_td-long-add-scaled base (* n 86400) 1000000 out)
+    (out 0) ) )
+
+
+;; ============================================================
+;; Truncation (floor to boundary)
+;; ============================================================
+
+#? ** Timestamp Truncation
+;; Functions for truncating (flooring) a timestamp down to the
+;; nearest boundary of a given time unit.  Useful for grouping
+;; tick data into bars (second, minute, hour, or daily bars),
+;; or for selecting time ranges.
+;;.PP
+;; All truncation is relative to UTC.  {<b> timestamp-truncate-days}
+;; floors to UTC midnight, not local midnight.
+
+#? (timestamp-truncate-seconds <micros>)
+;; Truncate a timestamp down to the nearest whole second,
+;; zeroing the sub-second microseconds.
+;;.VP
+;; Example:
+;;.CODE
+;;  ;; 14:30:00.123456 -> 14:30:00.000000
+;;  (timestamp-truncate-seconds ts)
+;;.P
+;;.SEE (timestamp-truncate-minutes <micros>)
+;;.SEE (timestamp-truncate-hours <micros>)
+;;.SEE (timestamp-truncate-days <micros>)
+(de timestamp-truncate-seconds (micros)
+  (let ((base (long-matrix 1))
+        (div (long-matrix 1))
+        (out (long-matrix 1)) )
+    (base 0 micros)
+    (div 0 1000000)
+    (_td-long-truncate base div out)
+    (out 0) ) )
+
+
+#? (timestamp-truncate-minutes <micros>)
+;; Truncate a timestamp down to the nearest whole minute
+;; (zeroing seconds and microseconds).
+;;.VP
+;; Example:
+;;.CODE
+;;  ;; 14:30:45.123456 -> 14:30:00.000000
+;;  (timestamp-truncate-minutes ts)
+;;.P
+;;.SEE (timestamp-truncate-seconds <micros>)
+;;.SEE (timestamp-truncate-hours <micros>)
+;;.SEE (timestamp-truncate-days <micros>)
+(de timestamp-truncate-minutes (micros)
+  (let ((base (long-matrix 1))
+        (div (long-matrix 1))
+        (out (long-matrix 1)) )
+    (base 0 micros)
+    (div 0 60000000)
+    (_td-long-truncate base div out)
+    (out 0) ) )
+
+
+#? (timestamp-truncate-hours <micros>)
+;; Truncate a timestamp down to the nearest whole hour
+;; (zeroing minutes, seconds, and microseconds).
+;;.VP
+;; Example:
+;;.CODE
+;;  ;; 14:30:45.123456 -> 14:00:00.000000
+;;  (timestamp-truncate-hours ts)
+;;.P
+;;.SEE (timestamp-truncate-minutes <micros>)
+;;.SEE (timestamp-truncate-days <micros>)
+(de timestamp-truncate-hours (micros)
+  (let ((base (long-matrix 1))
+        (div (long-matrix 1))
+        (out (long-matrix 1)) )
+    (base 0 micros)
+    (div 0 3600000000)
+    (_td-long-truncate base div out)
+    (out 0) ) )
+
+
+#? (timestamp-truncate-days <micros>)
+;; Truncate a timestamp down to the nearest day boundary
+;; (midnight UTC).
+;;.PP
+;; Note: truncates to UTC midnight, not local midnight.
+;;.VP
+;; Example:
+;;.CODE
+;;  ;; 2024-06-15 14:30:45 -> 2024-06-15 00:00:00
+;;  (timestamp-truncate-days ts)
+;;.P
+;;.SEE (timestamp-truncate-hours <micros>)
+(de timestamp-truncate-days (micros)
+  (let ((parts (timestamp-components micros)))
+    (timestamp-from-date (nth 0 parts) (nth 1 parts) (nth 2 parts)) ) )
