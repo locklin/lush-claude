@@ -803,7 +803,7 @@ DX(xstr_number_hex)
 char *
 str_gptr(gptr x)
 {
-    snprintf(string_buffer, STRING_BUFFER, "#$%lX", (unsigned long)(x));
+    snprintf(string_buffer, STRING_BUFFER, "#$%" PRIXPTR, (uintptr_t)(x));
     return string_buffer;
 }
 

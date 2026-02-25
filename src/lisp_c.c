@@ -1580,12 +1580,12 @@ make_lisp_from_c(avlnode *n, void *px)
   if (n==0)
     {
       lisp2c_warning("(out): Found dangling pointer",0);
-      return NEW_GPTR((unsigned long)px);
+      return NEW_GPTR((uintptr_t)px);
     }
   if (n->cinfo == CINFO_UNLINKED)
     {
       lisp2c_warning("(out): Found pointer to unlinked object",0);
-      return NEW_GPTR((unsigned long)px);
+      return NEW_GPTR((uintptr_t)px);
     }
   if (px != n->citem)
     {
@@ -1743,7 +1743,7 @@ dharg_to_address(dharg *arg, char *addr, dhrecord *drec)
     *((short *) addr) = arg->dh_short;
     break;
   case DHT_INT:
-    *((int *) addr) = arg->dh_int;
+    *((intg *) addr) = arg->dh_int;
     break;
   case DHT_LONG:
     *((int64_t *) addr) = arg->dh_long;
@@ -1782,7 +1782,7 @@ address_to_dharg(dharg *arg, char *addr, dhrecord *drec)
     arg->dh_short = *((short *) addr);
     break;
   case DHT_INT:
-    arg->dh_int = *((int *) addr);
+    arg->dh_int = *((intg *) addr);
     break;
   case DHT_LONG:
     arg->dh_long = *((int64_t *) addr);
@@ -1854,8 +1854,8 @@ at_to_dharg(at *at_obj, dharg *arg, dhrecord *drec, at *errctx)
       if (!at_obj)
         arg->dh_int = 0;
       else if ((at_obj->flags & C_NUMBER) &&
-               (at_obj->Number == (int)(at_obj->Number)) )
-        arg->dh_int = (int) at_obj->Number;
+               (at_obj->Number == (intg)(at_obj->Number)) )
+        arg->dh_int = (intg) at_obj->Number;
       else
         lisp2c_error("INT expected",errctx,at_obj);
       return;
@@ -2224,10 +2224,10 @@ update_c_from_lisp(avlnode *n)
             (cptr->flags & STS_MALLOC) )
           {
             /* C allocated SRG manage their own data block */
-            int bytes;
+            size_t bytes;
             ifn (st->srg.flags & STS_MALLOC)
               error(NIL,"lisp_c internal: expected ram storage",n->litem);
-            if (cptr->size < st->srg.size) 
+            if (cptr->size < st->srg.size)
               srg_resize(cptr,st->srg.size,__FILE__,__LINE__);
             bytes = cptr->size * storage_type_size[cptr->type];
             if (bytes>0 && cptr->data && st->srg.data)
@@ -2316,7 +2316,7 @@ update_c_from_lisp(avlnode *n)
                   error(NIL,"lisp_c internal : object slot mismatch",n->litem);
                 /* copy field described by current record */
                 at_to_dharg(object->slots[j].val,&tmparg,drec+1,n->litem);
-                pos = (char*)cptr + (unsigned long)(drec->arg);
+                pos = (char*)cptr + (uintptr_t)(drec->arg);
                 dharg_to_address(&tmparg, pos, drec+1);
                 /* next record */
                 drec = drec->end;
@@ -2358,7 +2358,7 @@ update_lisp_from_c(avlnode *n)
             (st->srg.flags & STS_MALLOC))
           {
             /* C allocated SRG manage their own data block */
-            int bytes;
+            size_t bytes;
             if (! (st->srg.flags & STS_MALLOC))
               error(NIL,"lisp_c internal: expected ram storage",n->litem);
             if (st->srg.size < cptr->size)
@@ -2464,7 +2464,7 @@ update_lisp_from_c(avlnode *n)
                 if (symb->name->name[0] != drec->name[0])
                   error(NIL,"lisp_c internal : object slot mismatch",n->litem);
                 /* copy field described by current record */
-                pos = (char*)cptr + (unsigned long)(drec->arg);
+                pos = (char*)cptr + (uintptr_t)(drec->arg);
                 address_to_dharg(&tmparg, pos, drec+1);
                 orig = object->slots[j].val;
                 new = dharg_to_at(&tmparg, drec+1, n->litem);

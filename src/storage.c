@@ -327,10 +327,10 @@ storage_dispose(at *p)
   st = p->Object;
   if (st) 
     {
-      if (st->srg.type == ST_AT) 
+      if (st->srg.type == ST_AT)
         {
           at **data;
-          int i;
+          intg i;
           data = st->srg.data;
           for (i=0; i<st->srg.size; i++)
             UNLOCK(data[i]);
@@ -364,7 +364,7 @@ storage_action(at *p, void (*action) (at *))
   st = p->Object;
   if (st && st->srg.type==ST_AT) {
     at **data;
-    int i;
+    intg i;
     data = st->srg.data;
     for (i=0; i<st->srg.size; i++)
       (*action)(data[i]);
@@ -456,6 +456,8 @@ storage_serialize(at **pp, int code)
       st = (*pp)->Object;
       type = st->srg.type;
       flags = st->srg.flags;
+      if (st->srg.size > INT_MAX)
+        error(NIL,"storage size too large for serialization format",*pp);
       size = st->srg.size;
     }
   // Read/write basic info
@@ -751,7 +753,7 @@ Generic_new_storage(I64, N, int64_t)
 
 
 at * 
-new_storage(int type, int size)
+new_storage(int type, intg size)
 {
   at *p;
   switch( type ) {
@@ -786,7 +788,7 @@ new_storage(int type, int size)
 
 
 at *
-new_storage_nc(int type, int size)
+new_storage_nc(int type, intg size)
 {
   at *p;
   switch( type ) {
@@ -1225,7 +1227,7 @@ void storage_clear(at *p)
     } 
   else 
     {
-      int n;
+      size_t n;
       long *p;
       char *q;
       p = st->srg.data;

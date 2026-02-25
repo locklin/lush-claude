@@ -375,7 +375,7 @@
            ((==> type is-a-strptr)
             (sprintf "printf(\"\\\"%%s\\\"\", (%s)->data);" item))
            ((==> type is-a-ptr)
-            (sprintf "printf(\"%%x \", %s);" retplace))
+            (sprintf "printf(\"%%p \", %s);" retplace))
            (t
             (dhc-error "can't print this this object's type"
                        :treetype:symbol:lisp-name) ) ) ) ) )
@@ -2119,7 +2119,7 @@
   (let ((plist (all ((so (cadr source)) (ty :(car :treetype:tn-list):tn-list))
                  (dhc-parse-expr-for-multi-use-c so ty ()))))
     (dhc-add-c-statements
-     "static int permlist[] = {"
+     "static intg permlist[] = {"
      (dhc-insert-op plist ", ")
      "};")
     "permlist"))
@@ -3766,7 +3766,7 @@
            (if (==> :ty:type is-a-ptr)
                (dhu-tclass (dhu-type :ty:type))
              (dhu-tclass :ty:type))) ) )
-    (dhc-add-c-statements "{\nchar tempstr[1100]; int templen;")
+    (dhc-add-c-statements "{\nchar tempstr[1100]; size_t templen;")
     (if ~(stringp (car arg-source))
       (setq data (sprintf "sprintf(tempstr,(char *)((%s)->data)"
                           (car arg-names)))
@@ -3848,7 +3848,7 @@
          (val (dhc-parse-expr-c (cadr source)
                                 (cadr :treetype:tn-list) ())))
     (dhc-add-c-statements (sprintf "{\nchar tmpchar[STRING_BUFFER];"))
-    (dhc-add-c-statements (sprintf "sprintf(tmpchar,\"0x%%x\",(int)(%s));" val))
+    (dhc-add-c-statements (sprintf "sprintf(tmpchar,\"0x%%lx\",(unsigned long)(%s));" val))
     (dhc-add-c-statements (sprintf "Msrg_resize(%s, strlen(tmpchar));"
                                    :srg-symb:c-name))
     (dhc-add-c-statements (sprintf "strcpy((char*)(%s->data),tmpchar);"

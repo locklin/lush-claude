@@ -991,8 +991,8 @@ LUSHAPI at *new_I8_storage(void);
 LUSHAPI at *new_U8_storage(void);
 LUSHAPI at *new_GPTR_storage(void);
 LUSHAPI at *new_I64_storage(void);
-LUSHAPI at *new_storage(int,int);
-LUSHAPI at *new_storage_nc(int,int);
+LUSHAPI at *new_storage(int,intg);
+LUSHAPI at *new_storage_nc(int,intg);
 
 LUSHAPI void storage_malloc(at*, intg, int);
 LUSHAPI void storage_realloc(at*, intg, int );

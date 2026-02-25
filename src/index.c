@@ -200,6 +200,8 @@ index_serialize(at **pp, int code)
     }
   {
     int tmp;
+    if (code != SRZ_READ && (id->offset > INT_MAX || id->offset < INT_MIN))
+      error(NIL,"index offset too large for serialization format",NIL);
     tmp = id->offset;
     serialize_int(&tmp, code);
     if (code == SRZ_READ) id->offset = tmp;
@@ -207,12 +209,16 @@ index_serialize(at **pp, int code)
   serialize_short(&id->ndim, code);
   for (i=0; i<id->ndim; i++) {
     int tmp;
+    if (code != SRZ_READ && (id->dim[i] > INT_MAX || id->dim[i] < INT_MIN))
+      error(NIL,"index dimension too large for serialization format",NIL);
     tmp = id->dim[i];
     serialize_int(&tmp, code);
     if (code == SRZ_READ) id->dim[i] = tmp;
   }
   for (i=0; i<id->ndim; i++) {
     int tmp;
+    if (code != SRZ_READ && (id->mod[i] > INT_MAX || id->mod[i] < INT_MIN))
+      error(NIL,"index modifier too large for serialization format",NIL);
     tmp = id->mod[i];
     serialize_int(&tmp, code);
     if (code == SRZ_READ) id->mod[i] = tmp;
@@ -515,7 +521,8 @@ DX(xindex_storage)
 DX(xindex_nelements)
 {
   struct index *ind;
-  int size, i;
+  intg size;
+  int i;
 
   ARG_NUMBER(1);
   ARG_EVAL(1);
@@ -531,7 +538,8 @@ DX(xindex_nelements)
 DX(xindex_size)
 {
   struct index *ind;
-  int size, i;
+  intg size;
+  int i;
   extern size_t storage_type_size[];
 
   ARG_NUMBER(1);
@@ -1868,8 +1876,9 @@ contiguity_check(at *p)
 {
   struct index *ind;
   struct storage *st;
-  int size, i;
-  
+  intg size;
+  int i;
+
   ind = p->Object;
   st = ind->st;
   if (st->srg.flags & STF_RDONLY)
@@ -2641,8 +2650,9 @@ DX(xindex_unfold)
 {
   at *p;
   struct index *ind;
-  int d, sz, st, s, n;
-  
+  int d, n;
+  intg sz, st, s;
+
   ALL_ARGS_EVAL;
   ARG_NUMBER(4);
   p = APOINTER(1);
@@ -2651,7 +2661,7 @@ DX(xindex_unfold)
   d = AINTEGER(2);
   sz = AINTEGER(3);
   st = AINTEGER(4);
-  
+
   if (d<0 || d>=ind->ndim || sz<1 || st<1)
     error(NIL,"illegal parameters",NIL);
 
@@ -2680,8 +2690,9 @@ DX(xindex_diagonal)
 {
   at *p;
   struct index *ind;
-  int d,i,m,n;
-  
+  int d,i,m;
+  intg n;
+
   ALL_ARGS_EVAL;
   ARG_NUMBER(2);
   p = APOINTER(1);
@@ -2712,8 +2723,9 @@ DX(xindex_narrow)
 {
   at *p;
   struct index *ind;
-  int d, sz, st;
-  
+  int d;
+  intg sz, st;
+
   ALL_ARGS_EVAL;
   ARG_NUMBER(4);
   p = APOINTER(1);
@@ -2722,7 +2734,7 @@ DX(xindex_narrow)
   d = AINTEGER(2);
   sz = AINTEGER(3);
   st = AINTEGER(4);
-  
+
   if (d<0 || d>=ind->ndim || sz<1 || st<0)
     error(NIL,"illegal parameters",NIL);
   if (st+sz > ind->dim[d])
@@ -2741,8 +2753,9 @@ DX(xindex_select)
 {
   at *p;
   struct index *ind;
-  int d, x;
-  
+  int d;
+  intg x;
+
   ALL_ARGS_EVAL;
   ARG_NUMBER(3);
   p = APOINTER(1);
@@ -2750,7 +2763,7 @@ DX(xindex_select)
   ind = p->Object;
   d = AINTEGER(2);
   x = AINTEGER(3);
-  
+
   if (d<0 || d>=ind->ndim || x<0 )
     error(NIL,"illegal parameters",NIL);
   if (x >= ind->dim[d])
@@ -2815,8 +2828,9 @@ DX(xindex_transpose2)
 {
   at *p;
   struct index *ind;
-  int d1, d2, tmp;
-  
+  int d1, d2;
+  intg tmp;
+
   ALL_ARGS_EVAL;
   ARG_NUMBER(3);
   p = APOINTER(1);
@@ -2917,7 +2931,8 @@ DX(xindex_transclone)
 
 static int index_check_size(struct index *ind)
 {
-  int j, size_min, size_max;
+  int j;
+  intg size_min, size_max;
   size_min = ind->offset;
   size_max = ind->offset;
   if (size_min<0)
@@ -2936,8 +2951,9 @@ DX(xindex_change_dim)
 {
   at *p;
   struct index *ind;
-  int d, x, oldx;
-  
+  int d;
+  intg x, oldx;
+
   ALL_ARGS_EVAL;
   ARG_NUMBER(3);
   p = APOINTER(1);
@@ -2962,8 +2978,9 @@ DX(xindex_change_mod)
 {
   at *p;
   struct index *ind;
-  int d, x, oldx;
-  
+  int d;
+  intg x, oldx;
+
   ALL_ARGS_EVAL;
   ARG_NUMBER(3);
   p = APOINTER(1);
@@ -2988,8 +3005,8 @@ DX(xindex_change_offset)
 {
   at *p;
   struct index *ind;
-  int x, old_val;
-  
+  intg x, old_val;
+
   ALL_ARGS_EVAL;
   ARG_NUMBER(2);
   p = APOINTER(1);

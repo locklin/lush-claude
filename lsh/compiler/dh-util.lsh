@@ -523,7 +523,7 @@
       (dhc-add-c-declarations 
        (sprintf "struct idx *%s;" name) )
       (dhc-add-c-externs 
-       "extern_c gptr C_allocidx_C_pool(struct CClass_pool*, int);")
+       "extern_c gptr C_allocidx_C_pool(struct CClass_pool*, intg);")
       (dhc-add-c-statements 
        (sprintf "%s = C_allocidx_C_pool(%s,%d);" name obst ndim) ) ) )
    
@@ -2667,7 +2667,7 @@
          (num -1)
          (mlist (dhc-insert-op 
                  (all ((x inds)) 
-                   (sprintf "(%s)->mod[%d]*((int)%s)" mat (incr num) x))
+                   (sprintf "(%s)->mod[%d]*((intg)%s)" mat (incr num) x))
                  "+")) )
     (setq num -1)
     (when (> ndim 0)
@@ -2774,10 +2774,10 @@
     (let ((siz 1))
       (for (i (1- ndim) 0 -1)
            (let ((nd (idx-dim source i)))
-             (dhc-add-c-statements (sprintf "(%s)->dim[%d] = %d;" :idx-symb:c-name i nd))
-             (dhc-add-c-statements (sprintf "(%s)->mod[%d] = %d;" :idx-symb:c-name i siz))
+             (dhc-add-c-statements (sprintf "(%s)->dim[%d] = %ld;" :idx-symb:c-name i nd))
+             (dhc-add-c-statements (sprintf "(%s)->mod[%d] = %ld;" :idx-symb:c-name i siz))
              (setq siz (* siz nd)) ) )
-      (dhc-add-c-statements (sprintf "(%s)->size = %d;" :srg-symb:c-name siz)) )
+      (dhc-add-c-statements (sprintf "(%s)->size = %ld;" :srg-symb:c-name siz)) )
     (dhc-add-c-statements (sprintf "(%s)->flags &= ~STS_MALLOC;" :srg-symb:c-name))
     (dhc-add-c-statements (sprintf "(%s)->flags |= STS_STATIC;" :srg-symb:c-name))
     (dhc-add-c-statements (sprintf "(%s)->data = %s;" :srg-symb:c-name constant-name))
