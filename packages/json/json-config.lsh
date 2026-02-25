@@ -3,6 +3,17 @@
 ;;; This file compiles yyjson.c and json-c.c into json-c.so.
 ;;; It must be loaded before json.lsh.
 
+#? ** Build Configuration
+;; Compiles the C layer (yyjson.c + json-c.c) into a shared library
+;; <json-c.so> using {<b> lushmake}.  This file is loaded automatically
+;; by <json.lsh> and should not be loaded directly.
+;;.PP
+;; The build produces three objects:
+;;.LI <yyjson.o>: vendored yyjson library (JSON parser, v0.12.0).
+;;.LI <json-c.o>: Lush-specific C functions (message type detection,
+;; schema extractors, general parser).
+;;.LI <json-c.so>: shared library linking both objects with <-lm>.
+
 (libload "libc/make")
 
 (let ((dir (dirname file-being-loaded)))

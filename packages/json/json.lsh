@@ -12,10 +12,24 @@
 (libload "json/json-config")
 
 #? *** JSON: Fast JSON Parser for Lush
-;; Fast C-level JSON parser built on yyjson (1.7+ GB/s).
-;; Provides a general-purpose parser for ad-hoc inspection,
-;; fast schema-specific extractors for Coinbase order book messages,
-;; and DataTable integration for columnar storage.
+;; Fast C-level JSON parser built on yyjson (1.7+ GB/s parse speed,
+;; zero-malloc via stack pool allocator, MIT license).
+;;.PP
+;; Three tiers of functionality:
+;;.LI General-purpose parser ({<b> json-parse}) for ad-hoc inspection
+;; of arbitrary JSON strings.  Objects become alists, arrays become
+;; lists, numbers become int or double, strings remain strings,
+;; <null> maps to <()>, <true> maps to <t>, <false> maps to <()>.
+;;.LI Schema-specific extractors ({<b> json-parse-l2update},
+;; {<b> json-parse-ticker}) for Coinbase WebSocket order book messages.
+;; These write directly into pre-allocated column arrays with zero
+;; heap allocation per parse, suitable for hot-path feed handlers.
+;;.LI Message type detector ({<b> json-msg-type}) for fast dispatch
+;; without full parse.
+;;.PP
+;; The schema-specific extractors produce columnar data compatible with
+;; the DataTable package.  Use {<b> json-l2-make-table} to wrap filled
+;; column arrays into a DataTable for further analysis.
 ;;.PP
 ;; General usage:
 ;;.CODE
@@ -26,29 +40,88 @@
 ;;.VP
 ;; Order book hot path:
 ;;.CODE
-;;  (json-msg-type msg)              ;; => 'l2update
-;;  (json-parse-l2update msg ...)    ;; writes directly into column arrays
+;;  (libload "json/json")
+;;  (let* ((products '("BTC-USD" "ETH-USD"))
+;;         (pt (_json-build-product-table products))
+;;         (sides (int-matrix 1000))
+;;         (prices (double-matrix 1000))
+;;         (qtys (double-matrix 1000))
+;;         (stamps (long-matrix 1000))
+;;         (pcodes (int-matrix 1000))
+;;         (n (json-parse-l2update msg sides prices qtys
+;;              stamps pcodes 0 (car pt) (cadr pt) (caddr pt))))
+;;    (json-l2-make-table n sides prices qtys stamps pcodes products))
 ;;.P
+;;.SEE (json-parse <string>)
+;;.SEE (json-msg-type <string>)
+;;.SEE (json-parse-l2update <string> <side-codes> <prices> <quantities> <timestamps> <product-codes> <offset> <product-buf> <product-offsets> <n-products>)
+;;.SEE (json-parse-ticker <string> <prices> <best-bids> <best-asks> <side-codes> <timestamps> <product-codes> <offset> <product-buf> <product-offsets> <n-products>)
+;;.SEE (json-l2-make-table <n-rows> <side-codes> <prices> <quantities> <timestamps> <product-codes> <product-strings>)
 
-;; ============================================================
-;; Type tags (must match json-c.h defines)
-;; ============================================================
 
+#? ** Constants and Variables
+
+#? *json-tag-null*
+;;.TYPE VAR
+;; Integer tag for JSON null values in the general parser output (value 0).
 (defvar *json-tag-null*        0)
+
+#? *json-tag-bool*
+;;.TYPE VAR
+;; Integer tag for JSON boolean values in the general parser output (value 1).
+;; The numeric value is 1.0 for true, 0.0 for false.
 (defvar *json-tag-bool*        1)
+
+#? *json-tag-int*
+;;.TYPE VAR
+;; Integer tag for JSON integer values in the general parser output (value 2).
 (defvar *json-tag-int*         2)
+
+#? *json-tag-real*
+;;.TYPE VAR
+;; Integer tag for JSON floating-point values in the general parser output (value 3).
 (defvar *json-tag-real*        3)
+
+#? *json-tag-string*
+;;.TYPE VAR
+;; Integer tag for JSON string values in the general parser output (value 4).
 (defvar *json-tag-string*      4)
+
+#? *json-tag-array-start*
+;;.TYPE VAR
+;; Integer tag marking the start of a JSON array (value 5).
 (defvar *json-tag-array-start* 5)
+
+#? *json-tag-array-end*
+;;.TYPE VAR
+;; Integer tag marking the end of a JSON array (value 6).
 (defvar *json-tag-array-end*   6)
+
+#? *json-tag-obj-start*
+;;.TYPE VAR
+;; Integer tag marking the start of a JSON object (value 7).
 (defvar *json-tag-obj-start*   7)
+
+#? *json-tag-obj-end*
+;;.TYPE VAR
+;; Integer tag marking the end of a JSON object (value 8).
 (defvar *json-tag-obj-end*     8)
+
+#? *json-tag-key*
+;;.TYPE VAR
+;; Integer tag for JSON object keys in the general parser output (value 9).
 (defvar *json-tag-key*         9)
 
-;; Message type symbols indexed by code (0..5)
+#? *json-msg-type-syms*
+;;.TYPE VAR
+;; List of symbols for Coinbase message types, indexed by the integer
+;; code returned by the C layer: <(subscriptions l2update ticker
+;; snapshot heartbeat error)>.
 (defvar *json-msg-type-syms*
   (list 'subscriptions 'l2update 'ticker 'snapshot 'heartbeat 'error))
 
+
+#? ** Compiled Layer (DHC)
 
 ;; ============================================================
 ;; DHC-compiled wrappers (thin bridges to C)
@@ -210,8 +283,27 @@
      (t (cons () (1+ pos))) ) ) )
 
 
-;; Pack a list of product strings into ubyte buffer + int offsets.
-;; Returns (list <ubyte-buf> <int-offsets> <n-products>).
+#? ** Internal Helpers
+
+#? (_json-build-product-table <product-list>)
+;; Pack a list of product name strings into a flat ubyte buffer
+;; with an integer offset array, suitable for passing to the C
+;; extraction functions.
+;;.PP
+;; <product-list> is a list of strings, e.g. <("BTC-USD" "ETH-USD")>.
+;; Each string is stored null-terminated in a contiguous ubyte buffer.
+;; The offset array records the starting byte position of each string.
+;;.PP
+;; Returns a list of three elements: <(ubyte-buf int-offsets n-products)>.
+;;.VP
+;; Example:
+;;.CODE
+;;  (let ((pt (_json-build-product-table '("BTC-USD" "ETH-USD"))))
+;;    ;; (car pt) = ubyte buffer with packed strings
+;;    ;; (cadr pt) = int offsets [0 8]
+;;    ;; (caddr pt) = 2
+;;    pt)
+;;.P
 (de _json-build-product-table (product-list)
   (let* ((n (length product-list))
          ;; Compute total buffer size: sum of (len + 1) for null terminators
@@ -240,10 +332,29 @@
 ;; Public API (interpreted)
 ;; ============================================================
 
+#? ** Public API
+
 #? (json-msg-type <string>)
-;; Detect the message type of a JSON string (Coinbase WebSocket).
-;; Returns a symbol: 'subscriptions, 'l2update, 'ticker, 'snapshot,
-;; 'heartbeat, 'error, or 'unknown.
+;; Detect the Coinbase WebSocket message type from a raw JSON string.
+;; Uses fast substring matching without a full JSON parse.
+;;.PP
+;; Returns one of the symbols: <subscriptions>, <l2update>, <ticker>,
+;; <snapshot>, <heartbeat>, <error>, or <unknown>.
+;;.PP
+;; This is useful for dispatching messages received from the Coinbase
+;; WebSocket feed before committing to a full parse.
+;;.VP
+;; Example:
+;;.CODE
+;;  (json-msg-type "{\"type\":\"l2update\",\"product_id\":\"BTC-USD\",...}")
+;;    => l2update
+;;  (json-msg-type "{\"type\":\"heartbeat\",\"sequence\":123}")
+;;    => heartbeat
+;;  (json-msg-type "{\"data\":123}")
+;;    => unknown
+;;.P
+;;.SEE (json-parse <string>)
+;;.SEE (json-parse-l2update <string> <side-codes> <prices> <quantities> <timestamps> <product-codes> <offset> <product-buf> <product-offsets> <n-products>)
 (de json-msg-type (s)
   (let ((code (_json-msg-type s (len s))))
     (if (and (>= code 0) (< code (length *json-msg-type-syms*)))
@@ -252,13 +363,41 @@
 
 
 #? (json-parse <string>)
-;; Parse a JSON string into Lush data structures.
-;; Objects become alists, arrays become lists.
-;; Numbers become int or double. Strings stay as strings.
-;; null -> (), true -> t, false -> ().
-;;
-;; This is the slow path for ad-hoc inspection.  For hot-path order
-;; book parsing, use json-parse-l2update or json-parse-ticker.
+;; Parse a JSON string into native Lush data structures.
+;;.PP
+;; Type mapping:
+;;.LI JSON objects become association lists (alists) of <(key . value)> pairs.
+;;.LI JSON arrays become Lush lists.
+;;.LI JSON integers become Lush integers.
+;;.LI JSON floats become Lush doubles.
+;;.LI JSON strings become Lush strings.
+;;.LI JSON <null> becomes <()>.
+;;.LI JSON <true> becomes <t>.
+;;.LI JSON <false> becomes <()>.
+;;.PP
+;; This is the general-purpose slow path for ad-hoc inspection.
+;; It allocates temporary arrays internally.  For hot-path order
+;; book parsing, use {<b> json-parse-l2update} or {<b> json-parse-ticker}
+;; which write directly into pre-allocated column arrays.
+;;.PP
+;; Signals an error if the JSON is malformed.
+;;.VP
+;; Examples:
+;;.CODE
+;;  (json-parse "42")
+;;    => 42
+;;  (json-parse "\"hello\"")
+;;    => "hello"
+;;  (json-parse "[1, 2, 3]")
+;;    => (1 2 3)
+;;  (json-parse "{\"name\":\"Alice\",\"age\":30}")
+;;    => (("name" . "Alice") ("age" . 30))
+;;  (json-parse "{\"data\":[1,2],\"meta\":{\"count\":2}}")
+;;    => (("data" 1 2) ("meta" ("count" . 2)))
+;;  (json-parse "null")
+;;    => ()
+;;.P
+;;.SEE (json-msg-type <string>)
 (de json-parse (s)
   (let* ((slen (len s))
          ;; Allocate generous temp arrays
@@ -277,11 +416,38 @@
 
 #? (json-parse-l2update <string> <side-codes> <prices> <quantities> <timestamps> <product-codes> <offset> <product-buf> <product-offsets> <n-products>)
 ;; Parse a Coinbase l2update message directly into pre-allocated
-;; column arrays at the given write offset.
-;; Returns number of rows (changes) added.
-;;
-;; Hot path: zero allocation, writes directly into DataTable columns.
-;; Use _json-build-product-table to create the product buffer/offsets.
+;; parallel column arrays at the given write offset.
+;;.PP
+;; This is the hot-path extractor for order book updates.  It uses
+;; a stack-allocated yyjson pool (zero heap allocation per call) and
+;; writes directly into caller-owned arrays.
+;;.PP
+;; Arguments:
+;;.LI <string>: raw JSON string of the l2update message.
+;;.LI <side-codes>: int idx1.  Receives 0 for buy, 1 for sell.
+;;.LI <prices>: double idx1.  Receives the price of each change.
+;;.LI <quantities>: double idx1.  Receives the quantity of each change.
+;;.LI <timestamps>: long idx1.  Receives the message timestamp as
+;; int64 microseconds since epoch (same as <'stamp> column type).
+;; All rows from one message share the same timestamp.
+;;.LI <product-codes>: int idx1.  Receives the integer product code
+;; looked up from the product table.
+;;.LI <offset>: integer write position in each array.  Subsequent
+;; calls should pass the running total of rows written so far.
+;;.LI <product-buf>, <product-offsets>, <n-products>: product string
+;; table created by {<b> _json-build-product-table}.
+;;.PP
+;; Returns the number of rows (changes) written, or signals an error.
+;;.PP
+;; The expected JSON schema is:
+;;.CODE
+;;  {"type":"l2update","product_id":"BTC-USD",
+;;   "changes":[["buy","50000.01","1.5"],["sell","50100","0.25"]],
+;;   "time":"2024-06-15T14:30:00.123456Z"}
+;;.P
+;;.SEE (json-msg-type <string>)
+;;.SEE (_json-build-product-table <product-list>)
+;;.SEE (json-l2-make-table <n-rows> <side-codes> <prices> <quantities> <timestamps> <product-codes> <product-strings>)
 (de json-parse-l2update (s side-codes prices quantities timestamps
                          product-codes offset product-buf product-offsets
                          n-products)
@@ -296,7 +462,35 @@
 #? (json-parse-ticker <string> <prices> <best-bids> <best-asks> <side-codes> <timestamps> <product-codes> <offset> <product-buf> <product-offsets> <n-products>)
 ;; Parse a Coinbase ticker message directly into pre-allocated
 ;; column arrays at the given write offset.
-;; Returns 1 on success.
+;;.PP
+;; This is the hot-path extractor for ticker messages.  It uses a
+;; stack-allocated yyjson pool (zero heap allocation per call) and
+;; writes a single row into the caller-owned arrays.
+;;.PP
+;; Arguments:
+;;.LI <string>: raw JSON string of the ticker message.
+;;.LI <prices>: double idx1.  Receives the last trade price.
+;;.LI <best-bids>: double idx1.  Receives the best bid price.
+;;.LI <best-asks>: double idx1.  Receives the best ask price.
+;;.LI <side-codes>: int idx1.  Receives 0 for buy, 1 for sell
+;; (the side of the last trade).
+;;.LI <timestamps>: long idx1.  Receives the message timestamp as
+;; int64 microseconds since epoch.
+;;.LI <product-codes>: int idx1.  Receives the integer product code.
+;;.LI <offset>: integer write position in each array.
+;;.LI <product-buf>, <product-offsets>, <n-products>: product string
+;; table created by {<b> _json-build-product-table}.
+;;.PP
+;; Returns 1 on success, or signals an error.
+;;.PP
+;; The expected JSON schema is:
+;;.CODE
+;;  {"type":"ticker","product_id":"BTC-USD",
+;;   "price":"50050.50","best_bid":"50050.00","best_ask":"50051.00",
+;;   "side":"sell","time":"2024-06-15T14:30:05.500000Z"}
+;;.P
+;;.SEE (json-msg-type <string>)
+;;.SEE (_json-build-product-table <product-list>)
 (de json-parse-ticker (s prices best-bids best-asks side-codes timestamps
                        product-codes offset product-buf product-offsets
                        n-products)
@@ -308,10 +502,39 @@
     rc ) )
 
 
+#? ** DataTable Integration
+
 #? (json-l2-make-table <n-rows> <side-codes> <prices> <quantities> <timestamps> <product-codes> <product-strings>)
-;; Wrap filled column arrays into a DataTable.
-;; <product-strings> is a list of product name strings (code -> string).
-;; Returns a DataTable with columns: side, price, quantity, time, product.
+;; Wrap filled column arrays (from one or more {<b> json-parse-l2update}
+;; calls) into a DataTable with the following columns:
+;;.LI <"side">: int column (0=buy, 1=sell).
+;;.LI <"price">: real (double) column.
+;;.LI <"quantity">: real (double) column.
+;;.LI <"time">: stamp (int64 microseconds) column.
+;;.LI <"product">: string column (dictionary-encoded via StringColumn).
+;;.PP
+;; <n-rows> is the total number of rows to include (typically the
+;; running offset after all messages have been parsed).
+;;.PP
+;; <product-strings> is a list of product name strings in the same
+;; order used to build the product table, e.g. <("BTC-USD" "ETH-USD")>.
+;; The integer product codes in <product-codes> index into this list.
+;;.PP
+;; Returns a DataTable object ready for filtering, sorting, and
+;; pretty-printing.
+;;.VP
+;; Example:
+;;.CODE
+;;  ;; After parsing N messages into column arrays:
+;;  (let ((dt (json-l2-make-table total-rows
+;;              side-codes prices quantities
+;;              timestamps product-codes
+;;              '("BTC-USD" "ETH-USD"))))
+;;    (==> dt print-table 20))
+;;.P
+;;.SEE (json-parse-l2update <string> <side-codes> <prices> <quantities> <timestamps> <product-codes> <offset> <product-buf> <product-offsets> <n-products>)
+;;.SEE datatable-from-columns
+;;.SEE (==> <sc> build-from-codes <code-array> <unique-strings>)
 (de json-l2-make-table (n-rows side-codes prices quantities timestamps
                         product-codes product-strings)
   (libload "datatable/datatable")

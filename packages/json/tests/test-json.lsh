@@ -1,6 +1,21 @@
 ;;; test-json.lsh -- Test suite for the JSON parser package
 ;;;
 ;;; Uses the test framework from packages/datatable/tests/framework.lsh.
+;;; Run via:  (libload "json/tests/test-json")
+
+#? ** Tests
+;; Test suite for the JSON parser package.  Covers the general-purpose
+;; parser, message type detection, schema-specific extractors (l2update
+;; and ticker), timestamp cross-validation against the timedate package,
+;; DataTable integration, and the product table builder.
+;;.PP
+;; To run the tests:
+;;.CODE
+;;  (libload "json/tests/test-json")
+;;.P
+;;.SEE (json-parse <string>)
+;;.SEE (json-msg-type <string>)
+;;.SEE (json-parse-l2update <string> <side-codes> <prices> <quantities> <timestamps> <product-codes> <offset> <product-buf> <product-offsets> <n-products>)
 
 (libload "datatable/tests/framework")
 (libload "json/json")
