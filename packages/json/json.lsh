@@ -1,0 +1,332 @@
+;;; json.lsh -- Fast JSON parser for Lush
+;;;
+;;; Two layers:
+;;;   1. DHC-compiled thin wrappers (_json-*) that bridge Lush types
+;;;      to the C functions in json-c.c (backed by yyjson).
+;;;   2. Interpreted high-level API (json-parse, json-msg-type,
+;;;      json-parse-l2update, json-parse-ticker, json-l2-make-table).
+;;;
+;;; Constraint: (-long-) is broken in DHC for scalars, so timestamps
+;;; are always passed as (-idx1- (-long-)) arrays.
+
+(libload "json/json-config")
+
+#? *** JSON: Fast JSON Parser for Lush
+;; Fast C-level JSON parser built on yyjson (1.7+ GB/s).
+;; Provides a general-purpose parser for ad-hoc inspection,
+;; fast schema-specific extractors for Coinbase order book messages,
+;; and DataTable integration for columnar storage.
+;;.PP
+;; General usage:
+;;.CODE
+;;  (libload "json/json")
+;;  (json-parse "{\"name\":\"Alice\",\"age\":30}")
+;;    => (("name" . "Alice") ("age" . 30))
+;;.P
+;;.VP
+;; Order book hot path:
+;;.CODE
+;;  (json-msg-type msg)              ;; => 'l2update
+;;  (json-parse-l2update msg ...)    ;; writes directly into column arrays
+;;.P
+
+;; ============================================================
+;; Type tags (must match json-c.h defines)
+;; ============================================================
+
+(defvar *json-tag-null*        0)
+(defvar *json-tag-bool*        1)
+(defvar *json-tag-int*         2)
+(defvar *json-tag-real*        3)
+(defvar *json-tag-string*      4)
+(defvar *json-tag-array-start* 5)
+(defvar *json-tag-array-end*   6)
+(defvar *json-tag-obj-start*   7)
+(defvar *json-tag-obj-end*     8)
+(defvar *json-tag-key*         9)
+
+;; Message type symbols indexed by code (0..5)
+(defvar *json-msg-type-syms*
+  (list 'subscriptions 'l2update 'ticker 'snapshot 'heartbeat 'error))
+
+
+;; ============================================================
+;; DHC-compiled wrappers (thin bridges to C)
+;; ============================================================
+
+;; Message type detector: returns int code (-1..5)
+(de _json-msg-type (json-str len-val)
+  ((-str-) json-str)
+  ((-int-) len-val)
+  (let ((rc 0))
+    ((-int-) rc)
+    #{ $rc = lush_json_msg_type((const char *)$json_str->data, $len_val); #}
+    rc ) )
+
+;; General-purpose parser: fills type_tags, num_vals, str_buf, str_offsets
+;; Returns number of entries written, or -1 on error.
+(de _json-parse-inner (json-str len-val
+                       type-tags num-vals str-buf str-offsets
+                       max-entries str-buf-size)
+  ((-str-) json-str)
+  ((-int-) len-val max-entries str-buf-size)
+  ((-idx1- (-int-)) type-tags str-offsets)
+  ((-idx1- (-double-)) num-vals)
+  ((-idx1- (-ubyte-)) str-buf)
+  (let ((rc 0))
+    ((-int-) rc)
+    #{ $rc = lush_json_parse(
+         (const char *)$json_str->data, $len_val,
+         IDX_PTR($type_tags, int), IDX_PTR($num_vals, double),
+         IDX_PTR($str_buf, unsigned char), IDX_PTR($str_offsets, int),
+         $max_entries, $str_buf_size); #}
+    rc ) )
+
+;; L2 update extractor: writes into parallel column arrays at offset
+;; Returns number of rows written, or -1.
+(de _json-parse-l2update-inner (json-str len-val
+                                side-codes prices quantities
+                                timestamps product-codes
+                                offset-val
+                                product-buf product-offsets n-products-val)
+  ((-str-) json-str)
+  ((-int-) len-val offset-val n-products-val)
+  ((-idx1- (-int-)) side-codes product-codes product-offsets)
+  ((-idx1- (-double-)) prices quantities)
+  ((-idx1- (-long-)) timestamps)
+  ((-idx1- (-ubyte-)) product-buf)
+  (let ((rc 0))
+    ((-int-) rc)
+    #{ $rc = lush_json_parse_l2update(
+         (const char *)$json_str->data, $len_val,
+         IDX_PTR($side_codes, int), IDX_PTR($prices, double),
+         IDX_PTR($quantities, double),
+         IDX_PTR($timestamps, long long), IDX_PTR($product_codes, int),
+         $offset_val,
+         IDX_PTR($product_buf, unsigned char),
+         IDX_PTR($product_offsets, int), $n_products_val); #}
+    rc ) )
+
+;; Ticker extractor: writes a single row at offset
+;; Returns 1 on success, or -1.
+(de _json-parse-ticker-inner (json-str len-val
+                              prices best-bids best-asks
+                              side-codes timestamps product-codes
+                              offset-val
+                              product-buf product-offsets n-products-val)
+  ((-str-) json-str)
+  ((-int-) len-val offset-val n-products-val)
+  ((-idx1- (-int-)) side-codes product-codes product-offsets)
+  ((-idx1- (-double-)) prices best-bids best-asks)
+  ((-idx1- (-long-)) timestamps)
+  ((-idx1- (-ubyte-)) product-buf)
+  (let ((rc 0))
+    ((-int-) rc)
+    #{ $rc = lush_json_parse_ticker(
+         (const char *)$json_str->data, $len_val,
+         IDX_PTR($prices, double), IDX_PTR($best_bids, double),
+         IDX_PTR($best_asks, double),
+         IDX_PTR($side_codes, int),
+         IDX_PTR($timestamps, long long), IDX_PTR($product_codes, int),
+         $offset_val,
+         IDX_PTR($product_buf, unsigned char),
+         IDX_PTR($product_offsets, int), $n_products_val); #}
+    rc ) )
+
+
+;; Compile all DHC wrappers
+;; Prepend local include/ (which has DH_LONG in dh.h) before system include
+(let ((dhc-make-lushflags
+       (concat " -I" (concat-fname (dirname file-being-loaded) "../../include")
+               " " dhc-make-lushflags
+               " -I" (dirname file-being-loaded))))
+  (dhc-make-with-libs () t
+    #{ #include "json-c.h" #}
+    _json-msg-type
+    _json-parse-inner
+    _json-parse-l2update-inner
+    _json-parse-ticker-inner ) )
+
+
+;; ============================================================
+;; Internal helpers
+;; ============================================================
+
+;; Extract a null-terminated string from ubyte buffer at given offset.
+(de _json-extract-string (buf offset)
+  (let ((s "")
+        (i offset)
+        (n (idx-dim buf 0)) )
+    (while (and (< i n) (> (buf i) 0))
+      (setq s (concat s (chr (buf i))))
+      (setq i (1+ i)) )
+    s ) )
+
+;; Reconstruct Lush value from the flat type-tagged stream.
+;; Returns (cons <value> <next-pos>).
+(de _json-reconstruct (type-tags num-vals str-buf str-offsets pos n)
+  (when (>= pos n) (cons () pos))
+  (let ((tag (type-tags pos)))
+    (cond
+     ;; Null
+     ((= tag *json-tag-null*)
+      (cons () (1+ pos)) )
+     ;; Bool
+     ((= tag *json-tag-bool*)
+      (cons (if (= (num-vals pos) 1.0) t ()) (1+ pos)) )
+     ;; Integer
+     ((= tag *json-tag-int*)
+      (cons (to-int (num-vals pos)) (1+ pos)) )
+     ;; Real
+     ((= tag *json-tag-real*)
+      (cons (num-vals pos) (1+ pos)) )
+     ;; String
+     ((= tag *json-tag-string*)
+      (cons (_json-extract-string str-buf (str-offsets pos)) (1+ pos)) )
+     ;; Array
+     ((= tag *json-tag-array-start*)
+      (let ((result ())
+            (p (1+ pos)) )
+        (while (and (< p n) (<> (type-tags p) *json-tag-array-end*))
+          (let ((r (_json-reconstruct type-tags num-vals str-buf str-offsets p n)))
+            (setq result (nconc1 result (car r)))
+            (setq p (cdr r)) ) )
+        (cons result (1+ p)) ) )
+     ;; Object -> alist
+     ((= tag *json-tag-obj-start*)
+      (let ((result ())
+            (p (1+ pos)) )
+        (while (and (< p n) (<> (type-tags p) *json-tag-obj-end*))
+          ;; Expect key tag
+          (when (= (type-tags p) *json-tag-key*)
+            (let ((key (_json-extract-string str-buf (str-offsets p))))
+              (setq p (1+ p))
+              ;; Value follows
+              (let ((r (_json-reconstruct type-tags num-vals str-buf str-offsets p n)))
+                (setq result (nconc1 result (cons key (car r))))
+                (setq p (cdr r)) ) ) ) )
+        (cons result (1+ p)) ) )
+     ;; Fallback
+     (t (cons () (1+ pos))) ) ) )
+
+
+;; Pack a list of product strings into ubyte buffer + int offsets.
+;; Returns (list <ubyte-buf> <int-offsets> <n-products>).
+(de _json-build-product-table (product-list)
+  (let* ((n (length product-list))
+         ;; Compute total buffer size: sum of (len + 1) for null terminators
+         (total-size (let ((sz 0))
+                       (each ((s product-list))
+                         (setq sz (+ sz (len s) 1)) )
+                       sz ))
+         (buf (ubyte-matrix (max 1 total-size)))
+         (offsets (int-matrix (max 1 n)))
+         (pos 0)
+         (idx 0) )
+    (each ((s product-list))
+      (offsets idx pos)
+      ;; Copy string bytes
+      (for (i 0 (1- (len s)))
+        (buf pos (asc (mid s (1+ i) 1)))
+        (setq pos (1+ pos)) )
+      ;; Null terminator
+      (buf pos 0)
+      (setq pos (1+ pos))
+      (setq idx (1+ idx)) )
+    (list buf offsets n) ) )
+
+
+;; ============================================================
+;; Public API (interpreted)
+;; ============================================================
+
+#? (json-msg-type <string>)
+;; Detect the message type of a JSON string (Coinbase WebSocket).
+;; Returns a symbol: 'subscriptions, 'l2update, 'ticker, 'snapshot,
+;; 'heartbeat, 'error, or 'unknown.
+(de json-msg-type (s)
+  (let ((code (_json-msg-type s (len s))))
+    (if (and (>= code 0) (< code (length *json-msg-type-syms*)))
+      (nth code *json-msg-type-syms*)
+      'unknown ) ) )
+
+
+#? (json-parse <string>)
+;; Parse a JSON string into Lush data structures.
+;; Objects become alists, arrays become lists.
+;; Numbers become int or double. Strings stay as strings.
+;; null -> (), true -> t, false -> ().
+;;
+;; This is the slow path for ad-hoc inspection.  For hot-path order
+;; book parsing, use json-parse-l2update or json-parse-ticker.
+(de json-parse (s)
+  (let* ((slen (len s))
+         ;; Allocate generous temp arrays
+         (max-entries (* 4 (max 64 slen)))
+         (str-buf-size (* 2 (max 64 slen)))
+         (type-tags (int-matrix max-entries))
+         (num-vals (double-matrix max-entries))
+         (str-buf (ubyte-matrix str-buf-size))
+         (str-offsets (int-matrix max-entries)) )
+    (let ((n (_json-parse-inner s slen type-tags num-vals str-buf str-offsets
+                                max-entries str-buf-size)))
+      (when (< n 0)
+        (error "json-parse" "failed to parse JSON" s) )
+      (car (_json-reconstruct type-tags num-vals str-buf str-offsets 0 n)) ) ) )
+
+
+#? (json-parse-l2update <string> <side-codes> <prices> <quantities> <timestamps> <product-codes> <offset> <product-buf> <product-offsets> <n-products>)
+;; Parse a Coinbase l2update message directly into pre-allocated
+;; column arrays at the given write offset.
+;; Returns number of rows (changes) added.
+;;
+;; Hot path: zero allocation, writes directly into DataTable columns.
+;; Use _json-build-product-table to create the product buffer/offsets.
+(de json-parse-l2update (s side-codes prices quantities timestamps
+                         product-codes offset product-buf product-offsets
+                         n-products)
+  (let ((rc (_json-parse-l2update-inner s (len s)
+              side-codes prices quantities timestamps product-codes
+              offset product-buf product-offsets n-products)))
+    (when (< rc 0)
+      (error "json-parse-l2update" "failed to parse l2update" s) )
+    rc ) )
+
+
+#? (json-parse-ticker <string> <prices> <best-bids> <best-asks> <side-codes> <timestamps> <product-codes> <offset> <product-buf> <product-offsets> <n-products>)
+;; Parse a Coinbase ticker message directly into pre-allocated
+;; column arrays at the given write offset.
+;; Returns 1 on success.
+(de json-parse-ticker (s prices best-bids best-asks side-codes timestamps
+                       product-codes offset product-buf product-offsets
+                       n-products)
+  (let ((rc (_json-parse-ticker-inner s (len s)
+              prices best-bids best-asks side-codes timestamps product-codes
+              offset product-buf product-offsets n-products)))
+    (when (< rc 0)
+      (error "json-parse-ticker" "failed to parse ticker" s) )
+    rc ) )
+
+
+#? (json-l2-make-table <n-rows> <side-codes> <prices> <quantities> <timestamps> <product-codes> <product-strings>)
+;; Wrap filled column arrays into a DataTable.
+;; <product-strings> is a list of product name strings (code -> string).
+;; Returns a DataTable with columns: side, price, quantity, time, product.
+(de json-l2-make-table (n-rows side-codes prices quantities timestamps
+                        product-codes product-strings)
+  (libload "datatable/datatable")
+  (let ((side-arr (narrow side-codes 0 n-rows 0))
+        (price-arr (narrow prices 0 n-rows 0))
+        (qty-arr (narrow quantities 0 n-rows 0))
+        (ts-arr (narrow timestamps 0 n-rows 0))
+        (prod-sc (new StringColumn n-rows)) )
+    ;; Build StringColumn from product codes
+    (==> prod-sc build-from-codes
+         (narrow product-codes 0 n-rows 0)
+         product-strings)
+    ;; Assemble DataTable
+    (datatable-from-columns
+     (list "side" "price" "quantity" "time" "product")
+     (list 'int 'real 'real 'stamp 'string)
+     (list side-arr price-arr qty-arr ts-arr prod-sc)
+     n-rows) ) )

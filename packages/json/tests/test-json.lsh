@@ -1,0 +1,406 @@
+;;; test-json.lsh -- Test suite for the JSON parser package
+;;;
+;;; Uses the test framework from packages/datatable/tests/framework.lsh.
+
+(libload "datatable/tests/framework")
+(libload "json/json")
+(libload "datatable/datatable")
+(libload "timedate/timedate")
+
+;; Reset counters in case of re-load
+(setq *test-pass-count* 0)
+(setq *test-fail-count* 0)
+
+
+;; ============================================================
+;; Test 1: General parser -- primitives
+;; ============================================================
+
+(test-suite "General Parser: Primitives"
+
+  ;; null
+  (test-check "null parses to ()"
+    (= (json-parse "null") ()) )
+
+  ;; booleans
+  (test-check "true parses to t"
+    (= (json-parse "true") t) )
+  (test-check "false parses to ()"
+    (= (json-parse "false") ()) )
+
+  ;; integers
+  (test-equal "integer 42"
+    (json-parse "42") 42)
+  (test-equal "integer 0"
+    (json-parse "0") 0)
+  (test-equal "negative integer"
+    (json-parse "-7") -7)
+
+  ;; reals
+  (test-approx "real 3.14"
+    (json-parse "3.14") 3.14 0.0001)
+  (test-approx "real with exponent"
+    (json-parse "1.5e2") 150.0 0.001)
+
+  ;; strings
+  (test-string-equal "simple string"
+    (json-parse "\"hello\"") "hello")
+  (test-string-equal "empty string"
+    (json-parse "\"\"") "")
+  (test-string-equal "string with escaped chars"
+    (json-parse "\"a\\\"b\"") "a\"b")
+)
+
+
+;; ============================================================
+;; Test 2: General parser -- collections
+;; ============================================================
+
+(test-suite "General Parser: Collections"
+
+  ;; arrays
+  (let ((r (json-parse "[1, 2, 3]")))
+    (test-equal "array length" (length r) 3)
+    (test-equal "array first" (car r) 1)
+    (test-equal "array second" (cadr r) 2)
+    (test-equal "array third" (caddr r) 3) )
+
+  ;; empty array
+  (test-equal "empty array" (length (json-parse "[]")) 0)
+
+  ;; objects -> alist
+  (let ((r (json-parse "{\"name\":\"Alice\",\"age\":30}")))
+    (test-equal "object length" (length r) 2)
+    ;; First pair: name -> Alice
+    (test-string-equal "object key 1" (car (car r)) "name")
+    (test-string-equal "object val 1" (cdr (car r)) "Alice")
+    ;; Second pair: age -> 30
+    (test-string-equal "object key 2" (car (cadr r)) "age")
+    (test-equal "object val 2" (cdr (cadr r)) 30) )
+
+  ;; empty object
+  (test-equal "empty object" (length (json-parse "{}")) 0)
+
+  ;; nested structures
+  (let ((r (json-parse "{\"data\":[1,2],\"meta\":{\"count\":2}}")))
+    (test-equal "nested: top-level keys" (length r) 2)
+    ;; data -> [1, 2]
+    (let ((data (cdr (car r))))
+      (test-equal "nested: array length" (length data) 2)
+      (test-equal "nested: array[0]" (car data) 1)
+      (test-equal "nested: array[1]" (cadr data) 2) )
+    ;; meta -> {count: 2}
+    (let ((meta (cdr (cadr r))))
+      (test-equal "nested: inner object length" (length meta) 1)
+      (test-string-equal "nested: inner key" (car (car meta)) "count")
+      (test-equal "nested: inner val" (cdr (car meta)) 2) ) )
+
+  ;; mixed array
+  (let ((r (json-parse "[null, true, 42, \"hi\"]")))
+    (test-equal "mixed array length" (length r) 4)
+    (test-check "mixed: null" (= (car r) ()))
+    (test-check "mixed: true" (= (cadr r) t))
+    (test-equal "mixed: int" (caddr r) 42)
+    (test-string-equal "mixed: string" (nth 3 r) "hi") )
+)
+
+
+;; ============================================================
+;; Test 3: Message type detection
+;; ============================================================
+
+(test-suite "Message Type Detection"
+
+  (test-check "l2update"
+    (= (json-msg-type "{\"type\":\"l2update\",\"product_id\":\"BTC-USD\"}")
+       'l2update) )
+  (test-check "ticker"
+    (= (json-msg-type "{\"type\":\"ticker\",\"price\":\"50000\"}")
+       'ticker) )
+  (test-check "subscriptions"
+    (= (json-msg-type "{\"type\":\"subscriptions\",\"channels\":[]}")
+       'subscriptions) )
+  (test-check "snapshot"
+    (= (json-msg-type "{\"type\":\"snapshot\",\"product_id\":\"BTC-USD\"}")
+       'snapshot) )
+  (test-check "heartbeat"
+    (= (json-msg-type "{\"type\":\"heartbeat\",\"sequence\":123}")
+       'heartbeat) )
+  (test-check "error"
+    (= (json-msg-type "{\"type\":\"error\",\"message\":\"bad\"}")
+       'error) )
+  (test-check "unknown type"
+    (= (json-msg-type "{\"type\":\"foobar\"}")
+       'unknown) )
+  (test-check "no type field"
+    (= (json-msg-type "{\"data\":123}")
+       'unknown) )
+)
+
+
+;; ============================================================
+;; Test 4: L2 update extraction
+;; ============================================================
+
+(test-suite "L2 Update Extraction"
+
+  (let* ((msg (concat "{\"type\":\"l2update\","
+                      "\"product_id\":\"BTC-USD\","
+                      "\"changes\":["
+                      "[\"buy\",\"50000.01\",\"1.5\"],"
+                      "[\"sell\",\"50100.00\",\"0.25\"]],"
+                      "\"time\":\"2024-06-15T14:30:00.123456Z\"}"))
+         ;; Set up column arrays (capacity 100)
+         (side-codes (int-matrix 100))
+         (prices (double-matrix 100))
+         (quantities (double-matrix 100))
+         (timestamps (long-matrix 100))
+         (product-codes (int-matrix 100))
+         ;; Build product table
+         (pt (_json-build-product-table '("BTC-USD" "ETH-USD")))
+         (product-buf (car pt))
+         (product-offsets (cadr pt))
+         (n-products (caddr pt))
+         ;; Parse
+         (n-rows (json-parse-l2update msg side-codes prices quantities
+                                      timestamps product-codes 0
+                                      product-buf product-offsets n-products)) )
+
+    (test-equal "l2update: row count" n-rows 2)
+
+    ;; Row 0: buy 50000.01 1.5
+    (test-equal "l2update: row 0 side" (side-codes 0) 0)   ;; buy=0
+    (test-approx "l2update: row 0 price" (prices 0) 50000.01 0.001)
+    (test-approx "l2update: row 0 qty" (quantities 0) 1.5 0.001)
+    (test-equal "l2update: row 0 product" (product-codes 0) 0)  ;; BTC-USD=0
+
+    ;; Row 1: sell 50100.00 0.25
+    (test-equal "l2update: row 1 side" (side-codes 1) 1)   ;; sell=1
+    (test-approx "l2update: row 1 price" (prices 1) 50100.00 0.001)
+    (test-approx "l2update: row 1 qty" (quantities 1) 0.25 0.001)
+    (test-equal "l2update: row 1 product" (product-codes 1) 0)
+
+    ;; Timestamps should be identical for both rows
+    (test-check "l2update: timestamps equal"
+      (= (timestamps 0) (timestamps 1)) )
+    ;; Timestamp should not be null
+    (test-check "l2update: timestamp not null"
+      (<> (timestamps 0) *td-stamp-null*) )
+  )
+
+  ;; Test with offset
+  (let* ((msg (concat "{\"type\":\"l2update\","
+                      "\"product_id\":\"ETH-USD\","
+                      "\"changes\":[[\"buy\",\"3500.00\",\"10.0\"]],"
+                      "\"time\":\"2024-06-15T14:30:01Z\"}"))
+         (side-codes (int-matrix 100))
+         (prices (double-matrix 100))
+         (quantities (double-matrix 100))
+         (timestamps (long-matrix 100))
+         (product-codes (int-matrix 100))
+         (pt (_json-build-product-table '("BTC-USD" "ETH-USD")))
+         (n-rows (json-parse-l2update msg side-codes prices quantities
+                                      timestamps product-codes 5
+                                      (car pt) (cadr pt) (caddr pt))) )
+    (test-equal "l2update offset: row count" n-rows 1)
+    ;; Data written at offset 5
+    (test-equal "l2update offset: side at 5" (side-codes 5) 0)
+    (test-approx "l2update offset: price at 5" (prices 5) 3500.0 0.001)
+    (test-equal "l2update offset: product ETH-USD" (product-codes 5) 1) )
+)
+
+
+;; ============================================================
+;; Test 5: Ticker extraction
+;; ============================================================
+
+(test-suite "Ticker Extraction"
+
+  (let* ((msg (concat "{\"type\":\"ticker\","
+                      "\"product_id\":\"BTC-USD\","
+                      "\"price\":\"50050.50\","
+                      "\"best_bid\":\"50050.00\","
+                      "\"best_ask\":\"50051.00\","
+                      "\"side\":\"sell\","
+                      "\"time\":\"2024-06-15T14:30:05.500000Z\"}"))
+         (prices (double-matrix 10))
+         (best-bids (double-matrix 10))
+         (best-asks (double-matrix 10))
+         (side-codes (int-matrix 10))
+         (timestamps (long-matrix 10))
+         (product-codes (int-matrix 10))
+         (pt (_json-build-product-table '("BTC-USD" "ETH-USD")))
+         (rc (json-parse-ticker msg prices best-bids best-asks side-codes
+                                timestamps product-codes 0
+                                (car pt) (cadr pt) (caddr pt))) )
+
+    (test-equal "ticker: return code" rc 1)
+    (test-approx "ticker: price" (prices 0) 50050.50 0.01)
+    (test-approx "ticker: best_bid" (best-bids 0) 50050.00 0.01)
+    (test-approx "ticker: best_ask" (best-asks 0) 50051.00 0.01)
+    (test-equal "ticker: side sell" (side-codes 0) 1)
+    (test-equal "ticker: product BTC-USD" (product-codes 0) 0)
+    (test-check "ticker: timestamp not null"
+      (<> (timestamps 0) *td-stamp-null*) )
+  )
+)
+
+
+;; ============================================================
+;; Test 6: Timestamp cross-validation with timedate package
+;; ============================================================
+
+(test-suite "Timestamp Cross-Validation"
+
+  ;; Parse the same ISO 8601 string with both parsers
+  (let* ((ts-str "2024-06-15T14:30:00.123456Z")
+         ;; Our C parser (via l2update)
+         (msg (concat "{\"type\":\"l2update\","
+                      "\"product_id\":\"BTC-USD\","
+                      "\"changes\":[[\"buy\",\"1.0\",\"1.0\"]],"
+                      "\"time\":\"" ts-str "\"}"))
+         (timestamps (long-matrix 10))
+         (side-codes (int-matrix 10))
+         (prices (double-matrix 10))
+         (quantities (double-matrix 10))
+         (product-codes (int-matrix 10))
+         (pt (_json-build-product-table '("BTC-USD")))
+         (rc (json-parse-l2update msg side-codes prices quantities
+                                  timestamps product-codes 0
+                                  (car pt) (cadr pt) (caddr pt)))
+         (json-ts (timestamps 0))
+         ;; timedate package parser
+         (td-ts (timestamp-parse "2024-06-15T14:30:00.123456" "%Y-%m-%dT%H:%M:%S")) )
+
+    (test-equal "timestamp cross-validate: values match"
+      json-ts td-ts)
+
+    ;; Also verify components
+    (let ((parts (timestamp-components json-ts)))
+      (test-equal "timestamp: year" (nth 0 parts) 2024)
+      (test-equal "timestamp: month" (nth 1 parts) 6)
+      (test-equal "timestamp: day" (nth 2 parts) 15)
+      (test-equal "timestamp: hour" (nth 3 parts) 14)
+      (test-equal "timestamp: minute" (nth 4 parts) 30)
+      (test-equal "timestamp: second" (nth 5 parts) 0)
+      (test-equal "timestamp: microseconds" (nth 6 parts) 123456) )
+  )
+
+  ;; Test without fractional seconds
+  (let* ((msg (concat "{\"type\":\"l2update\","
+                      "\"product_id\":\"X\","
+                      "\"changes\":[[\"buy\",\"1\",\"1\"]],"
+                      "\"time\":\"2024-01-01T00:00:00Z\"}"))
+         (timestamps (long-matrix 10))
+         (side-codes (int-matrix 10))
+         (prices (double-matrix 10))
+         (quantities (double-matrix 10))
+         (product-codes (int-matrix 10))
+         (pt (_json-build-product-table '("X")))
+         (rc (json-parse-l2update msg side-codes prices quantities
+                                  timestamps product-codes 0
+                                  (car pt) (cadr pt) (caddr pt)))
+         (td-ts (timestamp-parse "2024-01-01T00:00:00" "%Y-%m-%dT%H:%M:%S")) )
+    (test-equal "timestamp no-frac: matches timedate"
+      (timestamps 0) td-ts) )
+)
+
+
+;; ============================================================
+;; Test 7: DataTable integration
+;; ============================================================
+
+(test-suite "DataTable Integration"
+
+  ;; Parse two l2update messages into arrays, then build DataTable
+  (let* ((msg1 (concat "{\"type\":\"l2update\","
+                       "\"product_id\":\"BTC-USD\","
+                       "\"changes\":["
+                       "[\"buy\",\"50000.00\",\"1.0\"],"
+                       "[\"sell\",\"50100.00\",\"2.0\"]],"
+                       "\"time\":\"2024-06-15T10:00:00Z\"}"))
+         (msg2 (concat "{\"type\":\"l2update\","
+                       "\"product_id\":\"ETH-USD\","
+                       "\"changes\":["
+                       "[\"buy\",\"3500.00\",\"5.0\"]],"
+                       "\"time\":\"2024-06-15T10:00:01Z\"}"))
+         ;; Allocate arrays for up to 100 rows
+         (side-codes (int-matrix 100))
+         (prices (double-matrix 100))
+         (quantities (double-matrix 100))
+         (timestamps (long-matrix 100))
+         (product-codes (int-matrix 100))
+         (products '("BTC-USD" "ETH-USD"))
+         (pt (_json-build-product-table products))
+         ;; Parse msg1 at offset 0
+         (n1 (json-parse-l2update msg1 side-codes prices quantities
+                                  timestamps product-codes 0
+                                  (car pt) (cadr pt) (caddr pt)))
+         ;; Parse msg2 at offset n1
+         (n2 (json-parse-l2update msg2 side-codes prices quantities
+                                  timestamps product-codes n1
+                                  (car pt) (cadr pt) (caddr pt)))
+         ;; Total rows
+         (total (+ n1 n2))
+         ;; Build DataTable
+         (dt (json-l2-make-table total side-codes prices quantities
+                                timestamps product-codes products)) )
+
+    (test-equal "datatable: row count" (==> dt num-rows) 3)
+    (test-equal "datatable: col count" (==> dt num-cols) 5)
+
+    ;; Check column types
+    (test-check "datatable: side type"
+      (= (==> dt col-type "side") 'int) )
+    (test-check "datatable: price type"
+      (= (==> dt col-type "price") 'real) )
+    (test-check "datatable: time type"
+      (= (==> dt col-type "time") 'stamp) )
+    (test-check "datatable: product type"
+      (= (==> dt col-type "product") 'string) )
+
+    ;; Check values
+    (test-equal "datatable: row 0 side" (==> dt get 0 "side") 0)
+    (test-approx "datatable: row 0 price" (==> dt get 0 "price") 50000.0 0.01)
+    (test-approx "datatable: row 0 qty" (==> dt get 0 "quantity") 1.0 0.01)
+    (test-string-equal "datatable: row 0 product"
+      (==> dt get 0 "product") "BTC-USD")
+
+    (test-equal "datatable: row 1 side" (==> dt get 1 "side") 1)
+    (test-approx "datatable: row 1 price" (==> dt get 1 "price") 50100.0 0.01)
+    (test-string-equal "datatable: row 1 product"
+      (==> dt get 1 "product") "BTC-USD")
+
+    (test-equal "datatable: row 2 side" (==> dt get 2 "side") 0)
+    (test-approx "datatable: row 2 price" (==> dt get 2 "price") 3500.0 0.01)
+    (test-string-equal "datatable: row 2 product"
+      (==> dt get 2 "product") "ETH-USD")
+  )
+)
+
+
+;; ============================================================
+;; Test 8: Product table builder
+;; ============================================================
+
+(test-suite "Product Table Builder"
+
+  (let* ((pt (_json-build-product-table '("BTC-USD" "ETH-USD" "SOL-USD")))
+         (buf (car pt))
+         (offsets (cadr pt))
+         (n (caddr pt)) )
+    (test-equal "product table: count" n 3)
+    ;; First product starts at 0
+    (test-equal "product table: offset 0" (offsets 0) 0)
+    ;; Second starts after "BTC-USD\0" (8 bytes)
+    (test-equal "product table: offset 1" (offsets 1) 8)
+    ;; Third starts after "ETH-USD\0" (8 more bytes = 16)
+    (test-equal "product table: offset 2" (offsets 2) 16) )
+)
+
+
+;; ============================================================
+;; Print results
+;; ============================================================
+
+(test-summary)

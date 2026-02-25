@@ -1,0 +1,17 @@
+;;; json-config.lsh -- Compile yyjson + json-c into shared library
+;;;
+;;; This file compiles yyjson.c and json-c.c into json-c.so.
+;;; It must be loaded before json.lsh.
+
+(libload "libc/make")
+
+(let ((dir (dirname file-being-loaded)))
+  (let ((lm (new lushmake))
+        (cc (or (getconf "CC") "gcc")))
+    (==> lm setflags (concat " -I" dir " -O2 -fPIC"))
+    (==> lm rule "json-c.o" '("json-c.c" "json-c.h" "yyjson.h"))
+    (==> lm rule "yyjson.o" '("yyjson.c" "yyjson.h"))
+    (==> lm rule "json-c.so" '("json-c.o" "yyjson.o")
+         (concat cc " -shared -o $OBJ $SOURCES -lm"))
+    (==> lm make)
+    (==> lm load "json-c.so") ) )
