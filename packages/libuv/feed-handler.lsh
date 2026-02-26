@@ -1,0 +1,311 @@
+;;; feed-handler.lsh -- Feed handler process skeleton
+;;;
+;;; Demonstrates the libuv + wire integration pattern from the
+;;; async-approaches architecture document.  This is a working
+;;; skeleton that can be extended with actual WebSocket/feed logic.
+;;;
+;;; Architecture:
+;;;   - libuv event loop for: timers, signals, TCP connections
+;;;   - Wire server for: broadcasting data to downstream consumers
+;;;   - Main loop: uv-run 'nowait, drain events, serve wire clients
+;;;
+;;; Usage:
+;;;   lush feed-handler.lsh [--port 5560]
+;;;
+;;; Or from REPL:
+;;;   (libload "libuv/feed-handler")
+;;;   (feed-handler-start 5560)
+
+(libload "libuv/libuv")
+(libload "wire/wire")
+
+;; Helper: drain all stale events from the global queue
+(de flush-events ()
+  (while (uv-event-pending)
+    (uv-next-event) ) )
+
+#? *** Feed Handler
+;; Event-driven feed handler process built on libuv.
+;;.PP
+;; Integrates a libuv event loop (timers, signals, TCP) with a
+;; wire server for broadcasting data to downstream Lush processes.
+;; This follows the TorQ-like multi-process architecture where the
+;; feed handler acts as the tickerplant equivalent.
+;;.PP
+;; Lifecycle:
+;;.LI 1. Create libuv loop + wire server
+;;.LI 2. Register signal handlers (SIGTERM, SIGINT for graceful shutdown)
+;;.LI 3. Start heartbeat timer (periodic health logging)
+;;.LI 4. Connect to data feed (placeholder)
+;;.LI 5. Main loop: poll libuv, drain events, serve wire clients
+;;.LI 6. On shutdown signal: close all handles, drain, exit
+
+
+;; ============================================================
+;; Feed handler state
+;; ============================================================
+
+(defvar *fh-loop* ())          ;; libuv event loop
+(defvar *fh-wire* ())          ;; WireServer instance
+(defvar *fh-running* ())       ;; main loop flag
+(defvar *fh-handles* ())       ;; list of active handle IDs for cleanup
+
+;; Statistics
+(defvar *fh-stats-events* 0)   ;; total events processed
+(defvar *fh-stats-ticks* 0)    ;; total main loop iterations
+(defvar *fh-stats-broadcasts* 0) ;; total wire broadcasts
+(defvar *fh-start-time* 0)     ;; timestamp of handler start
+
+
+;; ============================================================
+;; Event handlers
+;; ============================================================
+
+#? (fh-on-timer <handle-id>)
+;; Called when a timer fires.  Currently handles the heartbeat timer.
+(de fh-on-timer (handle-id)
+  (setq *fh-stats-events* (1+ *fh-stats-events*))
+  (printf "feed-handler: heartbeat  ticks=%d events=%d broadcasts=%d clients=%d\n"
+          *fh-stats-ticks* *fh-stats-events* *fh-stats-broadcasts*
+          (if *fh-wire* :*fh-wire*:client-count 0) ) )
+
+
+#? (fh-on-signal <handle-id> <signum>)
+;; Called when a signal is received.  Initiates graceful shutdown.
+(de fh-on-signal (handle-id signum)
+  (printf "feed-handler: received signal %d, shutting down...\n" signum)
+  (setq *fh-running* ()) )
+
+
+#? (fh-on-read <handle-id> <status> [<data>])
+;; Called when data arrives on a TCP connection (e.g. from a data feed).
+;; Override this to implement feed-specific parsing and broadcasting.
+(de fh-on-read (handle-id status . data)
+  (setq *fh-stats-events* (1+ *fh-stats-events*))
+  (if (< status 0)
+    ;; EOF or error
+    (printf "feed-handler: connection %d closed (status=%d)\n"
+            handle-id status)
+    ;; Data received
+    (let ((payload (if data (car data) "")))
+      ;; --- PLACEHOLDER ---
+      ;; In a real feed handler, parse JSON here and broadcast
+      ;; via wire:
+      ;;   (let ((parsed (json-parse payload)))
+      ;;     (==> *fh-wire* broadcast parsed))
+      (when (> (len payload) 0)
+        (printf "feed-handler: received %d bytes on handle %d\n"
+                (len payload) handle-id) ) ) ) )
+
+
+#? (fh-on-connect <handle-id> <status>)
+;; Called when an outbound TCP connection completes.
+(de fh-on-connect (handle-id status)
+  (if (= status 0)
+    (progn
+      (printf "feed-handler: connected (handle=%d)\n" handle-id)
+      ;; Start reading from the feed
+      (uv-tcp-read-start handle-id) )
+    (printf "feed-handler: connect failed (handle=%d status=%d)\n"
+            handle-id status) ) )
+
+
+#? (fh-on-connection <handle-id> <status>)
+;; Called when a new inbound connection arrives (unused in feed handler,
+;; but included for completeness).
+(de fh-on-connection (handle-id status)
+  (printf "feed-handler: inbound connection on handle %d\n" handle-id) )
+
+
+;; ============================================================
+;; Event dispatcher
+;; ============================================================
+
+#? (fh-dispatch-event <ev>)
+;; Route a libuv event to the appropriate handler.
+;; <ev> is a list: (type-sym handle-id status [data])
+(de fh-dispatch-event (ev)
+  (let ((type (car ev))
+        (hid (cadr ev))
+        (status (caddr ev)) )
+    (cond
+     ((= type 'timer)
+      (fh-on-timer hid) )
+     ((= type 'signal)
+      (fh-on-signal hid status) )
+     ((= type 'read)
+      (if (> (length ev) 3)
+        (fh-on-read hid status (nth 3 ev))
+        (fh-on-read hid status) ) )
+     ((= type 'connect)
+      (fh-on-connect hid status) )
+     ((= type 'connection)
+      (fh-on-connection hid status) )
+     ((= type 'close)
+      ;; Remove from our handle tracking list
+      (setq *fh-handles* (filter (lambda (x) (<> x hid)) *fh-handles*)) )
+     ((= type 'write-complete)
+      () )  ;; normal, no action needed
+     (t
+      (printf "feed-handler: unknown event type %l\n" type) ) ) ) )
+
+
+;; ============================================================
+;; Shutdown
+;; ============================================================
+
+#? (fh-shutdown)
+;; Gracefully shut down the feed handler:
+;; close all libuv handles, drain events, close loop, stop wire server.
+(de fh-shutdown ()
+  (printf "feed-handler: shutting down...\n")
+  ;; Close all tracked handles
+  (each ((hid *fh-handles*))
+    (uv-close-handle hid) )
+  ;; Run loop to process close callbacks
+  (uv-run *fh-loop* 'nowait)
+  (uv-run *fh-loop* 'default)
+  (flush-events)
+  ;; Close the loop
+  (uv-loop-close *fh-loop*)
+  ;; Shut down wire server
+  (when *fh-wire*
+    (==> *fh-wire* shutdown) )
+  (printf "feed-handler: stopped.\n") )
+
+
+;; ============================================================
+;; Main loop
+;; ============================================================
+
+#? (fh-main-loop)
+;; The main event loop.  Alternates between:
+;; 1. Polling libuv for events (non-blocking)
+;; 2. Draining and dispatching libuv events
+;; 3. Servicing wire clients (non-blocking select with 5ms timeout)
+;;
+;; This interleaving ensures both libuv I/O and wire IPC are serviced
+;; with low latency.  The wire serve-once timeout controls the maximum
+;; latency between libuv polls.
+(de fh-main-loop ()
+  (setq *fh-running* t)
+  (while *fh-running*
+    ;; 1. Poll libuv (non-blocking)
+    (uv-run *fh-loop* 'nowait)
+
+    ;; 2. Drain and dispatch events
+    (uv-drain-events fh-dispatch-event)
+
+    ;; 3. Service wire clients (5ms timeout = max latency)
+    (when *fh-wire*
+      (==> *fh-wire* serve-once 5) )
+
+    (setq *fh-stats-ticks* (1+ *fh-stats-ticks*)) ) )
+
+
+;; ============================================================
+;; Startup
+;; ============================================================
+
+#? (feed-handler-start <wire-port>)
+;; Start the feed handler process.
+;; <wire-port>: port for the wire server (downstream consumers connect here).
+;;.VP
+;; Sets up:
+;;.LI Signal handlers for SIGTERM (15) and SIGINT (2)
+;;.LI Heartbeat timer (every 5 seconds)
+;;.LI Wire server on the specified port
+;;.LI Placeholder for data feed connection
+;;.PP
+;; Then enters the main event loop.  Returns when a shutdown signal
+;; is received.
+;;.VP
+;; Example:
+;;.CODE
+;;  (libload "libuv/feed-handler")
+;;  (feed-handler-start 5560)
+;;.P
+(de feed-handler-start (wire-port)
+  (printf "\n=== feed handler starting ===\n\n")
+  (setq *fh-handles* ())
+  (setq *fh-stats-events* 0)
+  (setq *fh-stats-ticks* 0)
+  (setq *fh-stats-broadcasts* 0)
+
+  ;; 1. Create libuv loop
+  (setq *fh-loop* (uv-loop-new))
+  (printf "feed-handler: loop created\n")
+
+  ;; 2. Register signal handlers
+  (let ((sigterm-id (uv-signal-start *fh-loop* 15))   ;; SIGTERM
+        (sigint-id  (uv-signal-start *fh-loop* 2)) )  ;; SIGINT
+    (setq *fh-handles* (nconc1 *fh-handles* sigterm-id))
+    (setq *fh-handles* (nconc1 *fh-handles* sigint-id))
+    (printf "feed-handler: signal handlers registered (SIGTERM=%d SIGINT=%d)\n"
+            sigterm-id sigint-id) )
+
+  ;; 3. Start heartbeat timer (5 second interval)
+  (let ((heartbeat-id (uv-timer-start *fh-loop* 5000 5000)))
+    (setq *fh-handles* (nconc1 *fh-handles* heartbeat-id))
+    (printf "feed-handler: heartbeat timer started (id=%d, 5s interval)\n"
+            heartbeat-id) )
+
+  ;; 4. Start wire server for downstream consumers
+  (setq *fh-wire* (new WireServer wire-port))
+  (==> *fh-wire* start)
+  (printf "feed-handler: wire server listening on port %d\n" wire-port)
+
+  ;; Set up wire callbacks
+  (setq :*fh-wire*:on-connect
+    (lambda (fd)
+      (printf "feed-handler: wire client connected (fd=%d)\n" fd) ) )
+  (setq :*fh-wire*:on-disconnect
+    (lambda (fd)
+      (printf "feed-handler: wire client disconnected (fd=%d)\n" fd) ) )
+  (setq :*fh-wire*:on-sync
+    (lambda (fd expr encoding)
+      ;; Handle synchronous queries from downstream
+      (cond
+       ((= expr "stats")
+        (list *fh-stats-ticks* *fh-stats-events* *fh-stats-broadcasts*) )
+       ((= expr "ping")
+        "pong" )
+       (t
+        (printf "feed-handler: unknown sync query: %l\n" expr)
+        () ) ) ) )
+
+  ;; 5. Placeholder: connect to data feed
+  ;; In a real implementation, this would be:
+  ;;   (let ((feed-tcp (uv-tcp-new *fh-loop*)))
+  ;;     (uv-tcp-connect feed-tcp "ws-feed.exchange.com" 443)
+  ;;     (setq *fh-handles* (nconc1 *fh-handles* feed-tcp)))
+  ;; For now, we skip the feed connection.
+  (printf "feed-handler: ready (no feed connection -- skeleton mode)\n")
+  (printf "feed-handler: send SIGTERM or SIGINT to stop\n\n")
+
+  ;; 6. Enter main event loop
+  (fh-main-loop)
+
+  ;; 7. Shutdown
+  (fh-shutdown) )
+
+
+;; ============================================================
+;; Wire broadcast helper
+;; ============================================================
+
+#? (fh-broadcast <data>)
+;; Broadcast data to all connected wire clients.
+;; Typically called from within fh-on-read after parsing feed data.
+(de fh-broadcast (data)
+  (when (and *fh-wire* (> :*fh-wire*:client-count 0))
+    (==> *fh-wire* broadcast data)
+    (setq *fh-stats-broadcasts* (1+ *fh-stats-broadcasts*)) ) )
+
+
+;; ============================================================
+;; Command-line entry point
+;; ============================================================
+
+;; To run as a standalone process:
+;;   lush -e '(libload "libuv/feed-handler") (feed-handler-start 5560)'

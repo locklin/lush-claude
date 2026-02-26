@@ -1,0 +1,697 @@
+;;; libuv.lsh -- Event loop for Lush (libuv wrapper)
+;;;
+;;; Two layers:
+;;;   1. DHC-compiled thin wrappers (_uv-*) that bridge Lush types
+;;;      to the C functions in libuv-c.c.
+;;;   2. Interpreted high-level API (uv-loop-new, uv-timer-start,
+;;;      uv-run, uv-next-event, uv-drain-events, etc.)
+;;;
+;;; Constraint: (-long-) is broken in DHC for scalars, so we use
+;;; (-gptr-) for loop pointers and (-int-) for handle IDs.
+;;;
+;;; Callback mechanism:
+;;;   libuv uses C function pointer callbacks.  The wrapper layer
+;;;   registers static C callbacks that push typed events into a
+;;;   ring buffer.  Lush drains the queue via (uv-next-event) or
+;;;   (uv-drain-events) after each uv_run cycle.
+
+(libload "libuv/libuv-config")
+
+#? *** libuv: Event Loop for Lush
+;; Asynchronous I/O event loop built on libuv (v1.49.2).
+;;.PP
+;; Provides non-blocking I/O via an event-driven architecture.
+;; libuv handles use C function pointer callbacks internally;
+;; this package bridges them to Lush via an event queue pattern:
+;;.CODE
+;;  (uv-run loop 'once)        ;; C: dispatches I/O, callbacks push events
+;;  (uv-drain-events handler)  ;; Lush: reads events, calls handler
+;;  ;; repeat
+;;.P
+;;.PP
+;; Supported handle types: timer, tcp, poll, signal.
+;; Each handle is identified by an integer ID (not a raw pointer).
+;;.VP
+;; Quick example:
+;;.CODE
+;;  (libload "libuv/libuv")
+;;  (let ((loop (uv-loop-new)))
+;;    (uv-timer-start loop 100 0)   ;; 100ms one-shot
+;;    (uv-run loop 'once)
+;;    (let ((ev (uv-next-event)))
+;;      (when ev (printf "Event: %l\n" ev)))
+;;    (uv-loop-close loop))
+;;.P
+;;.SEE (uv-loop-new)
+;;.SEE (uv-run <loop> <mode>)
+;;.SEE (uv-next-event)
+;;.SEE (uv-drain-events <handler>)
+
+
+#? ** Constants
+
+#? *uv-event-none*
+;;.TYPE VAR
+;; No event (queue empty).
+(defvar *uv-event-none*         0)
+
+#? *uv-event-timer*
+;;.TYPE VAR
+;; Timer fired.
+(defvar *uv-event-timer*        1)
+
+#? *uv-event-read*
+;;.TYPE VAR
+;; Data received on a stream (TCP). Event data contains the bytes read.
+;; Status < 0 indicates EOF or error.
+(defvar *uv-event-read*         2)
+
+#? *uv-event-write-complete*
+;;.TYPE VAR
+;; Write operation completed on a stream.
+(defvar *uv-event-write-complete* 3)
+
+#? *uv-event-connect*
+;;.TYPE VAR
+;; TCP connect completed. Status 0 = success.
+(defvar *uv-event-connect*      4)
+
+#? *uv-event-close*
+;;.TYPE VAR
+;; Handle closed. The handle ID is no longer valid after this event.
+(defvar *uv-event-close*        5)
+
+#? *uv-event-signal*
+;;.TYPE VAR
+;; Signal received. Status field contains the signal number.
+(defvar *uv-event-signal*       6)
+
+#? *uv-event-poll*
+;;.TYPE VAR
+;; File descriptor ready (readable/writable).
+(defvar *uv-event-poll*         7)
+
+#? *uv-event-connection*
+;;.TYPE VAR
+;; New connection on a listening TCP server.
+(defvar *uv-event-connection*   8)
+
+;; Symbol table for event type names
+(defvar *uv-event-syms*
+  '(none timer read write-complete connect close signal poll connection))
+
+
+#? ** Compiled Layer (DHC)
+
+;; ============================================================
+;; DHC-compiled wrappers (thin bridges to C)
+;; ============================================================
+
+;; ---- Loop ----
+
+(de _uv-loop-new ()
+  (let ((loop (gptr ())))
+    ((-gptr-) loop)
+    #{ $loop = lush_uv_loop_new(); #}
+    loop ) )
+
+(de _uv-loop-run (loop mode)
+  ((-gptr-) loop)
+  ((-int-) mode)
+  (let ((rc 0))
+    ((-int-) rc)
+    #{ $rc = lush_uv_loop_run($loop, $mode); #}
+    rc ) )
+
+(de _uv-loop-stop (loop)
+  ((-gptr-) loop)
+  #{ lush_uv_loop_stop($loop); #}
+  () )
+
+(de _uv-loop-close (loop)
+  ((-gptr-) loop)
+  (let ((rc 0))
+    ((-int-) rc)
+    #{ $rc = lush_uv_loop_close($loop); #}
+    rc ) )
+
+(de _uv-loop-alive (loop)
+  ((-gptr-) loop)
+  (let ((rc 0))
+    ((-int-) rc)
+    #{ $rc = lush_uv_loop_alive($loop); #}
+    rc ) )
+
+;; ---- Event queue ----
+
+(de _uv-next-event (type-out handle-out status-out len-out data-buf)
+  ((-idx1- (-int-)) type-out handle-out status-out len-out)
+  ((-idx1- (-ubyte-)) data-buf)
+  (let ((rc 0))
+    ((-int-) rc)
+    #{ $rc = lush_uv_next_event(
+         IDX_PTR($type_out, int),
+         IDX_PTR($handle_out, int),
+         IDX_PTR($status_out, int),
+         IDX_PTR($len_out, int),
+         (char *)IDX_PTR($data_buf, unsigned char)); #}
+    rc ) )
+
+(de _uv-event-pending ()
+  (let ((rc 0))
+    ((-int-) rc)
+    #{ $rc = lush_uv_event_pending(); #}
+    rc ) )
+
+;; ---- Handle management ----
+
+(de _uv-close-handle (handle-id)
+  ((-int-) handle-id)
+  #{ lush_uv_close_handle($handle_id); #}
+  () )
+
+(de _uv-handle-type (handle-id)
+  ((-int-) handle-id)
+  (let ((rc 0))
+    ((-int-) rc)
+    #{ $rc = lush_uv_handle_type($handle_id); #}
+    rc ) )
+
+;; ---- Timer ----
+
+(de _uv-timer-start (loop timeout-ms repeat-ms)
+  ((-gptr-) loop)
+  ((-int-) timeout-ms repeat-ms)
+  (let ((rc 0))
+    ((-int-) rc)
+    #{ $rc = lush_uv_timer_start($loop, $timeout_ms, $repeat_ms); #}
+    rc ) )
+
+(de _uv-timer-stop (handle-id)
+  ((-int-) handle-id)
+  (let ((rc 0))
+    ((-int-) rc)
+    #{ $rc = lush_uv_timer_stop($handle_id); #}
+    rc ) )
+
+(de _uv-timer-again (handle-id)
+  ((-int-) handle-id)
+  (let ((rc 0))
+    ((-int-) rc)
+    #{ $rc = lush_uv_timer_again($handle_id); #}
+    rc ) )
+
+;; ---- TCP ----
+
+(de _uv-tcp-new (loop)
+  ((-gptr-) loop)
+  (let ((rc 0))
+    ((-int-) rc)
+    #{ $rc = lush_uv_tcp_new($loop); #}
+    rc ) )
+
+(de _uv-tcp-bind (handle-id ip port)
+  ((-int-) handle-id port)
+  ((-str-) ip)
+  (let ((rc 0))
+    ((-int-) rc)
+    #{ $rc = lush_uv_tcp_bind($handle_id, $ip->data, $port); #}
+    rc ) )
+
+(de _uv-tcp-listen (handle-id backlog)
+  ((-int-) handle-id backlog)
+  (let ((rc 0))
+    ((-int-) rc)
+    #{ $rc = lush_uv_tcp_listen($handle_id, $backlog); #}
+    rc ) )
+
+(de _uv-tcp-accept (server-id)
+  ((-int-) server-id)
+  (let ((rc 0))
+    ((-int-) rc)
+    #{ $rc = lush_uv_tcp_accept($server_id); #}
+    rc ) )
+
+(de _uv-tcp-connect (handle-id ip port)
+  ((-int-) handle-id port)
+  ((-str-) ip)
+  (let ((rc 0))
+    ((-int-) rc)
+    #{ $rc = lush_uv_tcp_connect($handle_id, $ip->data, $port); #}
+    rc ) )
+
+(de _uv-tcp-read-start (handle-id)
+  ((-int-) handle-id)
+  (let ((rc 0))
+    ((-int-) rc)
+    #{ $rc = lush_uv_tcp_read_start($handle_id); #}
+    rc ) )
+
+(de _uv-tcp-read-stop (handle-id)
+  ((-int-) handle-id)
+  (let ((rc 0))
+    ((-int-) rc)
+    #{ $rc = lush_uv_tcp_read_stop($handle_id); #}
+    rc ) )
+
+(de _uv-tcp-write (handle-id data len)
+  ((-int-) handle-id len)
+  ((-str-) data)
+  (let ((rc 0))
+    ((-int-) rc)
+    #{ $rc = lush_uv_tcp_write($handle_id, $data->data, $len); #}
+    rc ) )
+
+;; ---- Poll ----
+
+(de _uv-poll-start (loop fd events)
+  ((-gptr-) loop)
+  ((-int-) fd events)
+  (let ((rc 0))
+    ((-int-) rc)
+    #{ $rc = lush_uv_poll_start($loop, $fd, $events); #}
+    rc ) )
+
+(de _uv-poll-stop (handle-id)
+  ((-int-) handle-id)
+  (let ((rc 0))
+    ((-int-) rc)
+    #{ $rc = lush_uv_poll_stop($handle_id); #}
+    rc ) )
+
+;; ---- Signal ----
+
+(de _uv-signal-start (loop signum)
+  ((-gptr-) loop)
+  ((-int-) signum)
+  (let ((rc 0))
+    ((-int-) rc)
+    #{ $rc = lush_uv_signal_start($loop, $signum); #}
+    rc ) )
+
+(de _uv-signal-stop (handle-id)
+  ((-int-) handle-id)
+  (let ((rc 0))
+    ((-int-) rc)
+    #{ $rc = lush_uv_signal_stop($handle_id); #}
+    rc ) )
+
+;; ---- Utilities ----
+
+(de _uv-tcp-getport (handle-id)
+  ((-int-) handle-id)
+  (let ((rc 0))
+    ((-int-) rc)
+    #{ $rc = lush_uv_tcp_getport($handle_id); #}
+    rc ) )
+
+(de _uv-kill-self (signum)
+  ((-int-) signum)
+  (let ((rc 0))
+    ((-int-) rc)
+    #{ $rc = lush_uv_kill_self($signum); #}
+    rc ) )
+
+
+;; Compile all DHC wrappers
+(let ((dhc-make-lushflags
+       (concat dhc-make-lushflags " -I" (dirname file-being-loaded)
+               " -I" (dirname file-being-loaded) "/include")))
+  (dhc-make-with-libs () t
+    #{ #include "libuv-c.h" #}
+    _uv-loop-new _uv-loop-run _uv-loop-stop _uv-loop-close _uv-loop-alive
+    _uv-next-event _uv-event-pending
+    _uv-close-handle _uv-handle-type
+    _uv-timer-start _uv-timer-stop _uv-timer-again
+    _uv-tcp-new _uv-tcp-bind _uv-tcp-listen _uv-tcp-accept
+    _uv-tcp-connect _uv-tcp-read-start _uv-tcp-read-stop _uv-tcp-write
+    _uv-poll-start _uv-poll-stop
+    _uv-signal-start _uv-signal-stop
+    _uv-tcp-getport _uv-kill-self ) )
+
+
+;; ============================================================
+;; Interpreted high-level API
+;; ============================================================
+
+#? ** Loop API
+
+#? (uv-loop-new)
+;; Create a new event loop.
+;; Returns an opaque loop handle (gptr).
+;; Must be closed with {<b> uv-loop-close} when done.
+;;.SEE (uv-loop-close <loop>)
+;;.SEE (uv-run <loop> <mode>)
+(de uv-loop-new ()
+  (let ((loop (_uv-loop-new)))
+    (when (= loop (gptr ()))
+      (error "uv-loop-new" "failed to create event loop") )
+    loop ) )
+
+
+#? (uv-run <loop> <mode>)
+;; Run the event loop.
+;; <mode> is one of:
+;;.LI <'default>: run until no more active handles/requests.
+;;.LI <'once>: poll for I/O once, may block if no pending callbacks.
+;;.LI <'nowait>: poll for I/O once, do not block.
+;;.PP
+;; Returns non-zero if there are still active handles or requests.
+;; After calling this, drain events with {<b> uv-next-event} or
+;; {<b> uv-drain-events}.
+;;.SEE (uv-next-event)
+;;.SEE (uv-drain-events <handler>)
+(de uv-run (loop mode)
+  (let ((m (cond
+            ((= mode 'default) 0)
+            ((= mode 'once)    1)
+            ((= mode 'nowait)  2)
+            (t (error "uv-run" "mode must be 'default, 'once, or 'nowait" mode)) )))
+    (_uv-loop-run loop m) ) )
+
+
+#? (uv-loop-stop <loop>)
+;; Stop the event loop.  The current or next call to {<b> uv-run}
+;; will return as soon as possible.
+(de uv-loop-stop (loop)
+  (_uv-loop-stop loop) )
+
+
+#? (uv-loop-close <loop>)
+;; Close and free the event loop.
+;; All handles must be closed first.
+;; Signals error if handles are still active (use {<b> uv-close-handle}
+;; first and run the loop to process close callbacks).
+;;.SEE (uv-close-handle <handle-id>)
+(de uv-loop-close (loop)
+  (let ((rc (_uv-loop-close loop)))
+    (when (<> rc 0)
+      (error 'uv-loop-close "loop has active handles (close them first)" rc) )
+    () ) )
+
+
+#? (uv-loop-alive <loop>)
+;; Returns <t> if the loop has active handles or requests, <()> otherwise.
+(de uv-loop-alive (loop)
+  (if (> (_uv-loop-alive loop) 0) t ()) )
+
+
+#? ** Event API
+
+;; Shared buffers for event reading (avoid per-call allocation)
+(defvar *uv-ev-type*    (int-matrix 1))
+(defvar *uv-ev-handle*  (int-matrix 1))
+(defvar *uv-ev-status*  (int-matrix 1))
+(defvar *uv-ev-len*     (int-matrix 1))
+(defvar *uv-ev-data*    (ubyte-matrix 8192))
+
+#? (uv-next-event)
+;; Dequeue the next event from the event queue.
+;; Returns a list <(type handle-id status [data])> where:
+;;.LI <type>: event type symbol (timer, read, write-complete, connect,
+;; close, signal, poll, connection).
+;;.LI <handle-id>: integer ID of the handle that produced the event.
+;;.LI <status>: integer status code (0 = success, <0 = error; for
+;; signal events this is the signal number).
+;;.LI <data>: string of received data (only for read events).
+;;.PP
+;; Returns <()> if the event queue is empty.
+;;.SEE (uv-drain-events <handler>)
+;;.SEE (uv-event-pending)
+(de uv-next-event ()
+  (let ((rc (_uv-next-event *uv-ev-type* *uv-ev-handle*
+                             *uv-ev-status* *uv-ev-len* *uv-ev-data*)))
+    (when (> rc 0)
+      (let ((type-code (*uv-ev-type* 0))
+            (hid (*uv-ev-handle* 0))
+            (st (*uv-ev-status* 0))
+            (dlen (*uv-ev-len* 0)) )
+        (let ((type-sym (if (and (> type-code 0)
+                                 (<= type-code (length *uv-event-syms*)))
+                          (nth type-code *uv-event-syms*)
+                          'unknown )))
+          (if (and (= type-code *uv-event-read*) (> dlen 0))
+            ;; Read event with data: extract string
+            (let ((s ""))
+              (for (i 0 (1- dlen))
+                (setq s (concat s (chr (*uv-ev-data* i)))) )
+              (list type-sym hid st s) )
+            (list type-sym hid st) ) ) ) ) ) )
+
+
+#? (uv-event-pending)
+;; Returns <t> if there are events in the queue, <()> otherwise.
+(de uv-event-pending ()
+  (if (> (_uv-event-pending) 0) t ()) )
+
+
+#? (uv-drain-events <handler>)
+;; Dequeue all pending events, calling <handler> for each one.
+;; <handler> is called with one argument: the event list as
+;; returned by {<b> uv-next-event}.
+;; Returns the number of events processed.
+;;.VP
+;; Example:
+;;.CODE
+;;  (uv-drain-events
+;;    (lambda (ev)
+;;      (let ((type (car ev))
+;;            (hid (cadr ev))
+;;            (status (caddr ev)))
+;;        (printf "Event: type=%l handle=%d status=%d\n"
+;;                type hid status))))
+;;.P
+;;.SEE (uv-next-event)
+(de uv-drain-events (handler)
+  (let ((count 0))
+    (while (uv-event-pending)
+      (let ((ev (uv-next-event)))
+        (when ev
+          (handler ev)
+          (setq count (1+ count)) ) ) )
+    count ) )
+
+
+#? ** Handle API
+
+#? (uv-close-handle <handle-id>)
+;; Request that a handle be closed.  The close happens asynchronously;
+;; a {<b> close} event will be queued when the handle is fully closed.
+;; After the close event, the handle ID is no longer valid.
+;; You must run the loop after calling this to process the close.
+;;.SEE (uv-loop-close <loop>)
+(de uv-close-handle (handle-id)
+  (_uv-close-handle handle-id) )
+
+
+#? ** Timer API
+
+#? (uv-timer-start <loop> <timeout-ms> <repeat-ms>)
+;; Start a timer.
+;; <timeout-ms>: initial delay in milliseconds before first fire.
+;; <repeat-ms>: repeat interval in milliseconds (0 for one-shot).
+;; Returns the handle ID (integer) for the timer.
+;;.VP
+;; Example:
+;;.CODE
+;;  (let ((loop (uv-loop-new)))
+;;    ;; One-shot 100ms timer
+;;    (let ((tid (uv-timer-start loop 100 0)))
+;;      (uv-run loop 'once)
+;;      (let ((ev (uv-next-event)))
+;;        (printf "Timer %d fired: %l\n" tid ev))
+;;      (uv-close-handle tid)
+;;      (uv-run loop 'once))  ;; process close
+;;    (uv-loop-close loop))
+;;.P
+;;.SEE (uv-timer-stop <handle-id>)
+;;.SEE (uv-timer-again <handle-id>)
+(de uv-timer-start (loop timeout-ms repeat-ms)
+  (let ((id (_uv-timer-start loop timeout-ms repeat-ms)))
+    (when (< id 0)
+      (error "uv-timer-start" "failed to start timer" id) )
+    id ) )
+
+
+#? (uv-timer-stop <handle-id>)
+;; Stop a timer.  The timer handle remains valid and can be
+;; restarted with {<b> uv-timer-again}.
+(de uv-timer-stop (handle-id)
+  (let ((rc (_uv-timer-stop handle-id)))
+    (when (< rc 0)
+      (error "uv-timer-stop" "failed to stop timer" rc) )
+    () ) )
+
+
+#? (uv-timer-again <handle-id>)
+;; Restart a repeating timer.  The timer must have been started
+;; with a non-zero repeat interval.
+(de uv-timer-again (handle-id)
+  (let ((rc (_uv-timer-again handle-id)))
+    (when (< rc 0)
+      (error "uv-timer-again" "failed to restart timer" rc) )
+    () ) )
+
+
+#? ** TCP API
+
+#? (uv-tcp-new <loop>)
+;; Create a new TCP handle.
+;; Returns the handle ID (integer).
+;;.SEE (uv-tcp-bind <handle-id> <ip> <port>)
+;;.SEE (uv-tcp-connect <handle-id> <ip> <port>)
+(de uv-tcp-new (loop)
+  (let ((id (_uv-tcp-new loop)))
+    (when (< id 0)
+      (error "uv-tcp-new" "failed to create TCP handle" id) )
+    id ) )
+
+
+#? (uv-tcp-bind <handle-id> <ip> <port>)
+;; Bind a TCP handle to an address.
+;; <ip>: IPv4 address string (e.g. "0.0.0.0")
+;; <port>: port number
+(de uv-tcp-bind (handle-id ip port)
+  (let ((rc (_uv-tcp-bind handle-id ip port)))
+    (when (< rc 0)
+      (error "uv-tcp-bind" "failed to bind" rc) )
+    () ) )
+
+
+#? (uv-tcp-listen <handle-id> [<backlog>])
+;; Start listening for incoming connections.
+;; New connections produce {<b> connection} events.
+;; Use {<b> uv-tcp-accept} in the event handler to accept.
+;;.SEE (uv-tcp-accept <server-id>)
+(de uv-tcp-listen (handle-id &optional backlog)
+  (let ((bl (if backlog backlog 128)))
+    (let ((rc (_uv-tcp-listen handle-id bl)))
+      (when (< rc 0)
+        (error "uv-tcp-listen" "failed to listen" rc) )
+      () ) ) )
+
+
+#? (uv-tcp-accept <server-id>)
+;; Accept a new connection on a listening TCP handle.
+;; Call this when you receive a {<b> connection} event.
+;; Returns the handle ID for the new client connection.
+(de uv-tcp-accept (server-id)
+  (let ((id (_uv-tcp-accept server-id)))
+    (when (< id 0)
+      (error "uv-tcp-accept" "failed to accept" id) )
+    id ) )
+
+
+#? (uv-tcp-connect <handle-id> <ip> <port>)
+;; Initiate a TCP connection.
+;; A {<b> connect} event will be queued when the connection
+;; completes (or fails).
+(de uv-tcp-connect (handle-id ip port)
+  (let ((rc (_uv-tcp-connect handle-id ip port)))
+    (when (< rc 0)
+      (error "uv-tcp-connect" "failed to initiate connect" rc) )
+    () ) )
+
+
+#? (uv-tcp-read-start <handle-id>)
+;; Start reading data from a TCP connection.
+;; Incoming data produces {<b> read} events with data in the
+;; fourth element of the event list.
+(de uv-tcp-read-start (handle-id)
+  (let ((rc (_uv-tcp-read-start handle-id)))
+    (when (< rc 0)
+      (error "uv-tcp-read-start" "failed to start reading" rc) )
+    () ) )
+
+
+#? (uv-tcp-read-stop <handle-id>)
+;; Stop reading data from a TCP connection.
+(de uv-tcp-read-stop (handle-id)
+  (let ((rc (_uv-tcp-read-stop handle-id)))
+    (when (< rc 0)
+      (error "uv-tcp-read-stop" "failed to stop reading" rc) )
+    () ) )
+
+
+#? (uv-tcp-write <handle-id> <data>)
+;; Write data to a TCP connection.
+;; <data>: string to send.
+;; A {<b> write-complete} event will be queued when the write finishes.
+(de uv-tcp-write (handle-id data)
+  (let ((rc (_uv-tcp-write handle-id data (len data))))
+    (when (< rc 0)
+      (error "uv-tcp-write" "failed to write" rc) )
+    () ) )
+
+
+#? ** Poll API
+
+#? (uv-poll-start <loop> <fd> <events>)
+;; Start polling a file descriptor for I/O readiness.
+;; <fd>: file descriptor (integer).
+;; <events>: bitmask — 1 = readable, 2 = writable, 3 = both.
+;; Returns the handle ID.
+;; {<b> poll} events will be queued when the fd becomes ready.
+(de uv-poll-start (loop fd events)
+  (let ((id (_uv-poll-start loop fd events)))
+    (when (< id 0)
+      (error "uv-poll-start" "failed to start poll" id) )
+    id ) )
+
+
+#? (uv-poll-stop <handle-id>)
+;; Stop polling a file descriptor.
+(de uv-poll-stop (handle-id)
+  (let ((rc (_uv-poll-stop handle-id)))
+    (when (< rc 0)
+      (error "uv-poll-stop" "failed to stop poll" rc) )
+    () ) )
+
+
+#? ** Signal API
+
+#? (uv-signal-start <loop> <signum>)
+;; Start watching for a signal.
+;; <signum>: signal number (e.g. 15 for SIGTERM, 2 for SIGINT).
+;; Returns the handle ID.
+;; {<b> signal} events will be queued when the signal is received.
+;; The status field of the event contains the signal number.
+(de uv-signal-start (loop signum)
+  (let ((id (_uv-signal-start loop signum)))
+    (when (< id 0)
+      (error "uv-signal-start" "failed to start signal handler" id) )
+    id ) )
+
+
+#? (uv-signal-stop <handle-id>)
+;; Stop watching for a signal.
+(de uv-signal-stop (handle-id)
+  (let ((rc (_uv-signal-stop handle-id)))
+    (when (< rc 0)
+      (error "uv-signal-stop" "failed to stop signal handler" rc) )
+    () ) )
+
+
+#? ** Utility API
+
+#? (uv-tcp-getport <handle-id>)
+;; Get the port number of a bound TCP handle.
+;; Useful after binding to port 0 (ephemeral port) to discover
+;; the actual port assigned by the OS.
+;; Returns the port number, or signals an error.
+(de uv-tcp-getport (handle-id)
+  (let ((port (_uv-tcp-getport handle-id)))
+    (when (< port 0)
+      (error 'uv-tcp-getport "failed to get port" port) )
+    port ) )
+
+
+#? (uv-kill-self <signum>)
+;; Send a signal to the current process.
+;; Useful for testing signal handlers.
+;; <signum>: signal number (e.g. 10 for SIGUSR1).
+(de uv-kill-self (signum)
+  (let ((rc (_uv-kill-self signum)))
+    (when (<> rc 0)
+      (error 'uv-kill-self "failed to send signal" rc) )
+    () ) )

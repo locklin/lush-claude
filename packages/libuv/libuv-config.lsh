@@ -1,0 +1,128 @@
+;;; libuv-config.lsh -- Compile libuv + libuv-c into shared library
+;;;
+;;; This file compiles vendored libuv source files and the Lush
+;;; wrapper layer (libuv-c.c) into a single shared library libuv-c.so.
+;;; It must be loaded before libuv.lsh.
+
+#? ** Build Configuration
+;; Compiles vendored libuv source (~49 files) and the C wrapper layer
+;; into a shared library using {<b> lushmake}.  This file is loaded
+;; automatically by <libuv.lsh> and should not be loaded directly.
+;;.PP
+;; The build produces a single shared library:
+;;.LI <libuv-c.so>: libuv v1.49.2 (Linux) plus the Lush-specific
+;; wrapper with handle table, event queue, and static callbacks.
+
+(libload "libc/make")
+
+(let ((dir (dirname file-being-loaded)))
+  (let ((lm (new lushmake))
+        (cc (or (getconf "CC") "gcc")))
+
+    ;; Include paths: libuv public headers + internal src headers
+    ;; -D_GNU_SOURCE required by libuv on Linux
+    (==> lm setflags
+         (concat " -I" dir "/include"
+                 " -I" dir "/src"
+                 " -I" dir
+                 " -D_GNU_SOURCE -O2 -fPIC"))
+
+    ;; ---- Core source files ----
+    (==> lm rule "fs-poll.o"
+         '("src/fs-poll.c" "src/uv-common.h" "include/uv.h"))
+    (==> lm rule "idna.o"
+         '("src/idna.c" "src/idna.h"))
+    (==> lm rule "inet.o"
+         '("src/inet.c"))
+    (==> lm rule "random.o"
+         '("src/random.c"))
+    (==> lm rule "strscpy.o"
+         '("src/strscpy.c" "src/strscpy.h"))
+    (==> lm rule "strtok.o"
+         '("src/strtok.c" "src/strtok.h"))
+    (==> lm rule "thread-common.o"
+         '("src/thread-common.c"))
+    (==> lm rule "threadpool.o"
+         '("src/threadpool.c"))
+    (==> lm rule "timer.o"
+         '("src/timer.c"))
+    (==> lm rule "uv-common.o"
+         '("src/uv-common.c" "src/uv-common.h"))
+    (==> lm rule "uv-data-getter-setters.o"
+         '("src/uv-data-getter-setters.c"))
+    (==> lm rule "version.o"
+         '("src/version.c"))
+
+    ;; ---- Unix/Linux source files ----
+    ;; Note: posix-poll.c, posix-hrtime.c, sysinfo-loadavg.c, and
+    ;; sysinfo-memory.c are NOT needed on Linux (linux.c provides
+    ;; these).  random-devurandom.c IS needed (fallback from random.c).
+    (==> lm rule "unix-async.o"
+         '("src/unix/async.c" "src/unix/internal.h"))
+    (==> lm rule "unix-core.o"
+         '("src/unix/core.c" "src/unix/internal.h"))
+    (==> lm rule "unix-dl.o"
+         '("src/unix/dl.c"))
+    (==> lm rule "unix-fs.o"
+         '("src/unix/fs.c" "src/unix/internal.h"))
+    (==> lm rule "unix-getaddrinfo.o"
+         '("src/unix/getaddrinfo.c"))
+    (==> lm rule "unix-getnameinfo.o"
+         '("src/unix/getnameinfo.c"))
+    (==> lm rule "unix-linux.o"
+         '("src/unix/linux.c" "src/unix/internal.h"))
+    (==> lm rule "unix-loop-watcher.o"
+         '("src/unix/loop-watcher.c"))
+    (==> lm rule "unix-loop.o"
+         '("src/unix/loop.c" "src/unix/internal.h"))
+    (==> lm rule "unix-pipe.o"
+         '("src/unix/pipe.c" "src/unix/internal.h"))
+    (==> lm rule "unix-poll.o"
+         '("src/unix/poll.c" "src/unix/internal.h"))
+    (==> lm rule "unix-process.o"
+         '("src/unix/process.c" "src/unix/internal.h"))
+    (==> lm rule "unix-procfs-exepath.o"
+         '("src/unix/procfs-exepath.c"))
+    (==> lm rule "unix-proctitle.o"
+         '("src/unix/proctitle.c"))
+    (==> lm rule "unix-random-devurandom.o"
+         '("src/unix/random-devurandom.c"))
+    (==> lm rule "unix-random-getrandom.o"
+         '("src/unix/random-getrandom.c"))
+    (==> lm rule "unix-random-sysctl-linux.o"
+         '("src/unix/random-sysctl-linux.c"))
+    (==> lm rule "unix-signal.o"
+         '("src/unix/signal.c" "src/unix/internal.h"))
+    (==> lm rule "unix-stream.o"
+         '("src/unix/stream.c" "src/unix/internal.h"))
+    (==> lm rule "unix-tcp.o"
+         '("src/unix/tcp.c" "src/unix/internal.h"))
+    (==> lm rule "unix-thread.o"
+         '("src/unix/thread.c"))
+    (==> lm rule "unix-tty.o"
+         '("src/unix/tty.c" "src/unix/internal.h"))
+    (==> lm rule "unix-udp.o"
+         '("src/unix/udp.c" "src/unix/internal.h"))
+
+    ;; ---- Wrapper layer ----
+    (==> lm rule "libuv-c.o" '("libuv-c.c" "libuv-c.h" "include/uv.h"))
+
+    ;; ---- Link all objects into a single shared library ----
+    (==> lm rule "libuv-c.so"
+         '("fs-poll.o" "idna.o" "inet.o" "random.o"
+           "strscpy.o" "strtok.o" "thread-common.o" "threadpool.o"
+           "timer.o" "uv-common.o" "uv-data-getter-setters.o" "version.o"
+           "unix-async.o" "unix-core.o" "unix-dl.o" "unix-fs.o"
+           "unix-getaddrinfo.o" "unix-getnameinfo.o" "unix-linux.o"
+           "unix-loop-watcher.o" "unix-loop.o" "unix-pipe.o" "unix-poll.o"
+           "unix-process.o" "unix-procfs-exepath.o" "unix-proctitle.o"
+           "unix-random-devurandom.o"
+           "unix-random-getrandom.o" "unix-random-sysctl-linux.o"
+           "unix-signal.o" "unix-stream.o"
+           "unix-tcp.o" "unix-thread.o" "unix-tty.o" "unix-udp.o"
+           "libuv-c.o")
+         (concat cc " -shared -o $OBJ $SOURCES -lpthread -ldl"))
+
+    ;; Build and load
+    (==> lm make)
+    (==> lm load "libuv-c.so") ) )
