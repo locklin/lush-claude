@@ -1,0 +1,109 @@
+;;; test-ws-client.lsh -- Integration test for event-driven WebSocket client
+;;;
+;;; Tests ws-client.lsh against Coinbase's public WebSocket API.
+;;; Verifies: connect, poll event delivery, message receipt, clean shutdown.
+;;;
+;;; Usage: lush test-ws-client.lsh
+
+(libload "libuv/ws-client")
+
+(printf "\n=== ws-client integration tests ===\n\n")
+
+;; Helper: drain all stale events from the global queue
+(de flush-events ()
+  (while (uv-event-pending)
+    (uv-next-event) ) )
+
+;; ---- Test 1: ws-client-connect succeeds ----
+(printf "Test 1: ws-client-connect... ")
+(flush-events)
+(let ((loop (uv-loop-new))
+      (client ()) )
+  (setq client (ws-client-connect loop "wss://ws-feed.exchange.coinbase.com"))
+  (if (and client
+           (car client)       ;; ws-handle
+           (cadr client)      ;; poll-handle-id
+           (> (caddr client) 0))  ;; fd > 0
+    (printf "PASS (poll-id=%d fd=%d)\n" (cadr client) (caddr client))
+    (printf "FAIL (client=%l)\n" client) )
+
+  ;; ---- Test 2: ws-client-send succeeds ----
+  (printf "Test 2: ws-client-send... ")
+  (let ((sub-msg "{\"type\":\"subscribe\",\"channels\":[\"status\"]}"))
+    (let ((sent (ws-client-send client sub-msg)))
+      (if (> sent 0)
+        (printf "PASS (sent %d bytes)\n" sent)
+        (printf "FAIL (sent=%d)\n" sent) ) ) )
+
+  ;; ---- Test 3: Poll events fire from libuv loop ----
+  (printf "Test 3: Poll events from libuv... ")
+  (let ((poll-id (ws-client-poll-id client))
+        (got-poll ())
+        (tries 0) )
+    ;; Run the loop a few times -- Coinbase should respond quickly
+    (while (and (not got-poll) (< tries 20))
+      (uv-run loop 'nowait)
+      (while (uv-event-pending)
+        (let ((ev (uv-next-event)))
+          (when (and ev (= (car ev) 'poll) (= (cadr ev) poll-id))
+            (setq got-poll t) ) ) )
+      ;; Small delay between iterations if no events yet
+      (when (not got-poll)
+        (uv-run loop 'once) )
+      (setq tries (1+ tries)) )
+    (if got-poll
+      (printf "PASS (after %d iterations)\n" tries)
+      (printf "FAIL (no poll events after %d iterations)\n" tries) ) )
+
+  ;; ---- Test 4: ws-client-recv-ready returns message ----
+  (printf "Test 4: ws-client-recv-ready... ")
+  (let ((msg ())
+        (tries 0) )
+    ;; Keep polling until we get a message
+    (while (and (not msg) (< tries 30))
+      (uv-run loop 'once)
+      ;; Drain events (we just need the poll trigger)
+      (while (uv-event-pending)
+        (uv-next-event) )
+      ;; Try to receive
+      (setq msg (ws-client-recv-ready client))
+      (setq tries (1+ tries)) )
+    (if msg
+      (progn
+        (printf "PASS (%d bytes" (len msg))
+        ;; Print first 60 chars as preview
+        (when (> (len msg) 0)
+          (printf ": %s" (if (> (len msg) 60)
+                           (concat (mid msg 1 60) "...")
+                           msg)) )
+        (printf ")\n") )
+      (printf "FAIL (no message after %d iterations)\n" tries) ) )
+
+  ;; ---- Test 5: Received message looks like JSON ----
+  (printf "Test 5: Message is JSON... ")
+  ;; Get another message if needed, or use the one from test 4
+  (let ((msg ())
+        (tries 0) )
+    (while (and (not msg) (< tries 20))
+      (uv-run loop 'once)
+      (flush-events)
+      (setq msg (ws-client-recv-ready client))
+      (setq tries (1+ tries)) )
+    (if (and msg (> (len msg) 0)
+             (= (mid msg 1 1) "{"))
+      (printf "PASS (starts with '{')\n")
+      (if msg
+        (printf "FAIL (msg starts with '%s')\n" (mid msg 1 1))
+        (printf "FAIL (no message)\n") ) ) )
+
+  ;; ---- Test 6: ws-client-close + clean shutdown ----
+  (printf "Test 6: ws-client-close... ")
+  (ws-client-close client)
+  ;; Run loop to process close callbacks
+  (uv-run loop 'nowait)
+  (uv-run loop 'default)
+  (flush-events)
+  (uv-loop-close loop)
+  (printf "PASS\n") )
+
+(printf "\n=== ws-client tests complete ===\n\n")

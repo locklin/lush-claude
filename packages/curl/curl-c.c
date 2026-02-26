@@ -321,6 +321,15 @@ char *lush_curl_ws_recv(void *handle, int timeout_ms,
     return result;
 }
 
+int lush_curl_ws_get_socket(void *handle)
+{
+    CURL *curl = (CURL *)handle;
+    curl_socket_t sockfd;
+    if (!curl) return -1;
+    CURLcode res = curl_easy_getinfo(curl, CURLINFO_ACTIVESOCKET, &sockfd);
+    return (res == CURLE_OK && sockfd != CURL_SOCKET_BAD) ? (int)sockfd : -1;
+}
+
 int lush_curl_ws_close(void *handle)
 {
     CURL *curl = (CURL *)handle;

@@ -1,0 +1,106 @@
+;;; ws-client.lsh -- Event-driven WebSocket client (curl + libuv)
+;;;
+;;; Combines curl's WebSocket support (CONNECT_ONLY=2 mode) with libuv's
+;;; poll watcher to provide non-blocking WebSocket I/O driven by the
+;;; libuv event loop.
+;;;
+;;; Architecture:
+;;;   1. ws-connect opens the WebSocket (blocking handshake via curl)
+;;;   2. ws-get-fd extracts the underlying socket fd
+;;;   3. uv-poll-start registers the fd with libuv for readability
+;;;   4. When libuv fires a 'poll event, call ws-client-recv-ready
+;;;      which does ws-recv with timeout=0 (non-blocking)
+;;;
+;;; A ws-client is a list: (ws-handle poll-handle-id fd)
+;;;
+;;; Usage:
+;;;   (libload "libuv/ws-client")
+;;;   (let ((loop (uv-loop-new))
+;;;         (client (ws-client-connect loop "wss://example.com/ws")))
+;;;     ;; In your event loop:
+;;;     ;;   uv-run loop 'nowait
+;;;     ;;   drain events -- on 'poll matching client's poll-id:
+;;;     ;;     (ws-client-recv-ready client) -> msg or ()
+;;;     (ws-client-close client))
+
+(libload "libuv/libuv")
+(libload "curl/curl")
+
+#? *** WebSocket Client (Event-Driven)
+;; Non-blocking WebSocket client combining curl WS with libuv poll.
+;;.PP
+;; Uses curl's {<b> CURLOPT_CONNECT_ONLY=2} mode for direct socket
+;; access and libuv's {<b> uv-poll-start} for event-driven readability
+;; notification.  No curl_multi interface needed.
+;;.PP
+;; A ws-client is represented as a list:
+;; {<b> (ws-handle poll-handle-id fd)}
+;;.VP
+;; Example:
+;;.CODE
+;;  (let ((loop (uv-loop-new))
+;;        (client (ws-client-connect loop "wss://ws-feed.exchange.coinbase.com")))
+;;    (ws-client-send client "{\"type\":\"subscribe\",\"channels\":[\"status\"]}")
+;;    ;; ... in event loop, on poll event:
+;;    (let ((msg (ws-client-recv-ready client)))
+;;      (when msg (printf "Got: %s\n" msg)))
+;;    (ws-client-close client)
+;;    (uv-loop-close loop))
+;;.P
+
+
+#? (ws-client-connect <loop> <url> [<headers>])
+;; Connect to a WebSocket server and register with a libuv event loop.
+;; <loop>: libuv loop handle from uv-loop-new
+;; <url>: WebSocket URL (ws:// or wss://)
+;; <headers>: optional list of "Key: Value" header strings
+;; Returns: ws-client list (ws-handle poll-handle-id fd).
+;; Signals error on connection failure or if socket fd is unavailable.
+(de ws-client-connect (loop url &optional headers)
+  (let ((ws (ws-connect url headers)))
+    (let ((fd (ws-get-fd ws)))
+      ;; Register fd with libuv for readability (events=1 = readable)
+      (let ((poll-id (uv-poll-start loop fd 1)))
+        (list ws poll-id fd) ) ) ) )
+
+
+#? (ws-client-poll-id <client>)
+;; Get the libuv poll handle ID from a ws-client.
+;; Use this to match incoming 'poll events in your event dispatcher.
+(de ws-client-poll-id (client)
+  (cadr client) )
+
+
+#? (ws-client-send <client> <message>)
+;; Send a text frame over the WebSocket connection.
+;; <client>: ws-client from ws-client-connect
+;; <message>: string to send
+;; Returns: number of bytes sent.
+(de ws-client-send (client message)
+  (ws-send (car client) message) )
+
+
+#? (ws-client-recv-ready <client>)
+;; Attempt a non-blocking receive on the WebSocket.
+;; Call this when a libuv 'poll event fires for this client's poll-id.
+;; Uses ws-recv with timeout=0 (immediate, non-blocking).
+;; Returns: message string, or () if no complete frame available.
+(de ws-client-recv-ready (client)
+  (ws-recv (car client) 0) )
+
+
+#? (ws-client-close <client>)
+;; Close the WebSocket client: stop the libuv poll watcher and
+;; close the WebSocket connection.
+;; <client>: ws-client from ws-client-connect
+;; Note: after calling this, you should still run the libuv loop
+;; to process the poll handle's close event.
+(de ws-client-close (client)
+  (let ((ws (car client))
+        (poll-id (cadr client)) )
+    ;; Stop polling first
+    (uv-poll-stop poll-id)
+    ;; Close the poll handle (async -- generates close event)
+    (uv-close-handle poll-id)
+    ;; Close the WebSocket connection
+    (ws-close ws) ) )

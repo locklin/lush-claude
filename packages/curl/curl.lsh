@@ -146,6 +146,13 @@
     #{ $rc = lush_curl_ws_poll($h, $timeout_ms); #}
     rc ) )
 
+(de _curl-ws-get-socket (h)
+  ((-gptr-) h)
+  (let ((rc 0))
+    ((-int-) rc)
+    #{ $rc = lush_curl_ws_get_socket($h); #}
+    rc ) )
+
 ;; DHC helper: copy gptr data to a Lush string and free the C buffer.
 ;; Returns the copied string. If resp is NULL or len <= 0, returns "".
 (de _curl-gptr-to-string (resp len)
@@ -174,7 +181,7 @@
     _curl-global-init
     _curl-get _curl-post _curl-request _curl-free-response
     _curl-ws-connect _curl-ws-send-text _curl-ws-send-binary
-    _curl-ws-recv _curl-ws-close _curl-ws-poll
+    _curl-ws-recv _curl-ws-close _curl-ws-poll _curl-ws-get-socket
     _curl-gptr-to-string ) )
 
 ;; Convert list of "Key: Value" strings to newline-delimited string
@@ -315,6 +322,19 @@
   (let ((tmo (if timeout-ms timeout-ms 0)))
     (let ((rc (_curl-ws-poll handle tmo)))
       (if (> rc 0) t ()) ) ) )
+
+
+#? (ws-get-fd <handle>)
+;; Get the underlying socket file descriptor of a WebSocket connection.
+;; <handle>: WebSocket handle from ws-connect
+;; Returns: integer file descriptor, or signals error on failure.
+;; Useful for registering the socket with an external event loop
+;; (e.g. libuv uv-poll-start).
+(de ws-get-fd (handle)
+  (let ((fd (_curl-ws-get-socket handle)))
+    (when (< fd 0)
+      (error "ws-get-fd: failed to get socket fd" fd) )
+    fd ) )
 
 
 #? (ws-close <handle>)

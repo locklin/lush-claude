@@ -29,5 +29,6 @@ char *lush_curl_ws_recv(void *curl, int timeout_ms,
                         int *out_len, int *out_flags);
 int   lush_curl_ws_close(void *curl);
 int   lush_curl_ws_poll(void *curl, int timeout_ms);
+int   lush_curl_ws_get_socket(void *handle);
 
 #endif /* LUSH_CURL_C_H */

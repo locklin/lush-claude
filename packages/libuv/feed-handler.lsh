@@ -17,6 +17,7 @@
 ;;;   (feed-handler-start 5560)
 
 (libload "libuv/libuv")
+(libload "libuv/ws-client")
 (libload "wire/wire")
 
 ;; Helper: drain all stale events from the global queue
@@ -49,6 +50,13 @@
 (defvar *fh-wire* ())          ;; WireServer instance
 (defvar *fh-running* ())       ;; main loop flag
 (defvar *fh-handles* ())       ;; list of active handle IDs for cleanup
+
+;; WebSocket feed state
+(defvar *fh-ws-client* ())     ;; ws-client list from ws-client-connect
+(defvar *fh-ws-poll-id* ())    ;; poll handle ID for matching events
+(defvar *fh-ws-url* ())        ;; feed URL for reconnection
+(defvar *fh-ws-subscribe* ())  ;; subscription message to send on connect
+(defvar *fh-reconnect-id* ())  ;; timer handle ID for reconnect
 
 ;; Statistics
 (defvar *fh-stats-events* 0)   ;; total events processed
@@ -117,6 +125,87 @@
   (printf "feed-handler: inbound connection on handle %d\n" handle-id) )
 
 
+#? (fh-on-feed-message <msg>)
+;; Called when a WebSocket message arrives from the data feed.
+;; Logs the message and broadcasts it to wire clients.
+;; Override this for feed-specific parsing.
+(de fh-on-feed-message (msg)
+  (setq *fh-stats-events* (1+ *fh-stats-events*))
+  (when (> (len msg) 0)
+    (printf "feed-handler: feed msg (%d bytes)\n" (len msg))
+    (fh-broadcast msg) ) )
+
+
+#? (fh-on-poll <handle-id> <status>)
+;; Called when a poll event fires.  If it matches the WebSocket
+;; feed's poll handle, read available data via ws-client-recv-ready.
+(de fh-on-poll (handle-id status)
+  (if (and *fh-ws-client* *fh-ws-poll-id*
+           (= handle-id *fh-ws-poll-id*))
+    ;; WebSocket feed is readable
+    (if (< status 0)
+      ;; Poll error -- connection likely dead, schedule reconnect
+      (progn
+        (printf "feed-handler: poll error on feed (status=%d), reconnecting...\n"
+                status)
+        (fh-schedule-reconnect) )
+      ;; Read available data
+      (let ((msg (ws-client-recv-ready *fh-ws-client*)))
+        (if msg
+          (fh-on-feed-message msg)
+          ;; recv returned () -- could be partial frame or connection lost
+          () ) ) )
+    ;; Not our WebSocket poll -- log it
+    (printf "feed-handler: poll event on handle %d (status=%d)\n"
+            handle-id status) ) )
+
+
+#? (fh-connect-feed <url> [<subscribe-msg>])
+;; Connect to a WebSocket data feed and register with the libuv loop.
+;; <url>: WebSocket URL (wss:// or ws://)
+;; <subscribe-msg>: optional subscription message to send after connecting
+;; Stores the client in *fh-ws-client* and poll ID in *fh-ws-poll-id*.
+(de fh-connect-feed (url &optional subscribe-msg)
+  (setq *fh-ws-url* url)
+  (when subscribe-msg
+    (setq *fh-ws-subscribe* subscribe-msg) )
+  ;; Close existing connection if any
+  (when *fh-ws-client*
+    (printf "feed-handler: closing existing feed connection\n")
+    (ws-client-close *fh-ws-client*)
+    (setq *fh-ws-client* ())
+    (setq *fh-ws-poll-id* ()) )
+  ;; Connect
+  (printf "feed-handler: connecting to %s\n" url)
+  (let ((client (ws-client-connect *fh-loop* url)))
+    (setq *fh-ws-client* client)
+    (setq *fh-ws-poll-id* (ws-client-poll-id client))
+    (setq *fh-handles* (nconc1 *fh-handles* *fh-ws-poll-id*))
+    (printf "feed-handler: connected (poll-id=%d)\n" *fh-ws-poll-id*)
+    ;; Send subscription message if provided
+    (when *fh-ws-subscribe*
+      (ws-client-send client *fh-ws-subscribe*)
+      (printf "feed-handler: subscription sent\n") )
+    client ) )
+
+
+#? (fh-schedule-reconnect)
+;; Schedule a reconnection attempt after 5 seconds.
+;; Closes the current ws-client and starts a one-shot timer.
+(de fh-schedule-reconnect ()
+  ;; Clean up the dead connection
+  (when *fh-ws-client*
+    (ws-client-close *fh-ws-client*)
+    (setq *fh-ws-client* ())
+    (setq *fh-ws-poll-id* ()) )
+  ;; Start a reconnect timer (5 second delay) if we have a URL
+  (when (and *fh-ws-url* (not *fh-reconnect-id*))
+    (let ((tid (uv-timer-start *fh-loop* 5000 0)))
+      (setq *fh-reconnect-id* tid)
+      (setq *fh-handles* (nconc1 *fh-handles* tid))
+      (printf "feed-handler: reconnect scheduled in 5s (timer=%d)\n" tid) ) ) )
+
+
 ;; ============================================================
 ;; Event dispatcher
 ;; ============================================================
@@ -130,7 +219,14 @@
         (status (caddr ev)) )
     (cond
      ((= type 'timer)
-      (fh-on-timer hid) )
+      ;; Check if this is a reconnect timer
+      (if (and *fh-reconnect-id* (= hid *fh-reconnect-id*))
+        (progn
+          (setq *fh-reconnect-id* ())
+          (printf "feed-handler: reconnect timer fired\n")
+          (when *fh-ws-url*
+            (fh-connect-feed *fh-ws-url* *fh-ws-subscribe*) ) )
+        (fh-on-timer hid) ) )
      ((= type 'signal)
       (fh-on-signal hid status) )
      ((= type 'read)
@@ -141,6 +237,8 @@
       (fh-on-connect hid status) )
      ((= type 'connection)
       (fh-on-connection hid status) )
+     ((= type 'poll)
+      (fh-on-poll hid status) )
      ((= type 'close)
       ;; Remove from our handle tracking list
       (setq *fh-handles* (filter (lambda (x) (<> x hid)) *fh-handles*)) )
@@ -159,6 +257,14 @@
 ;; close all libuv handles, drain events, close loop, stop wire server.
 (de fh-shutdown ()
   (printf "feed-handler: shutting down...\n")
+  ;; Close WebSocket feed connection first
+  (when *fh-ws-client*
+    (ws-client-close *fh-ws-client*)
+    ;; Remove poll-id from handles list since ws-client-close already closes it
+    (when *fh-ws-poll-id*
+      (setq *fh-handles* (filter (lambda (x) (<> x *fh-ws-poll-id*)) *fh-handles*)) )
+    (setq *fh-ws-client* ())
+    (setq *fh-ws-poll-id* ()) )
   ;; Close all tracked handles
   (each ((hid *fh-handles*))
     (uv-close-handle hid) )
@@ -228,6 +334,11 @@
 (de feed-handler-start (wire-port)
   (printf "\n=== feed handler starting ===\n\n")
   (setq *fh-handles* ())
+  (setq *fh-ws-client* ())
+  (setq *fh-ws-poll-id* ())
+  (setq *fh-ws-url* ())
+  (setq *fh-ws-subscribe* ())
+  (setq *fh-reconnect-id* ())
   (setq *fh-stats-events* 0)
   (setq *fh-stats-ticks* 0)
   (setq *fh-stats-broadcasts* 0)
@@ -274,13 +385,11 @@
         (printf "feed-handler: unknown sync query: %l\n" expr)
         () ) ) ) )
 
-  ;; 5. Placeholder: connect to data feed
-  ;; In a real implementation, this would be:
-  ;;   (let ((feed-tcp (uv-tcp-new *fh-loop*)))
-  ;;     (uv-tcp-connect feed-tcp "ws-feed.exchange.com" 443)
-  ;;     (setq *fh-handles* (nconc1 *fh-handles* feed-tcp)))
-  ;; For now, we skip the feed connection.
-  (printf "feed-handler: ready (no feed connection -- skeleton mode)\n")
+  ;; 5. Connect to data feed (optional -- call fh-connect-feed separately)
+  ;; Example:
+  ;;   (fh-connect-feed "wss://ws-feed.exchange.coinbase.com"
+  ;;     "{\"type\":\"subscribe\",\"channels\":[\"status\"]}")
+  (printf "feed-handler: ready (use fh-connect-feed to connect to a data feed)\n")
   (printf "feed-handler: send SIGTERM or SIGINT to stop\n\n")
 
   ;; 6. Enter main event loop
