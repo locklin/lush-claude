@@ -31,7 +31,6 @@ octave-workspace
 .DS_Store
 .Rhistory
 ltximg/
-lush/C/**
 C/
 bin/x86_64-unknown-linux-gnu/
 test
