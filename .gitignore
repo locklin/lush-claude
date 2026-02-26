@@ -38,3 +38,9 @@ example
 packages/curl/curl-8.12.1/
 packages/curl/curl-8.12.1.tar.gz
 packages/curl/dist/
+packages/libuv/include/
+packages/libuv/src/
+packages/libuv/libuv-v1.49.2/
+packages/libuv/libuv-v1.49.2.tar.gz
+bin/x86_64-unknown-linux-gnu/lush
+src/lush
