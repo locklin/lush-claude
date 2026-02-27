@@ -266,6 +266,114 @@ various libraries.
 #? ** << alsa/alsa.hlp
 
 
+#? *** Data Infrastructure
+Data tables, columnar storage, CSV parsing,
+and time/date utilities.
+
+#? ** << datatable/datatable.lsh
+
+#? ** << datatable/stringcol.lsh
+
+#? ** << datatable/datatable-csv.lsh
+
+#? ** << datatable/datatable-join.lsh
+
+#? ** << datatable/datatable-null.lsh
+
+#? ** << columnardb/columnardb.lsh
+
+#? ** << columnardb/columnardb-database.lsh
+
+#? ** << columnardb/columnardb-compress.lsh
+
+#? ** << columnardb/columnardb-partition.lsh
+
+#? ** << columnardb/columnardb-groupby.lsh
+
+#? ** << columnardb/columnardb-mutate.lsh
+
+#? ** << timedate/timedate.lsh
+
+#? ** << csvread/csvread.lsh
+
+#? ** << sqlite/sqlite.lsh
+
+
+#? *** Networking and Serialization
+HTTP client/server, JSON parsing, wire IPC,
+and compression.
+
+#? ** << curl/curl.lsh
+
+#? ** << httpd/httpd.lsh
+
+#? ** << httpd/httpd-json.lsh
+
+#? ** << httpd/httpd-form.lsh
+
+#? ** << httpd/httpd-static.lsh
+
+#? ** << json/json.lsh
+
+#? ** << wire/wire.lsh
+
+#? ** << wire/wire-serialize.lsh
+
+#? ** << lz4/lz4-compress.lsh
+
+
+#? *** Real-Time Data Pipeline
+Event-driven feed handler, gateway, real-time
+and historical databases, analytics, and CLI.
+
+#? ** << libuv/libuv.lsh
+
+#? ** << libuv/feed-handler.lsh
+
+#? ** << libuv/ws-client.lsh
+
+#? ** << libuv/gateway.lsh
+
+#? ** << libuv/rdb.lsh
+
+#? ** << libuv/hdb-reader.lsh
+
+#? ** << libuv/hdb-writer.lsh
+
+#? ** << libuv/analytics.lsh
+
+#? ** << libuv/consumer.lsh
+
+#? ** << libuv/permissions.lsh
+
+#? ** << libuv/gw-cli.lsh
+
+
+#? *** Topological Data Analysis
+Mapper algorithm for TDA: covers, clustering,
+lenses, metrics, statistical tests, and visualization.
+
+#? ** << mapper/mapper.lsh
+
+#? ** << mapper/lens.lsh
+
+#? ** << mapper/cover.lsh
+
+#? ** << mapper/cluster.lsh
+
+#? ** << mapper/metrics.lsh
+
+#? ** << mapper/graph.lsh
+
+#? ** << mapper/stats.lsh
+
+#? ** << mapper/mapper-db.lsh
+
+#? ** << mapper/mapper-viz.lsh
+
+#? ** << mapper/visualize.lsh
+
+
 #? *** Other Packages
 
 #? ** << mpi/mpi.hlp
