@@ -6,12 +6,11 @@
 ;;; Uses blocking _wire-recv-message in a loop (no libuv needed).
 ;;;
 ;;; Usage:
-;;;   lush consumer.lsh --port 5560          ;; connect to running feed handler
-;;;   lush consumer.lsh --port 19960         ;; standalone demo (starts feed handler)
-;;;
-;;; Or from REPL:
-;;;   (libload "libuv/consumer")
-;;;   (consumer-start 5560)                  ;; connect to running feed handler
+;;;   lush consumer.lsh                      ;; standalone demo (port 19960)
+;;;   lush -e '(libload "libuv/consumer") (consumer-start 5560)'
+;;;                                          ;; connect to running feed handler
+;;;   lush -e '(libload "libuv/consumer") (consumer-run-standalone (quote ("BTC-USD")) (quote ("ticker" "heartbeat")) 5560)'
+;;;                                          ;; standalone with custom settings
 
 (libload "wire/wire")
 
@@ -180,10 +179,10 @@
           (setq *consumer-total-broadcasts* (1+ *consumer-total-broadcasts*))
           (when (consp data)
             (cond
-             ((eq (car data) 'ticker)
+             ((= (car data) 'ticker)
               (consumer-update-ticker (cadr data))
               'ticker )
-             ((eq (car data) 'l2update)
+             ((= (car data) 'l2update)
               'l2update )
              (t ()) ) ) ) ) ) ) )
 
@@ -221,7 +220,7 @@
               (setq *consumer-running* ()) )
             ;; Process message
             (let ((msg-type (consumer-process-message raw-msg)))
-              (when (eq msg-type 'ticker)
+              (when (= msg-type 'ticker)
                 (consumer-display) ) ) ) ) )
 
       ;; Cleanup
@@ -327,7 +326,7 @@
               (progn
                 (setq consumer-bc-read (1+ consumer-bc-read))
                 (let ((result (consumer-process-message raw-msg)))
-                  (when (eq result 'ticker)
+                  (when (= result 'ticker)
                     (consumer-display) ) ) ) ) ) )
 
         (setq *fh-stats-ticks* (1+ *fh-stats-ticks*)) ) )
@@ -350,3 +349,20 @@
     (uv-loop-close *fh-loop*)
     (==> *fh-wire* shutdown)
     (printf "standalone: stopped.\n") ) )
+
+
+;; ============================================================
+;; Command-line entry point
+;; ============================================================
+
+;; When loaded as a library (e.g., by tests), set *consumer-no-autostart*
+;; to t BEFORE loading to suppress auto-start:
+;;   (setq *consumer-no-autostart* t)
+;;   (libload "libuv/consumer")
+
+(defvar *consumer-no-autostart* ())
+
+(when (not *consumer-no-autostart*)
+  (consumer-run-standalone '("BTC-USD" "ETH-USD")
+                           '("ticker" "heartbeat")
+                           19960) )

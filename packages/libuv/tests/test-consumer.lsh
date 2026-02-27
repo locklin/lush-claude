@@ -11,6 +11,7 @@
 ;;; Usage: lush test-consumer.lsh
 
 (libload "libuv/feed-handler")
+(defvar *consumer-no-autostart* t)
 (libload "libuv/consumer")
 
 (printf "\n=== consumer integration test ===\n\n")
@@ -177,12 +178,12 @@
       (let ((raw-msg (_wire-recv-message client-fd)))
         (if (and raw-msg (consp raw-msg))
           (let ((result (consumer-process-message raw-msg)))
-            (if (eq result 'ticker)
+            (if (= result 'ticker)
               ;; Verify SOL-USD was added to consumer state
               (let ((sol-state (cdr (assoc "SOL-USD" *consumer-products*))))
                 (if (and sol-state
                          (= (cdr (assoc "price" sol-state)) 142.50)
-                         (= (cdr (assoc "spread" sol-state)) 0.20) )
+                         (< (abs (- (cdr (assoc "spread" sol-state)) 0.20)) 0.001) )
                   (printf "PASS (SOL-USD @ %.2f, spread=%.2f)\n"
                           (cdr (assoc "price" sol-state))
                           (cdr (assoc "spread" sol-state)))
@@ -201,7 +202,7 @@
       (let ((raw-msg (_wire-recv-message client-fd)))
         (if (and raw-msg (consp raw-msg))
           (let ((result (consumer-process-message raw-msg)))
-            (if (and (eq result 'l2update)
+            (if (and (= result 'l2update)
                      (= *consumer-total-ticks* pre-ticks) )
               (printf "PASS (l2update counted, ticks unchanged)\n")
               (printf "FAIL (result=%l, ticks changed)\n" result) ) )
