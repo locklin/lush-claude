@@ -67,29 +67,19 @@ function viridis(t) {
 }
 
 function interpolateColor(t) {
-  // Dark purple -> teal -> yellow (viridis-inspired)
+  // Blue (cold, low) -> white (mid) -> Red (hot, high)
   t = Math.max(0, Math.min(1, t));
   let r, g, b;
-  if (t < 0.25) {
-    const s = t / 0.25;
-    r = Math.round(68 + s * (49 - 68));
-    g = Math.round(1 + s * (104 - 1));
-    b = Math.round(84 + s * (142 - 84));
-  } else if (t < 0.5) {
-    const s = (t - 0.25) / 0.25;
-    r = Math.round(49 + s * (33 - 49));
-    g = Math.round(104 + s * (144 - 104));
-    b = Math.round(142 + s * (141 - 142));
-  } else if (t < 0.75) {
-    const s = (t - 0.5) / 0.25;
-    r = Math.round(33 + s * (93 - 33));
-    g = Math.round(144 + s * (201 - 144));
-    b = Math.round(141 + s * (99 - 141));
+  if (t < 0.5) {
+    const s = t / 0.5;
+    r = Math.round(59 + s * (255 - 59));
+    g = Math.round(76 + s * (255 - 76));
+    b = Math.round(192 + s * (255 - 192));
   } else {
-    const s = (t - 0.75) / 0.25;
-    r = Math.round(93 + s * (253 - 93));
-    g = Math.round(201 + s * (231 - 201));
-    b = Math.round(99 + s * (37 - 99));
+    const s = (t - 0.5) / 0.5;
+    r = Math.round(255);
+    g = Math.round(255 - s * (255 - 65));
+    b = Math.round(255 - s * (255 - 54));
   }
   return `rgb(${r},${g},${b})`;
 }
@@ -1500,6 +1490,10 @@ async function onDatasetChange() {
     if (typeof colNames === 'string') colNames = JSON.parse(colNames);
     if (colNames && colNames.length > 0) {
       populateColSelCheckboxes(colNames);
+      // Set max on column index inputs to prevent out-of-range
+      const maxCol = colNames.length - 1;
+      document.getElementById('run-colorcol').max = maxCol;
+      document.getElementById('run-lens2-col').max = maxCol;
     }
   } catch(e) {
     container.innerHTML = '<span style="color:#666;font-size:11px">Could not load columns</span>';

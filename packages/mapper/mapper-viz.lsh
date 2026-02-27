@@ -449,6 +449,9 @@
       (printf "                  (setq color-col (val col-sel)) )\n")
       (printf "                ;; nil or empty -> defaults (all columns, color-col 0)\n")
       (printf "                () )\n")
+      ;; Clamp column indices to valid range
+      (printf "              (when (>= color-col d) (setq color-col (1- d)))\n")
+      (printf "              (when (>= lens2-col d) (setq lens2-col (1- d)))\n")
 
       ;; Handle auto_variance mode: compute per-column variance and pick top N
       (printf "              ;; Resolve auto_variance mode\n")
@@ -675,9 +678,8 @@
       ;; Try to open the browser
       (let ((url (sprintf "http://localhost:%d" port)))
         (printf "Mapper-viz: starting on %s\n" url)(flush)
-        ;; Try xdg-open (Linux), then open (macOS)
-        (sys (concat "xdg-open " url " 2>/dev/null &"))
-        (sys (concat "open " url " 2>/dev/null &")) )
+        ;; Try xdg-open (Linux), fall back to open (macOS)
+        (sys (concat "xdg-open " url " 2>/dev/null && exit 0 || open " url " 2>/dev/null &")) )
 
       ;; Start serving (blocks)
       (httpd-serve server) ) ) )

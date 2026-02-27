@@ -79,10 +79,9 @@
 ;; HTTP request parsing
 ;; ============================================================
 
-;; NOTE: We use read8 for header/line reads instead of (reading fin ...)
-;; because the `reading` redirect can interfere with subsequent writes.
-;; However, body reads use (reading fd (read-string n)) for O(n) bulk I/O
-;; since the body is the last read before the response is written.
+;; NOTE: We use read8 for all socket reads instead of (reading fin ...)
+;; because read_char() (used by read-string) converts CR+LF to LF,
+;; which corrupts byte counts for Content-Length-based body reads.
 
 ;; internal: read a line from socket fd using read8
 ;; Returns the line without the line ending.
@@ -158,13 +157,29 @@
     headers ) )
 
 
-;; internal: read exactly n bytes from socket fd
-;; Uses read-string for O(n) bulk read instead of byte-by-byte.
+;; internal: read exactly n bytes from socket fd using read8
+;; Builds the string in 1024-byte chunks to avoid O(n^2) concat.
+;; NOTE: we must use read8 (not reading/read-string) because
+;; read_char() converts CR+LF to LF, corrupting byte counts.
 (de _httpd-read-bytes (fd nbytes)
-  (let ((s ""))
-    (reading fd
-      (setq s (read-string nbytes)) )
-    (if (not s) "" s) ) )
+  (let ((chunks ()) (chunk "") (chunk-len 0))
+    (for (i 1 nbytes)
+      (let ((b (read8 fd)))
+        (when (>= b 0)
+          (setq chunk (concat chunk (chr b)))
+          (setq chunk-len (1+ chunk-len))
+          (when (>= chunk-len 1024)
+            (setq chunks (nconc1 chunks chunk))
+            (setq chunk "")
+            (setq chunk-len 0) ) ) ) )
+    ;; Add remaining partial chunk
+    (when (> chunk-len 0)
+      (setq chunks (nconc1 chunks chunk)) )
+    ;; Join all chunks
+    (let ((result ""))
+      (each ((c chunks))
+        (setq result (concat result c)) )
+      result ) ) )
 
 
 #? (httpd-parse-request <fin>)

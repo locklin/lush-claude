@@ -89,9 +89,12 @@
       (setq lines (nconc1 lines current)) )
     lines ) )
 
-;; internal: detect delimiter from header line (tab or comma)
+;; internal: detect delimiter from header line (tab, semicolon, or comma)
 (de _csvread-detect-delim (line)
-  (if (index "\t" line) "\t" ",") )
+  (cond
+   ((index "\t" line) "\t")
+   ((index ";" line) ";")
+   (t ",") ) )
 
 
 ;; ============================================================
@@ -136,7 +139,7 @@
                         (each ((field fields))
                           (when (< col-idx n-cols)
                             (let ((v (val (_csvread-strip field))))
-                              (data row-idx col-idx v) ) )
+                              (data row-idx col-idx (if (numberp v) v 0)) ) )
                           (setq col-idx (1+ col-idx)) ) )
                       (setq row-idx (1+ row-idx)) )
                     (list data header-fields) ) ) ) ) ) ) ) ) ) )
