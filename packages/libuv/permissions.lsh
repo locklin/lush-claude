@@ -12,7 +12,11 @@
 ;;;   monitor:ping,stats,backends
 ;;;   *:ping
 ;;;
-;;; The default user "*" (if present) applies to unauthenticated clients.
+;;; Special users:
+;;;   "*"     — default for unauthenticated clients (fallback if user not found)
+;;;   "local" — used by the gateway for localhost connections (auto-assigned).
+;;;             If omitted, localhost gets full access (trusted by default).
+;;;             If present, the listed commands restrict what localhost can do.
 ;;;
 ;;; Usage:
 ;;;   (libload "libuv/permissions")

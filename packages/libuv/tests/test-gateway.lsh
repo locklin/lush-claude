@@ -300,8 +300,82 @@
     (printf "FAIL (auth: %l)\n" result) ) )
 
 
+;; Test 19: Localhost trust — "local" user gets full access when no "local" entry in perms
+(printf "Test 19: localhost trust (no local entry)... ")
+;; Perms have admin and monitor but NO "local" entry
+(setq *gw-permissions*
+  (list (cons "admin" (list "*"))
+        (cons "monitor" (list "ping" "stats"))
+        (cons "*" (list "ping")) ))
+;; Simulate a localhost client by setting user to "local"
+(setq *gw-client-users* (list (cons 50 "local")))
+;; Localhost user should be able to do anything (trusted by default)
+(let ((result (gw-handle-query 50 (list "rdb" "tables"))))
+  (if (and (consp result) (= (car result) "ticker"))
+    (printf "PASS (local allowed rdb)\n")
+    (printf "FAIL (got: %l)\n" result) ) )
+
+
+;; Test 20: Localhost trust — smart-routed queries also allowed
+(printf "Test 20: localhost trust (smart route)... ")
+(let ((result (gw-handle-query 50 (list "mavg" "BTC-USD"))))
+  (if (> result 0)
+    (printf "PASS (local allowed mavg)\n")
+    (printf "FAIL (got: %l)\n" result) ) )
+
+
+;; Test 21: Localhost restricted — explicit "local" entry limits access
+(printf "Test 21: localhost restricted (explicit local entry)... ")
+;; Now add a "local" entry that only allows ping and stats
+(setq *gw-permissions*
+  (list (cons "admin" (list "*"))
+        (cons "local" (list "ping" "stats" "backends"))
+        (cons "*" (list "ping")) ))
+;; Localhost user should now be restricted
+(let ((result (gw-handle-query 50 (list "rdb" "tables"))))
+  (if (and (stringp result)
+           (> (len result) 0) )
+    (printf "PASS (denied: %s)\n" result)
+    (printf "FAIL (got: %l)\n" result) ) )
+
+
+;; Test 22: Localhost restricted — allowed commands still work
+(printf "Test 22: localhost restricted (allowed cmds work)... ")
+(let ((result (gw-handle-query 50 "stats")))
+  (if (and (consp result) (assoc "queries" result))
+    (printf "PASS (stats allowed)\n")
+    (printf "FAIL (got: %l)\n" result) ) )
+
+
+;; Test 23: Localhost user can auth as different identity to override
+(printf "Test 23: localhost user can re-auth... ")
+(gw-handle-query 50 (list "auth" "admin"))
+;; Now fd 50 is "admin", should have full access again
+(let ((result (gw-handle-query 50 (list "rdb" "tables"))))
+  (if (and (consp result) (= (car result) "ticker"))
+    (printf "PASS (admin override)\n")
+    (printf "FAIL (got: %l)\n" result) ) )
+
+
+;; Test 24: Unauthenticated non-local client falls back to "*" default
+(printf "Test 24: non-local falls back to default... ")
+;; fd 60 is not in client-users (simulates unauthenticated remote)
+(let ((result (gw-handle-query 60 "ping")))
+  (if (= result "pong")
+    (printf "PASS (ping allowed via default)\n")
+    (printf "FAIL (got: %l)\n" result) ) )
+
+
+;; Test 25: Unauthenticated non-local client denied for non-default commands
+(printf "Test 25: non-local denied for restricted... ")
+(let ((result (gw-handle-query 60 (list "rdb" "tables"))))
+  (if (and (stringp result) (> (len result) 0))
+    (printf "PASS (denied)\n")
+    (printf "FAIL (got: %l)\n" result) ) )
+
+
 ;; ---- Cleanup ----
-(printf "\nTest 19: Clean up... ")
+(printf "\nTest 26: Clean up... ")
 ;; Clear permissions and client state
 (setq *gw-permissions* ())
 (setq *gw-client-users* ())

@@ -9,7 +9,9 @@
 ;;;   - Supports explicit routing (("rdb" ...) ("hdb" ...) ("ana" ...))
 ;;;   - Supports smart routing (auto-detect backend from query pattern)
 ;;;   - Optional permission checking from a text-file permissions module
-;;;   - Tracks per-client authentication via WireServer client-state
+;;;   - Localhost connections are trusted by default (allow all) unless
+;;;     the permissions file has an explicit "local" entry to restrict them
+;;;   - Tracks per-client authentication via client-users alist
 ;;;
 ;;; Usage:
 ;;;   lush gateway.lsh
@@ -173,15 +175,26 @@
 ;; Check if the current client is allowed to execute a command.
 ;; Returns () if allowed (or no permissions loaded).
 ;; Returns an error string if denied.
+;;
+;; Localhost trust: if the user is "local" (auto-assigned at connect time
+;; for localhost connections) and the permissions file has no explicit
+;; "local" entry, allow all queries. This means localhost connections
+;; are trusted by default — to restrict them, add a "local:cmd1,cmd2,..."
+;; line to the permissions file.
 (de _gw-check-perms (fd cmd)
   (if (not *gw-permissions*)
     ;; No permissions loaded — allow all
     ()
     ;; Get user from client state
     (let ((user (_gw-get-user fd)))
-      (if (perm-check *gw-permissions* user cmd)
+      ;; Localhost trust: "local" user with no explicit entry → allow all
+      (if (and (= user "local")
+               (not (assoc "local" *gw-permissions*)) )
         ()
-        (sprintf "permission denied: user '%s' cannot execute '%s'" user cmd) ) ) ) )
+        ;; Normal permission check
+        (if (perm-check *gw-permissions* user cmd)
+          ()
+          (sprintf "permission denied: user '%s' cannot execute '%s'" user cmd) ) ) ) ) )
 
 
 #? (_gw-get-user <fd>)
@@ -255,7 +268,11 @@
       (gw-handle-query fd expr) ) )
   (setq :*gw-wire*:on-connect
     (lambda (fd)
-      (printf "gw: client connected (fd=%d)\n" fd) ) )
+      (printf "gw: client connected (fd=%d)\n" fd)
+      ;; Auto-tag localhost connections as "local" user
+      (when (= 1 (_wire-peer-is-local fd))
+        (setq *gw-client-users* (nconc1 *gw-client-users* (cons fd "local")))
+        (printf "gw: localhost client auto-authenticated as 'local'\n") ) ) )
   (setq :*gw-wire*:on-disconnect
     (lambda (fd)
       (printf "gw: client disconnected (fd=%d)\n" fd) ) )
