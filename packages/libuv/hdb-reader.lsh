@@ -1,0 +1,423 @@
+;;; hdb-reader.lsh -- Historical Database Reader process
+;;;
+;;; Loads historical data from date-partitioned splayed format on disk
+;;; and serves queries over wire protocol.  This is the read-side
+;;; complement to the HDB Writer: it scans for date partitions,
+;;; lazy-loads tables via mmap, and answers the same query vocabulary
+;;; as the RDB (snapshot, where, select, count, meta, etc.) plus
+;;; multi-date range queries.
+;;;
+;;; Together with the RDB (today's in-memory data) and HDB Writer
+;;; (periodic flush to disk), the HDB Reader completes the data
+;;; lifecycle: collect → accumulate → persist → query.
+;;;
+;;; Disk layout (read by HDB Reader, written by HDB Writer):
+;;;   <hdb-root>/
+;;;     2024.06.15/
+;;;       ticker/   meta.lsh, col-0.col, ...
+;;;       l2/       meta.lsh, col-0.col, ...
+;;;     2024.06.16/
+;;;       ticker/   ...
+;;;       l2/       ...
+;;;
+;;; Usage:
+;;;   lush hdb-reader.lsh                         ;; standalone (port 19962, /tmp/hdb)
+;;;   lush -e '(libload "libuv/hdb-reader") (hdbr-start 19962 "/tmp/hdb")'
+
+(libload "wire/wire")
+(libload "wire/wire-serialize")
+(libload "datatable/datatable")
+(libload "columnardb/columnardb")
+
+;; ============================================================
+;; HDB Reader state
+;; ============================================================
+
+(defvar *hdbr-root* "/tmp/hdb")         ;; HDB root directory path
+(defvar *hdbr-running* ())              ;; main loop flag
+(defvar *hdbr-wire* ())                 ;; WireServer instance
+(defvar *hdbr-dates* ())               ;; sorted list of date strings ("2024.06.15" ...)
+(defvar *hdbr-tables* ())              ;; list of table names found ("ticker" "l2")
+(defvar *hdbr-cache* ())               ;; alist: (("date/tbl" . DataTable) ...) — lazy cache
+(defvar *hdbr-start-time* 0)           ;; start timestamp (seconds)
+(defvar *hdbr-total-queries* 0)        ;; query counter
+
+
+;; ============================================================
+;; Internal helpers
+;; ============================================================
+
+;; Convert "YYYY.MM.DD" to integer YYYYMMDD for comparison.
+;; Lexicographic comparison on YYYY.MM.DD strings is equivalent to
+;; numeric comparison on YYYYMMDD, but this avoids needing string</>
+;; operators which Lush does not provide.
+(de _hdbr-date-to-int (d)
+  (val (concat (mid d 1 4) (mid d 6 2) (mid d 9 2))) )
+
+;; Read lines from a pipe command, return as list of strings.
+(de _hdbr-read-lines (cmd)
+  (let ((fd (open-read (concat "| " cmd)))
+        (result ()) )
+    (when fd
+      (reading fd
+        (while (<> (skip-char "\n\r\f") "\e")
+          (setq result (nconc1 result (read-string))) ) )
+      (delete fd) )
+    result ) )
+
+
+;; ============================================================
+;; Discovery
+;; ============================================================
+
+#? (hdbr-discover)
+;; Scan *hdbr-root* for YYYY.MM.DD date-partition directories.
+;; Populates *hdbr-dates* (sorted) and *hdbr-tables*.
+(de hdbr-discover ()
+  (setq *hdbr-dates* ())
+  (setq *hdbr-tables* ())
+  (when (dirp *hdbr-root*)
+    ;; List entries in root directory
+    (let ((entries (_hdbr-read-lines (concat "ls '" *hdbr-root* "'"))))
+      ;; Filter to YYYY.MM.DD pattern directories
+      (each ((e entries))
+        (when (and (= (len e) 10)
+                   (= (mid e 5 1) ".")
+                   (= (mid e 8 1) ".")
+                   (dirp (concat *hdbr-root* "/" e)) )
+          (setq *hdbr-dates* (nconc1 *hdbr-dates* e)) ) )
+      ;; Sort dates (convert to integers and sort)
+      (when *hdbr-dates*
+        ;; Build pairs (int . string), sort by int, extract strings
+        (let ((pairs ()))
+          (each ((d *hdbr-dates*))
+            (setq pairs (nconc1 pairs (list (_hdbr-date-to-int d) d))) )
+          ;; Simple insertion sort (date count is typically small)
+          (let ((sorted ()))
+            (each ((p pairs))
+              (let ((inserted ())
+                    (new-sorted ()) )
+                (each ((s sorted))
+                  (when (and (not inserted) (> (car s) (car p)))
+                    (setq new-sorted (nconc1 new-sorted p))
+                    (setq inserted t) )
+                  (setq new-sorted (nconc1 new-sorted s)) )
+                (when (not inserted)
+                  (setq new-sorted (nconc1 new-sorted p)) )
+                (setq sorted new-sorted) ) )
+            (setq *hdbr-dates* ())
+            (each ((s sorted))
+              (setq *hdbr-dates* (nconc1 *hdbr-dates* (cadr s))) ) ) ) )
+
+      ;; Discover table names from first date dir
+      (when *hdbr-dates*
+        (let ((first-dir (concat *hdbr-root* "/" (car *hdbr-dates*))))
+          (let ((subdirs (_hdbr-read-lines (concat "ls '" first-dir "'"))))
+            (each ((s subdirs))
+              (when (dirp (concat first-dir "/" s))
+                (setq *hdbr-tables* (nconc1 *hdbr-tables* s)) ) ) ) ) ) ) )
+  (printf "hdbr: discovered %d dates, %d tables\n"
+          (length *hdbr-dates*) (length *hdbr-tables*))
+  (when *hdbr-dates*
+    (printf "hdbr: date range: %s to %s\n"
+            (car *hdbr-dates*) (nth (1- (length *hdbr-dates*)) *hdbr-dates*))
+    (printf "hdbr: tables: %l\n" *hdbr-tables*) ) )
+
+
+;; ============================================================
+;; Path helpers
+;; ============================================================
+
+#? (hdbr-table-path <date> <tbl>)
+;; Return the full path for a table's splayed directory.
+;; Path: <hdbr-root>/<date>/<tbl>
+(de hdbr-table-path (date tbl)
+  (concat *hdbr-root* "/" date "/" tbl) )
+
+
+;; ============================================================
+;; Table loading and caching
+;; ============================================================
+
+#? (hdbr-load-table <date> <tbl>)
+;; Load a table from disk via mmap (columnardb-load), cache in *hdbr-cache*.
+;; Returns the DataTable, or () if not found on disk.
+(de hdbr-load-table (date tbl)
+  (let ((path (hdbr-table-path date tbl)))
+    (if (not (dirp path))
+      ()
+      (let ((dt (columnardb-load path)))
+        (let ((key (concat date "/" tbl)))
+          (setq *hdbr-cache* (cons (cons key dt) *hdbr-cache*)) )
+        dt ) ) ) )
+
+
+#? (hdbr-get-table <date> <tbl>)
+;; Return a cached DataTable, or lazy-load it from disk.
+;; Returns () if the table does not exist for the given date.
+(de hdbr-get-table (date tbl)
+  (let ((key (concat date "/" tbl)))
+    ;; Look up in cache
+    (let ((cached (assoc key *hdbr-cache*)))
+      (if cached
+        (cdr cached)
+        ;; Not cached: load from disk
+        (hdbr-load-table date tbl) ) ) ) )
+
+
+;; ============================================================
+;; Multi-date concatenation
+;; ============================================================
+
+#? (hdbr-concat-tables <dates> <tbl>)
+;; Load tables for multiple dates and concatenate via _partition-concat-tables.
+;; Returns a packed DataTable (wire-pack-datatable) ready for wire response.
+(de hdbr-concat-tables (dates tbl)
+  (let ((tables ()))
+    (each ((d dates))
+      (let ((dt (hdbr-get-table d tbl)))
+        (when (and dt (> (==> dt num-rows) 0))
+          (setq tables (nconc1 tables dt)) ) ) )
+    (if tables
+      (wire-pack-datatable (_partition-concat-tables tables))
+      ;; Empty result: return empty packed table with correct schema
+      (if *hdbr-dates*
+        (let ((sample (hdbr-get-table (car *hdbr-dates*) tbl)))
+          (if sample
+            (wire-pack-datatable (==> sample select-rows ()))
+            (sprintf "no data for table: %s" tbl) ) )
+        "no dates available" ) ) ) )
+
+
+;; ============================================================
+;; Query interface
+;; ============================================================
+
+#? (hdbr-handle-query <expr>)
+;; WireServer on-sync handler: dispatch queries on the HDB tables.
+;; Mirrors the RDB query interface for consistency.
+;; Returns the query result.
+(de hdbr-handle-query (expr)
+  (setq *hdbr-total-queries* (1+ *hdbr-total-queries*))
+  (cond
+
+   ;; "ping" — health check
+   ((= expr "ping")
+    "pong" )
+
+   ;; "dates" — list of date strings
+   ((= expr "dates")
+    *hdbr-dates* )
+
+   ;; "tables" — list of table names
+   ((= expr "tables")
+    *hdbr-tables* )
+
+   ;; "stats" — HDB reader statistics
+   ((= expr "stats")
+    (list (cons "queries" *hdbr-total-queries*)
+          (cons "dates" (length *hdbr-dates*))
+          (cons "tables" (length *hdbr-tables*))
+          (cons "cached" (length *hdbr-cache*))
+          (cons "uptime" (- (_wire-time-seconds) *hdbr-start-time*)) ) )
+
+   ;; "refresh" — rescan disk for new date partitions
+   ((= expr "refresh")
+    (hdbr-discover)
+    (sprintf "refreshed: %d dates" (length *hdbr-dates*)) )
+
+   ;; ("count" date tbl) — lightweight row count via columnardb-meta
+   ((and (consp expr) (= (car expr) "count"))
+    (let ((date (cadr expr)) (tbl (caddr expr)))
+      (let ((path (hdbr-table-path date tbl)))
+        (if (dirp path)
+          (let ((meta (columnardb-meta path)))
+            (cadr (assoc 'nrows meta)) )
+          0 ) ) ) )
+
+   ;; ("meta" date tbl) — table metadata
+   ((and (consp expr) (= (car expr) "meta"))
+    (let ((date (cadr expr)) (tbl (caddr expr)))
+      (let ((path (hdbr-table-path date tbl)))
+        (if (dirp path)
+          (columnardb-meta path)
+          () ) ) ) )
+
+   ;; ("snapshot" date tbl) — full table as packed DataTable
+   ((and (consp expr) (= (car expr) "snapshot"))
+    (let ((date (cadr expr)) (tbl (caddr expr)))
+      (let ((dt (hdbr-get-table date tbl)))
+        (if dt
+          (wire-pack-datatable dt)
+          (sprintf "table not found: %s/%s" date tbl) ) ) ) )
+
+   ;; ("last" date tbl N) — last N rows from a single date's table
+   ((and (consp expr) (= (car expr) "last"))
+    (let ((date (cadr expr)) (tbl (caddr expr)) (n (cadddr expr)))
+      (let ((dt (hdbr-get-table date tbl)))
+        (if (not dt)
+          (sprintf "table not found: %s/%s" date tbl)
+          (let ((nrows (==> dt num-rows)))
+            (if (<= nrows 0)
+              (wire-pack-datatable dt)
+              (let ((start (max 0 (- nrows n)))
+                    (indices ()) )
+                (for (i start (1- nrows))
+                  (setq indices (nconc1 indices i)) )
+                (wire-pack-datatable (==> dt select-rows indices)) ) ) ) ) ) ) )
+
+   ;; ("select" date tbl col-list) — selected columns from a single date
+   ((and (consp expr) (= (car expr) "select"))
+    (let ((date (cadr expr)) (tbl (caddr expr)) (col-list (cadddr expr)))
+      (let ((dt (hdbr-get-table date tbl)))
+        (if (not dt)
+          (sprintf "table not found: %s/%s" date tbl)
+          (wire-pack-datatable (==> dt select-columns col-list)) ) ) ) )
+
+   ;; ("where" date tbl op col val) — filtered rows from a single date
+   ((and (consp expr) (= (car expr) "where"))
+    (let ((date (cadr expr))
+          (tbl (caddr expr))
+          (op (cadddr expr))
+          (col (car (cddddr expr)))
+          (val (cadr (cddddr expr))) )
+      (let ((dt (hdbr-get-table date tbl)))
+        (if (not dt)
+          (sprintf "table not found: %s/%s" date tbl)
+          (wire-pack-datatable (==> dt where-rows op col val)) ) ) ) )
+
+   ;; ("range" tbl date-from date-to) — all rows across date range, concatenated
+   ((and (consp expr) (= (car expr) "range"))
+    (let ((tbl (cadr expr))
+          (d-from (caddr expr))
+          (d-to (cadddr expr)) )
+      ;; Filter *hdbr-dates* to [d-from, d-to] using integer comparison
+      (let ((from-int (_hdbr-date-to-int d-from))
+            (to-int (_hdbr-date-to-int d-to))
+            (matching-dates ()) )
+        (each ((d *hdbr-dates*))
+          (let ((d-int (_hdbr-date-to-int d)))
+            (when (and (>= d-int from-int) (<= d-int to-int))
+              (setq matching-dates (nconc1 matching-dates d)) ) ) )
+        (hdbr-concat-tables matching-dates tbl) ) ) )
+
+   ;; ("range-where" tbl date-from date-to op col val) — filtered across date range
+   ((and (consp expr) (= (car expr) "range-where"))
+    (let ((tbl (cadr expr))
+          (d-from (caddr expr))
+          (d-to (cadddr expr))
+          (op (car (cddddr expr)))
+          (col (cadr (cddddr expr)))
+          (val (caddr (cddddr expr))) )
+      ;; Get concatenated table for range
+      (let ((from-int (_hdbr-date-to-int d-from))
+            (to-int (_hdbr-date-to-int d-to))
+            (matching-dates ()) )
+        (each ((d *hdbr-dates*))
+          (let ((d-int (_hdbr-date-to-int d)))
+            (when (and (>= d-int from-int) (<= d-int to-int))
+              (setq matching-dates (nconc1 matching-dates d)) ) ) )
+        ;; Concatenate then filter
+        (let ((tables ()))
+          (each ((d matching-dates))
+            (let ((dt (hdbr-get-table d tbl)))
+              (when (and dt (> (==> dt num-rows) 0))
+                (setq tables (nconc1 tables dt)) ) ) )
+          (if tables
+            (let ((combined (_partition-concat-tables tables)))
+              (wire-pack-datatable (==> combined where-rows op col val)) )
+            (if *hdbr-dates*
+              (let ((sample (hdbr-get-table (car *hdbr-dates*) tbl)))
+                (if sample
+                  (wire-pack-datatable (==> sample select-rows ()))
+                  (sprintf "no data for table: %s" tbl) ) )
+              "no dates available" ) ) ) ) ) )
+
+   ;; Unknown query
+   (t (sprintf "unknown query: %l" expr)) ) )
+
+
+;; ============================================================
+;; Status
+;; ============================================================
+
+#? (hdbr-status)
+;; Print HDB Reader statistics.
+(de hdbr-status ()
+  (let ((uptime (- (_wire-time-seconds) *hdbr-start-time*)))
+    (printf "hdbr: queries=%d dates=%d tables=%d cached=%d uptime=%.0fs\n"
+            *hdbr-total-queries*
+            (length *hdbr-dates*)
+            (length *hdbr-tables*)
+            (length *hdbr-cache*)
+            uptime)
+    (printf "hdbr: root=%s\n" *hdbr-root*)
+    (when *hdbr-dates*
+      (printf "hdbr: date range: %s to %s\n"
+              (car *hdbr-dates*) (nth (1- (length *hdbr-dates*)) *hdbr-dates*)) ) ) )
+
+
+;; ============================================================
+;; Main entry point
+;; ============================================================
+
+#? (hdbr-start <port> <hdb-root>)
+;; Start the HDB Reader: discover dates, start WireServer, enter serve loop.
+;; <port>: wire server port for query clients.
+;; <hdb-root>: base directory containing date-partitioned data.
+;; Blocks until *hdbr-running* is set to ().
+(de hdbr-start (port hdb-root)
+  (printf "\n=== HDB Reader starting ===\n")
+  (printf "hdb root: %s\n" hdb-root)
+  (printf "query server: port %d\n\n" port)
+
+  ;; Set state
+  (setq *hdbr-root* hdb-root)
+  (setq *hdbr-running* t)
+  (setq *hdbr-cache* ())
+  (setq *hdbr-total-queries* 0)
+  (setq *hdbr-start-time* (_wire-time-seconds))
+
+  ;; Discover dates
+  (hdbr-discover)
+
+  ;; Start WireServer
+  (setq *hdbr-wire* (new WireServer port))
+  (==> *hdbr-wire* start)
+  (printf "hdbr: query server listening on port %d\n" port)
+
+  ;; Set up query handler
+  (setq :*hdbr-wire*:on-sync
+    (lambda (fd expr encoding)
+      (hdbr-handle-query expr) ) )
+  (setq :*hdbr-wire*:on-connect
+    (lambda (fd)
+      (printf "hdbr: query client connected (fd=%d)\n" fd) ) )
+  (setq :*hdbr-wire*:on-disconnect
+    (lambda (fd)
+      (printf "hdbr: query client disconnected (fd=%d)\n" fd) ) )
+
+  (printf "hdbr: entering serve loop\n\n")
+
+  ;; Serve loop
+  (while *hdbr-running*
+    (==> *hdbr-wire* serve-once 100) )
+
+  ;; Shutdown
+  (==> *hdbr-wire* shutdown)
+  (printf "\nhdbr: stopped (%d queries served)\n" *hdbr-total-queries*) )
+
+
+;; ============================================================
+;; Command-line entry point
+;; ============================================================
+
+;; When loaded as a library (e.g., by tests), set *hdbr-no-autostart*
+;; to t BEFORE loading to suppress auto-start:
+;;   (setq *hdbr-no-autostart* t)
+;;   (libload "libuv/hdb-reader")
+
+(defvar *hdbr-no-autostart* ())
+
+(when (not *hdbr-no-autostart*)
+  (hdbr-start 19962 "/tmp/hdb") )
