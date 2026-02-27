@@ -1,0 +1,349 @@
+;;; analytics.lsh -- Moving Average Analytics process
+;;;
+;;; Derived analytics/CEP (complex event processing) component that reads
+;;; raw ticker data from the RDB, computes moving averages per product,
+;;; and serves the results to downstream clients via wire.
+;;;
+;;; Architecture:
+;;;   - Connects to RDB's wire server as a query client
+;;;   - Uses high-water mark to incrementally pull new ticker rows
+;;;   - Computes naive moving averages per product (O(window) per update)
+;;;   - Stores results in a DataTable
+;;;   - Runs its own WireServer so downstream clients can query analytics
+;;;
+;;; TODO: Efficient O(1) moving average using running sum (add-new/subtract-old)
+;;;       as in Kerf1, instead of naive O(window) scan.
+;;;
+;;; Usage:
+;;;   lush analytics.lsh                       ;; standalone demo (FH + RDB + analytics)
+;;;   lush -e '(libload "libuv/analytics") (ana-start 19961 19963 10)'
+;;;                                            ;; connect to RDB on 19961, serve on 19963
+
+(libload "wire/wire")
+(libload "wire/wire-serialize")
+(libload "datatable/datatable")
+
+;; ============================================================
+;; Analytics state
+;; ============================================================
+
+(defvar *ana-rdb-conn* ())              ;; wire connection to RDB
+(defvar *ana-wire* ())                  ;; WireServer for serving analytics queries
+(defvar *ana-running* ())               ;; main loop flag
+(defvar *ana-ticker-hwm* 0)            ;; high-water mark: next ticker row to fetch from RDB
+(defvar *ana-window* 10)               ;; moving average window size (default 10)
+(defvar *ana-products* ())             ;; alist: (("BTC-USD" . (p1 p2 ...)) ...) per-product history
+(defvar *ana-table* ())                ;; DataTable: product(string), price(real), mavg(real), time(stamp)
+(defvar *ana-total-updates* 0)         ;; count of ticker rows processed
+(defvar *ana-start-time* 0)            ;; start timestamp
+(defvar *ana-total-queries* 0)         ;; query counter
+(defvar *ana-poll-interval* 1)         ;; seconds between RDB polls (default 1)
+(defvar *ana-last-poll-time* 0)        ;; timestamp of last poll
+
+
+;; ============================================================
+;; Moving average computation (naive O(window))
+;; ============================================================
+
+#? (_ana-mean <prices>)
+;; Compute mean of a list of numbers (sum/count).
+;; Returns 0 for empty list.
+(de _ana-mean (prices)
+  (if (not prices) 0
+    (let ((sum 0) (count 0))
+      (each ((p prices))
+        (setq sum (+ sum p))
+        (setq count (1+ count)) )
+      (/ sum count) ) ) )
+
+
+;; ============================================================
+;; Table initialization
+;; ============================================================
+
+#? (ana-init-table)
+;; Create empty analytics DataTable with schema:
+;; product(string), price(real), mavg(real), time(stamp)
+(de ana-init-table ()
+  (setq *ana-table* (new DataTable))
+  (==> *ana-table* add-column "product" 'string)
+  (==> *ana-table* add-column "price" 'real)
+  (==> *ana-table* add-column "mavg" 'real)
+  (==> *ana-table* add-column "time" 'stamp) )
+
+
+;; ============================================================
+;; Per-product update
+;; ============================================================
+
+#? (ana-update-product <product> <price> <time>)
+;; Append price to per-product history, compute MA, append row to analytics table.
+;; 1. Get or create per-product history from *ana-products*
+;; 2. Append new price to history
+;; 3. If history > *ana-window*, trim from front
+;; 4. Compute mavg = (_ana-mean history)
+;; 5. Append row to *ana-table*
+;; 6. Increment *ana-total-updates*
+(de ana-update-product (product price time)
+  ;; Get current history for this product
+  (let ((entry (assoc product *ana-products*))
+        (history ()) )
+    (if entry
+      (setq history (cdr entry))
+      () )
+    ;; Append new price
+    (setq history (nconc1 history price))
+    ;; Trim to window size if needed
+    (while (> (length history) *ana-window*)
+      (setq history (cdr history)) )
+    ;; Update the alist
+    (if entry
+      (rplacd entry history)
+      (setq *ana-products* (nconc1 *ana-products* (cons product history))) )
+    ;; Compute moving average
+    (let ((mavg (_ana-mean history)))
+      ;; Append row to analytics table
+      (==> *ana-table* append-row (list product price mavg time))
+      ;; Update counter
+      (setq *ana-total-updates* (1+ *ana-total-updates*)) ) ) )
+
+
+;; ============================================================
+;; RDB polling
+;; ============================================================
+
+#? (ana-poll)
+;; Query RDB for new ticker rows via wire-call, process each.
+;; Uses high-water mark to fetch only new rows.
+(de ana-poll ()
+  (let ((packed (wire-call *ana-rdb-conn* (list "rows-from" "ticker" *ana-ticker-hwm*))))
+    (when (and (consp packed) (= (car packed) 'datatable))
+      (let ((dt (wire-unpack-datatable packed)))
+        (let ((new-rows (==> dt num-rows)))
+          (when (> new-rows 0)
+            (for (r 0 (1- new-rows))
+              (let ((product (==> dt get r "product"))
+                    (price (==> dt get r "price"))
+                    (time (==> dt get r "time")) )
+                (ana-update-product product price time) ) )
+            ;; Advance high-water mark
+            (setq *ana-ticker-hwm* (+ *ana-ticker-hwm* new-rows)) ) ) ) ) ) )
+
+
+#? (ana-check-poll)
+;; Check if poll interval has elapsed, call ana-poll if so.
+(de ana-check-poll ()
+  (let ((now (_wire-time-seconds)))
+    (when (>= (- now *ana-last-poll-time*) *ana-poll-interval*)
+      (ana-poll)
+      (setq *ana-last-poll-time* now) ) ) )
+
+
+;; ============================================================
+;; Query helpers
+;; ============================================================
+
+#? (ana-current-mavg <product>)
+;; Return current moving average value for a product (from history).
+;; Returns 0 if product not found.
+(de ana-current-mavg (product)
+  (let ((entry (assoc product *ana-products*)))
+    (if entry
+      (_ana-mean (cdr entry))
+      0 ) ) )
+
+
+;; ============================================================
+;; Query interface
+;; ============================================================
+
+#? (ana-handle-query <expr>)
+;; WireServer on-sync handler: dispatch queries on analytics data.
+;; Returns the query result.
+(de ana-handle-query (expr)
+  (setq *ana-total-queries* (1+ *ana-total-queries*))
+  (cond
+   ;; "ping" -- health check
+   ((= expr "ping")
+    "pong" )
+
+   ;; "tables" -- list of table names
+   ((= expr "tables")
+    (list "analytics") )
+
+   ;; "stats" -- analytics statistics
+   ((= expr "stats")
+    (list (cons "updates" *ana-total-updates*)
+          (cons "window" *ana-window*)
+          (cons "products" (length *ana-products*))
+          (cons "rows" (==> *ana-table* num-rows))
+          (cons "uptime" (- (_wire-time-seconds) *ana-start-time*))
+          (cons "queries" *ana-total-queries*) ) )
+
+   ;; ("count") -- row count of analytics table
+   ((and (consp expr) (= (car expr) "count"))
+    (==> *ana-table* num-rows) )
+
+   ;; ("snapshot") -- full analytics table as packed DataTable
+   ((and (consp expr) (= (car expr) "snapshot"))
+    (wire-pack-datatable *ana-table*) )
+
+   ;; ("last" N) -- last N rows from analytics table
+   ((and (consp expr) (= (car expr) "last"))
+    (let ((n (cadr expr)))
+      (let ((nrows (==> *ana-table* num-rows)))
+        (if (<= nrows 0)
+          (wire-pack-datatable *ana-table*)
+          (let ((start (max 0 (- nrows n)))
+                (indices ()) )
+            (for (i start (1- nrows))
+              (setq indices (nconc1 indices i)) )
+            (wire-pack-datatable (==> *ana-table* select-rows indices)) ) ) ) ) )
+
+   ;; ("last-product" product N) -- last N analytics rows for a specific product
+   ((and (consp expr) (= (car expr) "last-product"))
+    (let ((product (cadr expr))
+          (n (caddr expr)) )
+      ;; Filter to product, then take last N
+      (let ((filtered (==> *ana-table* where-rows '= "product" product)))
+        (let ((nrows (==> filtered num-rows)))
+          (if (<= nrows n)
+            (wire-pack-datatable filtered)
+            (let ((start (- nrows n))
+                  (indices ()) )
+              (for (i start (1- nrows))
+                (setq indices (nconc1 indices i)) )
+              (wire-pack-datatable (==> filtered select-rows indices)) ) ) ) ) ) )
+
+   ;; ("where" op col val) -- filtered rows from analytics table
+   ((and (consp expr) (= (car expr) "where"))
+    (let ((op (cadr expr))
+          (col (caddr expr))
+          (val (cadddr expr)) )
+      (wire-pack-datatable (==> *ana-table* where-rows op col val)) ) )
+
+   ;; ("mavg" product) -- current moving average value for a product
+   ((and (consp expr) (= (car expr) "mavg"))
+    (let ((product (cadr expr)))
+      (ana-current-mavg product) ) )
+
+   ;; ("mavg-all") -- alist of all products -> current MA value
+   ((and (consp expr) (= (car expr) "mavg-all"))
+    (let ((result ()))
+      (each ((entry *ana-products*))
+        (setq result (nconc1 result
+          (cons (car entry) (_ana-mean (cdr entry))) )) )
+      result ) )
+
+   ;; Unknown query
+   (t (sprintf "unknown query: %l" expr)) ) )
+
+
+;; ============================================================
+;; Status
+;; ============================================================
+
+#? (ana-status)
+;; Print current analytics statistics.
+(de ana-status ()
+  (let ((uptime (- (_wire-time-seconds) *ana-start-time*)))
+    (printf "ana: updates=%d window=%d products=%d rows=%d uptime=%.0fs queries=%d\n"
+            *ana-total-updates* *ana-window* (length *ana-products*)
+            (==> *ana-table* num-rows) uptime *ana-total-queries*)
+    (printf "ana: ticker_hwm=%d poll_interval=%ds\n"
+            *ana-ticker-hwm* *ana-poll-interval*) ) )
+
+
+;; ============================================================
+;; Main loop (multi-process mode)
+;; ============================================================
+
+#? (ana-start <rdb-port> <port> <window>)
+;; Connect to an RDB wire server and start the analytics process.
+;; <rdb-port>: RDB wire server port to connect to.
+;; <port>: port for the analytics wire server (query clients connect here).
+;; <window>: moving average window size.
+;; Blocks until connection is closed or interrupted.
+(de ana-start (rdb-port port window)
+  (printf "\n=== Analytics starting ===\n")
+  (printf "rdb server: 127.0.0.1:%d\n" rdb-port)
+  (printf "analytics server: port %d\n" port)
+  (printf "window size: %d\n\n" window)
+
+  ;; Reset state
+  (setq *ana-running* t)
+  (setq *ana-window* window)
+  (setq *ana-ticker-hwm* 0)
+  (setq *ana-products* ())
+  (setq *ana-total-updates* 0)
+  (setq *ana-total-queries* 0)
+  (setq *ana-start-time* (_wire-time-seconds))
+  (setq *ana-last-poll-time* 0)
+  (setq *ana-poll-interval* 1)
+
+  ;; Initialize analytics table
+  (ana-init-table)
+  (printf "ana: analytics table initialized\n")
+
+  ;; Connect to RDB
+  (printf "ana: connecting to RDB...\n")
+  (setq *ana-rdb-conn* (wire-connect "127.0.0.1" rdb-port))
+  (printf "ana: connected (fd=%d)\n" (*ana-rdb-conn* "fd"))
+
+  ;; Verify connection
+  (let ((pong (wire-call *ana-rdb-conn* "ping")))
+    (if (= pong "pong")
+      (printf "ana: RDB ping OK\n")
+      (printf "ana: WARNING — unexpected ping response: %l\n" pong) ) )
+
+  ;; Start analytics wire server
+  (setq *ana-wire* (new WireServer port))
+  (==> *ana-wire* start)
+  (printf "ana: query server listening on port %d\n" port)
+
+  ;; Set up query handler
+  (setq :*ana-wire*:on-sync
+    (lambda (fd expr encoding)
+      (ana-handle-query expr) ) )
+  (setq :*ana-wire*:on-connect
+    (lambda (fd)
+      (printf "ana: query client connected (fd=%d)\n" fd) ) )
+  (setq :*ana-wire*:on-disconnect
+    (lambda (fd)
+      (printf "ana: query client disconnected (fd=%d)\n" fd) ) )
+
+  ;; Main polling loop
+  (printf "ana: entering main loop\n\n")
+  (while *ana-running*
+    ;; Service query clients
+    (==> *ana-wire* serve-once 5)
+    ;; Check poll timing
+    (ana-check-poll)
+    ;; Brief sleep to avoid busy-wait (~100ms via spin)
+    (let ((start (_wire-time-seconds)))
+      (while (< (- (_wire-time-seconds) start) 0.1) ()) ) )
+
+  ;; Shutdown
+  (printf "\nana: shutting down...\n")
+  (ana-poll)  ;; final poll
+  (wire-close *ana-rdb-conn*)
+  (setq *ana-rdb-conn* ())
+  (when *ana-wire*
+    (==> *ana-wire* shutdown) )
+  (printf "ana: stopped (%d updates, %d rows, %d queries)\n"
+          *ana-total-updates* (==> *ana-table* num-rows) *ana-total-queries*) )
+
+
+;; ============================================================
+;; Command-line entry point
+;; ============================================================
+
+;; When loaded as a library (e.g., by tests), set *ana-no-autostart*
+;; to t BEFORE loading to suppress auto-start:
+;;   (setq *ana-no-autostart* t)
+;;   (libload "libuv/analytics")
+
+(defvar *ana-no-autostart* ())
+
+(when (not *ana-no-autostart*)
+  (ana-start 19961 19963 10) )
