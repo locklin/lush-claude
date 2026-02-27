@@ -25,6 +25,34 @@
 ;;;     (perm-check perms "reader" "refresh")   ;; => ()
 ;;;   )
 
+#? *** Permissions: Text-File Access Control
+;; Standalone module for loading and checking text-file-based permissions.
+;; Usable by the Gateway or any WireServer.  No global state -- pure functions.
+;;
+;; Permission file format:
+;;
+;;   # comments start with #, blank lines ignored
+;;   admin:*
+;;   reader:ping,tables,stats,count,snapshot
+;;   *:ping
+;;
+;; Special users:
+;; {<ul>
+;; {<li> {<b> "*"} -- default for unauthenticated clients.}
+;; {<li> {<b> "local"} -- used for localhost connections.
+;; If omitted, localhost gets full access (trusted).}
+;; }
+;;
+;; Example:
+;; {<code>
+;;  (let ((perms (perm-load "/path/to/permissions.cfg")))
+;;    (perm-check perms "admin" "ping")      ;; => t
+;;    (perm-check perms "reader" "refresh")   ;; => ()
+;;  )
+;; </code>}
+;; {<see> (perm-load <path>)}
+;; {<see> (perm-check <perms> <user> <expr>)}
+
 ;; ============================================================
 ;; Permission file parsing
 ;; ============================================================

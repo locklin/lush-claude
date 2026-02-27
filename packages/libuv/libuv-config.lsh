@@ -8,10 +8,12 @@
 ;; Compiles vendored libuv source (~49 files) and the C wrapper layer
 ;; into a shared library using {<b> lushmake}.  This file is loaded
 ;; automatically by <libuv.lsh> and should not be loaded directly.
-;;.PP
+;;
 ;; The build produces a single shared library:
-;;.LI <libuv-c.so>: libuv v1.49.2 (Linux) plus the Lush-specific
-;; wrapper with handle table, event queue, and static callbacks.
+;; {<ul>
+;; {<li> <libuv-c.so>: libuv v1.49.2 (Linux) plus the Lush-specific
+;; wrapper with handle table, event queue, and static callbacks.}
+;; }
 
 (libload "libc/make")
 

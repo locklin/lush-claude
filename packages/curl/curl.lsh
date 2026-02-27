@@ -14,31 +14,31 @@
 
 #? *** Curl: HTTP and WebSocket Client
 ;; HTTP REST client and WebSocket client for Lush, built on libcurl.
-;;.PP
+;;
 ;; Provides a high-level API for making HTTP requests (GET, POST, PUT,
 ;; DELETE, PATCH) and for WebSocket connections (connect, send, receive,
 ;; close, stream).
-;;.PP
+;;
 ;; All HTTP functions return {<b> (list <status-code> <body-string>)}.
 ;; WebSocket functions use opaque handles obtained from {<b> ws-connect}.
-;;.VP
+;;
 ;; REST example:
-;;.CODE
+;; {<code>
 ;;  (libload "curl/curl")
 ;;  (let* ((result (curl-get "https://api.example.com/data"))
 ;;         (status (car result))
 ;;         (body (cadr result)))
 ;;    (printf "HTTP %d: %s\n" status body))
-;;.P
-;;.VP
+;; </code>}
+;;
 ;; WebSocket example:
-;;.CODE
+;; {<code>
 ;;  (let ((ws (ws-connect "ws://localhost:8080/ws")))
 ;;    (ws-send ws "hello")
 ;;    (let ((reply (ws-recv ws 5000)))
 ;;      (printf "Got: %s\n" reply))
 ;;    (ws-close ws))
-;;.P
+;; </code>}
 
 #? ** REST API
 

@@ -28,16 +28,16 @@
 
 #? *** WebSocket Client (Event-Driven)
 ;; Non-blocking WebSocket client combining curl WS with libuv poll.
-;;.PP
+;;
 ;; Uses curl's {<b> CURLOPT_CONNECT_ONLY=2} mode for direct socket
 ;; access and libuv's {<b> uv-poll-start} for event-driven readability
 ;; notification.  No curl_multi interface needed.
-;;.PP
+;;
 ;; A ws-client is represented as a list:
 ;; {<b> (ws-handle poll-handle-id fd)}
-;;.VP
+;;
 ;; Example:
-;;.CODE
+;; {<code>
 ;;  (let ((loop (uv-loop-new))
 ;;        (client (ws-client-connect loop "wss://ws-feed.exchange.coinbase.com")))
 ;;    (ws-client-send client "{\"type\":\"subscribe\",\"channels\":[\"status\"]}")
@@ -46,7 +46,7 @@
 ;;      (when msg (printf "Got: %s\n" msg)))
 ;;    (ws-client-close client)
 ;;    (uv-loop-close loop))
-;;.P
+;; </code>}
 
 
 #? (ws-client-connect <loop> <url> [<headers>])

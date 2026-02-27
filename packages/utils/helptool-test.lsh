@@ -1,0 +1,294 @@
+;;; helptool-test.lsh -- Test .lsh files for helptool documentation errors
+;;;
+;;; Scans .lsh files and simulates the helptool parsing pipeline to detect:
+;;;   1. Tag mixing errors (dot-tags + brace-tags in same entry)
+;;;   2. Bare {<li>} items not wrapped in {<ul>} (triggers splice-ul crash)
+;;;
+;;; Usage:
+;;;   lush helptool-test.lsh                          ;; test all Claude packages
+;;;   lush -e '(libload "helptool-test") (ht-test-file "path/to/file.lsh")'
+;;;
+;;; The splice-ul crash happens because brace.read-text turns newlines
+;;; between {<li>} items into -1 spacing tokens, and splice-ul at
+;;; lsh/libstd/brace.lsh:395 calls (car (cadr ul)) on -1, which is
+;;; not a list.  The fix is to wrap {<li>} items in explicit {<ul>...}
+;;; blocks, which splice-ul skips (line 399).
+
+;; Capture package base path at load time
+(defvar *ht-packages-base* (concat (dirname file-being-loaded) "/.."))
+
+;; ============================================================
+;; Text-based scanner (no helptool dependency)
+;; ============================================================
+
+;; Parse a .lsh file into entries: ((marker body-lines) ...)
+;; Each entry is a list: (marker-line (body-line1 body-line2 ...))
+(de _ht-parse-entries (path)
+  (let ((entries ())
+        (cur-marker ())
+        (cur-body ())
+        (fd (open-read path)) )
+    (when fd
+      (reading fd
+        (while (<> (skip-char "\n\r\f") "\e")
+          (let ((line (read-string)))
+            (cond
+             ;; New #? marker
+             ((and (>= (len line) 2) (= (mid line 1 2) "#?"))
+              ;; Save previous entry
+              (when cur-marker
+                (setq entries (nconc1 entries
+                  (list cur-marker (reverse cur-body)))) )
+              (setq cur-marker line)
+              (setq cur-body ()) )
+             ;; Comment line belonging to current entry body
+             ((and cur-marker
+                   (>= (len line) 2)
+                   (= (mid line 1 2) ";;") )
+              (setq cur-body (cons line cur-body)) )
+             ;; Non-comment line ends current entry
+             (cur-marker
+              (setq entries (nconc1 entries
+                (list cur-marker (reverse cur-body))))
+              (setq cur-marker ())
+              (setq cur-body ()) )
+             ;; Otherwise skip
+             (t ()) ) ) ) )
+      ;; Save last entry
+      (when cur-marker
+        (setq entries (nconc1 entries
+          (list cur-marker (reverse cur-body)))) )
+      (delete fd) )
+    entries ) )
+
+
+;; Check if a line starts with a dot-tag (after ;; prefix)
+;; Dot-tags: ;;.PP  ;;.CODE  ;;.LI  ;;.SEE  ;;.VP  ;;.TYPE  ;;.P  ;;.BR  ;;.PRE  ;;.IP
+(de _ht-has-dot-tag (line)
+  (let ((content ""))
+    ;; Strip leading ;; and optional space
+    (when (>= (len line) 2)
+      (setq content (mid line 3 (- (len line) 2)))
+      ;; Trim leading spaces
+      (while (and (> (len content) 0) (= (mid content 1 1) " "))
+        (setq content (mid content 2 (1- (len content)))) ) )
+    ;; Check for .[A-Z]
+    (and (>= (len content) 2)
+         (= (mid content 1 1) ".")
+         (let ((ch (mid content 2 1)))
+           (and (>= (asc ch) (asc "A"))
+                (<= (asc ch) (asc "Z")) ) ) ) ) )
+
+
+;; Check if a line contains a brace-tag
+(de _ht-has-brace-tag (line)
+  ;; Scan for {<
+  (let ((i 1)
+        (line-len (len line))
+        (found ()) )
+    (while (and (<= i (1- line-len)) (not found))
+      (when (and (= (mid line i 1) "{")
+                 (= (mid line (1+ i) 1) "<") )
+        (setq found t) )
+      (setq i (1+ i)) )
+    found ) )
+
+
+;; Check a single entry for tag mixing
+;; Returns: () if OK, or a string describing the problem
+(de _ht-check-tag-mixing (marker body-lines)
+  (let ((has-dot ())
+        (has-brace ()) )
+    (each ((line body-lines))
+      (when (_ht-has-dot-tag line)
+        (setq has-dot t) )
+      (when (_ht-has-brace-tag line)
+        (setq has-brace t) ) )
+    (when (and has-dot has-brace)
+      (sprintf "TAG-MIX: %s" marker) ) ) )
+
+
+;; Check a single entry for bare {<li>} items (not inside {<ul>...})
+;; Returns: () if OK, or a string describing the problem
+(de _ht-check-bare-li (marker body-lines)
+  (let ((in-ul 0)    ;; nesting depth of {<ul> ... }
+        (has-bare-li ())
+        (li-count 0) )
+    (each ((line body-lines))
+      ;; Check for {<ul> and } (closing ul)
+      ;; Simple approach: scan line for {<ul> and } tokens
+      (let ((i 1)
+            (line-len (len line)) )
+        (while (<= i line-len)
+          (cond
+           ;; Opening {<ul>
+           ((and (<= (+ i 4) line-len)
+                 (= (mid line i 5) "{<ul>") )
+            (setq in-ul (1+ in-ul))
+            (setq i (+ i 5)) )
+           ;; Opening {<li>
+           ((and (<= (+ i 3) line-len)
+                 (= (mid line i 4) "{<li>") )
+            (when (= in-ul 0)
+              (setq has-bare-li t)
+              (setq li-count (1+ li-count)) )
+            (setq i (+ i 4)) )
+           ;; Closing } -- could close <ul>
+           ;; This is tricky; we use a heuristic: a lone } on a comment
+           ;; line (;; }) closes the ul
+           (t (setq i (1+ i))) ) ) )
+      ;; Check for standalone closing brace: ";; }" at start of line
+      (let ((stripped ""))
+        (when (>= (len line) 2)
+          (setq stripped (mid line 3 (- (len line) 2)))
+          ;; Trim spaces
+          (while (and (> (len stripped) 0) (= (mid stripped 1 1) " "))
+            (setq stripped (mid stripped 2 (1- (len stripped)))) )
+          (when (and (> in-ul 0) (= stripped "}"))
+            (setq in-ul (1- in-ul)) ) ) ) )
+    (when has-bare-li
+      (sprintf "BARE-LI(%d): %s" li-count marker) ) ) )
+
+
+;; ============================================================
+;; Public API
+;; ============================================================
+
+#? (ht-test-file <path>)
+;; Test a single .lsh file for helptool documentation errors.
+;; Prints any problems found and returns the count of issues.
+(de ht-test-file (path)
+  (let ((entries (_ht-parse-entries path))
+        (issues 0) )
+    (each ((entry entries))
+      (let ((marker (car entry))
+            (body (cadr entry)) )
+        ;; Check tag mixing
+        (let ((mix-err (_ht-check-tag-mixing marker body)))
+          (when mix-err
+            (printf "  %s: %s\n" path mix-err)
+            (setq issues (1+ issues)) ) )
+        ;; Check bare <li>
+        (let ((li-err (_ht-check-bare-li marker body)))
+          (when li-err
+            (printf "  %s: %s\n" path li-err)
+            (setq issues (1+ issues)) ) ) ) )
+    issues ) )
+
+
+#? (ht-test-dir <dir>)
+;; Test all .lsh files in a directory for helptool documentation errors.
+;; Returns total issue count.
+(de ht-test-dir (dir)
+  (let ((total 0)
+        (saved-dir (pwd)) )
+    (chdir dir)
+    (let ((all-files (files))
+          (lsh-files ()) )
+      ;; Filter for .lsh files
+      (each ((f all-files))
+        (when (and (> (len f) 4)
+                   (= (mid f (- (len f) 3) 4) ".lsh") )
+          (setq lsh-files (nconc1 lsh-files f)) ) )
+      (each ((f lsh-files))
+        (let ((n (ht-test-file (concat dir "/" f))))
+          (setq total (+ total n)) ) ) )
+    (chdir saved-dir)
+    total ) )
+
+
+#? (ht-test-all)
+;; Test all Claude-created packages for helptool documentation errors.
+;; Scans: sqlite, timedate, datatable, columnardb, json, httpd,
+;; wire, libuv, mapper, curl, lz4, csvread.
+(de ht-test-all ()
+  (let ((base *ht-packages-base*)
+        (total 0)
+        (packages '("sqlite" "timedate" "datatable" "columnardb"
+                     "json" "httpd" "wire" "libuv" "mapper"
+                     "curl" "lz4" "csvread")) )
+    (printf "=== Helptool Documentation Test ===\n\n")
+    (each ((pkg packages))
+      (let ((dir (concat base "/" pkg)))
+        (printf "Testing %s...\n" pkg)
+        (let ((n (ht-test-dir dir)))
+          (setq total (+ total n))
+          (when (= n 0)
+            (printf "  OK\n") ) ) ) )
+    (printf "\n=== Total issues: %d ===\n" total)
+    total ) )
+
+
+;; ============================================================
+;; Full pipeline test (uses actual helptool machinery)
+;; ============================================================
+
+#? (ht-test-file-full <path>)
+;; Test a .lsh file through the actual helptool parsing pipeline.
+;; This simulates clicking each entry in the helptool GUI.
+;; Requires the help subsystem to be loaded.
+;; Returns count of entries that crashed during parsing.
+(de ht-test-file-full (path)
+  ;; Load the help subsystem if not already loaded
+  (when (not (functionp brace.read-body))
+    (libload "libstd/brace") )
+  (when (not (classp help-book))
+    (libload "libstd/help") )
+
+  (let ((entries (_ht-parse-entries path))
+        (crashes 0) )
+    (printf "  Full-parse test: %s (%d entries)\n" path (length entries))
+    (each ((entry entries))
+      (let ((marker (car entry))
+            (body (cadr entry)) )
+        (when body
+          ;; Build the body text as the helptool would see it
+          (let ((body-text ""))
+            (each ((line body))
+              ;; Strip the ;; prefix
+              (when (>= (len line) 2)
+                (let ((content (mid line 3 (- (len line) 2))))
+                  ;; Strip one leading space if present
+                  (when (and (> (len content) 0) (= (mid content 1 1) " "))
+                    (setq content (mid content 2 (1- (len content)))) )
+                  (setq body-text (concat body-text content "\n")) ) ) )
+            ;; Check for tag mixing first
+            (let ((has-dot ())
+                  (has-brace ()) )
+              (each ((line body))
+                (when (_ht-has-dot-tag line) (setq has-dot t))
+                (when (_ht-has-brace-tag line) (setq has-brace t)) )
+              (cond
+               ;; Mixed tags — would error
+               ((and has-dot has-brace)
+                (printf "    FAIL (tag-mix): %s\n" marker)
+                (setq crashes (1+ crashes)) )
+               ;; Brace-style — try parsing
+               (has-brace
+                ;; Try to parse through brace.read-body
+                ;; This is where splice-ul would crash
+                (let ((ok t))
+                  ;; Use error handling to catch splice-ul crashes
+                  (let ((result
+                         (errorf ()
+                           (let ((stream (open-read-string body-text)))
+                             (reading stream
+                               (let ((parsed (brace.read-body)))
+                                 parsed ) ) ) ) ))
+                    (when (not result)
+                      (setq ok ())
+                      (printf "    FAIL (parse): %s\n" marker)
+                      (setq crashes (1+ crashes)) ) ) ) )
+               ;; Old-style or plain — skip
+               (t ()) ) ) ) ) ) )
+    crashes ) )
+
+
+;; ============================================================
+;; Command-line entry point
+;; ============================================================
+
+(defvar *ht-test-no-autostart* ())
+
+(when (not *ht-test-no-autostart*)
+  (ht-test-all) )

@@ -29,6 +29,26 @@
 (libload "wire/wire-serialize")
 (libload "datatable/datatable")
 
+#? *** Analytics: Moving Average CEP
+;; Derived analytics / complex event processing (CEP) component.
+;; Reads raw ticker data from the RDB via wire, computes per-product
+;; analytics, and serves results to downstream clients.
+;;.PP
+;; Per-product metrics computed:
+;;.LI O(1) moving average via running sums (add-new / subtract-old).
+;;.LI Bid-ask spread.
+;;.LI Rolling volatility, min/max price, time-weighted average price (TWAP).
+;;.PP
+;; Results are stored in a DataTable and served via its own WireServer.
+;;.VP
+;; Example:
+;;.CODE
+;;  (libload "libuv/analytics")
+;;  (ana-start 19961 19963 10)  ;; RDB port, Analytics port, window size
+;;.P
+;;.SEE (ana-start <rdb-port> <port> <window>)
+;;.SEE (ana-handle-query <expr>)
+
 ;; ============================================================
 ;; Analytics state
 ;; ============================================================

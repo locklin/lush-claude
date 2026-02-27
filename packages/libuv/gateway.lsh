@@ -22,6 +22,28 @@
 (libload "wire/wire-serialize")
 (libload "libuv/permissions")
 
+#? *** Gateway: Unified Query Router
+;; A process that connects to RDB, HDB Reader, HDB Writer, and
+;; Analytics as wire clients, and exposes a single unified WireServer
+;; for downstream clients.
+;;
+;; Features:
+;; {<ul>
+;; {<li> Explicit routing via {<b> ("rdb" ...)}, {<b> ("hdb" ...)},
+;; {<b> ("hdbw" ...)}, {<b> ("ana" ...)} query prefixes.}
+;; {<li> Smart routing: auto-detects backend from query pattern.}
+;; {<li> Optional permission checking from a text-file permissions module.}
+;; {<li> Localhost connections are trusted by default unless restricted.}
+;; }
+;;
+;; Example:
+;; {<code>
+;;  (libload "libuv/gateway")
+;;  (gw-start 19964 19961 19962 19963 19965 ())
+;; </code>}
+;; {<see> (gw-start <port> <rdb-port> <hdb-port> <ana-port> <hdbw-port> <perm-file>)}
+;; {<see> (gw-handle-query <fd> <expr>)}
+
 ;; ============================================================
 ;; Gateway state
 ;; ============================================================

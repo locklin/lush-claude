@@ -209,13 +209,15 @@
 ;; Called when a WebSocket message arrives from the data feed.
 ;; Classifies the message using {<b> json-msg-type}, then dispatches
 ;; to the appropriate hot-path parser:
-;;.LI l2update: extract into column arrays, build DataTable, broadcast
-;;.LI ticker: extract into column arrays, broadcast as tagged alist
-;;.LI heartbeat: count only (not broadcast)
-;;.LI subscriptions: log confirmation
-;;.LI error: log error
-;;.LI snapshot: log (not yet parsed)
-;;.LI unknown: general parse + broadcast
+;; {<ul>
+;; {<li> l2update: extract into column arrays, build DataTable, broadcast}
+;; {<li> ticker: extract into column arrays, broadcast as tagged alist}
+;; {<li> heartbeat: count only (not broadcast)}
+;; {<li> subscriptions: log confirmation}
+;; {<li> error: log error}
+;; {<li> snapshot: log (not yet parsed)}
+;; {<li> unknown: general parse + broadcast}
+;; }
 (de fh-on-feed-message (msg)
   (setq *fh-stats-events* (1+ *fh-stats-events*))
   (when (> (len msg) 0)

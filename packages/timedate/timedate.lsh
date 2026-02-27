@@ -18,52 +18,54 @@
 ;; Timestamps are represented as int64 (long) microseconds since the
 ;; Unix epoch (1970-01-01T00:00:00Z), giving exact integer arithmetic
 ;; with no floating-point rounding.
-;;.PP
+;;
 ;; Provides functions for:
-;;.LI Getting the current time ({<b> timestamp-now}).
-;;.LI Parsing date/time strings via {<b> strptime} formats
-;; ({<b> timestamp-parse}).
-;;.LI Building timestamps from components ({<b> timestamp-from-date},
-;; {<b> timestamp-from-datetime}).
-;;.LI Formatting timestamps to strings ({<b> timestamp-to-string}).
-;;.LI Decomposing into components ({<b> timestamp-components}).
-;;.LI Int64-safe arithmetic: adding seconds, minutes, hours, days
+;; {<ul>
+;; {<li> Getting the current time ({<b> timestamp-now}).}
+;; {<li> Parsing date/time strings via {<b> strptime} formats
+;; ({<b> timestamp-parse}).}
+;; {<li> Building timestamps from components ({<b> timestamp-from-date},
+;; {<b> timestamp-from-datetime}).}
+;; {<li> Formatting timestamps to strings ({<b> timestamp-to-string}).}
+;; {<li> Decomposing into components ({<b> timestamp-components}).}
+;; {<li> Int64-safe arithmetic: adding seconds, minutes, hours, days
 ;; ({<b> timestamp-add-seconds}, {<b> timestamp-add-minutes},
-;; {<b> timestamp-add-hours}, {<b> timestamp-add-days}).
-;;.LI Truncation to time boundaries for bar aggregation
+;; {<b> timestamp-add-hours}, {<b> timestamp-add-days}).}
+;; {<li> Truncation to time boundaries for bar aggregation
 ;; ({<b> timestamp-truncate-seconds}, {<b> timestamp-truncate-minutes},
-;; {<b> timestamp-truncate-hours}, {<b> timestamp-truncate-days}).
-;;.PP
+;; {<b> timestamp-truncate-hours}, {<b> timestamp-truncate-days}).}
+;; }
+;;
 ;; The column type symbol <'stamp> is used by the DataTable and
 ;; ColumnarDB packages for timestamp columns.
-;;.PP
+;;
 ;; {<b> Important:} All arithmetic functions use int64 internally
 ;; (via DHC-compiled C code), avoiding the double-precision limit
 ;; of 2^53 (~9.0e15 microseconds, year 2255).  Do not use raw
 ;; Lush <+> or <-> on timestamps if you need precision beyond the
 ;; current era.
-;;.VP
+;;
 ;; Example:
-;;.CODE
+;; {<code>
 ;;  (libload "timedate/timedate")
 ;;  (let ((now (timestamp-now)))
 ;;    (printf "%s\n" (timestamp-to-string now))
 ;;    (let ((parts (timestamp-components now)))
 ;;      (printf "Year: %d  Month: %d\n" (car parts) (cadr parts))))
-;;.P
-;;.VP
+;; </code>}
+;;
 ;; Parsing:
-;;.CODE
+;; {<code>
 ;;  (timestamp-parse "2024-03-15" "%Y-%m-%d")
 ;;  (timestamp-parse "2024-03-15T10:30:00.123456" "%Y-%m-%dT%H:%M:%S")
-;;.P
-;;.VP
+;; </code>}
+;;
 ;; Duration arithmetic:
-;;.CODE
+;; {<code>
 ;;  (timestamp-add-hours ts -1)          ;; 1 hour ago
 ;;  (timestamp-add-minutes ts 30)        ;; 30 minutes from now
 ;;  (timestamp-truncate-hours ts)        ;; floor to hour boundary
-;;.P
+;; </code>}
 
 
 ;; ============================================================
@@ -373,25 +375,27 @@
 ;; Parse a date/time string using a {<b> strptime} format string.
 ;; Returns int64 microseconds since epoch.
 ;; Signals an error on parse failure.
-;;.PP
+;;
 ;; Handles trailing fractional seconds (<.123456>) automatically
 ;; after the format string has been consumed by strptime.
 ;; Fractional digits are parsed up to microsecond (6-digit) precision.
-;;.PP
+;;
 ;; Common formats:
-;;.LI <"%Y-%m-%d %H:%M:%S"> -- ISO datetime with space separator
-;;.LI <"%Y-%m-%dT%H:%M:%S"> -- ISO datetime with T separator
-;;.LI <"%Y-%m-%d"> -- ISO date only (time defaults to 00:00:00)
-;;.LI <"%m/%d/%Y"> -- US date format
-;;.VP
+;; {<ul>
+;; {<li> <"%Y-%m-%d %H:%M:%S"> -- ISO datetime with space separator}
+;; {<li> <"%Y-%m-%dT%H:%M:%S"> -- ISO datetime with T separator}
+;; {<li> <"%Y-%m-%d"> -- ISO date only (time defaults to 00:00:00)}
+;; {<li> <"%m/%d/%Y"> -- US date format}
+;; }
+;;
 ;; Examples:
-;;.CODE
+;; {<code>
 ;;  (timestamp-parse "2024-06-15" "%Y-%m-%d")
 ;;  (timestamp-parse "2024-06-15T14:30:00" "%Y-%m-%dT%H:%M:%S")
 ;;  (timestamp-parse "2024-06-15T14:30:00.123456" "%Y-%m-%dT%H:%M:%S")
-;;.P
-;;.SEE (timestamp-to-string <micros> [<fmt>])
-;;.SEE (timestamp-from-datetime <y> <m> <d> <H> <M> <S>)
+;; </code>}
+;; {<see> (timestamp-to-string <micros> [<fmt>])}
+;; {<see> (timestamp-from-datetime <y> <m> <d> <H> <M> <S>)}
 (de timestamp-parse (str fmt)
   (let ((out (long-matrix 1)))
     (_td-strptime-to-micros-out str fmt out)
@@ -403,22 +407,22 @@
 
 #? (timestamp-to-string <micros> [<fmt>])
 ;; Format a timestamp as a UTC string.
-;;.PP
+;;
 ;; <micros> is int64 microseconds since epoch.
 ;; <fmt> is an optional {<b> strftime} format string.
 ;; Default format: <"%Y-%m-%d %H:%M:%S">.
-;;.VP
+;;
 ;; Examples:
-;;.CODE
+;; {<code>
 ;;  (timestamp-to-string (timestamp-now))
 ;;    => "2024-06-15 14:30:00"
 ;;  (timestamp-to-string ts "%Y-%m-%dT%H:%M:%SZ")
 ;;    => "2024-06-15T14:30:00Z"
 ;;  (timestamp-to-string ts "%H:%M")
 ;;    => "14:30"
-;;.P
-;;.SEE (timestamp-parse <str> <fmt>)
-;;.SEE (timestamp-components <micros>)
+;; </code>}
+;; {<see> (timestamp-parse <str> <fmt>)}
+;; {<see> (timestamp-components <micros>)}
 (de timestamp-to-string (micros &optional fmt)
   (when (not fmt) (setq fmt "%Y-%m-%d %H:%M:%S"))
   (let ((micros-arr (long-matrix 1))
@@ -508,7 +512,7 @@
 ;; These are provided for readability and reference.  For
 ;; arithmetic, use the named functions ({<b> timestamp-add-seconds},
 ;; etc.) which perform int64 arithmetic internally.
-;;.PP
+;;
 ;; {<b> Warning:} <*td-hour*> and <*td-day*> exceed the 32-bit
 ;; integer range.  Do not pass them to raw Lush <+> on timestamps
 ;; if you need exact microsecond precision beyond year 2255.
@@ -648,7 +652,7 @@
 ;; nearest boundary of a given time unit.  Useful for grouping
 ;; tick data into bars (second, minute, hour, or daily bars),
 ;; or for selecting time ranges.
-;;.PP
+;;
 ;; All truncation is relative to UTC.  {<b> timestamp-truncate-days}
 ;; floors to UTC midnight, not local midnight.
 

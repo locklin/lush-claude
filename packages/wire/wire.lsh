@@ -55,22 +55,24 @@
 #? *** Wire: Interprocess Communication
 ;; TCP-based IPC package enabling Lush instances to communicate:
 ;; query tables, execute expressions, and exchange data.
-;;.PP
+;;
 ;; Inspired by Q/kdb+ IPC, TorQ, and Kerf1's wire.c.
 ;; Uses a binary wire protocol with a 16-byte header + payload.
-;;.PP
+;;
 ;; Features:
-;;.LI WireServer class with {<b> select()}-based event loop.
-;;.LI Localhost-only binding (security default).
-;;.LI Binary encoding via {<b> bwrite/bread} (default), or s-expression text.
-;;.LI LZ4 compression for large payloads (transparent).
-;;.LI Q-style callback hooks: {<b> on-sync}, {<b> on-async}, {<b> on-connect}, {<b> on-disconnect}.
-;;.LI Client API: {<b> wire-connect}, {<b> wire-call}, {<b> wire-send}, {<b> wire-close}.
-;;.LI WirePool with auto-reconnect for connection management.
-;;.LI DataTable serialization with LZ4 + byte-transpose compression.
-;;.PP
+;; {<ul>
+;; {<li> WireServer class with {<b> select()}-based event loop.}
+;; {<li> Localhost-only binding (security default).}
+;; {<li> Binary encoding via {<b> bwrite/bread} (default), or s-expression text.}
+;; {<li> LZ4 compression for large payloads (transparent).}
+;; {<li> Q-style callback hooks: {<b> on-sync}, {<b> on-async}, {<b> on-connect}, {<b> on-disconnect}.}
+;; {<li> Client API: {<b> wire-connect}, {<b> wire-call}, {<b> wire-send}, {<b> wire-close}.}
+;; {<li> WirePool with auto-reconnect for connection management.}
+;; {<li> DataTable serialization with LZ4 + byte-transpose compression.}
+;; }
+;;
 ;; Wire protocol header (16 bytes):
-;;.VP
+;;
 ;;   Bytes 0-3:   Magic "LWIR" (0x4C574952)
 ;;   Bytes 4:     Version (1)
 ;;   Bytes 5:     MsgType (0=async, 1=sync, 2=response, 3=error, 4=heartbeat)
@@ -78,19 +80,19 @@
 ;;   Bytes 7:     Reserved
 ;;   Bytes 8-11:  MsgID (uint32 LE)
 ;;   Bytes 12-15: PayloadLen (uint32 LE)
-;;.VP
+;;
 ;; Example (server):
-;;.CODE
+;; {<code>
 ;;  (libload "wire/wire")
 ;;  (wire-server-start 5555)
-;;.P
-;;.VP
+;; </code>}
+;;
 ;; Example (client):
-;;.CODE
+;; {<code>
 ;;  (setq c (wire-connect "localhost" 5555))
 ;;  (wire-call c "(+ 1 2)")     ;; => 3
 ;;  (wire-close c)
-;;.P
+;; </code>}
 
 #? ** Wire Constants and Protocol
 
@@ -604,7 +606,7 @@
 ;; Event-driven TCP server for the wire protocol.
 ;; Binds to localhost, accepts connections, and dispatches messages
 ;; to callback hooks.
-;;.PP
+;;
 ;; Set {<b> on-sync} to handle synchronous requests (must return a value).
 ;; Set {<b> on-async} to handle fire-and-forget messages.
 ;; Set {<b> on-connect} / {<b> on-disconnect} for connection lifecycle events.
@@ -612,13 +614,15 @@
 #? * WireServer
 ;; A wire protocol server with a select()-based event loop.
 ;; Slots:
-;;.LI {<b> port} -- listening port number.
-;;.LI {<b> on-sync} -- (lambda (fd expr encoding) ...) sync handler.
-;;.LI {<b> on-async} -- (lambda (fd expr encoding) ...) async handler.
-;;.LI {<b> on-connect} -- (lambda (fd) ...) called on new connection.
-;;.LI {<b> on-disconnect} -- (lambda (fd) ...) called when a client disconnects.
-;;.LI {<b> idle-timeout-secs} -- disconnect after this many idle seconds (default 300).
-;;.LI {<b> keepalive-interval-secs} -- seconds between heartbeat checks (default 60).
+;; {<ul>
+;; {<li> {<b> port} -- listening port number.}
+;; {<li> {<b> on-sync} -- (lambda (fd expr encoding) ...) sync handler.}
+;; {<li> {<b> on-async} -- (lambda (fd expr encoding) ...) async handler.}
+;; {<li> {<b> on-connect} -- (lambda (fd) ...) called on new connection.}
+;; {<li> {<b> on-disconnect} -- (lambda (fd) ...) called when a client disconnects.}
+;; {<li> {<b> idle-timeout-secs} -- disconnect after this many idle seconds (default 300).}
+;; {<li> {<b> keepalive-interval-secs} -- seconds between heartbeat checks (default 60).}
+;; }
 
 (defclass WireServer object
   port                    ;; int: listening port

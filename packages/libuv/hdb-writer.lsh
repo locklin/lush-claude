@@ -29,6 +29,32 @@
 (libload "datatable/datatable")
 (libload "columnardb/columnardb")
 
+#? *** HDB Writer: Periodic Disk Persistence
+;; Persists RDB in-memory data to disk using date-partitioned splayed
+;; format via ColumnarDB.  The TorQ "write database" (WDB) equivalent.
+;;
+;; Architecture:
+;; {<ul>
+;; {<li> Connects to RDB's wire server as a query client.}
+;; {<li> Periodically pulls data using incremental snapshots (high-water mark).}
+;; {<li> Writes to disk in date-partitioned splayed format via {<b> columnardb-append}.}
+;; {<li> Provides a WireServer for control queries ({<b> "flush"}, {<b> "stats"}).}
+;; }
+;;
+;; Disk layout:
+;; {<code>
+;;  <hdb-root>/YYYY.MM.DD/ticker/  (meta.lsh, col-*.col)
+;;  <hdb-root>/YYYY.MM.DD/l2/      (meta.lsh, col-*.col)
+;; </code>}
+;;
+;; Example:
+;; {<code>
+;;  (libload "libuv/hdb-writer")
+;;  (hdb-start 19961 "/tmp/hdb" 60)  ;; RDB port, HDB root, flush interval
+;; </code>}
+;; {<see> (hdb-start <rdb-port> <hdb-root> <flush-interval> . <query-port>)}
+;; {<see> (hdb-flush)}
+
 ;; ============================================================
 ;; HDB Writer state
 ;; ============================================================

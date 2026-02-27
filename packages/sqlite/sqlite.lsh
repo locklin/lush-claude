@@ -10,6 +10,38 @@
 
 (libload "sqlite-config")
 
+#? *** SQLite: Database Binding
+;; SQLite3 binding for Lush, providing embedded SQL database access.
+;;
+;; Two layers:
+;; {<ul>
+;; {<li> DHC-compiled thin wrappers (internal {<b> _sqlite-*} functions)
+;; that bridge Lush types to C via {<b> sqlite-c.c}.}
+;; {<li> Interpreted high-level API ({<b> sqlite-open}, {<b> sqlite-exec},
+;; {<b> sqlite-query}) that handles parameter binding, row iteration,
+;; and error checking.}
+;; }
+;;
+;; All SQL parameters use <?>  placeholders with automatic type dispatch
+;; (int, double, string, or NULL).  Query results are returned as lists
+;; of lists, one per row.
+;;
+;; Example:
+;; {<code>
+;;  (libload "sqlite/sqlite")
+;;  (let ((db (sqlite-open "/tmp/test.db")))
+;;    (sqlite-exec db "CREATE TABLE t (name TEXT, val REAL)")
+;;    (sqlite-exec db "INSERT INTO t VALUES (?,?)" "hello" 3.14)
+;;    (let ((rows (sqlite-query db "SELECT * FROM t")))
+;;      (printf "Rows: %l\n" rows))
+;;    (sqlite-close db))
+;; </code>}
+;; {<see> (sqlite-open <path>)}
+;; {<see> (sqlite-exec <db> <sql> . <params>)}
+;; {<see> (sqlite-query <db> <sql> . <params>)}
+
+#? ** Compiled Layer (DHC)
+
 ;; ============================================================
 ;; DHC-compiled wrappers (gptr <-> C)
 ;; ============================================================
@@ -186,6 +218,8 @@
     _sqlite-changes _sqlite-last-insert-rowid _sqlite-enable-wal ) )
 
 
+#? ** Public API
+
 ;; ============================================================
 ;; Interpreted high-level API
 ;; ============================================================
@@ -204,8 +238,11 @@
 
 
 #? (sqlite-open <path>)
-;; Open an SQLite database at <path>.  Returns a database handle (gptr).
+;; Open an SQLite database at <path>.  Creates the file if it does
+;; not exist.  Returns an opaque database handle (gptr).
 ;; Signals an error if the database cannot be opened.
+;; {<see> (sqlite-close <db>)}
+;; {<see> (sqlite-enable-wal <db>)}
 (de sqlite-open (path)
   (let ((db (_sqlite-open path)))
     (when (= db (gptr ()))
@@ -214,7 +251,8 @@
 
 
 #? (sqlite-close <db>)
-;; Close a database handle.
+;; Close a database handle.  Signals error on failure.
+;; {<see> (sqlite-open <path>)}
 (de sqlite-close (db)
   (let ((rc (_sqlite-close db)))
     (when (<> rc SQLITE_OK)
@@ -223,7 +261,9 @@
 
 
 #? (sqlite-busy-timeout <db> <ms>)
-;; Set the busy timeout in milliseconds.
+;; Set the busy timeout in milliseconds.  When another connection
+;; holds a lock, SQLite will retry for up to <ms> milliseconds
+;; before returning SQLITE_BUSY.
 (de sqlite-busy-timeout (db ms)
   (let ((rc (_sqlite-busy-timeout db ms)))
     (when (<> rc SQLITE_OK)
@@ -232,7 +272,10 @@
 
 
 #? (sqlite-enable-wal <db>)
-;; Enable WAL journal mode for the database.
+;; Enable WAL (Write-Ahead Logging) journal mode for the database.
+;; WAL mode allows concurrent readers and a single writer, improving
+;; performance for most workloads.
+;; {<see> (sqlite-open <path>)}
 (de sqlite-enable-wal (db)
   (let ((rc (_sqlite-enable-wal db)))
     (when (<> rc SQLITE_OK)
@@ -242,12 +285,14 @@
 
 #? (sqlite-changes <db>)
 ;; Return the number of rows changed by the last INSERT/UPDATE/DELETE.
+;; {<see> (sqlite-last-insert-id <db>)}
 (de sqlite-changes (db)
   (_sqlite-changes db) )
 
 
 #? (sqlite-last-insert-id <db>)
 ;; Return the rowid of the last successful INSERT.
+;; {<see> (sqlite-changes <db>)}
 (de sqlite-last-insert-id (db)
   (_sqlite-last-insert-rowid db) )
 
@@ -306,8 +351,24 @@
 
 #? (sqlite-exec <db> <sql> . <params>)
 ;; Execute an SQL statement that returns no result rows (INSERT, UPDATE,
-;; DELETE, CREATE, etc.).  Optional <params> are bound to ? placeholders.
-;; Signals an error on failure.
+;; DELETE, CREATE, etc.).  Optional <params> are bound to <?>  placeholders.
+;; Parameter types are dispatched automatically:
+;; {<ul>
+;; {<li> {<b> ()} binds as NULL.}
+;; {<li> Strings bind as TEXT.}
+;; {<li> Integers bind as INTEGER.}
+;; {<li> Doubles bind as REAL.}
+;; }
+;;
+;; Signals an error on failure.  Returns <t> on success.
+;;
+;; Example:
+;; {<code>
+;;  (sqlite-exec db "CREATE TABLE t (name TEXT, val REAL)")
+;;  (sqlite-exec db "INSERT INTO t VALUES (?,?)" "hello" 3.14)
+;;  (sqlite-exec db "DELETE FROM t WHERE val > ?" 10.0)
+;; </code>}
+;; {<see> (sqlite-query <db> <sql> . <params>)}
 (de sqlite-exec (db sql . params)
   (let ((stmt (_sqlite-prepare db sql)))
     (when (= stmt (gptr ()))
@@ -324,11 +385,16 @@
 #? (sqlite-query <db> <sql> . <params>)
 ;; Execute an SQL query and return all result rows as a list of lists.
 ;; Each row is a list of column values (int, double, string, or () for NULL).
-;; Optional <params> are bound to ? placeholders.
+;; Optional <params> are bound to <?>  placeholders.
 ;;
 ;; Example:
-;;   (sqlite-query db "SELECT * FROM test WHERE val > ?" 3.0)
-;;   => (("hello" 3.14) ("world" 2.72))
+;; {<code>
+;;  (sqlite-query db "SELECT * FROM test WHERE val > ?" 3.0)
+;;    => (("hello" 3.14) ("world" 2.72))
+;;  (sqlite-query db "SELECT count(*) FROM test")
+;;    => ((5))
+;; </code>}
+;; {<see> (sqlite-exec <db> <sql> . <params>)}
 (de sqlite-query (db sql . params)
   (let ((stmt (_sqlite-prepare db sql)))
     (when (= stmt (gptr ()))

@@ -22,6 +22,31 @@
 (libload "wire/wire-serialize")
 (libload "datatable/datatable")
 
+#? *** RDB: Real-time Database
+;; Accumulates ticker and L2 broadcasts from a feed handler into
+;; DataTables and serves queries over wire protocol.
+;;
+;; Provides queryable state -- not just a display, but a database
+;; that other processes (Analytics, HDB Writer, Gateway) can interrogate.
+;;
+;; Supported query types:
+;; {<ul>
+;; {<li> {<b> "ping"}, {<b> "tables"}, {<b> "stats"} -- status queries.}
+;; {<li> {<b> ("count" <tbl>)}, {<b> ("meta" <tbl>)} -- table info.}
+;; {<li> {<b> ("snapshot" <tbl>)} -- return full table as packed DataTable.}
+;; {<li> {<b> ("snapshot-from" <tbl> <hwm>)} -- incremental snapshot from row.}
+;; {<li> {<b> ("select" <tbl> <cols>)} -- column projection.}
+;; {<li> {<b> ("where" <tbl> <op> <col> <val>)} -- filtered query.}
+;; }
+;;
+;; Example:
+;; {<code>
+;;  (libload "libuv/rdb")
+;;  (rdb-start 19960 19961)  ;; FH port, RDB serve port
+;; </code>}
+;; {<see> (rdb-start <fh-port> <rdb-port>)}
+;; {<see> (rdb-handle-query <expr>)}
+
 ;; ============================================================
 ;; RDB state
 ;; ============================================================

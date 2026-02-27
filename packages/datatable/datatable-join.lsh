@@ -21,15 +21,15 @@
 #? *** DataTable Joins and Sorted Check
 ;; Join operations for DataTable: left join, right join, and as-of join.
 ;; Also provides a sorted-column check.
-;;.PP
+;;
 ;; Equi-joins ({<b> datatable-left-join}, {<b> datatable-right-join}) use
 ;; hash-based indexing for O(n+m) performance.  As-of joins use a
 ;; two-pointer merge scan on sorted keys.
-;;.PP
+;;
 ;; All joins return a new DataTable.  Columns with name conflicts
 ;; receive a ".left" or ".right" suffix.
-;;.SEE (datatable-left-join <left> <right> <on-col>)
-;;.SEE (datatable-asof-join <left> <right> <on-col>)
+;; {<see> (datatable-left-join <left> <right> <on-col>)}
+;; {<see> (datatable-asof-join <left> <right> <on-col>)}
 
 
 ;; ============================================================

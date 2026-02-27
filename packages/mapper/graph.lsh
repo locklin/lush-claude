@@ -10,31 +10,27 @@
 ;; After the cover and clustering steps, the nerve functor builds
 ;; a graph whose nodes are clusters and whose edges connect clusters
 ;; sharing at least {<b> min-intersection} data points.
-;;.SEE * MapperGraph
-;;.SEE (==> <MapperGraph> build-nerve <cover-clusters> <min-intersection>)
+;; {<see> * MapperGraph}
+;; {<see> (==> <MapperGraph> build-nerve <cover-clusters> <min-intersection>)}
 
 #? * MapperGraph
 ;; The output of the Mapper algorithm.
 ;; Contains nodes (clusters), edges (shared-point connections),
 ;; and metadata for coloring and analysis.
-;;.PP
+;;
 ;; Each node stores the indices of the original data points it contains.
 ;; Each edge connects two nodes that share at least <min-intersection>
 ;; data points.
-;;.PP
+;;
 ;; Fields:
-;;.IP
-;; <nodes> -- list of idx1-of-int, each containing sorted member indices.
-;;.IP
-;; <node-bins> -- list of ints, the cover bin index for each node.
-;;.IP
-;; <edges> -- idx2 of ints (E x 2), source and target node indices.
-;;.IP
-;; <edge-weights> -- idx1 of ints, shared-point count per edge.
-;;.IP
-;; <node-sizes> -- idx1 of ints, number of points per node.
-;;.IP
-;; <node-colors> -- idx1 of doubles, coloring value per node.
+;; {<ul>
+;; {<li> <nodes> -- list of idx1-of-int, each containing sorted member indices.}
+;; {<li> <node-bins> -- list of ints, the cover bin index for each node.}
+;; {<li> <edges> -- idx2 of ints (E x 2), source and target node indices.}
+;; {<li> <edge-weights> -- idx1 of ints, shared-point count per edge.}
+;; {<li> <node-sizes> -- idx1 of ints, number of points per node.}
+;; {<li> <node-colors> -- idx1 of doubles, coloring value per node.}
+;; }
 
 (defclass MapperGraph object
   nodes
@@ -61,7 +57,7 @@
 ;; <node-bin-list> is a list of ints (cover bin index per node).
 ;; <min-intersection> is the minimum shared-point count for an edge.
 ;; Returns a MapperGraph object.
-;;.PP
+;;
 ;; Only checks node pairs from different cover bins (nodes from the
 ;; same bin cannot share points since they are separate clusters).
 ;; Uses sorted-array merge intersection for O(A+B) per pair.

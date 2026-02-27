@@ -29,6 +29,34 @@
 (libload "datatable/datatable")
 (libload "columnardb/columnardb")
 
+#? *** HDB Reader: Historical Database
+;; Loads historical data from date-partitioned splayed format on disk
+;; and serves queries over wire protocol.
+;;
+;; Complements the HDB Writer: scans for date partitions, lazy-loads
+;; tables via mmap, and answers the same query vocabulary as the RDB
+;; (snapshot, where, select, count, meta) plus multi-date range queries.
+;;
+;; Disk layout (read by HDB Reader, written by HDB Writer):
+;;
+;;   <hdb-root>/YYYY.MM.DD/ticker/ (meta.lsh, col-*.col)
+;;   <hdb-root>/YYYY.MM.DD/l2/     (meta.lsh, col-*.col)
+;;
+;; Additional query types:
+;; {<ul>
+;; {<li> {<b> "dates"} -- list available date partitions.}
+;; {<li> {<b> ("range" <tbl> <from> <to>)} -- multi-date concatenation.}
+;; {<li> {<b> ("date" <date> <tbl>)} -- single-date table load.}
+;; }
+;;
+;; Example:
+;; {<code>
+;;  (libload "libuv/hdb-reader")
+;;  (hdbr-start 19962 "/tmp/hdb")
+;; </code>}
+;; {<see> (hdbr-start <port> <hdb-root>)}
+;; {<see> (hdbr-handle-query <expr>)}
+
 ;; ============================================================
 ;; HDB Reader state
 ;; ============================================================

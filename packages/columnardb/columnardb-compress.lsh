@@ -25,18 +25,20 @@
 #? *** ColumnarDB Column Compression
 ;; Column-level compression extending the LCDB file format with
 ;; additional typecodes for delta, RLE, and LZ4 encoding.
-;;.PP
+;;
 ;; Compression modes:
-;;.LI Delta encoding (typecodes 3, 6, 8) for sorted real/float/stamp columns.
-;;.LI RLE encoding (typecode 4) for sorted int columns with long runs.
-;;.LI LZ4+byte-transpose (typecodes 9-12) for any numeric column.
-;;.PP
+;; {<ul>
+;; {<li> Delta encoding (typecodes 3, 6, 8) for sorted real/float/stamp columns.}
+;; {<li> RLE encoding (typecode 4) for sorted int columns with long runs.}
+;; {<li> LZ4+byte-transpose (typecodes 9-12) for any numeric column.}
+;; }
+;;
 ;; Delta and RLE are auto-detected for sorted columns via
 ;; {<b> columnardb-save-compressed}.  LZ4 compression works on any
 ;; column regardless of sort order via {<b> columnardb-save-lz4}.
-;;.SEE (columnardb-save-compressed <dt> <path> [<compress-cols>])
-;;.SEE (columnardb-save-lz4 <dt> <path> [<compress-cols>])
-;;.SEE ColumnarDB Native Binary I/O
+;; {<see> (columnardb-save-compressed <dt> <path> [<compress-cols>])}
+;; {<see> (columnardb-save-lz4 <dt> <path> [<compress-cols>])}
+;; {<see> ColumnarDB Native Binary I/O}
 
 (defvar *cdb-type-delta-double* 3)
 (defvar *cdb-type-rle-int32* 4)

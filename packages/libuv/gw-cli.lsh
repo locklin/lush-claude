@@ -29,6 +29,28 @@
 (libload "wire/wire-serialize")
 (libload "datatable/datatable")
 
+#? *** Gateway CLI: Interactive Query REPL
+;; Connects to the gateway wire server and provides an interactive
+;; read-eval-print loop for ad-hoc queries.
+;;
+;; At the prompt, type any query as a Lush expression:
+;;
+;;   gw> "ping"
+;;   gw> ("rdb" "tables")
+;;   gw> ("rdb" ("count" "ticker"))
+;;   gw> ("hdb" "dates")
+;;   gw> ("ana" ("analytics-all" "BTC-USD"))
+;;
+;; Special commands: {<b> quit} (disconnect), {<b> help} (usage),
+;; {<b> backends} (shorthand for status query).
+;;
+;; Example:
+;; {<code>
+;;  (libload "libuv/gw-cli")
+;;  (gw-cli-start 19964)
+;; </code>}
+;; {<see> (gw-cli-start <port>)}
+
 ;; ============================================================
 ;; CLI state
 ;; ============================================================

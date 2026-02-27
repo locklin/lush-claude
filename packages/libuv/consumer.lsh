@@ -14,6 +14,21 @@
 
 (libload "wire/wire")
 
+#? *** Consumer: Live Price Display
+;; Wire consumer that connects to a feed handler's WireServer and
+;; displays a continuously-updating price table with ANSI colors.
+;;
+;; Uses blocking {<b> _wire-recv-message} in a loop (no libuv needed).
+;; Shows per-product price, bid, ask, spread, and up/down coloring.
+;;
+;; Example:
+;; {<code>
+;;  (libload "libuv/consumer")
+;;  (consumer-start 19960)           ;; connect to feed handler
+;; </code>}
+;; {<see> (consumer-start <port>)}
+;; {<see> (consumer-run-standalone <products> <channels> <port>)}
+
 ;; ============================================================
 ;; Consumer state
 ;; ============================================================

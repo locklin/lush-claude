@@ -36,26 +36,28 @@
 ;; splayed tables and Kerf1's disk tables.  Each column is stored
 ;; as a separate binary file in a directory, enabling mmap-based
 ;; zero-copy loading and column-level I/O.
-;;.PP
+;;
 ;; Features:
-;;.LI Save/load DataTable to/from disk with native-endian binary files.
-;;.LI Memory-mapped loading for zero-copy access ({<b> columnardb-load}).
-;;.LI In-memory loading for mutable access ({<b> columnardb-load-mem}).
-;;.LI Append rows to persisted tables ({<b> columnardb-append}).
-;;.LI Sorted column tracking with binary search range queries.
-;;.LI Advisory file locking for concurrent read/write access.
-;;.PP
+;; {<ul>
+;; {<li> Save/load DataTable to/from disk with native-endian binary files.}
+;; {<li> Memory-mapped loading for zero-copy access ({<b> columnardb-load}).}
+;; {<li> In-memory loading for mutable access ({<b> columnardb-load-mem}).}
+;; {<li> Append rows to persisted tables ({<b> columnardb-append}).}
+;; {<li> Sorted column tracking with binary search range queries.}
+;; {<li> Advisory file locking for concurrent read/write access.}
+;; }
+;;
 ;; Example:
-;;.CODE
+;; {<code>
 ;;   (columnardb-save dt "/tmp/trades")
 ;;   (setq dt2 (columnardb-load "/tmp/trades"))
 ;;   (columnardb-append "/tmp/trades" new-rows)
 ;;   (setq sub (columnardb-range dt2 "price" 100 200 meta))
-;;.END
-;;.SEE (columnardb-save <dt> <path>)
-;;.SEE (columnardb-load <path>)
-;;.SEE ColumnarDB Native Binary I/O
-;;.SEE ColumnarDB Column Compression
+;; </code>}
+;; {<see> (columnardb-save <dt> <path>)}
+;; {<see> (columnardb-load <path>)}
+;; {<see> ColumnarDB Native Binary I/O}
+;; {<see> ColumnarDB Column Compression}
 
 
 ;; ============================================================
@@ -1064,12 +1066,14 @@
 #? *** ColumnarDB: Advisory File Locking
 ;; Advisory file locking for safe concurrent access to persisted tables.
 ;; Uses flock(2) on a hidden {<b> .lock} file in the table directory.
-;;.LI Shared locks allow concurrent readers.
-;;.LI Exclusive locks block all other readers and writers.
-;;.LI Locks are automatically released when the lock object is garbage collected.
-;;.SEE (columnardb-lock-shared <path>)
-;;.SEE (columnardb-lock-exclusive <path>)
-;;.SEE (columnardb-unlock <lock>)
+;; {<ul>
+;; {<li> Shared locks allow concurrent readers.}
+;; {<li> Exclusive locks block all other readers and writers.}
+;; {<li> Locks are automatically released when the lock object is garbage collected.}
+;; }
+;; {<see> (columnardb-lock-shared <path>)}
+;; {<see> (columnardb-lock-exclusive <path>)}
+;; {<see> (columnardb-unlock <lock>)}
 
 (defclass columnardb-lock object
   fd lock-path lock-type)

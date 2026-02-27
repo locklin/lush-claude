@@ -340,8 +340,8 @@
 ;; Create a new event loop.
 ;; Returns an opaque loop handle (gptr).
 ;; Must be closed with {<b> uv-loop-close} when done.
-;;.SEE (uv-loop-close <loop>)
-;;.SEE (uv-run <loop> <mode>)
+;; {<see> (uv-loop-close <loop>)}
+;; {<see> (uv-run <loop> <mode>)}
 (de uv-loop-new ()
   (let ((loop (_uv-loop-new)))
     (when (= loop (gptr ()))
@@ -352,15 +352,17 @@
 #? (uv-run <loop> <mode>)
 ;; Run the event loop.
 ;; <mode> is one of:
-;;.LI <'default>: run until no more active handles/requests.
-;;.LI <'once>: poll for I/O once, may block if no pending callbacks.
-;;.LI <'nowait>: poll for I/O once, do not block.
-;;.PP
+;; {<ul>
+;; {<li> <'default>: run until no more active handles/requests.}
+;; {<li> <'once>: poll for I/O once, may block if no pending callbacks.}
+;; {<li> <'nowait>: poll for I/O once, do not block.}
+;; }
+;;
 ;; Returns non-zero if there are still active handles or requests.
 ;; After calling this, drain events with {<b> uv-next-event} or
 ;; {<b> uv-drain-events}.
-;;.SEE (uv-next-event)
-;;.SEE (uv-drain-events <handler>)
+;; {<see> (uv-next-event)}
+;; {<see> (uv-drain-events <handler>)}
 (de uv-run (loop mode)
   (let ((m (cond
             ((= mode 'default) 0)
@@ -382,7 +384,7 @@
 ;; All handles must be closed first.
 ;; Signals error if handles are still active (use {<b> uv-close-handle}
 ;; first and run the loop to process close callbacks).
-;;.SEE (uv-close-handle <handle-id>)
+;; {<see> (uv-close-handle <handle-id>)}
 (de uv-loop-close (loop)
   (let ((rc (_uv-loop-close loop)))
     (when (<> rc 0)
@@ -450,9 +452,9 @@
 ;; <handler> is called with one argument: the event list as
 ;; returned by {<b> uv-next-event}.
 ;; Returns the number of events processed.
-;;.VP
+;;
 ;; Example:
-;;.CODE
+;; {<code>
 ;;  (uv-drain-events
 ;;    (lambda (ev)
 ;;      (let ((type (car ev))
@@ -460,8 +462,8 @@
 ;;            (status (caddr ev)))
 ;;        (printf "Event: type=%l handle=%d status=%d\n"
 ;;                type hid status))))
-;;.P
-;;.SEE (uv-next-event)
+;; </code>}
+;; {<see> (uv-next-event)}
 (de uv-drain-events (handler)
   (let ((count 0))
     (while (uv-event-pending)
@@ -479,7 +481,7 @@
 ;; a {<b> close} event will be queued when the handle is fully closed.
 ;; After the close event, the handle ID is no longer valid.
 ;; You must run the loop after calling this to process the close.
-;;.SEE (uv-loop-close <loop>)
+;; {<see> (uv-loop-close <loop>)}
 (de uv-close-handle (handle-id)
   (_uv-close-handle handle-id) )
 
@@ -562,7 +564,7 @@
 ;; Start listening for incoming connections.
 ;; New connections produce {<b> connection} events.
 ;; Use {<b> uv-tcp-accept} in the event handler to accept.
-;;.SEE (uv-tcp-accept <server-id>)
+;; {<see> (uv-tcp-accept <server-id>)}
 (de uv-tcp-listen (handle-id &optional backlog)
   (let ((bl (if backlog backlog 128)))
     (let ((rc (_uv-tcp-listen handle-id bl)))

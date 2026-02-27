@@ -11,14 +11,16 @@
 #? *** HTTPD: JSON Serialization
 ;; JSON serialization helpers for the HTTPD server.
 ;; Converts Lush values to JSON strings:
-;;.LI {<b> ()} maps to {<b> null}.
-;;.LI {<b> t} maps to {<b> true}.
-;;.LI Numbers map to JSON numbers.
-;;.LI Strings map to quoted, escaped JSON strings.
-;;.LI Lists map to JSON arrays (or objects if the list is an alist).
-;;.LI Htables map to JSON objects.
-;;.SEE (json-encode <value>)
-;;.SEE (json-object . <pairs>)
+;; {<ul>
+;; {<li> {<b> ()} maps to {<b> null}.}
+;; {<li> {<b> t} maps to {<b> true}.}
+;; {<li> Numbers map to JSON numbers.}
+;; {<li> Strings map to quoted, escaped JSON strings.}
+;; {<li> Lists map to JSON arrays (or objects if the list is an alist).}
+;; {<li> Htables map to JSON objects.}
+;; }
+;; {<see> (json-encode <value>)}
+;; {<see> (json-object . <pairs>)}
 
 ;; ============================================================
 ;; JSON string escaping
