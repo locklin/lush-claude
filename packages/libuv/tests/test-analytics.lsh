@@ -277,8 +277,43 @@
     (printf "FAIL (got: %l)\n" result) ) )
 
 
-;; Test 21: ana-poll via test helper — insert rows into RDB, poll, verify
-(printf "Test 21: ana-poll from RDB... ")
+;; Test 21: ("rows-from" 0) returns all rows
+(printf "Test 21: rows-from 0 (all rows)... ")
+(let ((packed (ana-handle-query (list "rows-from" 0))))
+  (if (and (consp packed) (= (car packed) 'datatable))
+    (let ((dt (wire-unpack-datatable packed)))
+      (if (= (==> dt num-rows) 6)
+        (printf "PASS (6 rows)\n")
+        (printf "FAIL (rows=%d)\n" (==> dt num-rows)) ) )
+    (printf "FAIL (not packed)\n") ) )
+
+
+;; Test 22: ("rows-from" 4) returns partial rows
+(printf "Test 22: rows-from 4 (partial)... ")
+(let ((packed (ana-handle-query (list "rows-from" 4))))
+  (if (and (consp packed) (= (car packed) 'datatable))
+    (let ((dt (wire-unpack-datatable packed)))
+      (if (and (= (==> dt num-rows) 2)
+               (= (==> dt get 0 "product") "ETH-USD")
+               (= (==> dt get 0 "price") 50.0) )
+        (printf "PASS (2 rows from idx 4)\n")
+        (printf "FAIL (rows=%d)\n" (==> dt num-rows)) ) )
+    (printf "FAIL (not packed)\n") ) )
+
+
+;; Test 23: ("rows-from" 6) beyond end returns empty
+(printf "Test 23: rows-from beyond end (empty)... ")
+(let ((packed (ana-handle-query (list "rows-from" 6))))
+  (if (and (consp packed) (= (car packed) 'datatable))
+    (let ((dt (wire-unpack-datatable packed)))
+      (if (= (==> dt num-rows) 0)
+        (printf "PASS (0 rows)\n")
+        (printf "FAIL (rows=%d)\n" (==> dt num-rows)) ) )
+    (printf "FAIL (not packed)\n") ) )
+
+
+;; Test 24: ana-poll via test helper — insert rows into RDB, poll, verify
+(printf "Test 24: ana-poll from RDB... ")
 ;; Reset analytics state for this test
 (ana-init-table)
 (setq *ana-products* ())
@@ -322,8 +357,8 @@
           (==> *ana-table* num-rows) *ana-ticker-hwm* *ana-total-updates*) )
 
 
-;; Test 22: "stats" returns correct counters
-(printf "Test 22: stats query... ")
+;; Test 25: "stats" returns correct counters
+(printf "Test 25: stats query... ")
 (let ((result (ana-handle-query "stats")))
   (if (and (consp result)
            (= (cdr (assoc "updates" result)) 3)
