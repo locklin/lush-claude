@@ -1,0 +1,430 @@
+;;; hdb-writer.lsh -- Historical Database Writer process
+;;;
+;;; Persists RDB in-memory data to disk using date-partitioned splayed
+;;; format via columnardb.  This is the TorQ "write database" (WDB)
+;;; equivalent: periodically snapshot the RDB's in-memory tables to
+;;; date-partitioned directories on disk.
+;;;
+;;; Architecture:
+;;;   - Connects to RDB's wire server as a query client
+;;;   - Periodically pulls data using incremental snapshots (high-water mark)
+;;;   - Writes to disk in date-partitioned splayed format via columnardb
+;;;   - Supports standalone demo mode (FH + RDB + HDB Writer in one process)
+;;;
+;;; Disk layout:
+;;;   <hdb-root>/
+;;;     <YYYY.MM.DD>/
+;;;       ticker/
+;;;         meta.lsh, col-0.col, col-1.col, ...
+;;;       l2/
+;;;         meta.lsh, col-0.col, col-1.col, ...
+;;;
+;;; Usage:
+;;;   lush hdb-writer.lsh                    ;; standalone demo (FH + RDB + HDB)
+;;;   lush -e '(libload "libuv/hdb-writer") (hdb-start 19961 "/tmp/hdb" 60)'
+;;;                                          ;; connect to RDB on 19961
+
+(libload "wire/wire")
+(libload "wire/wire-serialize")
+(libload "datatable/datatable")
+(libload "columnardb/columnardb")
+
+;; ============================================================
+;; HDB Writer state
+;; ============================================================
+
+(defvar *hdb-root* "/tmp/hdb")           ;; base directory for HDB storage
+(defvar *hdb-running* ())                ;; main loop flag
+(defvar *hdb-ticker-hwm* 0)             ;; high-water mark: next ticker row to flush
+(defvar *hdb-l2-hwm* 0)                 ;; high-water mark: next L2 row to flush
+(defvar *hdb-total-flushes* 0)          ;; count of flush operations performed
+(defvar *hdb-total-ticker-rows* 0)      ;; total ticker rows written to disk
+(defvar *hdb-total-l2-rows* 0)          ;; total L2 rows written to disk
+(defvar *hdb-start-time* 0)             ;; start timestamp (seconds)
+(defvar *hdb-flush-interval* 60)        ;; seconds between flushes (default 60)
+(defvar *hdb-last-flush-time* 0)        ;; timestamp of last flush
+(defvar *hdb-rdb-conn* ())              ;; wire connection to RDB
+
+
+;; ============================================================
+;; Path helpers
+;; ============================================================
+
+#? (hdb-date-string)
+;; Return today's date as "YYYY.MM.DD" string.
+(de hdb-date-string ()
+  (let ((now (_wire-time-seconds)))
+    ;; Use the C-level time formatting: seconds -> "YYYY.MM.DD"
+    ;; _wire-time-seconds returns Unix epoch seconds
+    ;; We format via sys call to date, or compute manually
+    (let ((days (/ now 86400))
+          (y 1970) (m 1) (d 0)
+          (days-left 0) )
+      (setq days-left days)
+      ;; Advance years
+      (while (let ((yd (if (and (= 0 (mod y 4))
+                                (or (<> 0 (mod y 100))
+                                    (= 0 (mod y 400)) ))
+                         366 365)))
+               (>= days-left yd))
+        (let ((yd (if (and (= 0 (mod y 4))
+                           (or (<> 0 (mod y 100))
+                               (= 0 (mod y 400)) ))
+                    366 365)))
+          (setq days-left (- days-left yd))
+          (setq y (1+ y)) ) )
+      ;; Advance months
+      (let ((leap (if (and (= 0 (mod y 4))
+                           (or (<> 0 (mod y 100))
+                               (= 0 (mod y 400)) ))
+                    1 0)))
+        (let ((month-days (list 31 (+ 28 leap) 31 30 31 30 31 31 30 31 30 31)))
+          (while (and (<= m 12) (>= days-left (nth (1- m) month-days)))
+            (setq days-left (- days-left (nth (1- m) month-days)))
+            (setq m (1+ m)) ) ) )
+      (setq d (1+ days-left))
+      (sprintf "%04d.%02d.%02d" y m d) ) ) )
+
+
+#? (hdb-table-path <tbl>)
+;; Return the full path for a table's splayed directory.
+;; Path: <hdb-root>/<date>/<tbl>
+(de hdb-table-path (tbl)
+  (concat *hdb-root* "/" (hdb-date-string) "/" tbl) )
+
+
+;; ============================================================
+;; Flush logic
+;; ============================================================
+
+#? (hdb-flush-table <tbl> <hwm-sym>)
+;; Pull new rows from RDB via ("rows-from" tbl hwm), save/append to disk.
+;; <tbl>: table name string ("ticker" or "l2")
+;; <hwm-sym>: symbol of the high-water mark variable (*hdb-ticker-hwm* or *hdb-l2-hwm*)
+;; Updates the HWM and stats counters.
+(de hdb-flush-table (tbl hwm-sym)
+  (let ((hwm (eval hwm-sym)))
+    ;; Query RDB for rows from hwm onward
+    (let ((packed (wire-call *hdb-rdb-conn* (list "rows-from" tbl hwm))))
+      (when (and (consp packed) (= (car packed) 'datatable))
+        (let ((dt (wire-unpack-datatable packed)))
+          (let ((new-rows (==> dt num-rows)))
+            (when (> new-rows 0)
+              (let ((path (hdb-table-path tbl)))
+                ;; Create date partition directory if needed
+                (let ((date-dir (concat *hdb-root* "/" (hdb-date-string))))
+                  (when (not (dirp date-dir))
+                    (sys (concat "mkdir -p '" date-dir "'")) ) )
+                ;; Save or append
+                (if (dirp path)
+                  (columnardb-append path dt)
+                  (columnardb-save dt path) )
+                ;; Update high-water mark
+                (set hwm-sym (+ hwm new-rows))
+                ;; Update stats
+                (cond
+                 ((= tbl "ticker")
+                  (setq *hdb-total-ticker-rows* (+ *hdb-total-ticker-rows* new-rows)) )
+                 ((= tbl "l2")
+                  (setq *hdb-total-l2-rows* (+ *hdb-total-l2-rows* new-rows)) ) )
+                (printf "hdb: flushed %d %s rows to %s\n" new-rows tbl path) ) ) ) ) ) ) ) )
+
+
+#? (hdb-flush)
+;; Flush both ticker and L2 tables.
+(de hdb-flush ()
+  (hdb-flush-table "ticker" '*hdb-ticker-hwm*)
+  (hdb-flush-table "l2" '*hdb-l2-hwm*)
+  (setq *hdb-total-flushes* (1+ *hdb-total-flushes*))
+  (setq *hdb-last-flush-time* (_wire-time-seconds)) )
+
+
+#? (hdb-check-flush)
+;; Check if flush interval has elapsed, call hdb-flush if so.
+(de hdb-check-flush ()
+  (let ((now (_wire-time-seconds)))
+    (when (>= (- now *hdb-last-flush-time*) *hdb-flush-interval*)
+      (hdb-flush) ) ) )
+
+
+#? (hdb-status)
+;; Print current HDB writer statistics.
+(de hdb-status ()
+  (let ((uptime (- (_wire-time-seconds) *hdb-start-time*)))
+    (printf "hdb: flushes=%d ticker_rows=%d l2_rows=%d uptime=%.0fs interval=%ds\n"
+            *hdb-total-flushes* *hdb-total-ticker-rows* *hdb-total-l2-rows*
+            uptime *hdb-flush-interval*)
+    (printf "hdb: ticker_hwm=%d l2_hwm=%d root=%s\n"
+            *hdb-ticker-hwm* *hdb-l2-hwm* *hdb-root*) ) )
+
+
+;; ============================================================
+;; Main loop (multi-process mode)
+;; ============================================================
+
+#? (hdb-start <rdb-port> <hdb-root> <flush-interval>)
+;; Connect to an RDB wire server and start periodic flushing.
+;; <rdb-port>: RDB wire server port to connect to.
+;; <hdb-root>: base directory for HDB storage.
+;; <flush-interval>: seconds between flushes.
+;; Blocks until connection is closed or interrupted.
+(de hdb-start (rdb-port hdb-root flush-interval)
+  (printf "\n=== HDB Writer starting ===\n")
+  (printf "rdb server: 127.0.0.1:%d\n" rdb-port)
+  (printf "hdb root: %s\n" hdb-root)
+  (printf "flush interval: %ds\n\n" flush-interval)
+
+  ;; Reset state
+  (setq *hdb-running* t)
+  (setq *hdb-root* hdb-root)
+  (setq *hdb-flush-interval* flush-interval)
+  (setq *hdb-ticker-hwm* 0)
+  (setq *hdb-l2-hwm* 0)
+  (setq *hdb-total-flushes* 0)
+  (setq *hdb-total-ticker-rows* 0)
+  (setq *hdb-total-l2-rows* 0)
+  (setq *hdb-start-time* (_wire-time-seconds))
+  (setq *hdb-last-flush-time* (_wire-time-seconds))
+
+  ;; Create HDB root directory
+  (when (not (dirp hdb-root))
+    (sys (concat "mkdir -p '" hdb-root "'")) )
+
+  ;; Connect to RDB
+  (printf "hdb: connecting to RDB...\n")
+  (setq *hdb-rdb-conn* (wire-connect "127.0.0.1" rdb-port))
+  (printf "hdb: connected (fd=%d)\n" (*hdb-rdb-conn* "fd"))
+
+  ;; Verify connection
+  (let ((pong (wire-call *hdb-rdb-conn* "ping")))
+    (if (= pong "pong")
+      (printf "hdb: RDB ping OK\n")
+      (printf "hdb: WARNING — unexpected ping response: %l\n" pong) ) )
+
+  ;; Main polling loop
+  (printf "hdb: entering main loop\n\n")
+  (while *hdb-running*
+    (hdb-check-flush)
+    ;; Sleep briefly to avoid busy-wait (~100ms via spin)
+    (let ((start (_wire-time-seconds)))
+      (while (< (- (_wire-time-seconds) start) 1) ()) ) )
+
+  ;; Shutdown
+  (printf "\nhdb: final flush before shutdown...\n")
+  (hdb-flush)
+  (wire-close *hdb-rdb-conn*)
+  (setq *hdb-rdb-conn* ())
+  (printf "hdb: stopped (%d flushes, %d ticker rows, %d l2 rows)\n"
+          *hdb-total-flushes* *hdb-total-ticker-rows* *hdb-total-l2-rows*) )
+
+
+;; ============================================================
+;; Standalone mode (feed handler + RDB + HDB Writer in one process)
+;; ============================================================
+
+#? (hdb-run-standalone <products> <channels> <fh-port> <rdb-port> <hdb-root> <flush-interval>)
+;; Start feed handler + RDB + HDB Writer in one process.
+;; This is a demo mode that runs the full pipeline:
+;;   Coinbase WS -> JSON parse -> wire broadcast -> RDB accumulate -> HDB flush to disk
+;;
+;; <products>: list of product IDs, e.g. ("BTC-USD" "ETH-USD")
+;; <channels>: list of channel names, e.g. ("ticker" "level2" "heartbeat")
+;; <fh-port>: wire server port for feed handler broadcasts
+;; <rdb-port>: wire server port for RDB query clients
+;; <hdb-root>: base directory for HDB storage
+;; <flush-interval>: seconds between flushes
+(de hdb-run-standalone (products channels fh-port rdb-port hdb-root flush-interval)
+  ;; We need feed-handler and rdb for standalone mode
+  (libload "libuv/feed-handler")
+  (defvar *rdb-no-autostart* t)
+  (libload "libuv/rdb")
+
+  (printf "\n=== standalone HDB Writer demo ===\n")
+  (printf "products: %l\n" products)
+  (printf "channels: %l\n" channels)
+  (printf "feed handler port: %d\n" fh-port)
+  (printf "rdb query port: %d\n" rdb-port)
+  (printf "hdb root: %s\n" hdb-root)
+  (printf "flush interval: %ds\n\n" flush-interval)
+
+  ;; Reset HDB state
+  (setq *hdb-running* t)
+  (setq *hdb-root* hdb-root)
+  (setq *hdb-flush-interval* flush-interval)
+  (setq *hdb-ticker-hwm* 0)
+  (setq *hdb-l2-hwm* 0)
+  (setq *hdb-total-flushes* 0)
+  (setq *hdb-total-ticker-rows* 0)
+  (setq *hdb-total-l2-rows* 0)
+  (setq *hdb-start-time* (_wire-time-seconds))
+  (setq *hdb-last-flush-time* (_wire-time-seconds))
+
+  ;; Reset RDB state
+  (setq *rdb-running* t)
+  (setq *rdb-total-tickers* 0)
+  (setq *rdb-total-l2* 0)
+  (setq *rdb-total-broadcasts* 0)
+  (setq *rdb-start-time* (_wire-time-seconds))
+
+  ;; Initialize RDB tables
+  (rdb-init-tables)
+  (printf "hdb-standalone: rdb tables initialized\n")
+
+  ;; Initialize feed handler state
+  (setq *fh-handles* ())
+  (setq *fh-ws-client* ())
+  (setq *fh-ws-poll-id* ())
+  (setq *fh-ws-url* ())
+  (setq *fh-ws-subscribe* ())
+  (setq *fh-reconnect-id* ())
+  (setq *fh-stats-events* 0)
+  (setq *fh-stats-ticks* 0)
+  (setq *fh-stats-broadcasts* 0)
+  (setq *fh-stats-l2* 0)
+  (setq *fh-stats-tickers* 0)
+  (setq *fh-stats-heartbeats* 0)
+  (setq *fh-running* t)
+
+  ;; Create libuv loop
+  (setq *fh-loop* (uv-loop-new))
+
+  ;; Register signal handlers for graceful shutdown
+  (let ((sigterm-id (uv-signal-start *fh-loop* 15))
+        (sigint-id  (uv-signal-start *fh-loop* 2)) )
+    (setq *fh-handles* (nconc1 *fh-handles* sigterm-id))
+    (setq *fh-handles* (nconc1 *fh-handles* sigint-id)) )
+
+  ;; Start feed handler wire server
+  (setq *fh-wire* (new WireServer fh-port))
+  (==> *fh-wire* start)
+  (printf "hdb-standalone: feed handler wire server on port %d\n" fh-port)
+
+  ;; Wire callbacks
+  (setq :*fh-wire*:on-connect
+    (lambda (fd) (printf "hdb-standalone: fh client connected (fd=%d)\n" fd)) )
+  (setq :*fh-wire*:on-disconnect
+    (lambda (fd) (printf "hdb-standalone: fh client disconnected (fd=%d)\n" fd)) )
+
+  ;; Start RDB query wire server
+  (setq *rdb-wire* (new WireServer rdb-port))
+  (==> *rdb-wire* start)
+  (printf "hdb-standalone: rdb query server on port %d\n" rdb-port)
+
+  ;; Set up RDB query handler
+  (setq :*rdb-wire*:on-sync
+    (lambda (fd expr encoding)
+      (rdb-handle-query expr) ) )
+  (setq :*rdb-wire*:on-connect
+    (lambda (fd) (printf "rdb: query client connected (fd=%d)\n" fd)) )
+  (setq :*rdb-wire*:on-disconnect
+    (lambda (fd) (printf "rdb: query client disconnected (fd=%d)\n" fd)) )
+
+  ;; Initialize feed columns
+  (fh-init-feed-columns products)
+
+  ;; Connect to Coinbase feed
+  (let ((sub-msg (fh-build-subscribe-msg products channels)))
+    (fh-connect-feed "wss://ws-feed.exchange.coinbase.com" sub-msg) )
+
+  ;; Connect RDB as wire client to feed handler
+  (let ((rdb-conn (wire-connect "127.0.0.1" fh-port)))
+    (==> *fh-wire* serve-once 100)
+    (let ((rdb-fd (rdb-conn "fd"))
+          (rdb-bc-read 0) )
+      (printf "hdb-standalone: rdb connected to feed handler (fd=%d)\n" rdb-fd)
+
+      ;; Connect HDB Writer as wire client to RDB
+      (setq *hdb-rdb-conn* (wire-connect "127.0.0.1" rdb-port))
+      (==> *rdb-wire* serve-once 100)
+      (printf "hdb-standalone: hdb connected to rdb (fd=%d)\n\n"
+              (*hdb-rdb-conn* "fd"))
+
+      ;; Create HDB root directory
+      (when (not (dirp hdb-root))
+        (sys (concat "mkdir -p '" hdb-root "'")) )
+
+      ;; Combined event loop: drive FH, RDB, and HDB Writer
+      (while (and *fh-running* *rdb-running* *hdb-running*)
+        ;; 1. Poll libuv (non-blocking) — drives the WebSocket feed
+        (uv-run *fh-loop* 'nowait)
+        (uv-drain-events fh-dispatch-event)
+
+        ;; 2. Service feed handler wire clients (sends broadcasts)
+        (when *fh-wire*
+          (==> *fh-wire* serve-once 5) )
+
+        ;; 3. Service RDB query clients (including HDB Writer queries)
+        (when *rdb-wire*
+          (==> *rdb-wire* serve-once 1) )
+
+        ;; 4. Read broadcasts from feed handler into RDB
+        (while (< rdb-bc-read *fh-stats-broadcasts*)
+          (let ((raw-msg (_wire-recv-message rdb-fd)))
+            (if (not raw-msg)
+              (progn
+                (setq *rdb-running* ())
+                (setq rdb-bc-read *fh-stats-broadcasts*) )
+              (progn
+                (setq rdb-bc-read (1+ rdb-bc-read))
+                (rdb-process-message raw-msg) ) ) ) )
+
+        ;; 5. Check HDB flush timing
+        (hdb-check-flush)
+
+        (setq *fh-stats-ticks* (1+ *fh-stats-ticks*))
+
+        ;; Periodic status (every 1000 ticks)
+        (when (= 0 (mod *fh-stats-ticks* 1000))
+          (printf "hdb-standalone: tickers=%d l2=%d ticker_rows=%d l2_rows=%d flushes=%d\n"
+                  *rdb-total-tickers* *rdb-total-l2*
+                  (==> *rdb-ticker-table* num-rows)
+                  (==> *rdb-l2-table* num-rows)
+                  *hdb-total-flushes*) ) ) )
+
+    ;; Final flush
+    (printf "\nhdb-standalone: final flush...\n")
+    (hdb-flush)
+
+    ;; Shutdown
+    (printf "hdb-standalone: shutting down...\n")
+    (wire-close *hdb-rdb-conn*)
+    (setq *hdb-rdb-conn* ())
+    (wire-close rdb-conn)
+    (when *fh-ws-client*
+      (ws-client-close *fh-ws-client*)
+      (when *fh-ws-poll-id*
+        (setq *fh-handles*
+              (filter (lambda (x) (<> x *fh-ws-poll-id*)) *fh-handles*)) )
+      (setq *fh-ws-client* ())
+      (setq *fh-ws-poll-id* ()) )
+    (each ((hid *fh-handles*))
+      (uv-close-handle hid) )
+    (uv-run *fh-loop* 'nowait)
+    (uv-run *fh-loop* 'default)
+    (while (uv-event-pending) (uv-next-event))
+    (uv-loop-close *fh-loop*)
+    (==> *fh-wire* shutdown)
+    (when *rdb-wire*
+      (==> *rdb-wire* shutdown) )
+    (printf "hdb-standalone: stopped.\n")
+    (printf "hdb: %d flushes, %d ticker rows, %d l2 rows written\n"
+            *hdb-total-flushes* *hdb-total-ticker-rows* *hdb-total-l2-rows*)
+    (printf "rdb: ticker table: %d rows\n" (==> *rdb-ticker-table* num-rows))
+    (printf "rdb: l2 table: %d rows\n" (==> *rdb-l2-table* num-rows)) ) )
+
+
+;; ============================================================
+;; Command-line entry point
+;; ============================================================
+
+;; When loaded as a library (e.g., by tests), set *hdb-no-autostart*
+;; to t BEFORE loading to suppress auto-start:
+;;   (setq *hdb-no-autostart* t)
+;;   (libload "libuv/hdb-writer")
+
+(defvar *hdb-no-autostart* ())
+
+(when (not *hdb-no-autostart*)
+  (hdb-run-standalone '("BTC-USD" "ETH-USD")
+                       '("ticker" "level2" "heartbeat")
+                       19960 19961 "/tmp/hdb" 60) )

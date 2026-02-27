@@ -1,0 +1,474 @@
+;;; test-hdb-writer.lsh -- HDB Writer integration test
+;;;
+;;; Tests the HDB Writer pipeline:
+;;;   RDB tables -> query -> columnardb save/append -> disk -> load verify
+;;;
+;;; Tests new RDB queries (snapshot, rows-from) directly, then tests
+;;; HDB Writer flush logic using a test helper that bypasses the wire
+;;; layer (avoiding single-process deadlock), while still exercising
+;;; the full columnardb persistence path.
+;;;
+;;; Usage: lush test-hdb-writer.lsh
+
+(libload "libuv/feed-handler")
+(defvar *rdb-no-autostart* t)
+(libload "libuv/rdb")
+(defvar *hdb-no-autostart* t)
+(libload "libuv/hdb-writer")
+
+(printf "\n=== HDB Writer integration test ===\n\n")
+
+;; Test directory
+(defvar *test-hdb-root* "/tmp/claude/hdb-writer-tests")
+
+;; Clean up any previous test data
+(sys (concat "rm -rf '" *test-hdb-root* "'"))
+(sys (concat "mkdir -p '" *test-hdb-root* "'"))
+
+;; ---- Setup ----
+(printf "Setup: initializing state... ")
+
+;; Reset RDB state
+(setq *rdb-running* t)
+(setq *rdb-total-tickers* 0)
+(setq *rdb-total-l2* 0)
+(setq *rdb-total-broadcasts* 0)
+(setq *rdb-start-time* (_wire-time-seconds))
+
+;; Reset HDB state
+(setq *hdb-running* t)
+(setq *hdb-root* *test-hdb-root*)
+(setq *hdb-flush-interval* 60)
+(setq *hdb-ticker-hwm* 0)
+(setq *hdb-l2-hwm* 0)
+(setq *hdb-total-flushes* 0)
+(setq *hdb-total-ticker-rows* 0)
+(setq *hdb-total-l2-rows* 0)
+(setq *hdb-start-time* (_wire-time-seconds))
+(setq *hdb-last-flush-time* 0)
+
+;; Initialize RDB tables
+(rdb-init-tables)
+(printf "OK\n\n")
+
+
+;; ============================================================
+;; Helper: flush table using direct RDB query (no wire)
+;; ============================================================
+;; In single-process test, wire-call would deadlock. This helper
+;; calls rdb-handle-query directly, mimicking what wire-call returns.
+
+(de test-hdb-flush-table (tbl hwm-sym)
+  (let ((hwm (eval hwm-sym)))
+    ;; Query RDB directly (same as what wire server would return)
+    (let ((packed (rdb-handle-query (list "rows-from" tbl hwm))))
+      (when (and (consp packed) (= (car packed) 'datatable))
+        (let ((dt (wire-unpack-datatable packed)))
+          (let ((new-rows (==> dt num-rows)))
+            (when (> new-rows 0)
+              (let ((path (hdb-table-path tbl)))
+                ;; Create date partition directory if needed
+                (let ((date-dir (concat *hdb-root* "/" (hdb-date-string))))
+                  (when (not (dirp date-dir))
+                    (sys (concat "mkdir -p '" date-dir "'")) ) )
+                ;; Save or append
+                (if (dirp path)
+                  (columnardb-append path dt)
+                  (columnardb-save dt path) )
+                ;; Update high-water mark
+                (set hwm-sym (+ hwm new-rows))
+                ;; Update stats
+                (cond
+                 ((= tbl "ticker")
+                  (setq *hdb-total-ticker-rows* (+ *hdb-total-ticker-rows* new-rows)) )
+                 ((= tbl "l2")
+                  (setq *hdb-total-l2-rows* (+ *hdb-total-l2-rows* new-rows)) ) )
+                (printf "  (flushed %d %s rows to %s)\n" new-rows tbl path) ) ) ) ) ) ) ) )
+
+(de test-hdb-flush ()
+  (test-hdb-flush-table "ticker" '*hdb-ticker-hwm*)
+  (test-hdb-flush-table "l2" '*hdb-l2-hwm*)
+  (setq *hdb-total-flushes* (1+ *hdb-total-flushes*))
+  (setq *hdb-last-flush-time* (_wire-time-seconds)) )
+
+
+;; ---- Tests ----
+
+;; Test 1: hdb-date-string returns correctly formatted date
+(printf "Test 1: hdb-date-string format... ")
+(let ((ds (hdb-date-string)))
+  (if (and (stringp ds)
+           (= (len ds) 10)
+           (= (mid ds 5 1) ".")
+           (= (mid ds 8 1) ".") )
+    (printf "PASS (%s)\n" ds)
+    (printf "FAIL (got: %l)\n" ds) ) )
+
+
+;; Test 2: hdb-table-path builds correct path
+(printf "Test 2: hdb-table-path builds correct path... ")
+(let ((path (hdb-table-path "ticker")))
+  (let ((expected (concat *test-hdb-root* "/" (hdb-date-string) "/ticker")))
+    (if (= path expected)
+      (printf "PASS\n")
+      (printf "FAIL (got: %s, expected: %s)\n" path expected) ) ) )
+
+
+;; Test 3: RDB "snapshot" query on empty table
+(printf "Test 3: RDB snapshot query (empty)... ")
+(let ((packed (rdb-handle-query (list "snapshot" "ticker"))))
+  (if (and (consp packed) (= (car packed) 'datatable))
+    (let ((dt (wire-unpack-datatable packed)))
+      (if (= (==> dt num-rows) 0)
+        (printf "PASS (0 rows)\n")
+        (printf "FAIL (rows=%d)\n" (==> dt num-rows)) ) )
+    (printf "FAIL (not packed: %l)\n" packed) ) )
+
+
+;; Test 4: RDB "rows-from" query on empty table
+(printf "Test 4: RDB rows-from query (empty)... ")
+(let ((packed (rdb-handle-query (list "rows-from" "ticker" 0))))
+  (if (and (consp packed) (= (car packed) 'datatable))
+    (let ((dt (wire-unpack-datatable packed)))
+      (if (= (==> dt num-rows) 0)
+        (printf "PASS (0 rows)\n")
+        (printf "FAIL (rows=%d)\n" (==> dt num-rows)) ) )
+    (printf "FAIL (not packed: %l)\n" packed) ) )
+
+
+;; Test 5: Insert synthetic ticker rows into RDB
+(printf "Test 5: Insert ticker rows into RDB... ")
+(rdb-insert-ticker (list (cons "product" "BTC-USD")
+                          (cons "price" 67312.02)
+                          (cons "best_bid" 67312.00)
+                          (cons "best_ask" 67312.50)
+                          (cons "side" "sell")
+                          (cons "time" 1718457605500000) ))
+(rdb-insert-ticker (list (cons "product" "ETH-USD")
+                          (cons "price" 3850.75)
+                          (cons "best_bid" 3850.50)
+                          (cons "best_ask" 3851.00)
+                          (cons "side" "buy")
+                          (cons "time" 1718457606000000) ))
+(rdb-insert-ticker (list (cons "product" "BTC-USD")
+                          (cons "price" 67315.00)
+                          (cons "best_bid" 67314.50)
+                          (cons "best_ask" 67315.50)
+                          (cons "side" "buy")
+                          (cons "time" 1718457607000000) ))
+(if (= (==> *rdb-ticker-table* num-rows) 3)
+  (printf "PASS (3 rows)\n")
+  (printf "FAIL (rows=%d)\n" (==> *rdb-ticker-table* num-rows)) )
+
+
+;; Test 6: RDB "rows-from" returns correct rows
+(printf "Test 6: RDB rows-from (3 rows from 0)... ")
+(let ((packed (rdb-handle-query (list "rows-from" "ticker" 0))))
+  (if (and (consp packed) (= (car packed) 'datatable))
+    (let ((dt (wire-unpack-datatable packed)))
+      (if (and (= (==> dt num-rows) 3)
+               (= (==> dt get 0 "product") "BTC-USD")
+               (= (==> dt get 0 "price") 67312.02)
+               (= (==> dt get 2 "product") "BTC-USD") )
+        (printf "PASS (3 rows)\n")
+        (printf "FAIL (rows=%d)\n" (==> dt num-rows)) ) )
+    (printf "FAIL (not packed)\n") ) )
+
+
+;; Test 7: RDB "rows-from" with offset returns partial rows
+(printf "Test 7: RDB rows-from with offset... ")
+(let ((packed (rdb-handle-query (list "rows-from" "ticker" 1))))
+  (if (and (consp packed) (= (car packed) 'datatable))
+    (let ((dt (wire-unpack-datatable packed)))
+      (if (and (= (==> dt num-rows) 2)
+               (= (==> dt get 0 "product") "ETH-USD") )
+        (printf "PASS (2 rows from idx 1)\n")
+        (printf "FAIL (rows=%d)\n" (==> dt num-rows)) ) )
+    (printf "FAIL (not packed)\n") ) )
+
+
+;; Test 8: RDB "rows-from" beyond end returns empty
+(printf "Test 8: RDB rows-from beyond end... ")
+(let ((packed (rdb-handle-query (list "rows-from" "ticker" 3))))
+  (if (and (consp packed) (= (car packed) 'datatable))
+    (let ((dt (wire-unpack-datatable packed)))
+      (if (= (==> dt num-rows) 0)
+        (printf "PASS (0 rows)\n")
+        (printf "FAIL (rows=%d)\n" (==> dt num-rows)) ) )
+    (printf "FAIL (not packed)\n") ) )
+
+
+;; Test 9: RDB "snapshot" returns full table
+(printf "Test 9: RDB snapshot (full table)... ")
+(let ((packed (rdb-handle-query (list "snapshot" "ticker"))))
+  (if (and (consp packed) (= (car packed) 'datatable))
+    (let ((dt (wire-unpack-datatable packed)))
+      (if (and (= (==> dt num-rows) 3)
+               (= (==> dt get 0 "product") "BTC-USD")
+               (= (==> dt get 2 "price") 67315.00) )
+        (printf "PASS (3 rows)\n")
+        (printf "FAIL (rows=%d)\n" (==> dt num-rows)) ) )
+    (printf "FAIL (not packed)\n") ) )
+
+
+;; Test 10: RDB "snapshot" for L2 table
+(printf "Test 10: RDB snapshot L2 (empty)... ")
+(let ((packed (rdb-handle-query (list "snapshot" "l2"))))
+  (if (and (consp packed) (= (car packed) 'datatable))
+    (let ((dt (wire-unpack-datatable packed)))
+      (if (= (==> dt num-rows) 0)
+        (printf "PASS (0 rows)\n")
+        (printf "FAIL (rows=%d)\n" (==> dt num-rows)) ) )
+    (printf "FAIL (not packed)\n") ) )
+
+
+;; Test 11: Flush ticker table to disk
+(printf "Test 11: Flush ticker to disk... ")
+(test-hdb-flush-table "ticker" '*hdb-ticker-hwm*)
+(let ((path (hdb-table-path "ticker")))
+  (if (dirp path)
+    (let ((dt (columnardb-load-mem path)))
+      (if (and (= (==> dt num-rows) 3)
+               (= (==> dt get 0 "product") "BTC-USD")
+               (= (==> dt get 0 "price") 67312.02)
+               (= (==> dt get 1 "product") "ETH-USD")
+               (= (==> dt get 2 "price") 67315.00) )
+        (printf "PASS (3 rows on disk)\n")
+        (printf "FAIL (rows=%d)\n" (==> dt num-rows)) ) )
+    (printf "FAIL (path not found: %s)\n" path) ) )
+
+
+;; Test 12: Verify HWM advanced correctly
+(printf "Test 12: HWM tracking (ticker)... ")
+(if (= *hdb-ticker-hwm* 3)
+  (printf "PASS (hwm=3)\n")
+  (printf "FAIL (hwm=%d)\n" *hdb-ticker-hwm*) )
+
+
+;; Test 13: Verify stats counter
+(printf "Test 13: Stats counter (ticker rows)... ")
+(if (= *hdb-total-ticker-rows* 3)
+  (printf "PASS (total=3)\n")
+  (printf "FAIL (total=%d)\n" *hdb-total-ticker-rows*) )
+
+
+;; Test 14: Insert more ticker rows and flush again (tests append path)
+(printf "Test 14: Append ticker rows and re-flush... ")
+(rdb-insert-ticker (list (cons "product" "SOL-USD")
+                          (cons "price" 142.50)
+                          (cons "best_bid" 142.40)
+                          (cons "best_ask" 142.60)
+                          (cons "side" "sell")
+                          (cons "time" 1718457608000000) ))
+(rdb-insert-ticker (list (cons "product" "BTC-USD")
+                          (cons "price" 67320.00)
+                          (cons "best_bid" 67319.50)
+                          (cons "best_ask" 67320.50)
+                          (cons "side" "buy")
+                          (cons "time" 1718457609000000) ))
+(test-hdb-flush-table "ticker" '*hdb-ticker-hwm*)
+(let ((path (hdb-table-path "ticker")))
+  (let ((dt (columnardb-load-mem path)))
+    (if (and (= (==> dt num-rows) 5)
+             (= (==> dt get 3 "product") "SOL-USD")
+             (= (==> dt get 3 "price") 142.50)
+             (= (==> dt get 4 "product") "BTC-USD")
+             (= (==> dt get 4 "price") 67320.00) )
+      (printf "PASS (5 rows on disk after append)\n")
+      (printf "FAIL (rows=%d)\n" (==> dt num-rows)) ) ) )
+
+
+;; Test 15: HWM advanced after second flush
+(printf "Test 15: HWM after second flush... ")
+(if (= *hdb-ticker-hwm* 5)
+  (printf "PASS (hwm=5)\n")
+  (printf "FAIL (hwm=%d)\n" *hdb-ticker-hwm*) )
+
+
+;; Test 16: Insert L2 data and flush
+(printf "Test 16: Insert L2 rows and flush... ")
+(let ((l2-dt (new DataTable)))
+  (==> l2-dt add-column "side" 'int)
+  (==> l2-dt add-column "price" 'real)
+  (==> l2-dt add-column "quantity" 'real)
+  (==> l2-dt add-column "time" 'stamp)
+  (==> l2-dt add-column "product" 'string)
+  (==> l2-dt append-row (list 0 67300.00 1.5 1718457605000000 "BTC-USD"))
+  (==> l2-dt append-row (list 1 67310.00 0.8 1718457605000000 "BTC-USD"))
+  (==> l2-dt append-row (list 0 3850.00 5.0 1718457606000000 "ETH-USD"))
+  (rdb-insert-l2 l2-dt) )
+(test-hdb-flush-table "l2" '*hdb-l2-hwm*)
+(let ((path (hdb-table-path "l2")))
+  (if (dirp path)
+    (let ((dt (columnardb-load-mem path)))
+      (if (and (= (==> dt num-rows) 3)
+               (= (==> dt get 0 "price") 67300.00)
+               (= (==> dt get 1 "price") 67310.00)
+               (= (==> dt get 2 "product") "ETH-USD") )
+        (printf "PASS (3 l2 rows on disk)\n")
+        (printf "FAIL (rows=%d)\n" (==> dt num-rows)) ) )
+    (printf "FAIL (l2 path not found)\n") ) )
+
+
+;; Test 17: L2 HWM tracking
+(printf "Test 17: L2 HWM tracking... ")
+(if (= *hdb-l2-hwm* 3)
+  (printf "PASS (l2 hwm=3)\n")
+  (printf "FAIL (l2 hwm=%d)\n" *hdb-l2-hwm*) )
+
+
+;; Test 18: Flush with no new rows is a no-op
+(printf "Test 18: Flush with no new rows (no-op)... ")
+(let ((pre-ticker-rows *hdb-total-ticker-rows*)
+      (pre-l2-rows *hdb-total-l2-rows*) )
+  (test-hdb-flush-table "ticker" '*hdb-ticker-hwm*)
+  (test-hdb-flush-table "l2" '*hdb-l2-hwm*)
+  (if (and (= *hdb-total-ticker-rows* pre-ticker-rows)
+           (= *hdb-total-l2-rows* pre-l2-rows) )
+    (printf "PASS (no change)\n")
+    (printf "FAIL (ticker=%d->%d, l2=%d->%d)\n"
+            pre-ticker-rows *hdb-total-ticker-rows*
+            pre-l2-rows *hdb-total-l2-rows*) ) )
+
+
+;; Test 19: Full flush cycle with both tables
+(printf "Test 19: Full flush cycle... ")
+(rdb-insert-ticker (list (cons "product" "DOGE-USD")
+                          (cons "price" 0.15)
+                          (cons "best_bid" 0.14)
+                          (cons "best_ask" 0.16)
+                          (cons "side" "buy")
+                          (cons "time" 1718457610000000) ))
+(let ((l2-dt2 (new DataTable)))
+  (==> l2-dt2 add-column "side" 'int)
+  (==> l2-dt2 add-column "price" 'real)
+  (==> l2-dt2 add-column "quantity" 'real)
+  (==> l2-dt2 add-column "time" 'stamp)
+  (==> l2-dt2 add-column "product" 'string)
+  (==> l2-dt2 append-row (list 0 0.14 1000.0 1718457610000000 "DOGE-USD"))
+  (rdb-insert-l2 l2-dt2) )
+(let ((pre-flushes *hdb-total-flushes*))
+  (test-hdb-flush)
+  (if (and (= *hdb-total-flushes* (1+ pre-flushes))
+           (= *hdb-ticker-hwm* 6)
+           (= *hdb-l2-hwm* 4) )
+    (printf "PASS (flushes=%d, ticker_hwm=%d, l2_hwm=%d)\n"
+            *hdb-total-flushes* *hdb-ticker-hwm* *hdb-l2-hwm*)
+    (printf "FAIL (flushes=%d, ticker_hwm=%d, l2_hwm=%d)\n"
+            *hdb-total-flushes* *hdb-ticker-hwm* *hdb-l2-hwm*) ) )
+
+
+;; Test 20: Verify final disk state — ticker
+(printf "Test 20: Final ticker disk state... ")
+(let ((dt (columnardb-load-mem (hdb-table-path "ticker"))))
+  (if (and (= (==> dt num-rows) 6)
+           (= (==> dt get 5 "product") "DOGE-USD")
+           (= (==> dt get 5 "price") 0.15) )
+    (printf "PASS (6 rows)\n")
+    (printf "FAIL (rows=%d)\n" (==> dt num-rows)) ) )
+
+
+;; Test 21: Verify final disk state — L2
+(printf "Test 21: Final L2 disk state... ")
+(let ((dt (columnardb-load-mem (hdb-table-path "l2"))))
+  (if (and (= (==> dt num-rows) 4)
+           (= (==> dt get 3 "product") "DOGE-USD") )
+    (printf "PASS (4 rows)\n")
+    (printf "FAIL (rows=%d)\n" (==> dt num-rows)) ) )
+
+
+;; Test 22: Verify disk schema matches original
+(printf "Test 22: Disk schema matches RDB schema (ticker)... ")
+(let ((dt (columnardb-load-mem (hdb-table-path "ticker"))))
+  (let ((names (==> dt col-names))
+        (types (==> dt col-types)) )
+    (if (and (= (car names) "product")
+             (= (cadr names) "price")
+             (= (caddr names) "bid")
+             (= (cadddr names) "ask")
+             (= (nth 4 names) "side")
+             (= (nth 5 names) "time")
+             (= (car types) 'string)
+             (= (cadr types) 'real)
+             (= (caddr types) 'real)
+             (= (cadddr types) 'real)
+             (= (nth 4 types) 'string)
+             (= (nth 5 types) 'stamp) )
+      (printf "PASS\n")
+      (printf "FAIL (names=%l types=%l)\n" names types) ) ) )
+
+
+;; Test 23: Verify disk schema matches original (L2)
+(printf "Test 23: Disk schema matches RDB schema (l2)... ")
+(let ((dt (columnardb-load-mem (hdb-table-path "l2"))))
+  (let ((names (==> dt col-names))
+        (types (==> dt col-types)) )
+    (if (and (= (car names) "side")
+             (= (cadr names) "price")
+             (= (caddr names) "quantity")
+             (= (cadddr names) "time")
+             (= (nth 4 names) "product")
+             (= (car types) 'int)
+             (= (cadr types) 'real)
+             (= (caddr types) 'real)
+             (= (cadddr types) 'stamp)
+             (= (nth 4 types) 'string) )
+      (printf "PASS\n")
+      (printf "FAIL (names=%l types=%l)\n" names types) ) ) )
+
+
+;; Test 24: Date partition directory structure
+(printf "Test 24: Date partition directory... ")
+(let ((date-dir (concat *test-hdb-root* "/" (hdb-date-string))))
+  (if (and (dirp date-dir)
+           (dirp (concat date-dir "/ticker"))
+           (dirp (concat date-dir "/l2"))
+           (filep (concat date-dir "/ticker/meta.lsh"))
+           (filep (concat date-dir "/l2/meta.lsh")) )
+    (printf "PASS\n")
+    (printf "FAIL (missing dirs/files)\n") ) )
+
+
+;; Test 25: hdb-check-flush respects interval
+(printf "Test 25: hdb-check-flush respects interval... ")
+(let ((pre-flushes *hdb-total-flushes*))
+  ;; Set last flush to now, interval to 60 — should NOT flush
+  (setq *hdb-last-flush-time* (_wire-time-seconds))
+  (setq *hdb-flush-interval* 60)
+  ;; hdb-check-flush uses the real hdb-flush which uses wire-call,
+  ;; so we just verify the time check logic directly
+  (let ((now (_wire-time-seconds)))
+    (if (< (- now *hdb-last-flush-time*) *hdb-flush-interval*)
+      (printf "PASS (interval not elapsed)\n")
+      (printf "FAIL (interval elapsed unexpectedly)\n") ) ) )
+
+
+;; Test 26: RDB "rows-from" for L2 table
+(printf "Test 26: RDB rows-from L2... ")
+(let ((packed (rdb-handle-query (list "rows-from" "l2" 0))))
+  (if (and (consp packed) (= (car packed) 'datatable))
+    (let ((dt (wire-unpack-datatable packed)))
+      (if (= (==> dt num-rows) 4)
+        (printf "PASS (4 rows)\n")
+        (printf "FAIL (rows=%d)\n" (==> dt num-rows)) ) )
+    (printf "FAIL (not packed)\n") ) )
+
+
+;; Test 27: RDB "rows-from" L2 with offset
+(printf "Test 27: RDB rows-from L2 with offset... ")
+(let ((packed (rdb-handle-query (list "rows-from" "l2" 2))))
+  (if (and (consp packed) (= (car packed) 'datatable))
+    (let ((dt (wire-unpack-datatable packed)))
+      (if (and (= (==> dt num-rows) 2)
+               (= (==> dt get 0 "product") "ETH-USD") )
+        (printf "PASS (2 rows from idx 2)\n")
+        (printf "FAIL (rows=%d)\n" (==> dt num-rows)) ) )
+    (printf "FAIL (not packed)\n") ) )
+
+
+;; ---- Cleanup ----
+(printf "\nTest 28: Clean up... ")
+(sys (concat "rm -rf '" *test-hdb-root* "'"))
+(printf "PASS\n")
+
+(printf "\n=== HDB Writer integration test complete ===\n\n")

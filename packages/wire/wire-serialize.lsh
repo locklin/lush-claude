@@ -42,37 +42,42 @@
         (nrows (==> dt num-rows))
         (ncols (==> dt num-cols)) )
     (let ((cols ()))
-      (for (ci 0 (1- ncols))
-        (let ((col (==> dt get-column ci))
-              (type (nth ci types)) )
-          (cond
-           ;; Real (double) column: copy valid rows into a fresh idx1
-           ((= type 'real)
-            (let ((data (double-matrix nrows)))
-              (for (r 0 (1- nrows)) (data r (col r)))
-              (setq cols (nconc1 cols data)) ) )
-           ;; Int column
-           ((= type 'int)
-            (let ((data (int-matrix nrows)))
-              (for (r 0 (1- nrows)) (data r (col r)))
-              (setq cols (nconc1 cols data)) ) )
-           ;; Float column
-           ((= type 'float)
-            (let ((data (float-matrix nrows)))
-              (for (r 0 (1- nrows)) (data r (col r)))
-              (setq cols (nconc1 cols data)) ) )
-           ;; Stamp (long) column
-           ((= type 'stamp)
-            (let ((data (long-matrix nrows)))
-              (for (r 0 (1- nrows)) (data r (col r)))
-              (setq cols (nconc1 cols data)) ) )
-           ;; String column: send as list of strings
-           ((= type 'string)
-            (let ((strings ()))
-              (for (r 0 (1- nrows))
-                (setq strings (nconc1 strings (==> dt get r ci))) )
-              (setq cols (nconc1 cols strings)) ) )
-           (t (error "wire-pack-datatable" "unknown column type" type)) ) ) )
+      (if (= nrows 0)
+        ;; Empty table: use empty lists for all columns (Lush can't create 0-sized matrices)
+        (each ((type types))
+          (setq cols (nconc1 cols ())) )
+        ;; Non-empty table: copy column data
+        (for (ci 0 (1- ncols))
+          (let ((col (==> dt get-column ci))
+                (type (nth ci types)) )
+            (cond
+             ;; Real (double) column: copy valid rows into a fresh idx1
+             ((= type 'real)
+              (let ((data (double-matrix nrows)))
+                (for (r 0 (1- nrows)) (data r (col r)))
+                (setq cols (nconc1 cols data)) ) )
+             ;; Int column
+             ((= type 'int)
+              (let ((data (int-matrix nrows)))
+                (for (r 0 (1- nrows)) (data r (col r)))
+                (setq cols (nconc1 cols data)) ) )
+             ;; Float column
+             ((= type 'float)
+              (let ((data (float-matrix nrows)))
+                (for (r 0 (1- nrows)) (data r (col r)))
+                (setq cols (nconc1 cols data)) ) )
+             ;; Stamp (long) column
+             ((= type 'stamp)
+              (let ((data (long-matrix nrows)))
+                (for (r 0 (1- nrows)) (data r (col r)))
+                (setq cols (nconc1 cols data)) ) )
+             ;; String column: send as list of strings
+             ((= type 'string)
+              (let ((strings ()))
+                (for (r 0 (1- nrows))
+                  (setq strings (nconc1 strings (==> dt get r ci))) )
+                (setq cols (nconc1 cols strings)) ) )
+             (t (error "wire-pack-datatable" "unknown column type" type)) ) ) ) )
       (list 'datatable names types nrows cols) ) ) )
 
 
@@ -86,24 +91,30 @@
         (types (caddr packed))
         (nrows (cadddr packed))
         (cols (car (cddddr packed))) )
-    ;; Build column objects
-    (let ((column-list ())
-          (ci 0) )
-      (each ((col-data cols) (type types))
-        (cond
-         ;; Numeric columns: col-data is already an idx1
-         ((or (= type 'real) (= type 'int) (= type 'float) (= type 'stamp))
-          (setq column-list (nconc1 column-list col-data)) )
-         ;; String columns: col-data is a list of strings
-         ((= type 'string)
-          (let ((sc (new StringColumn (max 1 nrows))))
-            ;; Append each string (StringColumn uses dictionary encoding)
-            (each ((s col-data))
-              (==> sc append s) )
-            (setq column-list (nconc1 column-list sc)) ) )
-         (t (error "wire-unpack-datatable" "unknown column type" type)) )
-        (setq ci (1+ ci)) )
-      (datatable-from-columns names types column-list nrows) ) ) )
+    ;; Empty table: create with schema only (Lush can't create 0-sized matrices)
+    (if (= nrows 0)
+      (let ((dt (new DataTable)))
+        (each ((name names) (type types))
+          (==> dt add-column name type) )
+        dt )
+      ;; Non-empty table: build column objects
+      (let ((column-list ())
+            (ci 0) )
+        (each ((col-data cols) (type types))
+          (cond
+           ;; Numeric columns: col-data is already an idx1
+           ((or (= type 'real) (= type 'int) (= type 'float) (= type 'stamp))
+            (setq column-list (nconc1 column-list col-data)) )
+           ;; String columns: col-data is a list of strings
+           ((= type 'string)
+            (let ((sc (new StringColumn (max 1 nrows))))
+              ;; Append each string (StringColumn uses dictionary encoding)
+              (each ((s col-data))
+                (==> sc append s) )
+              (setq column-list (nconc1 column-list sc)) ) )
+           (t (error "wire-unpack-datatable" "unknown column type" type)) )
+          (setq ci (1+ ci)) )
+        (datatable-from-columns names types column-list nrows) ) ) ) )
 
 
 ;; ============================================================

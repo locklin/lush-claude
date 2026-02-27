@@ -216,6 +216,35 @@
           (sprintf "unknown table: %s" tbl)
           (wire-pack-datatable (==> dt where-rows op col val)) ) ) ) )
 
+   ;; ("snapshot" "ticker") or ("snapshot" "l2") — full table as packed DataTable
+   ((and (consp expr) (= (car expr) "snapshot"))
+    (let ((tbl (cadr expr)))
+      (let ((dt (cond ((= tbl "ticker") *rdb-ticker-table*)
+                      ((= tbl "l2") *rdb-l2-table*)
+                      (t ()) )))
+        (if (not dt)
+          (sprintf "unknown table: %s" tbl)
+          (wire-pack-datatable dt) ) ) ) )
+
+   ;; ("rows-from" "ticker" N) or ("rows-from" "l2" N) — rows from index N onward
+   ((and (consp expr) (= (car expr) "rows-from"))
+    (let ((tbl (cadr expr))
+          (n (caddr expr)) )
+      (let ((dt (cond ((= tbl "ticker") *rdb-ticker-table*)
+                      ((= tbl "l2") *rdb-l2-table*)
+                      (t ()) )))
+        (if (not dt)
+          (sprintf "unknown table: %s" tbl)
+          (let ((nrows (==> dt num-rows)))
+            (if (>= n nrows)
+              ;; No new rows — return empty table with same schema
+              (wire-pack-datatable (==> dt select-rows ()))
+              ;; Build index list from N to end
+              (let ((indices ()))
+                (for (i n (1- nrows))
+                  (setq indices (nconc1 indices i)) )
+                (wire-pack-datatable (==> dt select-rows indices)) ) ) ) ) ) ) )
+
    ;; Unknown query
    (t (sprintf "unknown query: %l" expr)) ) )
 
