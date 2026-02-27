@@ -14,6 +14,8 @@
 (libload "libuv/hdb-reader")
 (defvar *ana-no-autostart* t)
 (libload "libuv/analytics")
+(defvar *hdb-no-autostart* t)
+(libload "libuv/hdb-writer")
 (defvar *gw-no-autostart* t)
 (libload "libuv/gateway")
 
@@ -90,6 +92,21 @@
 (ana-update-product "BTC-USD" 67312.02 67312.00 67312.50 1718457605500000)
 (ana-update-product "BTC-USD" 67315.00 67314.50 67315.50 1718457607000000)
 
+;; --- HDB Writer ---
+;; Initialize state for hdb-handle-query (no actual RDB connection needed)
+(setq *hdb-running* t)
+(setq *hdb-root* "/tmp/claude/gw-hdbw-tests")
+(setq *hdb-flush-interval* 60)
+(setq *hdb-ticker-hwm* 0)
+(setq *hdb-l2-hwm* 0)
+(setq *hdb-total-flushes* 0)
+(setq *hdb-total-ticker-rows* 0)
+(setq *hdb-total-l2-rows* 0)
+(setq *hdb-total-queries* 0)
+(setq *hdb-start-time* (_wire-time-seconds))
+(setq *hdb-last-flush-time* (_wire-time-seconds))
+(setq *hdb-rdb-conn* ())
+
 ;; --- Gateway state ---
 (setq *gw-total-queries* 0)
 (setq *gw-start-time* (_wire-time-seconds))
@@ -101,6 +118,7 @@
 (setq *gw-rdb-conn* t)
 (setq *gw-hdb-conn* t)
 (setq *gw-ana-conn* t)
+(setq *gw-hdbw-conn* t)
 
 ;; Set up *gw-call-fn* to route to backend handlers directly
 (setq *gw-call-fn*
@@ -108,6 +126,7 @@
     (cond
      ((= backend "rdb") (rdb-handle-query query))
      ((= backend "hdb") (hdbr-handle-query query))
+     ((= backend "hdbw") (hdb-handle-query query))
      ((= backend "ana") (ana-handle-query query))
      (t (sprintf "unknown backend: %s" backend)) ) ) )
 
@@ -129,15 +148,16 @@
     (printf "FAIL (got: %l)\n" result) ) )
 
 
-;; Test 2: "backends" returns 3 backends
+;; Test 2: "backends" returns 4 backends
 (printf "Test 2: backends... ")
 (let ((result (gw-handle-query 0 "backends")))
   (if (and (consp result)
-           (= (length result) 3)
+           (= (length result) 4)
            (assoc "rdb" result)
            (assoc "hdb" result)
+           (assoc "hdbw" result)
            (assoc "ana" result) )
-    (printf "PASS (3 backends)\n")
+    (printf "PASS (4 backends)\n")
     (printf "FAIL (got: %l)\n" result) ) )
 
 
@@ -374,8 +394,41 @@
     (printf "FAIL (got: %l)\n" result) ) )
 
 
+;; Clear permissions for remaining backend tests
+(setq *gw-permissions* ())
+(setq *gw-client-users* ())
+
+;; Test 26: ("hdbw" "ping") forwards to HDB Writer
+(printf "Test 26: (\"hdbw\" \"ping\")... ")
+(let ((result (gw-handle-query 0 (list "hdbw" "ping"))))
+  (if (= result "pong")
+    (printf "PASS\n")
+    (printf "FAIL (got: %l)\n" result) ) )
+
+
+;; Test 27: ("hdbw" "stats") returns writer stats
+(printf "Test 27: (\"hdbw\" \"stats\")... ")
+(let ((result (gw-handle-query 0 (list "hdbw" "stats"))))
+  (if (and (consp result)
+           (assoc "flushes" result)
+           (assoc "ticker_hwm" result)
+           (assoc "root" result) )
+    (printf "PASS\n")
+    (printf "FAIL (got: %l)\n" result) ) )
+
+
+;; Test 28: Smart routing: "flush" resolves to hdbw backend
+;; We test the routing logic directly since actual flush requires a
+;; live RDB connection which isn't available in bypass-wire tests.
+(printf "Test 28: smart route flush -> hdbw... ")
+(let ((backend (_gw-smart-route "flush")))
+  (if (= backend "hdbw")
+    (printf "PASS (routes to hdbw)\n")
+    (printf "FAIL (got: %l)\n" backend) ) )
+
+
 ;; ---- Cleanup ----
-(printf "\nTest 26: Clean up... ")
+(printf "\nTest 29: Clean up... ")
 ;; Clear permissions and client state
 (setq *gw-permissions* ())
 (setq *gw-client-users* ())

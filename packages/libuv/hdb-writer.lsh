@@ -44,6 +44,8 @@
 (defvar *hdb-flush-interval* 60)        ;; seconds between flushes (default 60)
 (defvar *hdb-last-flush-time* 0)        ;; timestamp of last flush
 (defvar *hdb-rdb-conn* ())              ;; wire connection to RDB
+(defvar *hdb-wire* ())                  ;; WireServer for query/control interface
+(defvar *hdb-total-queries* 0)         ;; query counter
 
 
 ;; ============================================================
@@ -159,63 +161,127 @@
 
 
 ;; ============================================================
+;; Query interface
+;; ============================================================
+
+#? (hdb-handle-query <expr>)
+;; WireServer on-sync handler: dispatch queries on HDB Writer state.
+;; Provides operational control (flush, stats) — not data queries
+;; (those go through HDB Reader).
+(de hdb-handle-query (expr)
+  (setq *hdb-total-queries* (1+ *hdb-total-queries*))
+  (cond
+
+   ;; "ping" — health check
+   ((= expr "ping")
+    "pong" )
+
+   ;; "stats" — writer statistics
+   ((= expr "stats")
+    (list (cons "flushes" *hdb-total-flushes*)
+          (cons "ticker_rows" *hdb-total-ticker-rows*)
+          (cons "l2_rows" *hdb-total-l2-rows*)
+          (cons "ticker_hwm" *hdb-ticker-hwm*)
+          (cons "l2_hwm" *hdb-l2-hwm*)
+          (cons "flush_interval" *hdb-flush-interval*)
+          (cons "root" *hdb-root*)
+          (cons "uptime" (- (_wire-time-seconds) *hdb-start-time*))
+          (cons "queries" *hdb-total-queries*) ) )
+
+   ;; "flush" — trigger immediate flush
+   ((= expr "flush")
+    (hdb-flush)
+    (sprintf "flushed (ticker_hwm=%d l2_hwm=%d)" *hdb-ticker-hwm* *hdb-l2-hwm*) )
+
+   ;; Unknown query
+   (t (sprintf "unknown query: %l" expr)) ) )
+
+
+;; ============================================================
 ;; Main loop (multi-process mode)
 ;; ============================================================
 
-#? (hdb-start <rdb-port> <hdb-root> <flush-interval>)
+#? (hdb-start <rdb-port> <hdb-root> <flush-interval> . <query-port>)
 ;; Connect to an RDB wire server and start periodic flushing.
 ;; <rdb-port>: RDB wire server port to connect to.
 ;; <hdb-root>: base directory for HDB storage.
 ;; <flush-interval>: seconds between flushes.
+;; <query-port>: optional wire server port for query/control interface.
+;;               If provided, starts a WireServer so the gateway can connect.
 ;; Blocks until connection is closed or interrupted.
-(de hdb-start (rdb-port hdb-root flush-interval)
-  (printf "\n=== HDB Writer starting ===\n")
-  (printf "rdb server: 127.0.0.1:%d\n" rdb-port)
-  (printf "hdb root: %s\n" hdb-root)
-  (printf "flush interval: %ds\n\n" flush-interval)
+(de hdb-start (rdb-port hdb-root flush-interval . query-port)
+  (let ((qport (if query-port (car query-port) ())) )
+    (printf "\n=== HDB Writer starting ===\n")
+    (printf "rdb server: 127.0.0.1:%d\n" rdb-port)
+    (printf "hdb root: %s\n" hdb-root)
+    (printf "flush interval: %ds\n" flush-interval)
+    (when qport (printf "query server: port %d\n" qport))
+    (printf "\n")
 
-  ;; Reset state
-  (setq *hdb-running* t)
-  (setq *hdb-root* hdb-root)
-  (setq *hdb-flush-interval* flush-interval)
-  (setq *hdb-ticker-hwm* 0)
-  (setq *hdb-l2-hwm* 0)
-  (setq *hdb-total-flushes* 0)
-  (setq *hdb-total-ticker-rows* 0)
-  (setq *hdb-total-l2-rows* 0)
-  (setq *hdb-start-time* (_wire-time-seconds))
-  (setq *hdb-last-flush-time* (_wire-time-seconds))
+    ;; Reset state
+    (setq *hdb-running* t)
+    (setq *hdb-root* hdb-root)
+    (setq *hdb-flush-interval* flush-interval)
+    (setq *hdb-ticker-hwm* 0)
+    (setq *hdb-l2-hwm* 0)
+    (setq *hdb-total-flushes* 0)
+    (setq *hdb-total-ticker-rows* 0)
+    (setq *hdb-total-l2-rows* 0)
+    (setq *hdb-total-queries* 0)
+    (setq *hdb-start-time* (_wire-time-seconds))
+    (setq *hdb-last-flush-time* (_wire-time-seconds))
 
-  ;; Create HDB root directory
-  (when (not (dirp hdb-root))
-    (sys (concat "mkdir -p '" hdb-root "'")) )
+    ;; Create HDB root directory
+    (when (not (dirp hdb-root))
+      (sys (concat "mkdir -p '" hdb-root "'")) )
 
-  ;; Connect to RDB
-  (printf "hdb: connecting to RDB...\n")
-  (setq *hdb-rdb-conn* (wire-connect "127.0.0.1" rdb-port))
-  (printf "hdb: connected (fd=%d)\n" (*hdb-rdb-conn* "fd"))
+    ;; Connect to RDB
+    (printf "hdb: connecting to RDB...\n")
+    (setq *hdb-rdb-conn* (wire-connect "127.0.0.1" rdb-port))
+    (printf "hdb: connected (fd=%d)\n" (*hdb-rdb-conn* "fd"))
 
-  ;; Verify connection
-  (let ((pong (wire-call *hdb-rdb-conn* "ping")))
-    (if (= pong "pong")
-      (printf "hdb: RDB ping OK\n")
-      (printf "hdb: WARNING — unexpected ping response: %l\n" pong) ) )
+    ;; Verify connection
+    (let ((pong (wire-call *hdb-rdb-conn* "ping")))
+      (if (= pong "pong")
+        (printf "hdb: RDB ping OK\n")
+        (printf "hdb: WARNING — unexpected ping response: %l\n" pong) ) )
 
-  ;; Main polling loop
-  (printf "hdb: entering main loop\n\n")
-  (while *hdb-running*
-    (hdb-check-flush)
-    ;; Sleep briefly to avoid busy-wait (~100ms via spin)
-    (let ((start (_wire-time-seconds)))
-      (while (< (- (_wire-time-seconds) start) 1) ()) ) )
+    ;; Start query server if port given
+    (when qport
+      (setq *hdb-wire* (new WireServer qport))
+      (==> *hdb-wire* start)
+      (printf "hdb: query server listening on port %d\n" qport)
+      (setq :*hdb-wire*:on-sync
+        (lambda (fd expr encoding)
+          (hdb-handle-query expr) ) )
+      (setq :*hdb-wire*:on-connect
+        (lambda (fd)
+          (printf "hdb: query client connected (fd=%d)\n" fd) ) )
+      (setq :*hdb-wire*:on-disconnect
+        (lambda (fd)
+          (printf "hdb: query client disconnected (fd=%d)\n" fd) ) ) )
 
-  ;; Shutdown
-  (printf "\nhdb: final flush before shutdown...\n")
-  (hdb-flush)
-  (wire-close *hdb-rdb-conn*)
-  (setq *hdb-rdb-conn* ())
-  (printf "hdb: stopped (%d flushes, %d ticker rows, %d l2 rows)\n"
-          *hdb-total-flushes* *hdb-total-ticker-rows* *hdb-total-l2-rows*) )
+    ;; Main polling loop
+    (printf "hdb: entering main loop\n\n")
+    (while *hdb-running*
+      ;; Service query clients if server is running
+      (when *hdb-wire*
+        (==> *hdb-wire* serve-once 5) )
+      (hdb-check-flush)
+      ;; Sleep briefly to avoid busy-wait (~1s via spin)
+      (let ((start (_wire-time-seconds)))
+        (while (< (- (_wire-time-seconds) start) 1) ()) ) )
+
+    ;; Shutdown
+    (printf "\nhdb: final flush before shutdown...\n")
+    (hdb-flush)
+    (wire-close *hdb-rdb-conn*)
+    (setq *hdb-rdb-conn* ())
+    (when *hdb-wire*
+      (==> *hdb-wire* shutdown)
+      (setq *hdb-wire* ()) )
+    (printf "hdb: stopped (%d flushes, %d ticker rows, %d l2 rows)\n"
+            *hdb-total-flushes* *hdb-total-ticker-rows* *hdb-total-l2-rows*) ) )
 
 
 ;; ============================================================

@@ -4,9 +4,9 @@
 ;;; and exposes a single unified WireServer for downstream clients.
 ;;;
 ;;; Architecture:
-;;;   - Connects to 3 backends (RDB, HDB Reader, Analytics) as wire clients
+;;;   - Connects to 4 backends (RDB, HDB Reader, HDB Writer, Analytics) as wire clients
 ;;;   - Routes queries to the appropriate backend
-;;;   - Supports explicit routing (("rdb" ...) ("hdb" ...) ("ana" ...))
+;;;   - Supports explicit routing (("rdb" ...) ("hdb" ...) ("hdbw" ...) ("ana" ...))
 ;;;   - Supports smart routing (auto-detect backend from query pattern)
 ;;;   - Optional permission checking from a text-file permissions module
 ;;;   - Localhost connections are trusted by default (allow all) unless
@@ -15,8 +15,8 @@
 ;;;
 ;;; Usage:
 ;;;   lush gateway.lsh
-;;;   lush -e '(libload "libuv/gateway") (gw-start 19964 19961 19962 19963 ())'
-;;;                                       ;; gw-port rdb-port hdb-port ana-port perm-file
+;;;   lush -e '(libload "libuv/gateway") (gw-start 19964 19961 19962 19963 19965 ())'
+;;;                                       ;; gw-port rdb hdb ana hdbw perm-file
 
 (libload "wire/wire")
 (libload "wire/wire-serialize")
@@ -29,6 +29,7 @@
 (defvar *gw-rdb-conn* ())               ;; wire connection to RDB (port 19961)
 (defvar *gw-hdb-conn* ())               ;; wire connection to HDB Reader (port 19962)
 (defvar *gw-ana-conn* ())               ;; wire connection to Analytics (port 19963)
+(defvar *gw-hdbw-conn* ())              ;; wire connection to HDB Writer (port 19965)
 (defvar *gw-wire* ())                   ;; WireServer for client queries
 (defvar *gw-running* ())                ;; main loop flag
 (defvar *gw-total-queries* 0)           ;; query counter
@@ -71,17 +72,20 @@
 
 #? (_gw-smart-route <expr>)
 ;; Attempt to auto-detect the correct backend from query pattern.
-;; Returns backend name string ("rdb", "hdb", "ana") or () if no match.
+;; Returns backend name string ("rdb", "hdb", "hdbw", "ana") or () if no match.
 (de _gw-smart-route (expr)
   (let ((cmd (if (stringp expr) expr
                (if (consp expr) (car expr) ()) )))
     (cond
-     ;; HDB-specific queries
+     ;; HDB Reader-specific queries
      ((= cmd "dates") "hdb")
      ((= cmd "refresh") "hdb")
      ((= cmd "range") "hdb")
      ((= cmd "range-where") "hdb")
      ((and (consp expr) (= cmd "meta")) "hdb")
+
+     ;; HDB Writer-specific queries
+     ((= cmd "flush") "hdbw")
 
      ;; Analytics-specific queries
      ((= cmd "mavg") "ana")
@@ -112,6 +116,7 @@
    ((= expr "backends")
     (list (_gw-backend-status "rdb" *gw-rdb-conn*)
           (_gw-backend-status "hdb" *gw-hdb-conn*)
+          (_gw-backend-status "hdbw" *gw-hdbw-conn*)
           (_gw-backend-status "ana" *gw-ana-conn*) ) )
 
    ;; "stats" — gateway statistics
@@ -151,6 +156,13 @@
         (if (stringp perm-result) perm-result
           (_gw-call (if *gw-call-fn* "ana" *gw-ana-conn*) sub-query) ) ) ) )
 
+   ;; ("hdbw" sub-query...) — explicit routing to HDB Writer
+   ((and (consp expr) (= (car expr) "hdbw"))
+    (let ((sub-query (cadr expr)))
+      (let ((perm-result (_gw-check-perms fd "hdbw")))
+        (if (stringp perm-result) perm-result
+          (_gw-call (if *gw-call-fn* "hdbw" *gw-hdbw-conn*) sub-query) ) ) ) )
+
    ;; Smart routing — try to auto-detect backend
    (t
     (let ((backend (_gw-smart-route expr)))
@@ -160,6 +172,7 @@
           (if (stringp perm-result) perm-result
             (let ((conn (cond ((= backend "rdb") (if *gw-call-fn* "rdb" *gw-rdb-conn*))
                               ((= backend "hdb") (if *gw-call-fn* "hdb" *gw-hdb-conn*))
+                              ((= backend "hdbw") (if *gw-call-fn* "hdbw" *gw-hdbw-conn*))
                               ((= backend "ana") (if *gw-call-fn* "ana" *gw-ana-conn*))
                               (t ()) )))
               (_gw-call conn expr) ) ) )
@@ -211,17 +224,18 @@
 ;; Main entry point
 ;; ============================================================
 
-#? (gw-start <port> <rdb-port> <hdb-port> <ana-port> <perm-file>)
+#? (gw-start <port> <rdb-port> <hdb-port> <ana-port> <hdbw-port> <perm-file>)
 ;; Start the gateway: connect to backends, start WireServer, enter serve loop.
 ;; <port>: gateway wire server port for downstream clients.
 ;; <rdb-port>: RDB wire server port to connect to.
 ;; <hdb-port>: HDB Reader wire server port to connect to.
 ;; <ana-port>: Analytics wire server port to connect to.
+;; <hdbw-port>: HDB Writer wire server port, or () to skip.
 ;; <perm-file>: path to permissions file, or () to disable permissions.
-(de gw-start (port rdb-port hdb-port ana-port perm-file)
+(de gw-start (port rdb-port hdb-port ana-port hdbw-port perm-file)
   (printf "\n=== Gateway starting ===\n")
   (printf "gateway server: port %d\n" port)
-  (printf "backends: rdb=%d hdb=%d ana=%d\n" rdb-port hdb-port ana-port)
+  (printf "backends: rdb=%d hdb=%d ana=%d hdbw=%l\n" rdb-port hdb-port ana-port hdbw-port)
   (printf "permissions: %l\n\n" perm-file)
 
   ;; Reset state
@@ -251,11 +265,20 @@
   (setq *gw-ana-conn* (wire-connect "127.0.0.1" ana-port))
   (printf "gw: Analytics connected (fd=%d)\n" (*gw-ana-conn* "fd"))
 
+  ;; Connect to HDB Writer if port provided
+  (setq *gw-hdbw-conn* ())
+  (when hdbw-port
+    (printf "gw: connecting to HDB Writer...\n")
+    (setq *gw-hdbw-conn* (wire-connect "127.0.0.1" hdbw-port))
+    (printf "gw: HDB Writer connected (fd=%d)\n" (*gw-hdbw-conn* "fd")) )
+
   ;; Verify backends
   (let ((rdb-pong (_gw-call *gw-rdb-conn* "ping"))
         (hdb-pong (_gw-call *gw-hdb-conn* "ping"))
-        (ana-pong (_gw-call *gw-ana-conn* "ping")) )
-    (printf "gw: ping results: rdb=%l hdb=%l ana=%l\n" rdb-pong hdb-pong ana-pong) )
+        (ana-pong (_gw-call *gw-ana-conn* "ping"))
+        (hdbw-pong (if *gw-hdbw-conn* (_gw-call *gw-hdbw-conn* "ping") "n/a")) )
+    (printf "gw: ping results: rdb=%l hdb=%l ana=%l hdbw=%l\n"
+            rdb-pong hdb-pong ana-pong hdbw-pong) )
 
   ;; Start WireServer
   (setq *gw-wire* (new WireServer port))
@@ -288,9 +311,11 @@
   (wire-close *gw-rdb-conn*)
   (wire-close *gw-hdb-conn*)
   (wire-close *gw-ana-conn*)
+  (when *gw-hdbw-conn* (wire-close *gw-hdbw-conn*))
   (setq *gw-rdb-conn* ())
   (setq *gw-hdb-conn* ())
   (setq *gw-ana-conn* ())
+  (setq *gw-hdbw-conn* ())
   (when *gw-wire*
     (==> *gw-wire* shutdown) )
   (printf "gw: stopped (%d queries served)\n" *gw-total-queries*) )
@@ -308,4 +333,4 @@
 (defvar *gw-no-autostart* ())
 
 (when (not *gw-no-autostart*)
-  (gw-start 19964 19961 19962 19963 ()) )
+  (gw-start 19964 19961 19962 19963 19965 ()) )

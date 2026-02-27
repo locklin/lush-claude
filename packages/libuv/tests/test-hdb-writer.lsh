@@ -466,8 +466,43 @@
     (printf "FAIL (not packed)\n") ) )
 
 
+;; Test 28: hdb-handle-query "ping"
+(printf "Test 28: hdb-handle-query ping... ")
+(let ((result (hdb-handle-query "ping")))
+  (if (= result "pong")
+    (printf "PASS\n")
+    (printf "FAIL (got: %l)\n" result) ) )
+
+
+;; Test 29: hdb-handle-query "stats" returns correct counters
+(printf "Test 29: hdb-handle-query stats... ")
+(let ((result (hdb-handle-query "stats")))
+  (if (and (consp result)
+           (assoc "flushes" result)
+           (assoc "ticker_rows" result)
+           (assoc "l2_rows" result)
+           (assoc "ticker_hwm" result)
+           (assoc "l2_hwm" result)
+           (assoc "flush_interval" result)
+           (assoc "root" result)
+           (assoc "uptime" result)
+           (= (cdr (assoc "root" result)) *test-hdb-root*) )
+    (printf "PASS (flushes=%d, ticker_rows=%d)\n"
+            (cdr (assoc "flushes" result))
+            (cdr (assoc "ticker_rows" result)))
+    (printf "FAIL (got: %l)\n" result) ) )
+
+
+;; Test 30: hdb-handle-query unknown returns error string
+(printf "Test 30: hdb-handle-query unknown... ")
+(let ((result (hdb-handle-query "bogus")))
+  (if (stringp result)
+    (printf "PASS (%s)\n" result)
+    (printf "FAIL (got: %l)\n" result) ) )
+
+
 ;; ---- Cleanup ----
-(printf "\nTest 28: Clean up... ")
+(printf "\nTest 31: Clean up... ")
 (sys (concat "rm -rf '" *test-hdb-root* "'"))
 (printf "PASS\n")
 

@@ -1,0 +1,199 @@
+;;; gw-cli.lsh -- Gateway CLI: interactive query REPL
+;;;
+;;; Connects to the gateway wire server and provides an interactive
+;;; read-eval-print loop for ad-hoc queries.
+;;;
+;;; Usage:
+;;;   lush gw-cli.lsh                           ;; connect to localhost:19964
+;;;   lush -e '(libload "libuv/gw-cli") (gw-cli-start 19964)'
+;;;
+;;; At the prompt, type any query as a Lush expression:
+;;;   gw> "ping"
+;;;   gw> ("rdb" "tables")
+;;;   gw> ("rdb" ("count" "ticker"))
+;;;   gw> ("hdb" "dates")
+;;;   gw> ("mavg" "BTC-USD")
+;;;   gw> ("ana" ("analytics-all" "BTC-USD"))
+;;;   gw> ("hdbw" "flush")
+;;;   gw> "flush"
+;;;   gw> "backends"
+;;;   gw> "stats"
+;;;   gw> ("auth" "admin")
+;;;
+;;; Special commands (type without quotes):
+;;;   quit      — disconnect and exit
+;;;   help      — show usage
+;;;   backends  — shorthand for "backends" query
+
+(libload "wire/wire")
+(libload "wire/wire-serialize")
+(libload "datatable/datatable")
+
+;; ============================================================
+;; CLI state
+;; ============================================================
+
+(defvar *gw-cli-conn* ())              ;; wire connection to gateway
+(defvar *gw-cli-running* ())           ;; REPL loop flag
+
+
+;; ============================================================
+;; Pretty printing
+;; ============================================================
+
+#? (_gw-cli-print-datatable <packed>)
+;; Unpack and pretty-print a packed DataTable.
+(de _gw-cli-print-datatable (packed)
+  (let ((dt (wire-unpack-datatable packed)))
+    (let ((ncols (==> dt num-cols))
+          (nrows (==> dt num-rows))
+          (names (==> dt col-names))
+          (types (==> dt col-types)) )
+      ;; Print header
+      (each ((name names))
+        (printf "%-16s" name) )
+      (printf "\n")
+      ;; Separator
+      (for (c 0 (1- ncols))
+        (printf "%-16s" "────────────────") )
+      (printf "\n")
+      ;; Print rows (cap at 50 for readability)
+      (let ((max-rows (min nrows 50)))
+        (for (r 0 (1- max-rows))
+          (for (c 0 (1- ncols))
+            (let ((val (==> dt get r (nth c names)))
+                  (typ (nth c types)) )
+              (cond
+               ((= typ 'real) (printf "%-16.4f" val))
+               ((= typ 'int) (printf "%-16d" val))
+               ((= typ 'stamp)
+                ;; Format as readable timestamp
+                (printf "%-16d" val) )
+               (t (printf "%-16s" (sprintf "%l" val))) ) ) )
+          (printf "\n") ) )
+      ;; Footer
+      (when (> nrows 50)
+        (printf "... (%d more rows)\n" (- nrows 50)) )
+      (printf "[%d rows x %d cols]\n" nrows ncols) ) ) )
+
+
+#? (_gw-cli-print-result <result>)
+;; Print a query result with appropriate formatting.
+(de _gw-cli-print-result (result)
+  (cond
+   ;; Packed DataTable
+   ((and (consp result) (= (car result) 'datatable))
+    (_gw-cli-print-datatable result) )
+
+   ;; Alist (list of pairs)
+   ((and (consp result) (consp (car result)) (not (consp (caar result))))
+    (each ((pair result))
+      (printf "  %-20s %l\n" (sprintf "%l" (car pair)) (cdr pair)) ) )
+
+   ;; Simple list
+   ((consp result)
+    (printf "%l\n" result) )
+
+   ;; String
+   ((stringp result)
+    (printf "%s\n" result) )
+
+   ;; Number
+   ((numberp result)
+    (printf "%l\n" result) )
+
+   ;; Nil
+   ((not result)
+    (printf "()\n") )
+
+   ;; Anything else
+   (t (printf "%l\n" result)) ) )
+
+
+;; ============================================================
+;; Help text
+;; ============================================================
+
+(de _gw-cli-help ()
+  (printf "\nGateway CLI — query the data pipeline interactively.\n\n")
+  (printf "  Routing:     (\"rdb\" sub-query)    Route to RDB\n")
+  (printf "               (\"hdb\" sub-query)    Route to HDB Reader\n")
+  (printf "               (\"hdbw\" sub-query)   Route to HDB Writer\n")
+  (printf "               (\"ana\" sub-query)    Route to Analytics\n\n")
+  (printf "  Smart:       \"ping\"               Gateway health check\n")
+  (printf "               \"backends\"           Backend connection status\n")
+  (printf "               \"stats\"              Gateway statistics\n")
+  (printf "               \"dates\"              HDB date list (auto-routes)\n")
+  (printf "               \"flush\"              Trigger HDB flush (auto-routes)\n")
+  (printf "               (\"mavg\" product)     Moving average (auto-routes)\n")
+  (printf "               (\"analytics-all\" p)  All analytics (auto-routes)\n\n")
+  (printf "  Auth:        (\"auth\" username)    Authenticate\n\n")
+  (printf "  RDB queries: (\"rdb\" \"tables\")     List tables\n")
+  (printf "               (\"rdb\" (\"count\" t))  Row count\n")
+  (printf "               (\"rdb\" (\"last\" t n)) Last N rows\n")
+  (printf "               (\"rdb\" (\"snapshot\" t))  Full table\n\n")
+  (printf "  HDB queries: (\"hdb\" \"dates\")      Available dates\n")
+  (printf "               (\"hdb\" (\"count\" d t)) Row count for date\n")
+  (printf "               (\"hdb\" (\"range\" t d1 d2))  Date range\n\n")
+  (printf "  Special:     quit                 Exit\n")
+  (printf "               help                 This help\n\n") )
+
+
+;; ============================================================
+;; REPL
+;; ============================================================
+
+#? (gw-cli-start <port>)
+;; Connect to the gateway and start an interactive REPL.
+(de gw-cli-start (port)
+  (printf "Connecting to gateway on 127.0.0.1:%d... " port)
+  (setq *gw-cli-conn* (wire-connect "127.0.0.1" port))
+  (printf "OK (fd=%d)\n" (*gw-cli-conn* "fd"))
+
+  ;; Verify connection
+  (let ((pong (wire-call *gw-cli-conn* "ping")))
+    (if (= pong "pong")
+      (printf "Gateway ping: OK\n\n")
+      (printf "WARNING: unexpected ping response: %l\n\n" pong) ) )
+
+  (printf "Type 'help' for usage, 'quit' to exit.\n\n")
+
+  ;; REPL loop
+  (setq *gw-cli-running* t)
+  (while *gw-cli-running*
+    (printf "gw> ")
+    (flush)
+    (let ((expr (read)))
+      (cond
+       ;; EOF
+       ((= expr ())
+        (setq *gw-cli-running* ()) )
+
+       ;; quit
+       ((= expr 'quit)
+        (setq *gw-cli-running* ()) )
+
+       ;; help
+       ((= expr 'help)
+        (_gw-cli-help) )
+
+       ;; Any other expression — send to gateway
+       (t
+        (let ((result (wire-call *gw-cli-conn* expr)))
+          (_gw-cli-print-result result) ) ) ) ) )
+
+  ;; Disconnect
+  (printf "\nDisconnecting... ")
+  (wire-close *gw-cli-conn*)
+  (setq *gw-cli-conn* ())
+  (printf "done.\n") )
+
+
+;; ============================================================
+;; Command-line entry point
+;; ============================================================
+
+(defvar *gw-cli-no-autostart* ())
+
+(when (not *gw-cli-no-autostart*)
+  (gw-cli-start 19964) )
