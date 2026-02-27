@@ -79,9 +79,10 @@
 ;; HTTP request parsing
 ;; ============================================================
 
-;; NOTE: We use read8 for all socket reads instead of (reading fin (read-string))
-;; because the `reading` redirect interferes with subsequent writes to fout
-;; on the same socket pair.
+;; NOTE: We use read8 for header/line reads instead of (reading fin ...)
+;; because the `reading` redirect can interfere with subsequent writes.
+;; However, body reads use (reading fd (read-string n)) for O(n) bulk I/O
+;; since the body is the last read before the response is written.
 
 ;; internal: read a line from socket fd using read8
 ;; Returns the line without the line ending.
@@ -157,17 +158,13 @@
     headers ) )
 
 
-;; internal: read exactly n bytes from socket fd using read8
+;; internal: read exactly n bytes from socket fd
+;; Uses read-string for O(n) bulk read instead of byte-by-byte.
 (de _httpd-read-bytes (fd nbytes)
-  (let ((chars ()))
-    (for (i 1 nbytes)
-      (let ((b (read8 fd)))
-        (when (>= b 0)
-          (setq chars (nconc1 chars b)) ) ) )
-    (let ((s ""))
-      (each ((c chars))
-        (setq s (concat s (chr c))) )
-      s ) ) )
+  (let ((s ""))
+    (reading fd
+      (setq s (read-string nbytes)) )
+    (if (not s) "" s) ) )
 
 
 #? (httpd-parse-request <fin>)
