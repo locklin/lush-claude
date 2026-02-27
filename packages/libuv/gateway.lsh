@@ -1,0 +1,294 @@
+;;; gateway.lsh -- Unified query Gateway
+;;;
+;;; A process that connects to RDB, HDB Reader, and Analytics as wire clients,
+;;; and exposes a single unified WireServer for downstream clients.
+;;;
+;;; Architecture:
+;;;   - Connects to 3 backends (RDB, HDB Reader, Analytics) as wire clients
+;;;   - Routes queries to the appropriate backend
+;;;   - Supports explicit routing (("rdb" ...) ("hdb" ...) ("ana" ...))
+;;;   - Supports smart routing (auto-detect backend from query pattern)
+;;;   - Optional permission checking from a text-file permissions module
+;;;   - Tracks per-client authentication via WireServer client-state
+;;;
+;;; Usage:
+;;;   lush gateway.lsh
+;;;   lush -e '(libload "libuv/gateway") (gw-start 19964 19961 19962 19963 ())'
+;;;                                       ;; gw-port rdb-port hdb-port ana-port perm-file
+
+(libload "wire/wire")
+(libload "wire/wire-serialize")
+(libload "libuv/permissions")
+
+;; ============================================================
+;; Gateway state
+;; ============================================================
+
+(defvar *gw-rdb-conn* ())               ;; wire connection to RDB (port 19961)
+(defvar *gw-hdb-conn* ())               ;; wire connection to HDB Reader (port 19962)
+(defvar *gw-ana-conn* ())               ;; wire connection to Analytics (port 19963)
+(defvar *gw-wire* ())                   ;; WireServer for client queries
+(defvar *gw-running* ())                ;; main loop flag
+(defvar *gw-total-queries* 0)           ;; query counter
+(defvar *gw-start-time* 0)             ;; start timestamp
+(defvar *gw-perm-file* ())              ;; path to permissions file (or () for no perms)
+(defvar *gw-permissions* ())            ;; loaded permissions alist
+(defvar *gw-client-users* ())           ;; alist: ((fd . username) ...) for auth tracking
+
+;; Indirection for wire-call — allows tests to override with direct dispatch
+(defvar *gw-call-fn* ())
+
+
+;; ============================================================
+;; Backend call indirection
+;; ============================================================
+
+#? (_gw-call <conn> <query>)
+;; Call a backend, using *gw-call-fn* if set, otherwise wire-call.
+;; <conn>: for wire-call, the connection object; for test override,
+;;         the backend name string ("rdb", "hdb", "ana").
+(de _gw-call (conn query)
+  (if *gw-call-fn*
+    (*gw-call-fn* conn query)
+    (wire-call conn query) ) )
+
+
+;; ============================================================
+;; Backend status
+;; ============================================================
+
+#? (_gw-backend-status <name> <conn>)
+;; Return connection status for a backend.
+(de _gw-backend-status (name conn)
+  (cons name (if conn "connected" "disconnected")) )
+
+
+;; ============================================================
+;; Smart routing — detect backend from query pattern
+;; ============================================================
+
+#? (_gw-smart-route <expr>)
+;; Attempt to auto-detect the correct backend from query pattern.
+;; Returns backend name string ("rdb", "hdb", "ana") or () if no match.
+(de _gw-smart-route (expr)
+  (let ((cmd (if (stringp expr) expr
+               (if (consp expr) (car expr) ()) )))
+    (cond
+     ;; HDB-specific queries
+     ((= cmd "dates") "hdb")
+     ((= cmd "refresh") "hdb")
+     ((= cmd "range") "hdb")
+     ((= cmd "range-where") "hdb")
+     ((and (consp expr) (= cmd "meta")) "hdb")
+
+     ;; Analytics-specific queries
+     ((= cmd "mavg") "ana")
+     ((= cmd "mavg-all") "ana")
+     ((= cmd "analytics-all") "ana")
+
+     ;; No smart match
+     (t ()) ) ) )
+
+
+;; ============================================================
+;; Query dispatch
+;; ============================================================
+
+#? (gw-handle-query <fd> <expr>)
+;; Main query dispatcher. Routes queries to backends or handles locally.
+;; <fd>: client file descriptor (for per-client state like auth)
+;; <expr>: the query expression
+(de gw-handle-query (fd expr)
+  (setq *gw-total-queries* (1+ *gw-total-queries*))
+  (cond
+
+   ;; "ping" — gateway health check (no backend needed)
+   ((= expr "ping")
+    "pong" )
+
+   ;; "backends" — connection status of all backends
+   ((= expr "backends")
+    (list (_gw-backend-status "rdb" *gw-rdb-conn*)
+          (_gw-backend-status "hdb" *gw-hdb-conn*)
+          (_gw-backend-status "ana" *gw-ana-conn*) ) )
+
+   ;; "stats" — gateway statistics
+   ((= expr "stats")
+    (list (cons "queries" *gw-total-queries*)
+          (cons "uptime" (- (_wire-time-seconds) *gw-start-time*)) ) )
+
+   ;; ("auth" username) — authenticate client
+   ((and (consp expr) (= (car expr) "auth"))
+    (let ((username (cadr expr)))
+      ;; Store username in client-users alist
+      (let ((existing (assoc fd *gw-client-users*)))
+        (if existing
+          (rplacd existing username)
+          (setq *gw-client-users* (nconc1 *gw-client-users* (cons fd username))) ) )
+      (sprintf "authenticated as %s" username) ) )
+
+   ;; ("rdb" sub-query...) — explicit routing to RDB
+   ((and (consp expr) (= (car expr) "rdb"))
+    (let ((sub-query (cadr expr)))
+      ;; Check permissions if enabled
+      (let ((perm-result (_gw-check-perms fd "rdb")))
+        (if (stringp perm-result) perm-result
+          (_gw-call (if *gw-call-fn* "rdb" *gw-rdb-conn*) sub-query) ) ) ) )
+
+   ;; ("hdb" sub-query...) — explicit routing to HDB
+   ((and (consp expr) (= (car expr) "hdb"))
+    (let ((sub-query (cadr expr)))
+      (let ((perm-result (_gw-check-perms fd "hdb")))
+        (if (stringp perm-result) perm-result
+          (_gw-call (if *gw-call-fn* "hdb" *gw-hdb-conn*) sub-query) ) ) ) )
+
+   ;; ("ana" sub-query...) — explicit routing to Analytics
+   ((and (consp expr) (= (car expr) "ana"))
+    (let ((sub-query (cadr expr)))
+      (let ((perm-result (_gw-check-perms fd "ana")))
+        (if (stringp perm-result) perm-result
+          (_gw-call (if *gw-call-fn* "ana" *gw-ana-conn*) sub-query) ) ) ) )
+
+   ;; Smart routing — try to auto-detect backend
+   (t
+    (let ((backend (_gw-smart-route expr)))
+      (if backend
+        ;; Permission check on the original command
+        (let ((perm-result (_gw-check-perms fd (perm-query-command expr))))
+          (if (stringp perm-result) perm-result
+            (let ((conn (cond ((= backend "rdb") (if *gw-call-fn* "rdb" *gw-rdb-conn*))
+                              ((= backend "hdb") (if *gw-call-fn* "hdb" *gw-hdb-conn*))
+                              ((= backend "ana") (if *gw-call-fn* "ana" *gw-ana-conn*))
+                              (t ()) )))
+              (_gw-call conn expr) ) ) )
+        ;; No smart match
+        (sprintf "unknown query: %l" expr) ) ) ) ) )
+
+
+;; ============================================================
+;; Permission checking helper
+;; ============================================================
+
+#? (_gw-check-perms <fd> <cmd>)
+;; Check if the current client is allowed to execute a command.
+;; Returns () if allowed (or no permissions loaded).
+;; Returns an error string if denied.
+(de _gw-check-perms (fd cmd)
+  (if (not *gw-permissions*)
+    ;; No permissions loaded — allow all
+    ()
+    ;; Get user from client state
+    (let ((user (_gw-get-user fd)))
+      (if (perm-check *gw-permissions* user cmd)
+        ()
+        (sprintf "permission denied: user '%s' cannot execute '%s'" user cmd) ) ) ) )
+
+
+#? (_gw-get-user <fd>)
+;; Get the authenticated username for a client fd.
+;; Returns the username string, or "" if not authenticated.
+(de _gw-get-user (fd)
+  (let ((entry (assoc fd *gw-client-users*)))
+    (if entry
+      (cdr entry)
+      "" ) ) )
+
+
+;; ============================================================
+;; Main entry point
+;; ============================================================
+
+#? (gw-start <port> <rdb-port> <hdb-port> <ana-port> <perm-file>)
+;; Start the gateway: connect to backends, start WireServer, enter serve loop.
+;; <port>: gateway wire server port for downstream clients.
+;; <rdb-port>: RDB wire server port to connect to.
+;; <hdb-port>: HDB Reader wire server port to connect to.
+;; <ana-port>: Analytics wire server port to connect to.
+;; <perm-file>: path to permissions file, or () to disable permissions.
+(de gw-start (port rdb-port hdb-port ana-port perm-file)
+  (printf "\n=== Gateway starting ===\n")
+  (printf "gateway server: port %d\n" port)
+  (printf "backends: rdb=%d hdb=%d ana=%d\n" rdb-port hdb-port ana-port)
+  (printf "permissions: %l\n\n" perm-file)
+
+  ;; Reset state
+  (setq *gw-running* t)
+  (setq *gw-total-queries* 0)
+  (setq *gw-start-time* (_wire-time-seconds))
+  (setq *gw-perm-file* perm-file)
+  (setq *gw-permissions* ())
+  (setq *gw-client-users* ())
+  (setq *gw-call-fn* ())
+
+  ;; Load permissions if configured
+  (when perm-file
+    (setq *gw-permissions* (perm-load perm-file))
+    (printf "gw: loaded permissions (%d users)\n" (length *gw-permissions*)) )
+
+  ;; Connect to backends
+  (printf "gw: connecting to RDB...\n")
+  (setq *gw-rdb-conn* (wire-connect "127.0.0.1" rdb-port))
+  (printf "gw: RDB connected (fd=%d)\n" (*gw-rdb-conn* "fd"))
+
+  (printf "gw: connecting to HDB...\n")
+  (setq *gw-hdb-conn* (wire-connect "127.0.0.1" hdb-port))
+  (printf "gw: HDB connected (fd=%d)\n" (*gw-hdb-conn* "fd"))
+
+  (printf "gw: connecting to Analytics...\n")
+  (setq *gw-ana-conn* (wire-connect "127.0.0.1" ana-port))
+  (printf "gw: Analytics connected (fd=%d)\n" (*gw-ana-conn* "fd"))
+
+  ;; Verify backends
+  (let ((rdb-pong (_gw-call *gw-rdb-conn* "ping"))
+        (hdb-pong (_gw-call *gw-hdb-conn* "ping"))
+        (ana-pong (_gw-call *gw-ana-conn* "ping")) )
+    (printf "gw: ping results: rdb=%l hdb=%l ana=%l\n" rdb-pong hdb-pong ana-pong) )
+
+  ;; Start WireServer
+  (setq *gw-wire* (new WireServer port))
+  (==> *gw-wire* start)
+  (printf "gw: query server listening on port %d\n" port)
+
+  ;; Set up query handler
+  (setq :*gw-wire*:on-sync
+    (lambda (fd expr encoding)
+      (gw-handle-query fd expr) ) )
+  (setq :*gw-wire*:on-connect
+    (lambda (fd)
+      (printf "gw: client connected (fd=%d)\n" fd) ) )
+  (setq :*gw-wire*:on-disconnect
+    (lambda (fd)
+      (printf "gw: client disconnected (fd=%d)\n" fd) ) )
+
+  (printf "gw: entering serve loop\n\n")
+
+  ;; Serve loop
+  (while *gw-running*
+    (==> *gw-wire* serve-once 100) )
+
+  ;; Shutdown
+  (printf "\ngw: shutting down...\n")
+  (wire-close *gw-rdb-conn*)
+  (wire-close *gw-hdb-conn*)
+  (wire-close *gw-ana-conn*)
+  (setq *gw-rdb-conn* ())
+  (setq *gw-hdb-conn* ())
+  (setq *gw-ana-conn* ())
+  (when *gw-wire*
+    (==> *gw-wire* shutdown) )
+  (printf "gw: stopped (%d queries served)\n" *gw-total-queries*) )
+
+
+;; ============================================================
+;; Command-line entry point
+;; ============================================================
+
+;; When loaded as a library (e.g., by tests), set *gw-no-autostart*
+;; to t BEFORE loading to suppress auto-start:
+;;   (setq *gw-no-autostart* t)
+;;   (libload "libuv/gateway")
+
+(defvar *gw-no-autostart* ())
+
+(when (not *gw-no-autostart*)
+  (gw-start 19964 19961 19962 19963 ()) )

@@ -1,0 +1,313 @@
+;;; test-gateway.lsh -- Gateway integration test
+;;;
+;;; Tests the unified gateway query router using the bypass-wire pattern:
+;;; loads all backend modules with autostart suppressed, overrides
+;;; *gw-call-fn* to dispatch to backend handlers directly instead of
+;;; wire-call.
+;;;
+;;; Usage: lush test-gateway.lsh
+
+(libload "libuv/feed-handler")
+(defvar *rdb-no-autostart* t)
+(libload "libuv/rdb")
+(defvar *hdbr-no-autostart* t)
+(libload "libuv/hdb-reader")
+(defvar *ana-no-autostart* t)
+(libload "libuv/analytics")
+(defvar *gw-no-autostart* t)
+(libload "libuv/gateway")
+
+(printf "\n=== Gateway integration test ===\n\n")
+
+
+;; ============================================================
+;; Setup: initialize all backends with test data
+;; ============================================================
+
+(printf "Setup: initializing backends...\n")
+
+;; --- RDB ---
+(setq *rdb-running* t)
+(setq *rdb-total-tickers* 0)
+(setq *rdb-total-l2* 0)
+(setq *rdb-total-broadcasts* 0)
+(setq *rdb-start-time* (_wire-time-seconds))
+(rdb-init-tables)
+
+;; Insert test ticker rows into RDB
+(rdb-insert-ticker (list (cons "product" "BTC-USD")
+                          (cons "price" 67312.02)
+                          (cons "best_bid" 67312.00)
+                          (cons "best_ask" 67312.50)
+                          (cons "side" "sell")
+                          (cons "time" 1718457605500000) ))
+(rdb-insert-ticker (list (cons "product" "ETH-USD")
+                          (cons "price" 3850.75)
+                          (cons "best_bid" 3850.50)
+                          (cons "best_ask" 3851.00)
+                          (cons "side" "buy")
+                          (cons "time" 1718457606000000) ))
+(rdb-insert-ticker (list (cons "product" "BTC-USD")
+                          (cons "price" 67315.00)
+                          (cons "best_bid" 67314.50)
+                          (cons "best_ask" 67315.50)
+                          (cons "side" "buy")
+                          (cons "time" 1718457607000000) ))
+
+;; --- HDB Reader ---
+;; Create synthetic date-partitioned data on disk
+(defvar *test-gw-hdb-root* "/tmp/claude/gw-hdb-tests")
+(sys (concat "rm -rf '" *test-gw-hdb-root* "'"))
+(sys (concat "mkdir -p '" *test-gw-hdb-root* "/2024.06.15'"))
+
+(let ((dt (new DataTable)))
+  (==> dt add-column "product" 'string)
+  (==> dt add-column "price" 'real)
+  (==> dt add-column "bid" 'real)
+  (==> dt add-column "ask" 'real)
+  (==> dt add-column "side" 'string)
+  (==> dt add-column "time" 'stamp)
+  (==> dt append-row (list "BTC-USD" 67000.00 66999.50 67000.50 "buy" 1718371200000000))
+  (==> dt append-row (list "ETH-USD" 3800.00 3799.50 3800.50 "sell" 1718371201000000))
+  (columnardb-save dt (concat *test-gw-hdb-root* "/2024.06.15/ticker")) )
+
+(setq *hdbr-root* *test-gw-hdb-root*)
+(setq *hdbr-cache* ())
+(setq *hdbr-total-queries* 0)
+(setq *hdbr-start-time* (_wire-time-seconds))
+(hdbr-discover)
+
+;; --- Analytics ---
+(ana-init-table)
+(setq *ana-window* 3)
+(setq *ana-products* ())
+(setq *ana-total-updates* 0)
+(setq *ana-total-queries* 0)
+(setq *ana-start-time* (_wire-time-seconds))
+(setq *ana-ticker-hwm* 0)
+
+;; Add analytics data by updating directly
+(ana-update-product "BTC-USD" 67312.02 67312.00 67312.50 1718457605500000)
+(ana-update-product "BTC-USD" 67315.00 67314.50 67315.50 1718457607000000)
+
+;; --- Gateway state ---
+(setq *gw-total-queries* 0)
+(setq *gw-start-time* (_wire-time-seconds))
+(setq *gw-permissions* ())
+(setq *gw-client-users* ())
+(setq *gw-wire* ())
+
+;; Mark backends as "connected" for backends query
+(setq *gw-rdb-conn* t)
+(setq *gw-hdb-conn* t)
+(setq *gw-ana-conn* t)
+
+;; Set up *gw-call-fn* to route to backend handlers directly
+(setq *gw-call-fn*
+  (lambda (backend query)
+    (cond
+     ((= backend "rdb") (rdb-handle-query query))
+     ((= backend "hdb") (hdbr-handle-query query))
+     ((= backend "ana") (ana-handle-query query))
+     (t (sprintf "unknown backend: %s" backend)) ) ) )
+
+(printf "Setup: done (rdb=%d rows, hdb=%d dates, ana=%d updates)\n\n"
+        (==> *rdb-ticker-table* num-rows)
+        (length *hdbr-dates*)
+        *ana-total-updates*)
+
+
+;; ============================================================
+;; Tests
+;; ============================================================
+
+;; Test 1: "ping" returns "pong"
+(printf "Test 1: ping... ")
+(let ((result (gw-handle-query 0 "ping")))
+  (if (= result "pong")
+    (printf "PASS\n")
+    (printf "FAIL (got: %l)\n" result) ) )
+
+
+;; Test 2: "backends" returns 3 backends
+(printf "Test 2: backends... ")
+(let ((result (gw-handle-query 0 "backends")))
+  (if (and (consp result)
+           (= (length result) 3)
+           (assoc "rdb" result)
+           (assoc "hdb" result)
+           (assoc "ana" result) )
+    (printf "PASS (3 backends)\n")
+    (printf "FAIL (got: %l)\n" result) ) )
+
+
+;; Test 3: ("rdb" "ping") forwards to RDB
+(printf "Test 3: (\"rdb\" \"ping\") forwarded to RDB... ")
+(let ((result (gw-handle-query 0 (list "rdb" "ping"))))
+  (if (= result "pong")
+    (printf "PASS\n")
+    (printf "FAIL (got: %l)\n" result) ) )
+
+
+;; Test 4: ("rdb" "tables") returns ("ticker" "l2")
+(printf "Test 4: (\"rdb\" \"tables\")... ")
+(let ((result (gw-handle-query 0 (list "rdb" "tables"))))
+  (if (and (consp result)
+           (= (car result) "ticker")
+           (= (cadr result) "l2") )
+    (printf "PASS\n")
+    (printf "FAIL (got: %l)\n" result) ) )
+
+
+;; Test 5: ("rdb" ("count" "ticker")) returns correct count
+(printf "Test 5: (\"rdb\" (\"count\" \"ticker\"))... ")
+(let ((result (gw-handle-query 0 (list "rdb" (list "count" "ticker")))))
+  (if (= result 3)
+    (printf "PASS (3)\n")
+    (printf "FAIL (got: %l)\n" result) ) )
+
+
+;; Test 6: ("rdb" ("snapshot" "ticker")) returns packed datatable
+(printf "Test 6: (\"rdb\" (\"snapshot\" \"ticker\"))... ")
+(let ((result (gw-handle-query 0 (list "rdb" (list "snapshot" "ticker")))))
+  (if (and (consp result) (= (car result) 'datatable))
+    (let ((dt (wire-unpack-datatable result)))
+      (if (= (==> dt num-rows) 3)
+        (printf "PASS (3 rows)\n")
+        (printf "FAIL (rows=%d)\n" (==> dt num-rows)) ) )
+    (printf "FAIL (not packed: %l)\n" result) ) )
+
+
+;; Test 7: ("ana" "ping") forwards to Analytics
+(printf "Test 7: (\"ana\" \"ping\")... ")
+(let ((result (gw-handle-query 0 (list "ana" "ping"))))
+  (if (= result "pong")
+    (printf "PASS\n")
+    (printf "FAIL (got: %l)\n" result) ) )
+
+
+;; Test 8: ("ana" ("mavg" "BTC-USD")) returns moving average
+(printf "Test 8: (\"ana\" (\"mavg\" \"BTC-USD\"))... ")
+(let ((result (gw-handle-query 0 (list "ana" (list "mavg" "BTC-USD")))))
+  (if (> result 0)
+    (printf "PASS (mavg=%l)\n" result)
+    (printf "FAIL (got: %l)\n" result) ) )
+
+
+;; Test 9: ("ana" ("count")) returns analytics row count
+(printf "Test 9: (\"ana\" (\"count\"))... ")
+(let ((result (gw-handle-query 0 (list "ana" (list "count")))))
+  (if (= result 2)
+    (printf "PASS (2)\n")
+    (printf "FAIL (got: %l)\n" result) ) )
+
+
+;; Test 10: ("hdb" "ping") forwards to HDB
+(printf "Test 10: (\"hdb\" \"ping\")... ")
+(let ((result (gw-handle-query 0 (list "hdb" "ping"))))
+  (if (= result "pong")
+    (printf "PASS\n")
+    (printf "FAIL (got: %l)\n" result) ) )
+
+
+;; Test 11: ("hdb" "dates") returns date list
+(printf "Test 11: (\"hdb\" \"dates\")... ")
+(let ((result (gw-handle-query 0 (list "hdb" "dates"))))
+  (if (and (consp result)
+           (= (length result) 1)
+           (= (car result) "2024.06.15") )
+    (printf "PASS (1 date)\n")
+    (printf "FAIL (got: %l)\n" result) ) )
+
+
+;; Test 12: Smart routing: ("mavg" "BTC-USD") auto-routes to analytics
+(printf "Test 12: smart route mavg -> analytics... ")
+(let ((result (gw-handle-query 0 (list "mavg" "BTC-USD"))))
+  (if (> result 0)
+    (printf "PASS (mavg=%l)\n" result)
+    (printf "FAIL (got: %l)\n" result) ) )
+
+
+;; Test 13: Smart routing: ("range" ...) auto-routes to HDB
+(printf "Test 13: smart route range -> hdb... ")
+(let ((result (gw-handle-query 0 (list "range" "ticker" "2024.06.15" "2024.06.15"))))
+  (if (and (consp result) (= (car result) 'datatable))
+    (let ((dt (wire-unpack-datatable result)))
+      (if (= (==> dt num-rows) 2)
+        (printf "PASS (2 rows)\n")
+        (printf "FAIL (rows=%d)\n" (==> dt num-rows)) ) )
+    (printf "FAIL (not packed: %l)\n" result) ) )
+
+
+;; Test 14: Smart routing: "dates" auto-routes to HDB
+(printf "Test 14: smart route dates -> hdb... ")
+(let ((result (gw-handle-query 0 "dates")))
+  (if (and (consp result)
+           (= (car result) "2024.06.15") )
+    (printf "PASS\n")
+    (printf "FAIL (got: %l)\n" result) ) )
+
+
+;; Test 15: "stats" returns gateway statistics
+(printf "Test 15: stats... ")
+(let ((result (gw-handle-query 0 "stats")))
+  (if (and (consp result)
+           (> (cdr (assoc "queries" result)) 0)
+           (>= (cdr (assoc "uptime" result)) 0) )
+    (printf "PASS (queries=%d)\n" (cdr (assoc "queries" result)))
+    (printf "FAIL (got: %l)\n" result) ) )
+
+
+;; Test 16: Permission denied when user lacks access (with permissions loaded)
+(printf "Test 16: permission denied... ")
+;; Load test permissions: monitor can only ping,stats,backends
+(setq *gw-permissions*
+  (list (cons "admin" (list "*"))
+        (cons "monitor" (list "ping" "stats" "backends"))
+        (cons "*" (list "ping")) ))
+;; Authenticate as monitor
+(gw-handle-query 42 (list "auth" "monitor"))
+;; Try an rdb query — should be denied
+(let ((result (gw-handle-query 42 (list "rdb" "tables"))))
+  (if (and (stringp result)
+           (> (len result) 0) )
+    (printf "PASS (denied: %s)\n" result)
+    (printf "FAIL (got: %l)\n" result) ) )
+
+
+;; Test 17: Permission granted for allowed queries
+(printf "Test 17: permission granted... ")
+;; monitor is allowed "stats"
+(let ((result (gw-handle-query 42 "stats")))
+  (if (and (consp result)
+           (assoc "queries" result) )
+    (printf "PASS (stats returned)\n")
+    (printf "FAIL (got: %l)\n" result) ) )
+
+
+;; Test 18: ("auth" "admin") sets user identity
+(printf "Test 18: auth sets identity... ")
+(let ((result (gw-handle-query 99 (list "auth" "admin"))))
+  (if (and (stringp result)
+           (> (len result) 0) )
+    (progn
+      ;; Now admin should be able to do anything
+      (let ((rdb-result (gw-handle-query 99 (list "rdb" "tables"))))
+        (if (and (consp rdb-result)
+                 (= (car rdb-result) "ticker") )
+          (printf "PASS (admin can access rdb)\n")
+          (printf "FAIL (rdb access: %l)\n" rdb-result) ) ) )
+    (printf "FAIL (auth: %l)\n" result) ) )
+
+
+;; ---- Cleanup ----
+(printf "\nTest 19: Clean up... ")
+;; Clear permissions and client state
+(setq *gw-permissions* ())
+(setq *gw-client-users* ())
+(setq *gw-call-fn* ())
+;; Remove HDB test data
+(sys (concat "rm -rf '" *test-gw-hdb-root* "'"))
+(printf "PASS\n")
+
+(printf "\n=== Gateway integration test complete ===\n\n")

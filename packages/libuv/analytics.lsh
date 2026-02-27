@@ -1,18 +1,24 @@
 ;;; analytics.lsh -- Moving Average Analytics process
 ;;;
 ;;; Derived analytics/CEP (complex event processing) component that reads
-;;; raw ticker data from the RDB, computes moving averages per product,
+;;; raw ticker data from the RDB, computes analytics per product,
 ;;; and serves the results to downstream clients via wire.
 ;;;
 ;;; Architecture:
 ;;;   - Connects to RDB's wire server as a query client
 ;;;   - Uses high-water mark to incrementally pull new ticker rows
-;;;   - Computes naive moving averages per product (O(window) per update)
+;;;   - Computes O(1) moving average using running sums (add-new/subtract-old)
+;;;   - Computes spread, volatility, rolling min/max, TWAP per product
 ;;;   - Stores results in a DataTable
 ;;;   - Runs its own WireServer so downstream clients can query analytics
 ;;;
-;;; TODO: Efficient O(1) moving average using running sum (add-new/subtract-old)
-;;;       as in Kerf1, instead of naive O(window) scan.
+;;; Per-product state alist:
+;;;   ("BTC-USD" . (("prices" . (p1 p2 p3))
+;;;                 ("times"  . (t1 t2 t3))
+;;;                 ("sum"    . 600.0)          ;; running sum of prices
+;;;                 ("sum-sq" . 140000.0)       ;; running sum of squared prices
+;;;                 ("bid"    . 67314.50)       ;; last bid
+;;;                 ("ask"    . 67315.50)))     ;; last ask
 ;;;
 ;;; Usage:
 ;;;   lush analytics.lsh                       ;; standalone demo (FH + RDB + analytics)
@@ -32,8 +38,8 @@
 (defvar *ana-running* ())               ;; main loop flag
 (defvar *ana-ticker-hwm* 0)            ;; high-water mark: next ticker row to fetch from RDB
 (defvar *ana-window* 10)               ;; moving average window size (default 10)
-(defvar *ana-products* ())             ;; alist: (("BTC-USD" . (p1 p2 ...)) ...) per-product history
-(defvar *ana-table* ())                ;; DataTable: product(string), price(real), mavg(real), time(stamp)
+(defvar *ana-products* ())             ;; alist: (("BTC-USD" . state-alist) ...) per-product state
+(defvar *ana-table* ())                ;; DataTable: product, price, mavg, spread, volatility, min_price, max_price, twap, time
 (defvar *ana-total-updates* 0)         ;; count of ticker rows processed
 (defvar *ana-start-time* 0)            ;; start timestamp
 (defvar *ana-total-queries* 0)         ;; query counter
@@ -42,12 +48,44 @@
 
 
 ;; ============================================================
-;; Moving average computation (naive O(window))
+;; Per-product state access helpers
+;; ============================================================
+
+#? (_ana-get <product> <key>)
+;; Get value from per-product state alist.
+;; Returns () if product or key not found.
+(de _ana-get (product key)
+  (let ((entry (assoc product *ana-products*)))
+    (if entry
+      (let ((kv (assoc key (cdr entry))))
+        (if kv (cdr kv) ()) )
+      () ) ) )
+
+#? (_ana-set <product> <key> <val>)
+;; Set value in per-product state alist.
+;; Creates product entry if needed, creates or updates key.
+(de _ana-set (product key val)
+  (let ((entry (assoc product *ana-products*)))
+    (if entry
+      ;; Product exists — update or add key
+      (let ((kv (assoc key (cdr entry))))
+        (if kv
+          (rplacd kv val)
+          (rplacd entry (nconc1 (cdr entry) (cons key val))) ) )
+      ;; New product — create entry
+      (setq *ana-products*
+        (nconc1 *ana-products*
+          (cons product (list (cons key val))) ) ) ) ) )
+
+
+;; ============================================================
+;; Moving average computation (O(1) via running sum)
 ;; ============================================================
 
 #? (_ana-mean <prices>)
 ;; Compute mean of a list of numbers (sum/count).
 ;; Returns 0 for empty list.
+;; NOTE: kept for backward compatibility, but O(1) mavg uses running sum.
 (de _ana-mean (prices)
   (if (not prices) 0
     (let ((sum 0) (count 0))
@@ -58,17 +96,94 @@
 
 
 ;; ============================================================
+;; Additional analytics helpers
+;; ============================================================
+
+#? (_ana-volatility <product>)
+;; Compute stddev from running sums: sqrt(sum_sq/n - (sum/n)^2)
+;; Returns 0 if fewer than 1 price.
+(de _ana-volatility (product)
+  (let ((prices (_ana-get product "prices")))
+    (if (or (not prices) (<= (length prices) 0))
+      0
+      (let ((n (length prices))
+            (sum (_ana-get product "sum"))
+            (sum-sq (_ana-get product "sum-sq")) )
+        (let ((mean (/ sum n))
+              (mean-sq (/ sum-sq n)) )
+          (let ((variance (- mean-sq (* mean mean))))
+            ;; Guard against tiny negative due to float imprecision
+            (if (<= variance 0) 0
+              (sqrt variance) ) ) ) ) ) ) )
+
+#? (_ana-min-price <product>)
+;; Scan prices list for min. O(window).
+(de _ana-min-price (product)
+  (let ((prices (_ana-get product "prices")))
+    (if (not prices) 0
+      (let ((result (car prices)))
+        (each ((p (cdr prices)))
+          (when (< p result) (setq result p)) )
+        result ) ) ) )
+
+#? (_ana-max-price <product>)
+;; Scan prices list for max. O(window).
+(de _ana-max-price (product)
+  (let ((prices (_ana-get product "prices")))
+    (if (not prices) 0
+      (let ((result (car prices)))
+        (each ((p (cdr prices)))
+          (when (> p result) (setq result p)) )
+        result ) ) ) )
+
+#? (_ana-twap <product>)
+;; Compute time-weighted average price over window.
+;; TWAP = sum(price_i * (time_{i+1} - time_i)) / (time_last - time_first)
+;; If only 1 price, TWAP = that price.
+(de _ana-twap (product)
+  (let ((prices (_ana-get product "prices"))
+        (times (_ana-get product "times")) )
+    (if (or (not prices) (<= (length prices) 1))
+      ;; 0 or 1 price: TWAP = the price itself (or 0)
+      (if prices (car prices) 0)
+      ;; Multiple prices: time-weighted average
+      (let ((n (length prices))
+            (weighted-sum 0)
+            (p-list prices)
+            (t-list times) )
+        (let ((total-time (- (nth (1- n) times) (car times))))
+          (if (<= total-time 0)
+            ;; All same time: simple average
+            (_ana-mean prices)
+            ;; Compute sum(price_i * (time_{i+1} - time_i))
+            (let ((p-cur p-list)
+                  (t-cur t-list) )
+              (while (cdr p-cur)
+                (let ((dt (- (cadr t-cur) (car t-cur))))
+                  (setq weighted-sum (+ weighted-sum (* (car p-cur) dt))) )
+                (setq p-cur (cdr p-cur))
+                (setq t-cur (cdr t-cur)) )
+              (/ weighted-sum total-time) ) ) ) ) ) ) )
+
+
+;; ============================================================
 ;; Table initialization
 ;; ============================================================
 
 #? (ana-init-table)
 ;; Create empty analytics DataTable with schema:
-;; product(string), price(real), mavg(real), time(stamp)
+;; product(string), price(real), mavg(real), spread(real),
+;; volatility(real), min_price(real), max_price(real), twap(real), time(stamp)
 (de ana-init-table ()
   (setq *ana-table* (new DataTable))
   (==> *ana-table* add-column "product" 'string)
   (==> *ana-table* add-column "price" 'real)
   (==> *ana-table* add-column "mavg" 'real)
+  (==> *ana-table* add-column "spread" 'real)
+  (==> *ana-table* add-column "volatility" 'real)
+  (==> *ana-table* add-column "min_price" 'real)
+  (==> *ana-table* add-column "max_price" 'real)
+  (==> *ana-table* add-column "twap" 'real)
   (==> *ana-table* add-column "time" 'stamp) )
 
 
@@ -76,34 +191,58 @@
 ;; Per-product update
 ;; ============================================================
 
-#? (ana-update-product <product> <price> <time>)
-;; Append price to per-product history, compute MA, append row to analytics table.
-;; 1. Get or create per-product history from *ana-products*
-;; 2. Append new price to history
-;; 3. If history > *ana-window*, trim from front
-;; 4. Compute mavg = (_ana-mean history)
-;; 5. Append row to *ana-table*
-;; 6. Increment *ana-total-updates*
-(de ana-update-product (product price time)
-  ;; Get current history for this product
-  (let ((entry (assoc product *ana-products*))
-        (history ()) )
-    (if entry
-      (setq history (cdr entry))
-      () )
-    ;; Append new price
-    (setq history (nconc1 history price))
+#? (ana-update-product <product> <price> <bid> <ask> <time>)
+;; Update per-product state with O(1) running-sum MA, compute all analytics,
+;; append row to analytics table.
+;; 1. Push new price/time, add to running sums
+;; 2. If length > window: pop oldest, subtract from running sums
+;; 3. Compute all analytics
+;; 4. Append row to *ana-table*
+(de ana-update-product (product price bid ask time)
+  ;; Get current state
+  (let ((prices (_ana-get product "prices"))
+        (times (_ana-get product "times"))
+        (sum (or (_ana-get product "sum") 0))
+        (sum-sq (or (_ana-get product "sum-sq") 0)) )
+
+    ;; Append new price and time
+    (setq prices (nconc1 prices price))
+    (setq times (nconc1 times time))
+
+    ;; Update running sums
+    (setq sum (+ sum price))
+    (setq sum-sq (+ sum-sq (* price price)))
+
     ;; Trim to window size if needed
-    (while (> (length history) *ana-window*)
-      (setq history (cdr history)) )
-    ;; Update the alist
-    (if entry
-      (rplacd entry history)
-      (setq *ana-products* (nconc1 *ana-products* (cons product history))) )
-    ;; Compute moving average
-    (let ((mavg (_ana-mean history)))
+    (while (> (length prices) *ana-window*)
+      (let ((old-price (car prices))
+            (old-time (car times)) )
+        (setq sum (- sum old-price))
+        (setq sum-sq (- sum-sq (* old-price old-price)))
+        (setq prices (cdr prices))
+        (setq times (cdr times)) ) )
+
+    ;; Store updated state
+    (_ana-set product "prices" prices)
+    (_ana-set product "times" times)
+    (_ana-set product "sum" sum)
+    (_ana-set product "sum-sq" sum-sq)
+    (_ana-set product "bid" bid)
+    (_ana-set product "ask" ask)
+
+    ;; Compute analytics
+    (let ((count (length prices))
+          (mavg (/ sum (length prices)))
+          (spread (- ask bid))
+          (vol (_ana-volatility product))
+          (minp (_ana-min-price product))
+          (maxp (_ana-max-price product))
+          (twap (_ana-twap product)) )
+
       ;; Append row to analytics table
-      (==> *ana-table* append-row (list product price mavg time))
+      (==> *ana-table* append-row
+           (list product price mavg spread vol minp maxp twap time) )
+
       ;; Update counter
       (setq *ana-total-updates* (1+ *ana-total-updates*)) ) ) )
 
@@ -115,6 +254,7 @@
 #? (ana-poll)
 ;; Query RDB for new ticker rows via wire-call, process each.
 ;; Uses high-water mark to fetch only new rows.
+;; Now extracts bid and ask in addition to product, price, time.
 (de ana-poll ()
   (let ((packed (wire-call *ana-rdb-conn* (list "rows-from" "ticker" *ana-ticker-hwm*))))
     (when (and (consp packed) (= (car packed) 'datatable))
@@ -124,8 +264,10 @@
             (for (r 0 (1- new-rows))
               (let ((product (==> dt get r "product"))
                     (price (==> dt get r "price"))
+                    (bid (==> dt get r "bid"))
+                    (ask (==> dt get r "ask"))
                     (time (==> dt get r "time")) )
-                (ana-update-product product price time) ) )
+                (ana-update-product product price bid ask time) ) )
             ;; Advance high-water mark
             (setq *ana-ticker-hwm* (+ *ana-ticker-hwm* new-rows)) ) ) ) ) ) )
 
@@ -144,12 +286,13 @@
 ;; ============================================================
 
 #? (ana-current-mavg <product>)
-;; Return current moving average value for a product (from history).
+;; Return current moving average value for a product (from running sum).
 ;; Returns 0 if product not found.
 (de ana-current-mavg (product)
-  (let ((entry (assoc product *ana-products*)))
-    (if entry
-      (_ana-mean (cdr entry))
+  (let ((prices (_ana-get product "prices"))
+        (sum (_ana-get product "sum")) )
+    (if (and prices sum)
+      (/ sum (length prices))
       0 ) ) )
 
 
@@ -244,9 +387,30 @@
    ((and (consp expr) (= (car expr) "mavg-all"))
     (let ((result ()))
       (each ((entry *ana-products*))
-        (setq result (nconc1 result
-          (cons (car entry) (_ana-mean (cdr entry))) )) )
+        (let ((pname (car entry))
+              (state (cdr entry)) )
+          (let ((sum (cdr (assoc "sum" state)))
+                (prices (cdr (assoc "prices" state))) )
+            (setq result (nconc1 result
+              (cons pname (if (and sum prices) (/ sum (length prices)) 0)) )) ) ) )
       result ) )
+
+   ;; ("analytics-all" product) -- alist of all current analytics for a product
+   ((and (consp expr) (= (car expr) "analytics-all"))
+    (let ((product (cadr expr)))
+      (let ((prices (_ana-get product "prices"))
+            (sum (_ana-get product "sum"))
+            (bid (_ana-get product "bid"))
+            (ask (_ana-get product "ask")) )
+        (if (not prices)
+          (sprintf "unknown product: %s" product)
+          (list (cons "mavg" (/ sum (length prices)))
+                (cons "spread" (- ask bid))
+                (cons "volatility" (_ana-volatility product))
+                (cons "min_price" (_ana-min-price product))
+                (cons "max_price" (_ana-max-price product))
+                (cons "twap" (_ana-twap product))
+                (cons "count" (length prices)) ) ) ) ) )
 
    ;; Unknown query
    (t (sprintf "unknown query: %l" expr)) ) )

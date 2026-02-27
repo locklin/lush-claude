@@ -1,0 +1,120 @@
+;;; permissions.lsh -- Text-file permission loading and checking
+;;;
+;;; A standalone module for loading and checking text-file-based permissions.
+;;; Usable by the gateway or any WireServer. No global state — pure functions.
+;;;
+;;; Permission file format:
+;;;   # comments start with #, blank lines ignored
+;;;   # Format: user:allowed_queries
+;;;   # allowed_queries is comma-separated query command names, or * for all
+;;;   admin:*
+;;;   reader:ping,tables,stats,count,snapshot
+;;;   monitor:ping,stats,backends
+;;;   *:ping
+;;;
+;;; The default user "*" (if present) applies to unauthenticated clients.
+;;;
+;;; Usage:
+;;;   (libload "libuv/permissions")
+;;;   (let ((perms (perm-load "/path/to/permissions.cfg")))
+;;;     (perm-check perms "admin" "ping")      ;; => t
+;;;     (perm-check perms "reader" "refresh")   ;; => ()
+;;;   )
+
+;; ============================================================
+;; Permission file parsing
+;; ============================================================
+
+#? (perm-load <path>)
+;; Parse a permission file into an alist: ((user . (cmd1 cmd2 ...)) ...)
+;; Lines starting with # are comments, blank lines are ignored.
+;; Format: user:cmd1,cmd2,... or user:* for all commands.
+;; Returns the alist, or () if file does not exist.
+(de perm-load (path)
+  (let ((result ())
+        (fd (open-read path)) )
+    (when fd
+      (reading fd
+        (while (<> (skip-char "\n\r\f") "\e")
+          (let ((line (read-string)))
+            ;; Skip comments and blank lines
+            (when (and (> (len line) 0)
+                       (<> (mid line 1 1) "#") )
+              ;; Find the colon separator
+              (let ((colon-pos 0)
+                    (line-len (len line)) )
+                ;; Scan for ':'
+                (let ((i 1))
+                  (while (and (<= i line-len) (= colon-pos 0))
+                    (when (= (mid line i 1) ":")
+                      (setq colon-pos i) )
+                    (setq i (1+ i)) ) )
+                (when (> colon-pos 0)
+                  (let ((user (mid line 1 (1- colon-pos)))
+                        (cmds-str (mid line (1+ colon-pos) (- line-len colon-pos))) )
+                    ;; Parse comma-separated commands
+                    (let ((cmds ())
+                          (cur "")
+                          (j 1)
+                          (cmds-len (len cmds-str)) )
+                      (while (<= j cmds-len)
+                        (let ((ch (mid cmds-str j 1)))
+                          (if (= ch ",")
+                            (progn
+                              (when (> (len cur) 0)
+                                (setq cmds (nconc1 cmds cur)) )
+                              (setq cur "") )
+                            (setq cur (concat cur ch)) ) )
+                        (setq j (1+ j)) )
+                      ;; Don't forget the last token
+                      (when (> (len cur) 0)
+                        (setq cmds (nconc1 cmds cur)) )
+                      ;; Add to result
+                      (setq result (nconc1 result (cons user cmds))) ) ) ) ) ) ) ) )
+      (delete fd) )
+    result ) )
+
+
+;; ============================================================
+;; Query command extraction
+;; ============================================================
+
+#? (perm-query-command <expr>)
+;; Extract the command name from a query expression.
+;; String queries: the string itself — "ping" -> "ping"
+;; List queries: the car — ("snapshot") -> "snapshot", ("rdb" ...) -> "rdb"
+(de perm-query-command (expr)
+  (cond
+   ((stringp expr) expr)
+   ((consp expr) (car expr))
+   (t (sprintf "%l" expr)) ) )
+
+
+;; ============================================================
+;; Permission checking
+;; ============================================================
+
+#? (perm-check <perms> <user> <expr>)
+;; Check if a user is allowed to run a query.
+;; 1. Look up user in perms alist
+;; 2. If not found, look up "*" (default user)
+;; 3. If not found, deny (return ())
+;; 4. If allowed list is ("*"), allow all (return t)
+;; 5. Otherwise, check if command is in allowed list
+(de perm-check (perms user expr)
+  (let ((cmd (perm-query-command expr)))
+    ;; Look up user
+    (let ((user-entry (assoc user perms)))
+      (when (not user-entry)
+        ;; Fall back to default user
+        (setq user-entry (assoc "*" perms)) )
+      (if (not user-entry)
+        ;; No user and no default — deny
+        ()
+        ;; Check allowed list
+        (let ((allowed (cdr user-entry)))
+          (if (and allowed (= (car allowed) "*"))
+            ;; Wildcard — allow all
+            t
+            ;; Check if command is in the list
+            (member cmd allowed) ) ) ) ) ) )
