@@ -209,6 +209,34 @@ ALL dot-tags in that same entry:
 - Test files in `tests/` directories do not need `#?` entries.
 - Config files (`*-config.lsh`) may optionally have a `#? **` subsection.
 
+## Two Documentation File Formats
+
+The help system reads `#?` entries from two file types:
+
+- **`.lsh` files** — documentation embedded inline in source code (what we write).
+  The `#?` markers and `;;` body lines sit alongside function definitions.
+- **`.hlp` files** — standalone documentation files (no code, just help entries).
+  The `#?` markers and body lines are bare (no `;;` prefix needed).
+
+Both formats use the same `#?` marker syntax and brace/dot-tag formatting.
+The help system (`lsh/libstd/help.lsh`) reads both identically via
+`read-help-headers` and `read-help-entry`.
+
+**There is no tool to extract `.lsh` docs into `.hlp` format.**  The two
+formats are parallel inputs, not a source/target pipeline.  For our
+packages we use inline `.lsh` documentation exclusively.
+
+### Export to other formats
+
+The help system can render documentation to HTML or LaTeX:
+
+```lisp
+(make-html-manual)    ;; export full Lush manual to HTML
+(make-latex-manual)   ;; export full Lush manual to LaTeX
+```
+
+These render FROM `.hlp`/`.lsh` entries, reading through `help-book`.
+
 ## File-Level Structure
 
 A well-documented `.lsh` package file should have:
