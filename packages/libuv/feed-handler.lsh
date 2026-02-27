@@ -16,8 +16,10 @@
 ;;;   (libload "libuv/feed-handler")
 ;;;   (feed-handler-start 5560)
 
-(libload "libuv/libuv")
+;; Load order: ws-client (which loads libuv + curl) must come before
+;; json to avoid a Lush DHC compilation interaction issue.
 (libload "libuv/ws-client")
+(libload "json/json")
 (libload "wire/wire")
 
 ;; Helper: drain all stale events from the global queue
@@ -58,10 +60,30 @@
 (defvar *fh-ws-subscribe* ())  ;; subscription message to send on connect
 (defvar *fh-reconnect-id* ())  ;; timer handle ID for reconnect
 
+;; JSON parsing state (initialized by fh-init-feed-columns)
+(defvar *fh-products* ())      ;; list of product strings
+(defvar *fh-product-table* ()) ;; packed product table for C extractors
+;; L2 update column buffers
+(defvar *fh-l2-sides* ())      ;; int-matrix: 0=buy, 1=sell
+(defvar *fh-l2-prices* ())     ;; double-matrix: price per change
+(defvar *fh-l2-quantities* ()) ;; double-matrix: quantity per change
+(defvar *fh-l2-timestamps* ()) ;; long-matrix: microseconds since epoch
+(defvar *fh-l2-products* ())   ;; int-matrix: product code index
+;; Ticker column buffers
+(defvar *fh-tk-prices* ())     ;; double-matrix: last trade price
+(defvar *fh-tk-bids* ())       ;; double-matrix: best bid
+(defvar *fh-tk-asks* ())       ;; double-matrix: best ask
+(defvar *fh-tk-sides* ())      ;; int-matrix: 0=buy, 1=sell
+(defvar *fh-tk-timestamps* ()) ;; long-matrix: microseconds since epoch
+(defvar *fh-tk-products* ())   ;; int-matrix: product code index
+
 ;; Statistics
 (defvar *fh-stats-events* 0)   ;; total events processed
 (defvar *fh-stats-ticks* 0)    ;; total main loop iterations
 (defvar *fh-stats-broadcasts* 0) ;; total wire broadcasts
+(defvar *fh-stats-l2* 0)       ;; l2update messages parsed
+(defvar *fh-stats-tickers* 0)  ;; ticker messages parsed
+(defvar *fh-stats-heartbeats* 0) ;; heartbeat messages received
 (defvar *fh-start-time* 0)     ;; timestamp of handler start
 
 
@@ -73,8 +95,9 @@
 ;; Called when a timer fires.  Currently handles the heartbeat timer.
 (de fh-on-timer (handle-id)
   (setq *fh-stats-events* (1+ *fh-stats-events*))
-  (printf "feed-handler: heartbeat  ticks=%d events=%d broadcasts=%d clients=%d\n"
+  (printf "feed-handler: heartbeat  ticks=%d events=%d bcast=%d l2=%d tick=%d hb=%d clients=%d\n"
           *fh-stats-ticks* *fh-stats-events* *fh-stats-broadcasts*
+          *fh-stats-l2* *fh-stats-tickers* *fh-stats-heartbeats*
           (if *fh-wire* :*fh-wire*:client-count 0) ) )
 
 
@@ -125,15 +148,134 @@
   (printf "feed-handler: inbound connection on handle %d\n" handle-id) )
 
 
+#? (fh-init-feed-columns <products>)
+;; Initialize pre-allocated column buffers for hot-path JSON parsing.
+;; <products>: list of product ID strings, e.g. ("BTC-USD" "ETH-USD").
+;; Must be called before connecting to a feed that sends l2update or
+;; ticker messages.  The product list determines the product code mapping.
+(de fh-init-feed-columns (products)
+  (setq *fh-products* products)
+  (setq *fh-product-table* (_json-build-product-table products))
+  ;; L2 update buffers (256 rows per message is more than enough)
+  (setq *fh-l2-sides* (int-matrix 256))
+  (setq *fh-l2-prices* (double-matrix 256))
+  (setq *fh-l2-quantities* (double-matrix 256))
+  (setq *fh-l2-timestamps* (long-matrix 256))
+  (setq *fh-l2-products* (int-matrix 256))
+  ;; Ticker buffers (1 row per message)
+  (setq *fh-tk-prices* (double-matrix 16))
+  (setq *fh-tk-bids* (double-matrix 16))
+  (setq *fh-tk-asks* (double-matrix 16))
+  (setq *fh-tk-sides* (int-matrix 16))
+  (setq *fh-tk-timestamps* (long-matrix 16))
+  (setq *fh-tk-products* (int-matrix 16))
+  (printf "feed-handler: column buffers initialized for %d products\n"
+          (length products)) )
+
+
+#? (fh-build-subscribe-msg <products> <channels>)
+;; Build a Coinbase WebSocket subscription JSON message.
+;; <products>: list of product IDs, e.g. ("BTC-USD" "ETH-USD")
+;; <channels>: list of channel names, e.g. ("level2" "ticker" "heartbeat")
+;; Returns: JSON string suitable for ws-client-send.
+(de fh-build-subscribe-msg (products channels)
+  (let ((pids "")
+        (chans "") )
+    ;; Build "product_ids":[...] array
+    (let ((first t))
+      (each ((p products))
+        (if first
+          (progn (setq pids (concat "\"" p "\""))
+                 (setq first ()) )
+          (setq pids (concat pids ",\"" p "\"")) ) ) )
+    ;; Build "channels":[...] array
+    (let ((first t))
+      (each ((c channels))
+        (if first
+          (progn (setq chans (concat "\"" c "\""))
+                 (setq first ()) )
+          (setq chans (concat chans ",\"" c "\"")) ) ) )
+    (concat "{\"type\":\"subscribe\",\"product_ids\":[" pids
+            "],\"channels\":[" chans "]}") ) )
+
+
 #? (fh-on-feed-message <msg>)
 ;; Called when a WebSocket message arrives from the data feed.
-;; Logs the message and broadcasts it to wire clients.
-;; Override this for feed-specific parsing.
+;; Classifies the message using {<b> json-msg-type}, then dispatches
+;; to the appropriate hot-path parser:
+;;.LI l2update: extract into column arrays, build DataTable, broadcast
+;;.LI ticker: extract into column arrays, broadcast as tagged alist
+;;.LI heartbeat: count only (not broadcast)
+;;.LI subscriptions: log confirmation
+;;.LI error: log error
+;;.LI snapshot: log (not yet parsed)
+;;.LI unknown: general parse + broadcast
 (de fh-on-feed-message (msg)
   (setq *fh-stats-events* (1+ *fh-stats-events*))
   (when (> (len msg) 0)
-    (printf "feed-handler: feed msg (%d bytes)\n" (len msg))
-    (fh-broadcast msg) ) )
+    (let ((mtype (json-msg-type msg)))
+      (cond
+
+       ;; ---- L2 order book update ----
+       ((= mtype 'l2update)
+        (setq *fh-stats-l2* (1+ *fh-stats-l2*))
+        (if *fh-product-table*
+          ;; Hot path: parse directly into pre-allocated columns
+          (let* ((pt *fh-product-table*)
+                 (n (json-parse-l2update msg
+                      *fh-l2-sides* *fh-l2-prices* *fh-l2-quantities*
+                      *fh-l2-timestamps* *fh-l2-products*
+                      0 (car pt) (cadr pt) (caddr pt))) )
+            (when (> n 0)
+              (let ((dt (json-l2-make-table n
+                          *fh-l2-sides* *fh-l2-prices* *fh-l2-quantities*
+                          *fh-l2-timestamps* *fh-l2-products*
+                          *fh-products*)))
+                (fh-broadcast (list 'l2update dt)) ) ) )
+          ;; Fallback: general parse
+          (fh-broadcast (list 'l2update (json-parse msg))) ) )
+
+       ;; ---- Ticker ----
+       ((= mtype 'ticker)
+        (setq *fh-stats-tickers* (1+ *fh-stats-tickers*))
+        (if *fh-product-table*
+          ;; Hot path: extract into pre-allocated columns
+          (let* ((pt *fh-product-table*)
+                 (rc (json-parse-ticker msg
+                       *fh-tk-prices* *fh-tk-bids* *fh-tk-asks*
+                       *fh-tk-sides* *fh-tk-timestamps* *fh-tk-products*
+                       0 (car pt) (cadr pt) (caddr pt))) )
+            (when (> rc 0)
+              (fh-broadcast
+                (list 'ticker
+                  (list (cons "product" (nth (*fh-tk-products* 0) *fh-products*))
+                        (cons "price" (*fh-tk-prices* 0))
+                        (cons "best_bid" (*fh-tk-bids* 0))
+                        (cons "best_ask" (*fh-tk-asks* 0))
+                        (cons "side" (if (= (*fh-tk-sides* 0) 0) "buy" "sell"))
+                        (cons "time" (*fh-tk-timestamps* 0)) ) ) ) ) )
+          ;; Fallback: general parse
+          (fh-broadcast (list 'ticker (json-parse msg))) ) )
+
+       ;; ---- Heartbeat ----
+       ((= mtype 'heartbeat)
+        (setq *fh-stats-heartbeats* (1+ *fh-stats-heartbeats*)) )
+
+       ;; ---- Subscription confirmation ----
+       ((= mtype 'subscriptions)
+        (printf "feed-handler: subscription confirmed\n") )
+
+       ;; ---- Snapshot (initial order book state) ----
+       ((= mtype 'snapshot)
+        (printf "feed-handler: snapshot received (%d bytes)\n" (len msg)) )
+
+       ;; ---- Error from exchange ----
+       ((= mtype 'error)
+        (printf "feed-handler: feed error: %s\n" msg) )
+
+       ;; ---- Unknown message type ----
+       (t
+        (fh-broadcast (list 'message (json-parse msg))) ) ) ) ) )
 
 
 #? (fh-on-poll <handle-id> <status>)
@@ -339,9 +481,14 @@
   (setq *fh-ws-url* ())
   (setq *fh-ws-subscribe* ())
   (setq *fh-reconnect-id* ())
+  (setq *fh-products* ())
+  (setq *fh-product-table* ())
   (setq *fh-stats-events* 0)
   (setq *fh-stats-ticks* 0)
   (setq *fh-stats-broadcasts* 0)
+  (setq *fh-stats-l2* 0)
+  (setq *fh-stats-tickers* 0)
+  (setq *fh-stats-heartbeats* 0)
 
   ;; 1. Create libuv loop
   (setq *fh-loop* (uv-loop-new))
