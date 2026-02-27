@@ -16,10 +16,16 @@
 ;;;   (libload "libuv/feed-handler")
 ;;;   (feed-handler-start 5560)
 
-;; Load order: ws-client (which loads libuv + curl) must come before
-;; json to avoid a Lush DHC compilation interaction issue.
-(libload "libuv/ws-client")
+;; Load order: load json, libuv, and curl individually BEFORE
+;; ws-client.  This avoids a Lush DHC interaction issue where
+;; loading ws-client.lsh (which does sequential libload of libuv +
+;; curl) after json causes curl's blocking connect to hang.
+;; Loading them individually at top level avoids the problem, and
+;; ws-client's internal libloads become no-ops.
 (libload "json/json")
+(libload "libuv/libuv")
+(libload "curl/curl")
+(libload "libuv/ws-client")
 (libload "wire/wire")
 
 ;; Helper: drain all stale events from the global queue
