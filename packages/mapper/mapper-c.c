@@ -193,6 +193,27 @@ static double metric_kendall(const double *data, int ncols, int i, int j) {
     return 1.0 - (con - dis) / sqrt(denomx * denomy);
 }
 
+static double metric_hellinger(const double *data, int ncols, int i, int j) {
+    const double *a = ROW(data, i, ncols);
+    const double *b = ROW(data, j, ncols);
+    /* Normalize each row to sum to 1 (treat as probability distribution) */
+    double sum_a = 0.0, sum_b = 0.0;
+    for (int k = 0; k < ncols; k++) {
+        sum_a += (a[k] > 0.0 ? a[k] : 0.0);
+        sum_b += (b[k] > 0.0 ? b[k] : 0.0);
+    }
+    if (sum_a == 0.0 || sum_b == 0.0) return 1.0;
+    /* H = sqrt(1 - BC) where BC = sum(sqrt(p_k * q_k)) */
+    double bc = 0.0;
+    for (int k = 0; k < ncols; k++) {
+        double p = (a[k] > 0.0 ? a[k] : 0.0) / sum_a;
+        double q = (b[k] > 0.0 ? b[k] : 0.0) / sum_b;
+        bc += sqrt(p * q);
+    }
+    if (bc > 1.0) bc = 1.0;  /* numerical safety */
+    return sqrt(1.0 - bc);
+}
+
 /* Metric selection by name */
 metric_fn_t mapper_select_metric(const char *name) {
     if (!strcmp(name, "euclidean"))    return metric_euclidean;
@@ -205,6 +226,7 @@ metric_fn_t mapper_select_metric(const char *name) {
     if (!strcmp(name, "hamming"))      return metric_hamming;
     if (!strcmp(name, "spearman"))     return metric_spearman;
     if (!strcmp(name, "kendall"))      return metric_kendall;
+    if (!strcmp(name, "hellinger"))    return metric_hellinger;
     return NULL;
 }
 

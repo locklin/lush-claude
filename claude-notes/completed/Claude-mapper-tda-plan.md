@@ -858,3 +858,166 @@ The Mapper package naturally complements the columnar DataTable:
    The J FFI layer (j-cluster.ijs) is J-specific and won't transfer,
    but the C entry point `treecluster()` maps directly to a Lush DX
    function.
+
+---
+
+## Part 11: Categorical and Mixed-Type Variables
+
+### The Problem
+
+The current metric functions all assume continuous (double) data.
+Real-world datasets often contain categorical columns (e.g., country,
+diagnosis code, treatment group) or a mix of categorical and continuous.
+Feeding categorical data encoded as integers into Euclidean distance
+is meaningless — the distance between "France" (3) and "Germany" (4)
+is not 1.0.
+
+### Metrics for Categorical Variables
+
+**Hamming distance** (already implemented):
+- Fraction of columns where values differ: `count(a[k] != b[k]) / d`
+- Works on integer-encoded categoricals, but treats all mismatches
+  as equally distant. "France" vs "Germany" = "France" vs "Japan" = 1.
+- Appropriate when categories have no ordinal or similarity structure.
+
+**Jaccard distance** (to implement):
+- For binary/set-valued data: `1 - |A ∩ B| / |A ∪ B|`
+- Ignores mutual absences (0,0 pairs don't count as agreement).
+  This is important for sparse binary features — e.g., two patients
+  who both lack a rare symptom shouldn't be considered similar because
+  of that shared absence.
+- Implementation: iterate columns; count (1,1), (1,0), (0,1) pairs.
+  J = n11 / (n11 + n10 + n01). Distance = 1 - J.
+- Generalizable to multi-valued sets via set intersection/union.
+
+**Dice / Czekanowski-Sorensen distance** (to implement):
+- `1 - 2|A ∩ B| / (|A| + |B|)`
+- Like Jaccard but weights shared presences more heavily.
+- Equivalent to F1 score between two binary vectors.
+- Implementation: same counting as Jaccard, different formula.
+  D = 1 - 2*n11 / (2*n11 + n10 + n01).
+
+**Simple matching distance**:
+- Like Hamming but on binary data specifically; includes (0,0) as
+  agreement. `1 - (n11 + n00) / (n11 + n10 + n01 + n00)`.
+- Usually less appropriate than Jaccard for sparse features.
+
+### Mixed-Type Metric: Gower Distance
+
+**Gower distance** (Gower 1971) is the standard approach for
+mixed continuous/categorical data:
+
+```
+d(a, b) = sum(w_k * d_k(a_k, b_k)) / sum(w_k * delta_k)
+```
+
+Where for each column k:
+- If continuous: `d_k = |a_k - b_k| / range_k` (Manhattan normalized
+  by the column range). `delta_k = 1` if both values present.
+- If categorical: `d_k = (a_k != b_k) ? 1 : 0`. `delta_k = 1`.
+- If binary (asymmetric): `d_k` uses Jaccard-like logic.
+  `delta_k = 0` if both are 0 (mutual absence ignored).
+- `w_k` = column weight (default 1.0).
+
+Gower distance is in [0, 1] and handles missing values naturally
+(set `delta_k = 0` for missing, that column is excluded from the
+average).
+
+### Data Structure Requirements
+
+The current system assumes a homogeneous `double-matrix` for all data.
+Supporting categorical variables requires:
+
+**Option A: Column type metadata alongside the double matrix.**
+- Store categoricals as integer codes in the same double matrix.
+- Maintain a separate column-type array: `type[k]` = "continuous",
+  "categorical", or "binary".
+- The metric function receives the type array and dispatches per-column.
+- Pro: minimal change to data flow. Con: type info must be threaded
+  through every function.
+
+**Option B: Separate matrices for continuous and categorical.**
+- `data_cont` (N x d1 double-matrix) + `data_cat` (N x d2 int-matrix).
+- Metric receives both matrices.
+- Pro: type-safe. Con: changes the metric function signature, which
+  currently takes a single `const double *data`.
+
+**Option C: Encode everything in the double matrix + use a descriptor.**
+- Like Option A but with a formal descriptor struct passed to metrics:
+  ```c
+  typedef struct {
+      int ncols;
+      int *col_type;     /* 0=continuous, 1=categorical, 2=binary */
+      double *col_range;  /* for Gower normalization of continuous cols */
+      double *col_weight; /* per-column weight */
+  } column_desc_t;
+  ```
+- The metric function signature changes to include the descriptor.
+- This is the most general approach and supports Gower cleanly.
+
+**Recommendation: Option C.** The `metric_fn_t` signature would become:
+```c
+typedef double (*metric_fn_t)(const double *data, int ncols,
+                              int i, int j, const column_desc_t *desc);
+```
+
+For existing continuous-only metrics, `desc` can be NULL and the
+function ignores it. New mixed-type metrics (Gower) use it. This is
+backward compatible if existing metric functions accept and ignore the
+extra parameter.
+
+### Lens Functions for Categorical Data
+
+Most current lens functions (PCA, L2 norm, eccentricity) assume
+continuous data. For mixed-type data:
+
+- **Eccentricity** works with any metric, so it naturally extends
+  to Gower distance.
+- **Column lens** works for any column type (just uses raw values).
+- **PCA** does not work on categorical data. Alternatives:
+  - MCA (Multiple Correspondence Analysis) for categorical.
+  - FAMD (Factor Analysis of Mixed Data) for mixed.
+  - These are substantially more complex to implement.
+- **Practical approach:** Use eccentricity or column-based lenses
+  for mixed-type data. PCA remains continuous-only.
+
+### CSV Ingestion Changes
+
+The CSV parser currently converts all fields to doubles via `val`.
+For categorical support, it needs to:
+
+1. **Auto-detect column types** from data (or accept a schema).
+   Heuristic: if all non-empty values parse as numbers, it's
+   continuous. Otherwise categorical.
+2. **Build a category encoding table** per categorical column:
+   map string values to integer codes (0, 1, 2, ...).
+3. **Store the encoding** alongside the data so the UI can display
+   original category names.
+4. **Compute column ranges** for continuous columns (needed by Gower).
+
+The columnardb/datatable system already handles typed columns and
+could be leveraged here.
+
+### Implementation Order
+
+1. **Jaccard and Dice metrics** — pure C functions, same signature
+   as existing metrics. Data assumed to be 0/1 encoded in the double
+   matrix. Minimal effort.
+2. **Gower distance** — requires the column descriptor struct.
+   Changes metric signature. Moderate effort.
+3. **CSV type detection** — extend csvread-parse to detect and encode
+   categorical columns. Moderate effort.
+4. **UI changes** — column type indicators, category display in
+   tooltips, schema editor. Moderate effort.
+5. **MCA/FAMD lenses** — significant effort, lower priority. The
+   existing eccentricity lens works with Gower distance and covers
+   most use cases.
+
+### References
+
+- Gower, J.C. (1971). A General Coefficient of Similarity and Some
+  of Its Properties. Biometrics, 27(4), 857-871.
+- Podani, J. (1999). Extending Gower's General Coefficient of
+  Similarity to Ordinal Characters. Taxon, 48(2), 331-340.
+- Kaufman, L. & Rousseeuw, P. (1990). Finding Groups in Data.
+  Chapter 1 covers Gower distance in detail.

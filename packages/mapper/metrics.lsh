@@ -7,7 +7,9 @@
 ;; Distance metric functions for computing pairwise distances.
 ;; Available metrics: "euclidean", "sqeuclidean", "cityblock"
 ;; (alias "manhattan"), "chebyshev", "cosine", "correlation",
-;; "hamming", "spearman", "kendall".
+;; "hamming", "spearman", "kendall", "hellinger".
+;; Hellinger distance treats each row as a probability distribution
+;; (non-negative values, normalized to sum to 1).
 
 #? (mapper-distance-matrix <data> <metric>)
 ;; Compute pairwise distance matrix for all rows of <data>.
