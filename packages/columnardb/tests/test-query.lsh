@@ -1,0 +1,286 @@
+;;; test-query.lsh -- Tests for the ColumnarDB query language
+;;;
+;;; Loaded by run-all.lsh.  Assumes the test framework and columnardb
+;;; are already loaded.
+
+(printf "\n=== Query Language Tests ===\n")
+
+;; ============================================================
+;; Test data setup
+;; ============================================================
+
+(let ((dt (new DataTable)))
+  (==> dt add-column "symbol" 'string)
+  (==> dt add-column "price" 'real)
+  (==> dt add-column "qty" 'int)
+
+  (==> dt append-row (list "AAPL" 150.0 100))
+  (==> dt append-row (list "GOOG" 200.0 50))
+  (==> dt append-row (list "AAPL" 155.0 75))
+  (==> dt append-row (list "MSFT" 300.0 200))
+  (==> dt append-row (list "GOOG" 180.0 60))
+  (==> dt append-row (list "AAPL" 145.0 120))
+  (==> dt append-row (list "MSFT" 310.0 150))
+  (==> dt append-row (list "TSLA" 250.0 80))
+  (==> dt append-row (list "TSLA" 240.0 90))
+  (==> dt append-row (list "GOOG" 210.0 40))
+
+
+;; ============================================================
+;; Test 1: Basic SELECT
+;; ============================================================
+
+(test-suite "Query: Basic SELECT"
+  ;; Select all columns
+  (let ((result (db-select * (from dt))))
+    (test-equal "select * rows" (==> result num-rows) 10)
+    (test-equal "select * cols" (==> result num-cols) 3) )
+
+  ;; Select named columns
+  (let ((result (db-select ("symbol" "price") (from dt))))
+    (test-equal "named cols rows" (==> result num-rows) 10)
+    (test-equal "named cols count" (==> result num-cols) 2)
+    (test-string-equal "named col0" (car (==> result col-names)) "symbol")
+    (test-string-equal "named col1" (cadr (==> result col-names)) "price") )
+
+  ;; Select single column
+  (let ((result (db-select ("price") (from dt))))
+    (test-equal "single col count" (==> result num-cols) 1)
+    (test-approx "single col val" (==> result get 0 "price") 150.0 0.001) ) )
+
+
+;; ============================================================
+;; Test 2: WHERE clause
+;; ============================================================
+
+(test-suite "Query: WHERE"
+  ;; Single predicate
+  (let ((result (db-select * (from dt) (where (> "price" 200)))))
+    (test-equal "where > rows" (==> result num-rows) 5) )
+
+  ;; String equality
+  (let ((result (db-select * (from dt) (where (= "symbol" "AAPL")))))
+    (test-equal "where string= rows" (==> result num-rows) 3) )
+
+  ;; AND predicate
+  (let ((result (db-select *
+                  (from dt)
+                  (where (and (= "symbol" "AAPL") (> "price" 148))))))
+    (test-equal "where AND rows" (==> result num-rows) 2) )
+
+  ;; OR predicate
+  (let ((result (db-select *
+                  (from dt)
+                  (where (or (= "symbol" "TSLA") (= "symbol" "MSFT"))))))
+    (test-equal "where OR rows" (==> result num-rows) 4) )
+
+  ;; BETWEEN predicate
+  (let ((result (db-select *
+                  (from dt)
+                  (where (between "price" 180.0 250.0)))))
+    (test-equal "where between rows" (==> result num-rows) 5) )
+
+  ;; Empty result
+  (let ((result (db-select * (from dt) (where (> "price" 999)))))
+    (test-equal "where empty rows" (==> result num-rows) 0)
+    (test-equal "where empty cols" (==> result num-cols) 3) )
+
+  ;; Variable in value position
+  (let ((max-price 200))
+    (let ((result (db-select * (from dt) (where (> "price" max-price)))))
+      (test-equal "where variable rows" (==> result num-rows) 5) )) )
+
+
+;; ============================================================
+;; Test 3: ORDER BY clause
+;; ============================================================
+
+(test-suite "Query: ORDER BY"
+  ;; Ascending order
+  (let ((result (db-select * (from dt) (order-by "price"))))
+    (test-equal "order-by asc rows" (==> result num-rows) 10)
+    (test-approx "order-by asc first" (==> result get 0 "price") 145.0 0.001)
+    (test-approx "order-by asc last" (==> result get 9 "price") 310.0 0.001) )
+
+  ;; Descending order
+  (let ((result (db-select * (from dt) (order-by "price" 'desc))))
+    (test-approx "order-by desc first" (==> result get 0 "price") 310.0 0.001)
+    (test-approx "order-by desc last" (==> result get 9 "price") 145.0 0.001) )
+
+  ;; ORDER BY with WHERE
+  (let ((result (db-select *
+                  (from dt)
+                  (where (= "symbol" "AAPL"))
+                  (order-by "price"))))
+    (test-equal "where+order rows" (==> result num-rows) 3)
+    (test-approx "where+order first" (==> result get 0 "price") 145.0 0.001)
+    (test-approx "where+order last" (==> result get 2 "price") 155.0 0.001) ) )
+
+
+;; ============================================================
+;; Test 4: LIMIT clause
+;; ============================================================
+
+(test-suite "Query: LIMIT"
+  ;; Simple limit
+  (let ((result (db-select * (from dt) (limit 3))))
+    (test-equal "limit rows" (==> result num-rows) 3) )
+
+  ;; Limit with WHERE + ORDER BY
+  (let ((result (db-select *
+                  (from dt)
+                  (where (> "price" 140))
+                  (order-by "price" 'desc)
+                  (limit 3))))
+    (test-equal "where+order+limit rows" (==> result num-rows) 3)
+    (test-approx "w+o+l first" (==> result get 0 "price") 310.0 0.001)
+    (test-approx "w+o+l second" (==> result get 1 "price") 300.0 0.001)
+    (test-approx "w+o+l third" (==> result get 2 "price") 250.0 0.001) )
+
+  ;; Limit larger than result set
+  (let ((result (db-select *
+                  (from dt)
+                  (where (= "symbol" "TSLA"))
+                  (limit 100))))
+    (test-equal "limit > result" (==> result num-rows) 2) )
+
+  ;; Limit with variable
+  (let ((n 5))
+    (let ((result (db-select * (from dt) (limit n))))
+      (test-equal "limit variable" (==> result num-rows) 5) )) )
+
+
+;; ============================================================
+;; Test 5: GROUP BY clause
+;; ============================================================
+
+(test-suite "Query: GROUP BY"
+  ;; Count
+  (let ((result (db-select *
+                  (from dt)
+                  (group-by "symbol" (count)))))
+    (test-equal "groupby count rows" (==> result num-rows) 4) )
+
+  ;; Sum
+  (let ((result (db-select *
+                  (from dt)
+                  (group-by "symbol" (sum "price")))))
+    (test-equal "groupby sum rows" (==> result num-rows) 4) )
+
+  ;; Mean
+  (let ((result (db-select *
+                  (from dt)
+                  (group-by "symbol" (mean "price")))))
+    (test-equal "groupby mean rows" (==> result num-rows) 4) )
+
+  ;; Min
+  (let ((result (db-select *
+                  (from dt)
+                  (group-by "symbol" (min "price")))))
+    (test-equal "groupby min rows" (==> result num-rows) 4) )
+
+  ;; Max
+  (let ((result (db-select *
+                  (from dt)
+                  (group-by "symbol" (max "price")))))
+    (test-equal "groupby max rows" (==> result num-rows) 4) )
+
+  ;; Group-by with WHERE pre-filter
+  (let ((result (db-select *
+                  (from dt)
+                  (where (> "price" 160))
+                  (group-by "symbol" (count)))))
+    ;; Only GOOG(200,180,210), MSFT(300,310), TSLA(250,240) pass filter
+    ;; AAPL prices are 150,155,145 -- none > 160
+    (test-equal "groupby+where rows" (==> result num-rows) 3) ) )
+
+
+;; ============================================================
+;; Test 6: db-count
+;; ============================================================
+
+(test-suite "Query: db-count"
+  ;; Count all rows
+  (let ((count (db-count (from dt))))
+    (test-equal "count all" count 10) )
+
+  ;; Count with WHERE
+  (let ((count (db-count (from dt) (where (> "price" 200)))))
+    (test-equal "count where" count 5) )
+
+  ;; Count with string predicate
+  (let ((count (db-count (from dt) (where (= "symbol" "AAPL")))))
+    (test-equal "count string" count 3) )
+
+  ;; Count with AND
+  (let ((count (db-count (from dt)
+                  (where (and (= "symbol" "GOOG") (> "price" 190))))))
+    (test-equal "count and" count 2) )
+
+  ;; Count with empty result
+  (let ((count (db-count (from dt) (where (> "price" 999)))))
+    (test-equal "count empty" count 0) ) )
+
+
+;; ============================================================
+;; Test 7: Database FROM clause
+;; ============================================================
+
+(test-suite "Query: Database FROM"
+  (let ((db (new Database ())))
+    (==> db attach "trades" dt)
+
+    ;; Select from database
+    (let ((result (db-select * (from db "trades"))))
+      (test-equal "db from rows" (==> result num-rows) 10)
+      (test-equal "db from cols" (==> result num-cols) 3) )
+
+    ;; Count from database
+    (let ((count (db-count (from db "trades"))))
+      (test-equal "db count" count 10) )
+
+    ;; Query from database with WHERE
+    (let ((result (db-select ("symbol" "price")
+                    (from db "trades")
+                    (where (> "price" 200))
+                    (order-by "price" 'desc)
+                    (limit 2))))
+      (test-equal "db query rows" (==> result num-rows) 2)
+      (test-approx "db query first" (==> result get 0 "price") 310.0 0.001) ) ) )
+
+
+;; ============================================================
+;; Test 8: Edge cases
+;; ============================================================
+
+(test-suite "Query: Edge cases"
+  ;; Empty table
+  (let ((empty-dt (new DataTable)))
+    (==> empty-dt add-column "x" 'real)
+    (==> empty-dt add-column "y" 'int)
+
+    (let ((result (db-select * (from empty-dt))))
+      (test-equal "empty table rows" (==> result num-rows) 0)
+      (test-equal "empty table cols" (==> result num-cols) 2) )
+
+    (let ((count (db-count (from empty-dt))))
+      (test-equal "empty table count" count 0) ) )
+
+  ;; Limit of 0
+  (let ((result (db-select * (from dt) (limit 0))))
+    (test-equal "limit 0 rows" (==> result num-rows) 0) )
+
+  ;; Full pipeline: select + where + order + limit + project
+  (let ((result (db-select ("symbol" "price")
+                  (from dt)
+                  (where (>= "price" 200))
+                  (order-by "price")
+                  (limit 3))))
+    (test-equal "full pipeline rows" (==> result num-rows) 3)
+    (test-equal "full pipeline cols" (==> result num-cols) 2)
+    (test-approx "full pipeline first" (==> result get 0 "price") 200.0 0.001)
+    (test-approx "full pipeline second" (==> result get 1 "price") 210.0 0.001)
+    (test-approx "full pipeline third" (==> result get 2 "price") 240.0 0.001) ) )
+
+
+) ;; end let dt

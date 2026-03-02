@@ -474,7 +474,7 @@
                                ((= type 'stamp) (long-matrix n-rows)) )))
             (for (r 0 (1- n-rows))
               (dst-col r (src-col r)) )
-            (==> result set-column-data name dst-col) ) ) ) ) ) )
+            (==> result set-column-data name dst-col) ) ) ) ) )
     result ) )
 
 
@@ -716,7 +716,7 @@
                         ((= op 'not-null?) (not (dt-null? type v)))
                         (t (error "DataTable" "unknown operator" op)) )
               (setq result (nconc1 result r)) ) ) )
-        result ) ) ) )
+        result ) ) ) ) )
 
 
 #? (==> <dt> where-rows <op> <col-name> <value>)

@@ -145,12 +145,16 @@ Current packages include:
 }
 {<ul>
   {<li>
-    Numerical Functions Library for Linear Algebra, Complex Numbers, Vectors, Matrices, 
+    Numerical Functions Library for Linear Algebra, Complex Numbers, Vectors, Matrices,
     etc., as well as a Low-Level Interface to the GNU Scientific Library (GSL)}
 
   {<li>
     Gradient-Based Machine Learning Algorithms Class Library, includes: neural nets,
     convolutional nets, and many others.}
+
+  {<li>
+    XGBoost Gradient Boosting Library for training and predicting with
+    gradient-boosted decision trees.}
 
   {<li>
     SDL Environment for writing simple video games}
@@ -204,6 +208,8 @@ estimation, and pattern recognition.
 #? ** << htk/htk.hlp
 
 #? ** << torch/torch.hlp
+
+#? ** << xgboost/xgboost.lsh
 
 
 #? *** Music, Audio, MIDI
@@ -291,6 +297,10 @@ and time/date utilities.
 #? ** << columnardb/columnardb-groupby.lsh
 
 #? ** << columnardb/columnardb-mutate.lsh
+
+#? ** << columnardb/columnardb-multiindex.lsh
+
+#? ** << columnardb/columnardb-query.lsh
 
 #? ** << timedate/timedate.lsh
 

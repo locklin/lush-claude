@@ -1399,3 +1399,4 @@
 (libload "columnardb/columnardb-multiindex")
 (libload "columnardb/columnardb-compress")
 (libload "columnardb/columnardb-database")
+(libload "columnardb/columnardb-query")

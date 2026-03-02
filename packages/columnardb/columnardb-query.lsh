@@ -1,0 +1,461 @@
+;;; columnardb-query.lsh -- SQL-like query language for ColumnarDB
+;;;
+;;; Provides db-select and db-count macros that expand to existing
+;;; DataTable and ColumnarDB method calls, providing syntactic
+;;; convenience with no optimizer or query planner (Phase 1).
+;;;
+;;; Usage:
+;;;   (db-select ("price" "symbol")
+;;;     (from db "trades")
+;;;     (where (> "price" 100))
+;;;     (order-by "price" 'desc)
+;;;     (limit 10))
+;;;
+;;;   (db-select *
+;;;     (from dt)
+;;;     (where (and (= "symbol" "AAPL") (> "price" 150))))
+;;;
+;;;   (db-count (from dt) (where (> "price" 100)))
+
+#? *** ColumnarDB Query Language
+;; SQL-like query macros for DataTable and Database.
+;; {<b> db-select} and {<b> db-count} expand to existing method calls
+;; on DataTable and ColumnarDB, providing declarative query syntax.
+;;
+;; Pipeline architecture:
+;; {<code>
+;;   from -> where -> order-by -> limit -> materialize -> project
+;; </code>}
+;;
+;; Stages pass sorted row-index arrays (idx1) between steps.
+;; Only the final step materializes a DataTable via {<b> select-rows-idx}
+;; and {<b> select-columns}.
+;;
+;; Supported clauses:
+;; {<ul>
+;; {<li> {<b> from} -- source DataTable or Database table}
+;; {<li> {<b> where} -- filter with =, <, >, <=, >=, <>, and, or, between}
+;; {<li> {<b> order-by} -- sort ascending or descending}
+;; {<li> {<b> limit} -- take first N rows}
+;; {<li> {<b> group-by} -- grouped aggregation (count, sum, mean, min, max)}
+;; }
+;;
+;; Example:
+;; {<code>
+;;   (db-select ("sym" "price")
+;;     (from dt)
+;;     (where (> "price" 100))
+;;     (order-by "price" 'desc)
+;;     (limit 5))
+;; </code>}
+;; {<see> (db-select <columns> <clauses...>)}
+;; {<see> (db-count <clauses...>)}
+;; {<see> (columnardb-where-multi <dt> <conditions> [<meta>])}
+;; {<see> (columnardb-group-by <dt> <group-col> <agg-col> <op>)}
+
+
+;; ============================================================
+;; Section A: Macro expansion helpers (called at macro time)
+;; ============================================================
+
+;; Transform a WHERE predicate form at macro expansion time.
+;; Returns a Lush form that when evaluated produces a parsed predicate.
+;; Simple/AND/between: produces a condition list ((op col val) ...)
+;; OR: produces (or-clause (branch1 branch2 ...))
+(de _query-macro-transform-pred (pred)
+  (let ((op (car pred)))
+    (cond
+     ;; AND: flatten sub-predicates into single condition list
+     ((= op 'and)
+      (let ((forms ()))
+        (each ((sub (cdr pred)))
+          (setq forms (nconc1 forms
+            (_query-macro-transform-pred sub) )))
+        (cons 'nconc forms) ))
+
+     ;; OR: each sub-predicate becomes a branch
+     ((= op 'or)
+      (let ((branch-forms ()))
+        (each ((sub (cdr pred)))
+          (setq branch-forms (nconc1 branch-forms
+            (_query-macro-transform-pred sub) )))
+        `(list 'or-clause (list ,@branch-forms)) ))
+
+     ;; BETWEEN: (between col lo hi) -> ((range col lo hi))
+     ((= op 'between)
+      (let ((col (cadr pred))
+            (lo (caddr pred))
+            (hi (nth 3 pred)) )
+        `(list (list 'range ,col ,lo ,hi)) ))
+
+     ;; Simple predicate: (op col val) -> ((op col val))
+     ;; op and col are quoted; val is evaluated (supports variables)
+     (t
+      (let ((col (cadr pred))
+            (val (caddr pred)) )
+        `(list (list ',op ,col ,val)) )))))
+
+
+;; Transform a single clause form at macro expansion time.
+;; Returns a Lush form that when evaluated produces the clause list.
+(de _query-macro-transform-clause (clause)
+  (let ((keyword (car clause)))
+    (cond
+     ;; (from db "name") or (from dt) -- all args evaluated
+     ((= keyword 'from)
+      `(list 'from ,@(cdr clause)) )
+
+     ;; (where pred) -- predicate transformed
+     ((= keyword 'where)
+      `(list 'where ,(_query-macro-transform-pred (cadr clause))) )
+
+     ;; (order-by col ['desc]) -- all args evaluated
+     ((= keyword 'order-by)
+      `(list 'order-by ,@(cdr clause)) )
+
+     ;; (limit n) -- arg evaluated
+     ((= keyword 'limit)
+      `(list 'limit ,(cadr clause)) )
+
+     ;; (group-by col (op agg-col)) -- group-col evaluated, agg-spec quoted
+     ((= keyword 'group-by)
+      (let ((group-col (cadr clause))
+            (agg-specs (cddr clause)) )
+        (let ((quoted-specs ()))
+          (each ((spec agg-specs))
+            (setq quoted-specs (nconc1 quoted-specs `',spec)) )
+          `(list 'group-by ,group-col ,@quoted-specs) )))
+
+     (t (error "db-select" "unknown clause" keyword)) )))
+
+
+;; ============================================================
+;; Section B: Internal clause parsing and pipeline execution
+;; ============================================================
+
+;; Parse clause list into alist with keys:
+;; 'from 'where 'order-by 'limit 'group-by 'columns
+(de _query-parse-clauses (columns clauses)
+  (let ((result (list (list 'columns columns))))
+    (each ((c clauses))
+      (let ((key (car c)))
+        (setq result (nconc1 result (cons key (cdr c)))) ))
+    result ) )
+
+
+;; Resolve FROM clause arguments.
+;; (from db "name") -> DataTable + metadata
+;; (from dt) -> DataTable + () metadata
+;; Returns (list dt meta)
+(de _query-resolve-from (from-args)
+  (if (= (length from-args) 2)
+    ;; Database + table name
+    (let ((db (car from-args))
+          (name (cadr from-args)) )
+      (list (==> db table name) (==> db table-meta name)) )
+    ;; Direct DataTable
+    (list (car from-args) ()) ))
+
+
+;; Run WHERE filter, handling both AND and OR predicates.
+;; Returns a list of matching row indices, or () for no matches.
+(de _query-run-where (dt meta where-pred)
+  (if (and (listp where-pred) (= (car where-pred) 'or-clause))
+    ;; OR: union branches
+    (_query-where-or dt meta (cadr where-pred))
+    ;; AND: condition list
+    (columnardb-where-multi dt where-pred meta) ))
+
+
+;; Run each OR branch via columnardb-where-multi, union with dedup.
+;; Returns list of row indices or ().
+(de _query-where-or (dt meta branches)
+  (let ((ht (htable))
+        (result ()) )
+    (each ((branch branches))
+      (let ((rows (columnardb-where-multi dt branch meta)))
+        (when rows
+          (each ((r rows))
+            (let ((key (sprintf "%d" r)))
+              (when (not (ht key))
+                (ht key t)
+                (setq result (nconc1 result r)) ))))))
+    result ) )
+
+
+;; Return an empty DataTable with the same schema as dt.
+(de _query-empty-table (dt)
+  (let ((result (new DataTable)))
+    (each ((name (==> dt col-names)) (type (==> dt col-types)))
+      (==> result add-column name type) )
+    result ) )
+
+
+;; Apply ORDER BY to indices.
+;; dt: source DataTable
+;; indices: idx1 of selected rows, or () for all rows
+;; ob-args: (col-name ['desc])
+;; Returns idx1 in sort order.
+(de _query-apply-order-by (dt indices ob-args)
+  (let ((col-name (car ob-args))
+        (desc-flag (and (cdr ob-args) (= (cadr ob-args) 'desc))) )
+    (let ((grade-perm (==> dt grade col-name desc-flag)))
+      (if (not indices)
+        ;; All rows: grade permutation is the result
+        grade-perm
+        ;; Filter grade permutation to only members in indices
+        (let* ((nrows (==> dt num-rows))
+               (n-idx (idx-dim indices 0))
+               (bitmap (int-matrix nrows))
+               (result (int-matrix n-idx))
+               (ri 0) )
+          ;; Mark members in bitmap
+          (for (i 0 (1- n-idx))
+            (bitmap (indices i) 1) )
+          ;; Scan grade order, keeping only members
+          (for (i 0 (1- nrows))
+            (when (= (bitmap (grade-perm i)) 1)
+              (result ri (grade-perm i))
+              (setq ri (1+ ri)) ))
+          (if (= ri 0)
+            ()
+            (narrow result 0 ri 0) ))))))
+
+
+;; Apply LIMIT to indices.
+;; indices: idx1, or () for all rows
+;; limit-n: max number of rows
+;; nrows: total rows in source table
+;; Returns idx1.
+(de _query-apply-limit (indices limit-n nrows)
+  (if (not indices)
+    ;; All rows: build 0..min(limit-n, nrows)-1
+    (let ((n (min limit-n nrows)))
+      (if (= n 0)
+        'empty
+        (let ((result (int-matrix n)))
+          (for (i 0 (1- n))
+            (result i i) )
+          result )))
+    ;; Truncate existing indices
+    (let ((n (min limit-n (idx-dim indices 0))))
+      (if (= n 0)
+        'empty
+        (narrow indices 0 n 0) ))))
+
+
+;; Standard (non-GROUP BY) pipeline execution.
+(de _query-execute-standard (dt meta where-pred ob-args limit-n columns)
+  (let ((nrows (==> dt num-rows))
+        (indices ())     ;; () = all rows
+        (no-match ()) )  ;; t if WHERE produced zero results
+
+    ;; WHERE
+    (when where-pred
+      (let ((rows (_query-run-where dt meta where-pred)))
+        (if rows
+          (setq indices (_list-to-sorted-idx1 rows))
+          (setq no-match t) )))
+
+    (if no-match
+      ;; Short-circuit: return empty table with correct schema
+      (let ((empty-dt (_query-empty-table dt)))
+        (if (= columns '*)
+          empty-dt
+          (==> empty-dt select-columns columns) ))
+
+      ;; Continue pipeline
+      (progn
+        ;; ORDER BY
+        (when ob-args
+          (setq indices (_query-apply-order-by dt indices ob-args)) )
+
+        ;; LIMIT
+        (when limit-n
+          (setq indices (_query-apply-limit indices limit-n nrows)) )
+
+        ;; Check for empty sentinel from limit
+        (if (= indices 'empty)
+          (let ((empty-dt (_query-empty-table dt)))
+            (if (= columns '*)
+              empty-dt
+              (==> empty-dt select-columns columns) ))
+          ;; Materialize
+          (let ((result-dt
+                  (if indices
+                    (==> dt select-rows-idx indices)
+                    ;; No filtering/ordering: return copy via select-columns
+                    dt )))
+            ;; Project
+            (if (= columns '*)
+              result-dt
+              (==> result-dt select-columns columns) )))))))
+
+
+;; GROUP BY pipeline execution.
+(de _query-execute-groupby (dt meta where-pred gb-args ob-args limit-n columns)
+  (let ((group-col (car gb-args))
+        (agg-spec (cadr gb-args)) )
+    (let ((op (car agg-spec))
+          (agg-col (if (cdr agg-spec) (cadr agg-spec) ())) )
+
+      ;; Optional WHERE filter first
+      (let ((filtered-dt
+              (if where-pred
+                (let ((rows (_query-run-where dt meta where-pred)))
+                  (if rows
+                    (==> dt select-rows rows)
+                    (_query-empty-table dt) ))
+                dt )))
+
+        ;; Apply group-by
+        (let ((result (columnardb-group-by filtered-dt group-col agg-col op)))
+
+          ;; ORDER BY
+          (when ob-args
+            (let ((sort-col (car ob-args))
+                  (desc (and (cdr ob-args) (= (cadr ob-args) 'desc))) )
+              (setq result (==> result sort-by sort-col desc)) ))
+
+          ;; LIMIT
+          (when limit-n
+            (let ((n (min limit-n (==> result num-rows))))
+              (if (> n 0)
+                (let ((idx (int-matrix n)))
+                  (for (i 0 (1- n)) (idx i i))
+                  (setq result (==> result select-rows-idx idx)) )
+                (setq result (_query-empty-table result)) )))
+
+          ;; Project
+          (if (= columns '*)
+            result
+            (==> result select-columns columns) ))))))
+
+
+;; Main execution entry point.
+(de _query-execute (columns clauses)
+  (let* ((parsed (_query-parse-clauses columns clauses))
+         (from-args (cdr (assoc 'from parsed)))
+         (where-pred (cadr (assoc 'where parsed)))
+         (ob-args (cdr (assoc 'order-by parsed)))
+         (limit-n (cadr (assoc 'limit parsed)))
+         (gb-args (cdr (assoc 'group-by parsed))) )
+
+    (when (not from-args)
+      (error "db-select" "missing FROM clause" ()) )
+
+    (let* ((from-result (_query-resolve-from from-args))
+           (dt (car from-result))
+           (meta (cadr from-result)) )
+
+      (if gb-args
+        (_query-execute-groupby dt meta where-pred gb-args ob-args limit-n columns)
+        (_query-execute-standard dt meta where-pred ob-args limit-n columns) ))))
+
+
+;; Count-only execution path.
+(de _query-count (clauses)
+  (let* ((parsed (_query-parse-clauses () clauses))
+         (from-args (cdr (assoc 'from parsed)))
+         (where-pred (cadr (assoc 'where parsed))) )
+
+    (when (not from-args)
+      (error "db-count" "missing FROM clause" ()) )
+
+    (let* ((from-result (_query-resolve-from from-args))
+           (dt (car from-result))
+           (meta (cadr from-result)) )
+
+      (if where-pred
+        (let ((rows (_query-run-where dt meta where-pred)))
+          (if rows (length rows) 0) )
+        (==> dt num-rows) ))))
+
+
+;; ============================================================
+;; Section C: Public API (dmd macros)
+;; ============================================================
+
+#? (db-select <columns> <clauses...>)
+;; SQL-like query macro for DataTable and Database.
+;; Expands to pipeline of existing method calls.
+;;
+;; <columns>: either {<b> *} for all columns, or a list of column
+;; name strings like {<b> ("price" "symbol")}.
+;;
+;; Supported clauses:
+;; {<ul>
+;; {<li> {<b> (from <dt>)} -- query a DataTable directly}
+;; {<li> {<b> (from <db> <name>)} -- query a named table in a Database}
+;; {<li> {<b> (where <predicate>)} -- filter rows by condition}
+;; {<li> {<b> (order-by <col> ['desc])} -- sort results}
+;; {<li> {<b> (limit <n>)} -- return at most N rows}
+;; {<li> {<b> (group-by <col> (<op> <agg-col>))} -- grouped aggregation}
+;; }
+;;
+;; WHERE predicates:
+;; {<ul>
+;; {<li> {<b> (= "col" val)}, {<b> (> "col" val)}, etc. -- comparison}
+;; {<li> {<b> (and pred1 pred2 ...)} -- all conditions must hold}
+;; {<li> {<b> (or pred1 pred2 ...)} -- any condition suffices}
+;; {<li> {<b> (between "col" lo hi)} -- range check}
+;; }
+;;
+;; GROUP BY aggregation ops: {<b> count}, {<b> sum}, {<b> mean},
+;; {<b> min}, {<b> max}.
+;;
+;; Examples:
+;; {<code>
+;;   ;; Basic query
+;;   (db-select ("price" "symbol")
+;;     (from dt)
+;;     (where (> "price" 100))
+;;     (order-by "price" 'desc)
+;;     (limit 10))
+;;
+;;   ;; All columns with compound filter
+;;   (db-select *
+;;     (from dt)
+;;     (where (and (= "symbol" "AAPL") (> "price" 150))))
+;;
+;;   ;; Grouped aggregation
+;;   (db-select *
+;;     (from db "trades")
+;;     (group-by "symbol" (sum "price")))
+;; </code>}
+;; {<see> (db-count <clauses...>)}
+;; {<see> (columnardb-where-multi <dt> <conditions> [<meta>])}
+;; {<see> (columnardb-group-by <dt> <group-col> <agg-col> <op>)}
+(dmd db-select (columns . clauses)
+  (let ((col-expr (if (= columns '*)
+                    ''*
+                    `',columns ))
+        (clause-forms ()) )
+    (each ((c clauses))
+      (setq clause-forms (nconc1 clause-forms
+        (_query-macro-transform-clause c) )))
+    `(_query-execute ,col-expr (list ,@clause-forms)) ))
+
+
+#? (db-count <clauses...>)
+;; Count rows matching query conditions.
+;; Like {<b> db-select} but returns an integer count instead of a DataTable.
+;;
+;; Examples:
+;; {<code>
+;;   ;; Count all rows
+;;   (db-count (from dt))
+;;
+;;   ;; Count with filter
+;;   (db-count (from dt) (where (> "price" 100)))
+;;
+;;   ;; Count from Database table
+;;   (db-count (from db "trades") (where (= "symbol" "AAPL")))
+;; </code>}
+;; {<see> (db-select <columns> <clauses...>)}
+(dmd db-count clauses
+  (let ((clause-forms ()))
+    (each ((c clauses))
+      (setq clause-forms (nconc1 clause-forms
+        (_query-macro-transform-clause c) )))
+    `(_query-count (list ,@clause-forms)) ))
