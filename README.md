@@ -1,5 +1,29 @@
 Using claude to clean up the lush1 stuff:
 
+If you want to use this thing:
+./configure
+make
+(make install if you can, otherwise ./bin/lush)
+
+From there:
+
+(helptool)
+
+if the font is too small
+
+(setq *ogre-font-scale* 2)
+ 
+then
+(helptool)
+
+The topological data analysis is fun and pretty code complete, if you know how to use mapper
+
+(libload "mapper/mapper")
+(mapper-viz-setup) ;; only run this once if you want to persist data
+(mapper-viz-start)
+
+Most of the stuff in packages is undocumented for now.
+
 Opening prompt:
 
 -----
