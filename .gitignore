@@ -45,3 +45,6 @@ packages/libuv/libuv-v1.49.2.tar.gz
 bin/x86_64-unknown-linux-gnu/lush
 src/lush
 packages/mapper/NKI/
+packages/xgboost/xgboost-src-3.2.0/
+packages/xgboost/xgboost-src-3.2.0.tar.gz
+packages/xgboost/dist/

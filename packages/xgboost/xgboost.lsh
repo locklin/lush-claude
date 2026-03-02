@@ -1,0 +1,309 @@
+;;; xgboost.lsh -- XGBoost gradient boosting for Lush
+;;;
+;;; Two layers:
+;;;   1. DHC-compiled thin wrappers (_xgb-*) that bridge Lush types
+;;;      to the C functions in xgboost-c.c.
+;;;   2. Interpreted high-level API (xgb-dmatrix, xgb-train, xgb-predict,
+;;;      xgb-save-model, xgb-load-model, etc.) that handle matrix
+;;;      conversion, error checking, and convenience features.
+;;;
+;;; Constraint: (-long-) is broken, so we use (-gptr-) for opaque
+;;; handles, (-int-) / (-float-) / (-str-) for data.
+
+(libload "xgboost-config")
+
+#? *** XGBoost: Gradient Boosting Library
+;; XGBoost gradient boosting for Lush, wrapping xgboost 3.2.0.
+;;
+;; Provides a high-level API for training and predicting with XGBoost
+;; models. Supports DMatrix creation from Lush float-matrices,
+;; parameter setting via alists, iterative training, prediction,
+;; and model persistence.
+;;
+;; Functions:
+;; {<ul>
+;; {<li> {<b> xgb-dmatrix} -- create DMatrix from features + labels}
+;; {<li> {<b> xgb-train} -- train a booster for N rounds}
+;; {<li> {<b> xgb-predict} -- predict with a trained booster}
+;; {<li> {<b> xgb-save-model} / {<b> xgb-load-model} -- model persistence}
+;; {<li> {<b> xgb-free-dmatrix} / {<b> xgb-free-booster} -- cleanup}
+;; }
+;;
+;; Typical workflow:
+;; {<code>
+;;  (libload "xgboost/xgboost")
+;;  (let* ((x (float-matrix 4 2))
+;;         (y (float-matrix 4)))
+;;    ;; ... fill x and y ...
+;;    (let* ((dm (xgb-dmatrix x y))
+;;           (bst (xgb-train dm '(("max_depth" "2")
+;;                                 ("eta" "0.3")
+;;                                 ("objective" "reg:squarederror")) 10))
+;;           (preds (xgb-predict bst dm)))
+;;      (pretty preds)
+;;      (xgb-save-model bst "/tmp/claude/model.xgb")
+;;      (xgb-free-booster bst)
+;;      (xgb-free-dmatrix dm)))
+;; </code>}
+;;
+;; {<b> Prerequisites:} Run {<c> install-xgboost-locally.sh} first to
+;; build the xgboost shared library into {<c> dist/}.
+
+;; ============================================================
+;; DHC-compiled wrappers (gptr <-> C)
+;; ============================================================
+
+(de _xgb-dmatrix-create (data missing status-out)
+  ((-idx2- (-float-)) data)
+  ((-float-) missing)
+  ((-idx1- (-int-)) status-out)
+  (let ((handle (gptr ()))
+        (nrows (idx-dim data 0))
+        (ncols (idx-dim data 1)))
+    ((-gptr-) handle)
+    ((-int-) nrows ncols)
+    #{ $handle = lush_xgb_dmatrix_create(
+           IDX_PTR($data, float), $nrows, $ncols, $missing,
+           IDX_PTR($status_out, int)); #}
+    handle ) )
+
+(de _xgb-dmatrix-set-labels (handle labels status-out)
+  ((-gptr-) handle)
+  ((-idx1- (-float-)) labels)
+  ((-idx1- (-int-)) status-out)
+  (let ((n (idx-dim labels 0)))
+    ((-int-) n)
+    #{ lush_xgb_dmatrix_set_labels($handle,
+           IDX_PTR($labels, float), $n,
+           IDX_PTR($status_out, int)); #}
+    () ) )
+
+(de _xgb-dmatrix-free (handle)
+  ((-gptr-) handle)
+  #{ lush_xgb_dmatrix_free($handle); #}
+  () )
+
+(de _xgb-booster-create (dmat-handle status-out)
+  ((-gptr-) dmat-handle)
+  ((-idx1- (-int-)) status-out)
+  (let ((handle (gptr ())))
+    ((-gptr-) handle)
+    #{ {
+         void *dmats[1];
+         dmats[0] = $dmat_handle;
+         $handle = lush_xgb_booster_create(dmats, 1,
+                       IDX_PTR($status_out, int));
+       } #}
+    handle ) )
+
+(de _xgb-booster-free (handle)
+  ((-gptr-) handle)
+  #{ lush_xgb_booster_free($handle); #}
+  () )
+
+(de _xgb-booster-set-param (handle key val status-out)
+  ((-gptr-) handle)
+  ((-str-) key val)
+  ((-idx1- (-int-)) status-out)
+  #{ lush_xgb_booster_set_param($handle, $key->data, $val->data,
+         IDX_PTR($status_out, int)); #}
+  () )
+
+(de _xgb-booster-update (handle dtrain iter status-out)
+  ((-gptr-) handle)
+  ((-gptr-) dtrain)
+  ((-int-) iter)
+  ((-idx1- (-int-)) status-out)
+  #{ lush_xgb_booster_update($handle, $dtrain, $iter,
+         IDX_PTR($status_out, int)); #}
+  () )
+
+(de _xgb-predict (booster dmat len-out status-out)
+  ((-gptr-) booster dmat)
+  ((-idx1- (-int-)) len-out status-out)
+  (let ((pred (gptr ())))
+    ((-gptr-) pred)
+    #{ $pred = (void *)lush_xgb_predict($booster, $dmat,
+                   IDX_PTR($len_out, int),
+                   IDX_PTR($status_out, int)); #}
+    pred ) )
+
+;; Copy prediction floats from C buffer into a Lush float-matrix, then free.
+(de _xgb-predict-to-idx (pred-ptr n)
+  ((-gptr-) pred-ptr)
+  ((-int-) n)
+  (let ((result (float-matrix n)))
+    ((-idx1- (-float-)) result)
+    #{ {
+         float *src = (float *)$pred_ptr;
+         float *dst = IDX_PTR($result, float);
+         int i;
+         for (i = 0; i < $n; i++) dst[i] = src[i];
+         lush_xgb_free_prediction(src);
+       } #}
+    result ) )
+
+(de _xgb-save-model (handle path status-out)
+  ((-gptr-) handle)
+  ((-str-) path)
+  ((-idx1- (-int-)) status-out)
+  #{ lush_xgb_save_model($handle, $path->data,
+         IDX_PTR($status_out, int)); #}
+  () )
+
+(de _xgb-load-model (path status-out)
+  ((-str-) path)
+  ((-idx1- (-int-)) status-out)
+  (let ((handle (gptr ())))
+    ((-gptr-) handle)
+    #{ $handle = lush_xgb_load_model($path->data,
+                     IDX_PTR($status_out, int)); #}
+    handle ) )
+
+
+;; Compile all DHC wrappers
+(let ((dhc-make-lushflags
+       (concat dhc-make-lushflags " -I" (dirname file-being-loaded)
+               " -I" (dirname file-being-loaded) "/dist/include")))
+  (dhc-make-with-libs () t
+    #{ #include "xgboost-c.h" #}
+    _xgb-dmatrix-create _xgb-dmatrix-set-labels _xgb-dmatrix-free
+    _xgb-booster-create _xgb-booster-free
+    _xgb-booster-set-param _xgb-booster-update
+    _xgb-predict _xgb-predict-to-idx
+    _xgb-save-model _xgb-load-model ) )
+
+
+;; ============================================================
+;; Interpreted high-level API
+;; ============================================================
+
+#? ** Data
+
+#? (xgb-dmatrix <features> <labels>)
+;; Create an XGBoost DMatrix from a float-matrix of features and
+;; a float-vector of labels.
+;; <features>: idx2 of float (nsamples x nfeatures)
+;; <labels>: idx1 of float (nsamples)
+;; Returns: opaque DMatrix handle (gptr). Free with {<b> xgb-free-dmatrix}
+;; when no longer needed.
+;; Signals error on failure.
+;; {<see> (xgb-free-dmatrix <handle>)}
+(de xgb-dmatrix (features labels)
+  (let ((status-out (int-matrix 1)))
+    (let ((handle (_xgb-dmatrix-create features (to-float NaN) status-out)))
+      (when (<> (status-out 0) 0)
+        (error "xgb-dmatrix: failed to create DMatrix" ()) )
+      (status-out 0 0)
+      (_xgb-dmatrix-set-labels handle labels status-out)
+      (when (<> (status-out 0) 0)
+        (_xgb-dmatrix-free handle)
+        (error "xgb-dmatrix: failed to set labels" ()) )
+      handle ) ) )
+
+
+#? ** Training
+
+#? (xgb-train <dtrain> <params> <nrounds>)
+;; Train an XGBoost booster.
+;; <dtrain>: DMatrix handle from {<b> xgb-dmatrix}
+;; <params>: alist of string pairs, e.g.
+;; {<code>
+;;  '(("max_depth" "3") ("eta" "0.1") ("objective" "reg:squarederror"))
+;; </code>}
+;; <nrounds>: number of boosting rounds (integer)
+;; Returns: opaque Booster handle (gptr). Free with {<b> xgb-free-booster}
+;; when no longer needed.
+;; Signals error on failure.
+;; {<see> (xgb-dmatrix <features> <labels>)}
+;; {<see> (xgb-predict <booster> <dmat>)}
+(de xgb-train (dtrain params nrounds)
+  (let ((status-out (int-matrix 1)))
+    (let ((bst (_xgb-booster-create dtrain status-out)))
+      (when (<> (status-out 0) 0)
+        (error "xgb-train: failed to create booster" ()) )
+      ;; Set parameters
+      (each ((p params))
+        (let ((key (car p))
+              (val (cadr p)))
+          (status-out 0 0)
+          (_xgb-booster-set-param bst key val status-out)
+          (when (<> (status-out 0) 0)
+            (_xgb-booster-free bst)
+            (error "xgb-train: failed to set param" key) ) ) )
+      ;; Training iterations
+      (for (i 0 (1- nrounds))
+        (status-out 0 0)
+        (_xgb-booster-update bst dtrain i status-out)
+        (when (<> (status-out 0) 0)
+          (_xgb-booster-free bst)
+          (error "xgb-train: failed at iteration" i) ) )
+      bst ) ) )
+
+
+#? ** Prediction
+
+#? (xgb-predict <booster> <dmat>)
+;; Predict with a trained booster on a DMatrix.
+;; <booster>: Booster handle from {<b> xgb-train} or {<b> xgb-load-model}
+;; <dmat>: DMatrix handle from {<b> xgb-dmatrix}
+;; Returns: idx1 of float (one prediction per sample).
+;; Signals error on failure.
+;; {<see> (xgb-train <dtrain> <params> <nrounds>)}
+(de xgb-predict (booster dmat)
+  (let ((len-out (int-matrix 1))
+        (status-out (int-matrix 1)))
+    (let ((pred-ptr (_xgb-predict booster dmat len-out status-out)))
+      (when (<> (status-out 0) 0)
+        (error "xgb-predict: prediction failed" ()) )
+      (when (= pred-ptr (gptr ()))
+        (error "xgb-predict: NULL prediction result" ()) )
+      (_xgb-predict-to-idx pred-ptr (len-out 0)) ) ) )
+
+
+#? ** Model Persistence
+
+#? (xgb-save-model <booster> <path>)
+;; Save a trained booster model to a file.
+;; <booster>: Booster handle from {<b> xgb-train}
+;; <path>: file path string (e.g. "/tmp/claude/model.xgb")
+;; Returns {<c> t} on success, signals error on failure.
+;; {<see> (xgb-load-model <path>)}
+(de xgb-save-model (booster path)
+  (let ((status-out (int-matrix 1)))
+    (_xgb-save-model booster path status-out)
+    (when (<> (status-out 0) 0)
+      (error "xgb-save-model: failed to save" path) )
+    t ) )
+
+
+#? (xgb-load-model <path>)
+;; Load a booster model from a file.
+;; <path>: file path string
+;; Returns: opaque Booster handle (gptr). Free with {<b> xgb-free-booster}
+;; when no longer needed.
+;; {<see> (xgb-save-model <booster> <path>)}
+(de xgb-load-model (path)
+  (let ((status-out (int-matrix 1)))
+    (let ((handle (_xgb-load-model path status-out)))
+      (when (<> (status-out 0) 0)
+        (error "xgb-load-model: failed to load" path) )
+      handle ) ) )
+
+
+#? ** Cleanup
+
+#? (xgb-free-dmatrix <handle>)
+;; Free a DMatrix handle. Must be called when the DMatrix is no longer
+;; needed to avoid memory leaks.
+(de xgb-free-dmatrix (handle)
+  (_xgb-dmatrix-free handle)
+  () )
+
+
+#? (xgb-free-booster <handle>)
+;; Free a Booster handle. Must be called when the Booster is no longer
+;; needed to avoid memory leaks.
+(de xgb-free-booster (handle)
+  (_xgb-booster-free handle)
+  () )

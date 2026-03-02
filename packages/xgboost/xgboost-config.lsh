@@ -1,0 +1,19 @@
+;;; xgboost-config.lsh -- Compile xgboost C wrapper into shared library
+;;;
+;;; This file compiles xgboost-c.c into a shared library linked against
+;;; the locally-built xgboost in dist/.
+;;; It must be loaded before xgboost.lsh.
+
+(libload "libc/make")
+
+(let ((dir (dirname file-being-loaded)))
+  (let ((lm (new lushmake))
+        (cc (or (getconf "CC") "gcc")))
+    (==> lm setflags (concat " -I" dir "/dist/include -O2 -fPIC"))
+    (==> lm rule "xgboost-c.o" '("xgboost-c.c" "xgboost-c.h"))
+    (==> lm rule "xgboost-c.so" '("xgboost-c.o")
+         (concat cc " -shared -o $OBJ $SOURCES"
+                 " -L" dir "/dist/lib -lxgboost"
+                 " -Wl,-rpath," dir "/dist/lib"))
+    (==> lm make)
+    (==> lm load "xgboost-c.so") ) )
