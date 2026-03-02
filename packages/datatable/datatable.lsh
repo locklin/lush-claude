@@ -17,6 +17,7 @@
 ;;;   (==> t print-table 5)
 
 (libload "datatable/stringcol")
+(libload "datatable/intcol")
 (libload "timedate/timedate")
 (libload "datatable/datatable-null")
 (libload "datatable/datatable-compiled")
@@ -33,6 +34,7 @@
 ;; {<li> {<b> 'float} -- single-precision floating point (NaN = NULL).}
 ;; {<li> {<b> 'stamp} -- int64 microseconds since epoch (INT64_MIN = NULL).}
 ;; {<li> {<b> 'string} -- dictionary-encoded via StringColumn ("" = NULL).}
+;; {<li> {<b> 'intcol} -- dictionary-encoded via IntColumn (INT_MIN = NULL).}
 ;; }
 ;;
 ;; Includes column management, row append/access, filtering ({<b> where}),
@@ -130,7 +132,8 @@
                ((= type 'int)    (int-matrix capacity))
                ((= type 'stamp)  (long-matrix capacity))
                ((= type 'string) (new StringColumn capacity))
-               (t (error "DataTable" "unknown column type (use 'real, 'float, 'int, 'stamp, or 'string)" type)) )))
+               ((= type 'intcol) (new IntColumn capacity))
+               (t (error "DataTable" "unknown column type (use 'real, 'float, 'int, 'stamp, 'string, or 'intcol)" type)) )))
     (setq col-names-list (nconc1 col-names-list name))
     (setq col-types-list (nconc1 col-types-list type))
     (col-names-ht name n-cols)
@@ -185,6 +188,7 @@
          (column (nth idx columns)) )
     (cond
      ((= type 'string) (==> column get row))
+     ((= type 'intcol) (==> column get row))
      (t (column row)) ) ) )
 
 
@@ -204,6 +208,20 @@
           (let ((sc (new StringColumn nr)))
             (==> sc build-from-codes new-codes (==> col get-pool))
             (setq columns (_dt-list-replace columns col-idx sc)) ) ) ) )
+     ((= type 'intcol)
+      (when (not (writablep (==> col get-codes)))
+        ;; IntColumn codes are mmap'd: rebuild with writable copies
+        (let* ((old-codes (==> col get-codes))
+               (old-pool (==> col get-pool))
+               (nr (==> col num-rows))
+               (nu (==> col num-unique))
+               (new-codes (int-matrix nr))
+               (new-pool (int-matrix nu)) )
+          (for (i 0 (1- nr)) (new-codes i (old-codes i)))
+          (for (i 0 (1- nu)) (new-pool i (old-pool i)))
+          (let ((ic (new IntColumn nr)))
+            (==> ic build-from-codes new-codes new-pool)
+            (setq columns (_dt-list-replace columns col-idx ic)) ) ) ) )
      (t
       (when (not (writablep col))
         ;; Numeric/stamp column: copy to writable heap array
@@ -222,8 +240,8 @@
          (type (nth idx col-types-list)) )
     (when (or (< row 0) (>= row n-rows))
       (error "DataTable" "row index out of range" row) )
-    (if (= type 'string)
-      (error "DataTable" "cannot set individual string column values" ())
+    (if (or (= type 'string) (= type 'intcol))
+      (error "DataTable" "cannot set individual string/intcol column values" ())
       (progn
         (==> this _ensure-writable idx)
         (let ((column (nth idx columns)))
@@ -246,6 +264,7 @@
       (let ((ci 0))
         (each ((col columns) (type col-types-list))
           (when (or (= type 'real) (= type 'float) (= type 'int) (= type 'stamp))
+            ;; IntColumn and StringColumn manage their own growth
             ;; Allocate new array and copy
             (let ((new-col (cond ((= type 'real)  (double-matrix new-cap))
                                  ((= type 'float) (float-matrix new-cap))
@@ -265,6 +284,8 @@
         (==> col append (cond ((stringp val) val)
                               ((not val) "")
                               (t (sprintf "%g" val)) )) )
+       ((= type 'intcol)
+        (==> col append (if val (to-int val) *dt-null-int*)) )
        ((= type 'real)
         (col n-rows (if val (to-double val) (nan))) )
        ((= type 'float)
@@ -320,11 +341,11 @@
     (setq columns (_dt-list-replace columns idx data))
     ;; Update row count from data
     (let ((type (nth idx col-types-list)))
-      (let ((nr (if (= type 'string)
+      (let ((nr (if (or (= type 'string) (= type 'intcol))
                   (==> data num-rows)
                   (idx-dim data 0) )))
         (when (> nr n-rows) (setq n-rows nr))
-        (when (and (<> type 'string) (> nr capacity))
+        (when (and (<> type 'string) (<> type 'intcol) (> nr capacity))
           (setq capacity nr) ) ) ) ) )
 
 
@@ -351,6 +372,8 @@
             (for (r 0 (1- (min show-rows n-rows)))
               (let ((sv (cond
                          ((= type 'string) (==> col get r))
+                         ((= type 'intcol)
+                          (let ((v (==> col get r))) (if (= v *dt-null-int*) "NULL" (sprintf "%d" v))))
                          ((= type 'real)
                           (let ((v (col r))) (if (nanp v) "NULL" (sprintf "%.6g" v))))
                          ((= type 'float)
@@ -387,6 +410,9 @@
             (let ((w (widths ci)))
               (let ((sv (cond
                          ((= type 'string) (==> col get r))
+                         ((= type 'intcol)
+                          (let ((v (==> col get r)))
+                            (if (= v *dt-null-int*) "NULL" (sprintf "%d" v)) ) )
                          ((= type 'real)
                           (let ((v (col r)))
                             (if (nanp v) "NULL" (sprintf "%.6g" v)) ) )
@@ -429,11 +455,18 @@
       (let* ((src-idx (col-names-ht name))
              (type (nth src-idx col-types-list))
              (src-col (nth src-idx columns)) )
-        (if (= type 'string)
+        (cond
+         ((= type 'string)
           ;; Copy StringColumn
           (let ((dst-col (==> result get-column name)))
             (for (r 0 (1- n-rows))
-              (==> dst-col append (==> src-col get r)) ) )
+              (==> dst-col append (==> src-col get r)) ) ) )
+         ((= type 'intcol)
+          ;; Copy IntColumn
+          (let ((dst-col (==> result get-column name)))
+            (for (r 0 (1- n-rows))
+              (==> dst-col append (==> src-col get r)) ) ) )
+         (t
           ;; Copy numeric/stamp column
           (let ((dst-col (cond ((= type 'real)  (double-matrix n-rows))
                                ((= type 'float) (float-matrix n-rows))
@@ -441,7 +474,7 @@
                                ((= type 'stamp) (long-matrix n-rows)) )))
             (for (r 0 (1- n-rows))
               (dst-col r (src-col r)) )
-            (==> result set-column-data name dst-col) ) ) ) )
+            (==> result set-column-data name dst-col) ) ) ) ) ) )
     result ) )
 
 
@@ -461,6 +494,10 @@
         (each ((col columns) (type col-types-list))
           (cond
            ((= type 'string)
+            (let ((dst-col (==> result get-column ci)))
+              (each ((ri indices))
+                (==> dst-col append (==> col get ri)) ) ) )
+           ((= type 'intcol)
             (let ((dst-col (==> result get-column ci)))
               (each ((ri indices))
                 (==> dst-col append (==> col get ri)) ) ) )
@@ -491,8 +528,8 @@
          (col (nth idx columns)) )
     (when (not idx)
       (error "DataTable" "column not found" col-name) )
-    (when (= type 'string)
-      (error "DataTable" "cannot grade by string column" col-name) )
+    (when (or (= type 'string) (= type 'intcol))
+      (error "DataTable" "cannot grade by string/intcol column" col-name) )
     ;; Trivial case: 0 or 1 rows need no sorting
     (if (<= n-rows 1)
       (let ((perm (int-matrix (max 1 n-rows))))
@@ -559,6 +596,11 @@
               (for (i 0 (1- nr))
                 (==> sc append (==> col get (idx-perm i))) )
               (setq new-cols (nconc1 new-cols sc)) ) )
+           ((= type 'intcol)
+            (let ((ic (new IntColumn (max 64 nr))))
+              (for (i 0 (1- nr))
+                (==> ic append (==> col get (idx-perm i))) )
+              (setq new-cols (nconc1 new-cols ic)) ) )
            ((= type 'stamp)
             ;; Long stamp: use compiled gather if available
             (let ((dst (long-matrix nr)))
@@ -612,7 +654,8 @@
          (col (nth idx columns)) )
     (when (not idx)
       (error "DataTable" "column not found" col-name) )
-    (if (= type 'string)
+    (cond
+     ((= type 'string)
       ;; String column: delegate to StringColumn
       (cond
        ((= op '=)
@@ -636,7 +679,29 @@
                 (when (not (eq-ht (sprintf "%d" i)))
                   (setq result (nconc1 result i)) ) )
               result ) ) ) )
-       (t (error "DataTable" "string columns only support '= and '<> operators" op)) )
+       (t (error "DataTable" "string columns only support '= and '<> operators" op)) ) )
+     ((= type 'intcol)
+      ;; IntColumn: delegate where-eq for '=, linear scan on decoded values for others
+      (cond
+       ((= op '=)
+        (let ((result (==> col where-eq value)))
+          (if result result ()) ) )
+       (t
+        ;; Linear scan on decoded values for < > <= >= <> null? not-null?
+        (let ((result ()))
+          (for (r 0 (1- n-rows))
+            (let ((v (==> col get r)))
+              (when (cond ((= op '<)  (< v value))
+                          ((= op '>)  (> v value))
+                          ((= op '<=) (<= v value))
+                          ((= op '>=) (>= v value))
+                          ((= op '<>) (<> v value))
+                          ((= op 'null?) (= v *dt-null-int*))
+                          ((= op 'not-null?) (<> v *dt-null-int*))
+                          (t (error "DataTable" "unknown operator" op)) )
+                (setq result (nconc1 result r)) ) ) )
+          result ) ) ) )
+     (t
       ;; Numeric or stamp column: linear scan
       (let ((result ()))
         (for (r 0 (1- n-rows))
@@ -666,6 +731,44 @@
 ;; Print the first n rows (default 10).
 (defmethod DataTable head (&optional n)
   (==> this print-table (or n 10)) )
+
+
+#? (==> <dt> distinct <col-name>)
+;; Return the unique values from the named column.
+;; For 'intcol: returns a sorted list of unique ints (from pool).
+;; For 'string: returns the string pool as a list.
+;; For numeric types ('int 'real 'float 'stamp): htable scan, returns sorted list.
+(defmethod DataTable distinct (col-name)
+  (let* ((idx (col-names-ht col-name))
+         (type (nth idx col-types-list))
+         (col (nth idx columns)) )
+    (when (not idx)
+      (error "DataTable" "column not found" col-name) )
+    (cond
+     ((= type 'intcol)
+      ;; Pool-based O(1) distinct, return sorted list
+      (let* ((pool-arr (==> col distinct))
+             (nu (idx-dim pool-arr 0))
+             (result ()) )
+        (for (i 0 (1- nu))
+          (setq result (nconc1 result (pool-arr i))) )
+        (setq result (sort-list result <))
+        result ) )
+     ((= type 'string)
+      ;; Return pool list
+      (==> col get-pool) )
+     (t
+      ;; Numeric column: scan with htable for dedup
+      (let ((seen (htable (max 32 (min n-rows 10000))))
+            (result ()) )
+        (for (r 0 (1- n-rows))
+          (let* ((v (col r))
+                 (key (sprintf "%g" v)) )
+            (when (not (seen key))
+              (seen key t)
+              (setq result (nconc1 result v)) ) ) )
+        (setq result (sort-list result <))
+        result ) ) ) ) )
 
 
 ;; ============================================================

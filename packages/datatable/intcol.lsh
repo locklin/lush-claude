@@ -1,0 +1,322 @@
+;;; intcol.lsh -- Dictionary-encoded integer column for DataTable
+;;;
+;;; Stores integer data efficiently using per-column interning:
+;;;   - A pool (int-matrix of unique values, htable for reverse lookup)
+;;;   - An int-matrix of per-row codes
+;;;
+;;; At the Lush prompt, an IntColumn looks like a vector of ints.
+;;; Internally it stores only small integer codes, with a compact pool
+;;; of unique integers.  This gives large memory savings for columns
+;;; with very few distinct values (e.g. bidask with values 1, 2).
+;;; Inspired by Kerf1's HASH type.
+;;;
+;;; Usage:
+;;;   (setq ic (new IntColumn 100))  ;; initial capacity 100
+;;;   (==> ic append 1)
+;;;   (==> ic append 2)
+;;;   (==> ic append 1)              ;; reuses existing code
+;;;   (==> ic get 0)                 ;; => 1
+;;;   (==> ic get 2)                 ;; => 1
+;;;   (==> ic num-unique)            ;; => 2
+;;;   (==> ic distinct)              ;; => int-matrix [1 2]
+
+#? *** IntColumn: Dictionary-Encoded Integer Column
+;; Dictionary-encoded integer column for DataTable.
+;; Stores integer data efficiently using per-column interning:
+;; a pool (unique ints indexed by integer code) and an int-matrix
+;; of per-row codes.
+;;
+;; Typical columns with few distinct values (e.g. bidask with only
+;; 1 and 2) see massive memory savings and enable O(1) distinct.
+;; Inspired by Kerf1's HASH type.
+;;
+;; Features:
+;; {<ul>
+;; {<li> O(1) append and get via dictionary codes.}
+;; {<li> O(1) equality test between rows ({<b> rows-equal}).}
+;; {<li> Optional CSR inverted index for O(1) {<b> where-eq} lookups.}
+;; {<li> O(1) distinct via pool snapshot.}
+;; {<li> Bulk initialization from pre-computed codes ({<b> build-from-codes}).}
+;; }
+;; {<see> (new IntColumn <initial-capacity>)}
+
+
+;; ============================================================
+;; IntColumn class
+;; ============================================================
+
+(defclass IntColumn object
+  ;; Forward map: sprintf'd int -> integer code (O(1) lookup)
+  val-to-code
+
+  ;; Reverse map: code -> int value (int-matrix indexed by code)
+  pool
+
+  ;; Per-row data: integer codes, one per row
+  codes
+
+  ;; Pool bookkeeping
+  pool-size          ;; number of unique ints in pool
+  num-rows           ;; logical row count
+  capacity           ;; allocated capacity of codes array
+  pool-capacity      ;; allocated capacity of pool array
+
+  ;; CSR inverted index for O(1) where-eq
+  idx-offsets        ;; idx1 of int (CSR offsets by code), or ()
+  idx-rows           ;; idx1 of int (row indices grouped by code), or ()
+  idx-valid          ;; boolean: t if index is current, () if stale
+)
+
+
+#? (new IntColumn <initial-capacity>)
+;; Create a new IntColumn with the given initial capacity.
+(defmethod IntColumn IntColumn (init-cap)
+  (setq val-to-code (htable 64))
+  (setq pool (int-matrix 64))
+  (setq codes (int-matrix (max 64 init-cap)))
+  (setq pool-size 0)
+  (setq num-rows 0)
+  (setq capacity (max 64 init-cap))
+  (setq pool-capacity 64)
+  (setq idx-offsets ())
+  (setq idx-rows ())
+  (setq idx-valid ()) )
+
+
+#? (==> <ic> append <value>)
+;; Append an integer value to the column. The value is interned in
+;; the column's pool if not already present.
+(defmethod IntColumn append (val)
+  (let* ((key (sprintf "%d" val))
+         (code (val-to-code key)) )
+    (when (not code)
+      ;; New value: add to pool
+      (setq code pool-size)
+      (val-to-code key code)
+      ;; Grow pool if needed
+      (when (>= pool-size pool-capacity)
+        (let ((new-pcap (* 2 pool-capacity)))
+          (let ((new-pool (int-matrix new-pcap)))
+            (for (i 0 (1- pool-size))
+              (new-pool i (pool i)) )
+            (setq pool new-pool)
+            (setq pool-capacity new-pcap) ) ) )
+      (pool pool-size val)
+      (setq pool-size (1+ pool-size)) )
+    ;; Grow codes array if needed
+    (when (>= num-rows capacity)
+      (let ((new-cap (* 2 capacity)))
+        (let ((new-codes (int-matrix new-cap)))
+          (for (i 0 (1- num-rows))
+            (new-codes i (codes i)) )
+          (setq codes new-codes)
+          (setq capacity new-cap) ) ) )
+    ;; Store code for this row
+    (codes num-rows code)
+    (setq num-rows (1+ num-rows))
+    ;; Invalidate index (new row not reflected)
+    (setq idx-valid ()) ) )
+
+
+#? (==> <ic> get <index>)
+;; Get the integer value at row <index>.
+;; Two-step lookup: row -> code -> int value.
+(defmethod IntColumn get (i)
+  (when (and (>= i 0) (< i num-rows))
+    (pool (codes i)) ) )
+
+
+#? (==> <ic> get-code <index>)
+;; Get the raw integer code at row <index> (for internal use).
+(defmethod IntColumn get-code (i)
+  (when (and (>= i 0) (< i num-rows))
+    (codes i) ) )
+
+
+#? (==> <ic> num-rows)
+;; Return the number of rows in this column.
+(defmethod IntColumn num-rows ()
+  num-rows )
+
+
+#? (==> <ic> num-unique)
+;; Return the number of unique integer values in the pool.
+(defmethod IntColumn num-unique ()
+  pool-size )
+
+
+#? (==> <ic> get-codes)
+;; Return the underlying codes int-matrix (for direct access).
+(defmethod IntColumn get-codes ()
+  codes )
+
+
+#? (==> <ic> get-pool)
+;; Return the pool int-matrix of unique values (index = code).
+(defmethod IntColumn get-pool ()
+  pool )
+
+
+#? (==> <ic> rows-equal <i> <j>)
+;; Test if rows i and j have the same integer value.
+;; O(1) integer comparison on codes.
+(defmethod IntColumn rows-equal (i j)
+  (= (codes i) (codes j)) )
+
+
+#? (==> <ic> where-eq <value>)
+;; Return a list of row indices where the value equals <value>.
+;; If a CSR index is available, uses O(1) lookup; otherwise linear scan.
+(defmethod IntColumn where-eq (val)
+  (let* ((key (sprintf "%d" val))
+         (target-code (val-to-code key)) )
+    (when target-code
+      (if (==> this has-index)
+        ;; Fast path: CSR index lookup
+        (==> this _index-lookup target-code)
+        ;; Slow path: linear scan
+        (let ((result ()))
+          (for (i 0 (1- num-rows))
+            (when (= (codes i) target-code)
+              (setq result (nconc1 result i)) ) )
+          result ) ) ) ) )
+
+
+#? (==> <ic> distinct)
+;; Return an int-matrix of unique values in the pool.
+;; O(1) -- just a narrow of the pool array.
+(defmethod IntColumn distinct ()
+  (if (= pool-size 0)
+    (int-matrix 0)
+    (let ((result (int-matrix pool-size)))
+      (for (i 0 (1- pool-size))
+        (result i (pool i)) )
+      result ) ) )
+
+
+#? (==> <ic> build-from-codes <code-array> <pool-array>)
+;; Bulk-initialize the IntColumn from pre-computed codes and pool.
+;; <code-array> is an int-matrix of codes (one per row).
+;; <pool-array> is an int-matrix of unique int values (index = code).
+(defmethod IntColumn build-from-codes (code-array pool-array)
+  (let ((nr (idx-dim code-array 0))
+        (nu (idx-dim pool-array 0)) )
+    ;; Set up pool
+    (setq val-to-code (htable (max 64 (* 2 nu))))
+    (setq pool pool-array)
+    (setq pool-size nu)
+    (setq pool-capacity (idx-dim pool-array 0))
+    ;; Register each unique value in the htable
+    (for (i 0 (1- nu))
+      (val-to-code (sprintf "%d" (pool-array i)) i) )
+    ;; Set up codes
+    (setq codes code-array)
+    (setq num-rows nr)
+    (setq capacity nr) ) )
+
+
+#? (==> <ic> build-from-codes-mmap <code-array> <pool-array>)
+;; Bulk-initialize with mmap'd arrays.
+;; <code-array>: int idx1 of per-row codes (may be mmap'd)
+;; <pool-array>: int idx1 of unique int values (may be mmap'd)
+(defmethod IntColumn build-from-codes-mmap (code-array pool-array)
+  (let ((nr (idx-dim code-array 0))
+        (nu (idx-dim pool-array 0)) )
+    (setq codes code-array)
+    (setq num-rows nr)
+    (setq capacity nr)
+    (setq pool pool-array)
+    (setq pool-size nu)
+    (setq pool-capacity nu)
+    ;; Build htable from pool
+    (setq val-to-code (htable (max 64 (* 2 nu))))
+    (for (i 0 (1- nu))
+      (val-to-code (sprintf "%d" (pool-array i)) i) ) ) )
+
+
+;; ============================================================
+;; CSR Inverted Index
+;; ============================================================
+
+#? (==> <ic> has-index)
+;; Return t if a valid CSR index is available.
+(defmethod IntColumn has-index ()
+  (and idx-offsets idx-rows idx-valid) )
+
+
+#? (==> <ic> build-index)
+;; Build the CSR inverted index from current codes.
+;; O(n) two-pass algorithm: count per code, prefix-sum, fill rows.
+(defmethod IntColumn build-index ()
+  (when (> num-rows 0)
+    ;; Pass 1: count rows per code
+    (let ((counts (int-matrix (1+ pool-size))))
+      (if (functionp _cdb-i1count-codes)
+        ;; Compiled C path
+        (_cdb-i1count-codes codes counts num-rows)
+        ;; Interpreted fallback
+        (for (i 0 (1- num-rows))
+          (let ((c (codes i)))
+            (counts c (1+ (counts c))) ) ) )
+      ;; Prefix sum -> offsets array (length pool-size + 1)
+      (let ((offsets (int-matrix (1+ pool-size)))
+            (rows-arr (int-matrix num-rows))
+            (pos (int-matrix pool-size)) )
+        ;; Build offsets from counts
+        (offsets 0 0)
+        (for (c 0 (1- pool-size))
+          (offsets (1+ c) (+ (offsets c) (counts c))) )
+        ;; Copy offsets into pos (write cursors)
+        (for (c 0 (1- pool-size))
+          (pos c (offsets c)) )
+        ;; Pass 2: fill rows array
+        (if (functionp _cdb-i1csr-fill)
+          ;; Compiled C path
+          (_cdb-i1csr-fill codes pos rows-arr num-rows)
+          ;; Interpreted fallback
+          (for (i 0 (1- num-rows))
+            (let ((c (codes i)))
+              (rows-arr (pos c) i)
+              (pos c (1+ (pos c))) ) ) )
+        (setq idx-offsets offsets)
+        (setq idx-rows rows-arr)
+        (setq idx-valid t) ) ) ) )
+
+
+#? (==> <ic> drop-index)
+;; Remove the CSR inverted index, freeing memory.
+(defmethod IntColumn drop-index ()
+  (setq idx-offsets ())
+  (setq idx-rows ())
+  (setq idx-valid ()) )
+
+
+;; Private: look up all row indices for a given code via the CSR index.
+;; Returns a list of row indices.
+(defmethod IntColumn _index-lookup (code)
+  (let ((start (idx-offsets code))
+        (end (idx-offsets (1+ code)))
+        (result ()) )
+    (for (i start (1- end))
+      (setq result (nconc1 result (idx-rows i))) )
+    result ) )
+
+
+#? (==> <ic> get-idx-offsets)
+;; Return the CSR offsets idx1 (for persistence).
+(defmethod IntColumn get-idx-offsets ()
+  idx-offsets )
+
+
+#? (==> <ic> get-idx-rows)
+;; Return the CSR rows idx1 (for persistence).
+(defmethod IntColumn get-idx-rows ()
+  idx-rows )
+
+
+#? (==> <ic> build-from-index-mmap <offsets-idx> <rows-idx>)
+;; Attach pre-built (mmap'd) CSR index arrays.
+(defmethod IntColumn build-from-index-mmap (offsets-idx rows-idx)
+  (setq idx-offsets offsets-idx)
+  (setq idx-rows rows-idx)
+  (setq idx-valid t) )

@@ -216,6 +216,42 @@
                         (when (< rc 0)
                           (error "columnardb-save" "failed to write index rows" name) ) ) ) ) ) ) )
 
+             ;; IntColumn (dictionary-encoded integer)
+             ((= type 'intcol)
+              ;; Write codes as int column
+              (let ((codes-fname (concat path "/col-" (str ci) "-codes.col"))
+                    (pool-fname (concat path "/col-" (str ci) "-intpool.col"))
+                    (codes (==> col get-codes))
+                    (pdata (==> col get-pool))
+                    (nu (==> col num-unique)) )
+                ;; Write codes (only the valid rows)
+                (let ((data (int-matrix nrows)))
+                  (for (i 0 (1- nrows)) (data i (codes i)))
+                  (let ((rc (_cdb-write-ints codes-fname data nrows)))
+                    (when (< rc 0)
+                      (error "columnardb-save" "failed to write intcol codes" name) ) ) )
+                ;; Write pool as LCDB int32
+                (let ((pool-data (int-matrix nu)))
+                  (for (i 0 (1- nu)) (pool-data i (pdata i)))
+                  (let ((rc (_cdb-write-ints pool-fname pool-data nu)))
+                    (when (< rc 0)
+                      (error "columnardb-save" "failed to write intcol pool" name) ) ) )
+                ;; Build and write CSR index
+                (when (> nrows 0)
+                  (when (not (==> col has-index))
+                    (==> col build-index) )
+                  (when (==> col has-index)
+                    (let ((idx-off-fname (concat path "/col-" (str ci) "-idx-offsets.col"))
+                          (idx-row-fname (concat path "/col-" (str ci) "-idx-rows.col"))
+                          (ioff (==> col get-idx-offsets))
+                          (irow (==> col get-idx-rows)) )
+                      (let ((rc (_cdb-write-ints idx-off-fname ioff (idx-dim ioff 0))))
+                        (when (< rc 0)
+                          (error "columnardb-save" "failed to write index offsets" name) ) )
+                      (let ((rc (_cdb-write-ints idx-row-fname irow (idx-dim irow 0))))
+                        (when (< rc 0)
+                          (error "columnardb-save" "failed to write index rows" name) ) ) ) ) ) ) )
+
              (t (error "columnardb-save" "unknown column type" type)) ) ) )
         (setq ci (1+ ci)) ) )
 
@@ -271,6 +307,8 @@
               (setq column-list (nconc1 column-list (int-matrix 1))) )
              ((= type 'string)
               (setq column-list (nconc1 column-list (new StringColumn 1))) )
+             ((= type 'intcol)
+              (setq column-list (nconc1 column-list (new IntColumn 1))) )
              (t (error "columnardb-load-mem" "unknown column type" type)) )
             ;; Non-empty: load from files
             (cond
@@ -407,6 +445,53 @@
                                   (==> sc build-from-index-mmap off-data row-data) ) ) ) ) ) ) )
                     (setq column-list (nconc1 column-list sc)) ) ) ) )
 
+             ;; IntColumn (dictionary-encoded integer)
+             ((= type 'intcol)
+              (let ((codes-fname (concat path "/col-" (str ci) "-codes.col"))
+                    (pool-fname (concat path "/col-" (str ci) "-intpool.col")) )
+                (let ((codes (int-matrix nrows)))
+                  ;; Check typecode for compression on codes
+                  (let ((cnt-chk (double-matrix 1))
+                        (typ-chk (int-matrix 1)) )
+                    (_cdb-read-header codes-fname cnt-chk typ-chk)
+                    (cond
+                     ((= (typ-chk 0) *cdb-type-rle-int32*)
+                      (_cdb-read-rle-ints codes-fname codes nrows) )
+                     ((= (typ-chk 0) *cdb-type-lz4-int32*)
+                      (_cdb-read-lz4-ints codes-fname codes nrows) )
+                     (t
+                      (let ((rc (_cdb-read-ints codes-fname codes nrows)))
+                        (when (< rc 0)
+                          (error "columnardb-load-mem" "failed to read intcol codes" name) ) ) ) ) )
+                  ;; Read pool
+                  (let ((pool-cnt (double-matrix 1))
+                        (pool-typ (int-matrix 1)) )
+                    (_cdb-read-header pool-fname pool-cnt pool-typ)
+                    (let* ((nu (int (pool-cnt 0)))
+                           (pool-data (int-matrix nu)) )
+                      (let ((rc (_cdb-read-ints pool-fname pool-data nu)))
+                        (when (< rc 0)
+                          (error "columnardb-load-mem" "failed to read intcol pool" name) ) )
+                      ;; Build IntColumn from codes and pool
+                      (let ((ic (new IntColumn nrows)))
+                        (==> ic build-from-codes codes pool-data)
+                        ;; Load CSR index if files exist
+                        (let ((idx-off-fname (concat path "/col-" (str ci) "-idx-offsets.col"))
+                              (idx-row-fname (concat path "/col-" (str ci) "-idx-rows.col")) )
+                          (when (and (filep idx-off-fname) (filep idx-row-fname))
+                            (let ((cnt-out (double-matrix 1))
+                                  (typ-out (int-matrix 1)) )
+                              (_cdb-read-header idx-off-fname cnt-out typ-out)
+                              (let ((noff (int (cnt-out 0))))
+                                (let ((off-data (int-matrix noff)))
+                                  (_cdb-read-ints idx-off-fname off-data noff)
+                                  (_cdb-read-header idx-row-fname cnt-out typ-out)
+                                  (let ((nidxr (int (cnt-out 0))))
+                                    (let ((row-data (int-matrix nidxr)))
+                                      (_cdb-read-ints idx-row-fname row-data nidxr)
+                                      (==> ic build-from-index-mmap off-data row-data) ) ) ) ) ) ) )
+                        (setq column-list (nconc1 column-list ic)) ) ) ) ) ) )
+
              (t (error "columnardb-load-mem" "unknown column type" type)) ) )
           (setq ci (1+ ci)) )
 
@@ -453,6 +538,8 @@
               (setq column-list (nconc1 column-list (int-matrix 1))) )
              ((= type 'string)
               (setq column-list (nconc1 column-list (new StringColumn 1))) )
+             ((= type 'intcol)
+              (setq column-list (nconc1 column-list (new IntColumn 1))) )
              (t (error "columnardb-load" "unknown column type" type)) )
             ;; Non-empty: mmap from files (with compressed fallback)
             (cond
@@ -622,6 +709,56 @@
                                         (==> sc build-from-index-mmap off-idx row-idx) ) ) ) ) ) ) ) ) )
                       (setq column-list (nconc1 column-list sc)) ) ) ) ) )
 
+             ;; IntColumn -> codes mmap'd (or RLE/LZ4 decode), pool mmap'd
+             ((= type 'intcol)
+              (let ((codes-fname (concat path "/col-" (str ci) "-codes.col"))
+                    (pool-fname (concat path "/col-" (str ci) "-intpool.col")) )
+                ;; Check typecode on codes file
+                (let ((cnt-chk (double-matrix 1))
+                      (typ-chk (int-matrix 1)) )
+                  (_cdb-read-header codes-fname cnt-chk typ-chk)
+                  (let ((codes
+                         (cond
+                          ((= (typ-chk 0) *cdb-type-rle-int32*)
+                           (let ((c (int-matrix nrows)))
+                             (_cdb-read-rle-ints codes-fname c nrows) c) )
+                          ((= (typ-chk 0) *cdb-type-lz4-int32*)
+                           (let ((c (int-matrix nrows)))
+                             (_cdb-read-lz4-ints codes-fname c nrows) c) )
+                          (t
+                           ;; Raw codes: mmap
+                           (let ((stor (int-storage)))
+                             (storage-mmap stor codes-fname *cdb-header-size*)
+                             (new-index stor (list nrows)) ) ) ) ))
+                    ;; Read pool: mmap as int
+                    (let ((pool-cnt (double-matrix 1))
+                          (pool-typ (int-matrix 1)) )
+                      (_cdb-read-header pool-fname pool-cnt pool-typ)
+                      (let ((nu (int (pool-cnt 0))))
+                        (let ((pool-stor (int-storage)))
+                          (storage-mmap pool-stor pool-fname *cdb-header-size*)
+                          (let ((pool-data (new-index pool-stor (list nu))))
+                            (let ((ic (new IntColumn nrows)))
+                              (==> ic build-from-codes-mmap codes pool-data)
+                              ;; Load CSR index if files exist
+                              (let ((idx-off-fname (concat path "/col-" (str ci) "-idx-offsets.col"))
+                                    (idx-row-fname (concat path "/col-" (str ci) "-idx-rows.col")) )
+                                (when (and (filep idx-off-fname) (filep idx-row-fname))
+                                  (let ((cnt-out (double-matrix 1))
+                                        (typ-out (int-matrix 1)) )
+                                    (_cdb-read-header idx-off-fname cnt-out typ-out)
+                                    (let ((noff (int (cnt-out 0))))
+                                      (_cdb-read-header idx-row-fname cnt-out typ-out)
+                                      (let ((nidxr (int (cnt-out 0))))
+                                        (let ((off-s (int-storage)))
+                                          (storage-mmap off-s idx-off-fname *cdb-header-size*)
+                                          (let ((off-idx (new-index off-s (list noff))))
+                                            (let ((row-s (int-storage)))
+                                              (storage-mmap row-s idx-row-fname *cdb-header-size*)
+                                              (let ((row-idx (new-index row-s (list nidxr))))
+                                                (==> ic build-from-index-mmap off-idx row-idx) ) ) ) ) ) ) ) ) )
+                              (setq column-list (nconc1 column-list ic)) ) ) ) ) ) ) ) ) )
+
              (t (error "columnardb-load" "unknown column type" type)) ) )
           (setq ci (1+ ci)) )
 
@@ -665,6 +802,8 @@
               (setq column-list (nconc1 column-list (int-matrix 1))) )
              ((= type 'string)
               (setq column-list (nconc1 column-list (new StringColumn 1))) )
+             ((= type 'intcol)
+              (setq column-list (nconc1 column-list (new IntColumn 1))) )
              (t (error "columnardb-load-rw" "unknown column type" type)) )
             ;; Non-empty: mmap-rw from files
             (cond
@@ -745,6 +884,42 @@
                                       (let ((row-idx (new-index row-s (list nidxr))))
                                         (==> sc build-from-index-mmap off-idx row-idx) ) ) ) ) ) ) ) ) )
                       (setq column-list (nconc1 column-list sc)) ) ) ) ) )
+
+             ;; IntColumn -> codes and pool mmap-rw'd
+             ((= type 'intcol)
+              (let ((codes-fname (concat path "/col-" (str ci) "-codes.col"))
+                    (pool-fname (concat path "/col-" (str ci) "-intpool.col")) )
+                (let ((codes-stor (int-storage)))
+                  (storage-mmap-rw codes-stor codes-fname *cdb-header-size*)
+                  (let ((codes (new-index codes-stor (list nrows))))
+                    ;; Read pool
+                    (let ((pool-cnt (double-matrix 1))
+                          (pool-typ (int-matrix 1)) )
+                      (_cdb-read-header pool-fname pool-cnt pool-typ)
+                      (let ((nu (int (pool-cnt 0))))
+                        (let ((pool-stor (int-storage)))
+                          (storage-mmap-rw pool-stor pool-fname *cdb-header-size*)
+                          (let ((pool-data (new-index pool-stor (list nu))))
+                            (let ((ic (new IntColumn nrows)))
+                              (==> ic build-from-codes-mmap codes pool-data)
+                              ;; Load CSR index if files exist
+                              (let ((idx-off-fname (concat path "/col-" (str ci) "-idx-offsets.col"))
+                                    (idx-row-fname (concat path "/col-" (str ci) "-idx-rows.col")) )
+                                (when (and (filep idx-off-fname) (filep idx-row-fname))
+                                  (let ((cnt-out (double-matrix 1))
+                                        (typ-out (int-matrix 1)) )
+                                    (_cdb-read-header idx-off-fname cnt-out typ-out)
+                                    (let ((noff (int (cnt-out 0))))
+                                      (_cdb-read-header idx-row-fname cnt-out typ-out)
+                                      (let ((nidxr (int (cnt-out 0))))
+                                        (let ((off-s (int-storage)))
+                                          (storage-mmap-rw off-s idx-off-fname *cdb-header-size*)
+                                          (let ((off-idx (new-index off-s (list noff))))
+                                            (let ((row-s (int-storage)))
+                                              (storage-mmap-rw row-s idx-row-fname *cdb-header-size*)
+                                              (let ((row-idx (new-index row-s (list nidxr))))
+                                                (==> ic build-from-index-mmap off-idx row-idx) ) ) ) ) ) ) ) ) )
+                              (setq column-list (nconc1 column-list ic)) ) ) ) ) ) ) ) ) )
 
              (t (error "columnardb-load-rw" "unknown column type" type)) ) )
           (setq ci (1+ ci)) )
@@ -934,6 +1109,66 @@
                         ;; Update pool if needed
                         (when pool-changed
                           (_cdb-write-sexp pool-fname pool-list) ) ) ) ) )
+
+                 ;; IntColumn: re-encode against existing pool, extend codes+pool
+                 ((= type 'intcol)
+                  (let ((codes-fname (concat path "/col-" (str ci) "-codes.col"))
+                        (pool-fname (concat path "/col-" (str ci) "-intpool.col")) )
+                    ;; Remove stale CSR index files
+                    (let ((idx-off-fname (concat path "/col-" (str ci) "-idx-offsets.col"))
+                          (idx-row-fname (concat path "/col-" (str ci) "-idx-rows.col")) )
+                      (when (filep idx-off-fname)
+                        (sys (concat "rm -f '" idx-off-fname "'")) )
+                      (when (filep idx-row-fname)
+                        (sys (concat "rm -f '" idx-row-fname "'")) ) )
+                    ;; Read existing pool
+                    (let ((pool-cnt (double-matrix 1))
+                          (pool-typ (int-matrix 1)) )
+                      (_cdb-read-header pool-fname pool-cnt pool-typ)
+                      (let* ((old-nu (int (pool-cnt 0)))
+                             (old-pool (int-matrix old-nu)) )
+                        (let ((rc (_cdb-read-ints pool-fname old-pool old-nu)))
+                          (when (< rc 0)
+                            (error "columnardb-append" "failed to read intcol pool" name) ) )
+                        ;; Build lookup from old pool
+                        (let ((pool-ht (htable (max 64 (* 2 old-nu))))
+                              (pool-vals ())
+                              (next-code old-nu)
+                              (new-codes (int-matrix new-nrows))
+                              (pool-changed ()) )
+                          ;; Init pool vals list from old pool
+                          (for (i 0 (1- old-nu))
+                            (let ((v (old-pool i)))
+                              (pool-ht (sprintf "%d" v) i)
+                              (setq pool-vals (nconc1 pool-vals v)) ) )
+                          ;; Encode new values
+                          (for (i 0 (1- new-nrows))
+                            (let* ((v (==> col get i))
+                                   (key (sprintf "%d" v))
+                                   (code (pool-ht key)) )
+                              (if code
+                                (new-codes i code)
+                                ;; New value: add to pool
+                                (progn
+                                  (pool-ht key next-code)
+                                  (setq pool-vals (nconc1 pool-vals v))
+                                  (new-codes i next-code)
+                                  (setq next-code (1+ next-code))
+                                  (setq pool-changed t) ) ) ) )
+                          ;; Append codes
+                          (let ((rc (_cdb-append-ints codes-fname new-codes new-nrows total-rows)))
+                            (when (< rc 0)
+                              (error "columnardb-append" "failed to append intcol codes" name) ) )
+                          ;; Update pool if needed
+                          (when pool-changed
+                            (let ((new-pool (int-matrix next-code)))
+                              (let ((idx 0))
+                                (each ((v pool-vals))
+                                  (new-pool idx v)
+                                  (setq idx (1+ idx)) ) )
+                              (let ((rc (_cdb-write-ints pool-fname new-pool next-code)))
+                                (when (< rc 0)
+                                  (error "columnardb-append" "failed to write intcol pool" name) ) ) ) ) ) ) ) ) )
 
                  (t (error "columnardb-append" "unknown column type" type)) ) )
               (setq ci (1+ ci)) ) )

@@ -24,6 +24,7 @@
         ((= type 'float) (nan))
         ((= type 'stamp) *td-stamp-null*)
         ((= type 'int)   *dt-null-int*)
+        ((= type 'intcol) *dt-null-int*)
         ((= type 'string) "")
         (t (error "dt-null" "unknown type" type))))
 
@@ -35,6 +36,8 @@
         ((= type 'stamp)
          (= value *td-stamp-null*))
         ((= type 'int)
+         (= value *dt-null-int*))
+        ((= type 'intcol)
          (= value *dt-null-int*))
         ((= type 'string)
          (or (not value) (= value "")))
