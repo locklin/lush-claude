@@ -1,0 +1,353 @@
+;;; test-wavelet.lsh -- Tests for the wavelet package
+;;;
+;;; Run via: src/lush packages/wavelets/tests/test-wavelet.lsh
+
+(addpath "packages")
+(load "packages/wavelets/tests/framework.lsh")
+(libload "wavelets/wavelet")
+
+(setq *test-pass-count* 0)
+(setq *test-fail-count* 0)
+
+;; Helper: max absolute difference between two idx1
+(de max-abs-diff (a b)
+  (let ((n (idx-dim a 0))
+        (err 0))
+    (for (i 0 (1- n))
+      (setq err (max err (abs (- (a i) (b i))))))
+    err))
+
+;; ================================================================
+;; 1. Filter Coefficients
+;; ================================================================
+(test-suite "Filter Coefficients"
+
+  ;; Haar filter values
+  (let ((g (wavelet-filter "haar")))
+    (test-equal "haar filter length" (idx-dim g 0) 2)
+    (test-approx "haar g[0]" (g 0) (/ 1.0 (sqrt 2)) 1e-15)
+    (test-approx "haar g[1]" (g 1) (/ 1.0 (sqrt 2)) 1e-15))
+
+  ;; D4 filter length and known value
+  (let ((g (wavelet-filter "d4")))
+    (test-equal "d4 filter length" (idx-dim g 0) 4)
+    (test-approx "d4 g[0]" (g 0) 0.4829629131445341 1e-14))
+
+  ;; LA8 filter length and known value
+  (let ((g (wavelet-filter "la8")))
+    (test-equal "la8 filter length" (idx-dim g 0) 8)
+    (test-approx "la8 g[0]" (g 0) -0.07576571478927333 1e-14))
+
+  ;; Filter sum property: sum(g) = sqrt(2)
+  (let ((g (wavelet-filter "d4")))
+    (let ((s 0))
+      (for (i 0 (1- (idx-dim g 0))) (setq s (+ s (g i))))
+      (test-approx "d4 sum(g) = sqrt(2)" s (sqrt 2) 1e-10)))
+
+  (let ((g (wavelet-filter "la8")))
+    (let ((s 0))
+      (for (i 0 (1- (idx-dim g 0))) (setq s (+ s (g i))))
+      (test-approx "la8 sum(g) = sqrt(2)" s (sqrt 2) 1e-10)))
+
+  ;; Filter energy: sum(g^2) = 1
+  (let ((g (wavelet-filter "d4")))
+    (let ((s 0))
+      (for (i 0 (1- (idx-dim g 0))) (setq s (+ s (* (g i) (g i)))))
+      (test-approx "d4 sum(g^2) = 1" s 1.0 1e-10)))
+
+  ;; QMF properties: sum(h) = 0
+  (let* ((g (wavelet-filter "d4"))
+         (h (wavelet-qmf g)))
+    (let ((s 0))
+      (for (i 0 (1- (idx-dim h 0))) (setq s (+ s (h i))))
+      (test-approx "d4 QMF sum(h) = 0" s 0.0 1e-10)))
+
+  ;; QMF energy: sum(h^2) = 1
+  (let* ((g (wavelet-filter "la8"))
+         (h (wavelet-qmf g)))
+    (let ((s 0))
+      (for (i 0 (1- (idx-dim h 0))) (setq s (+ s (* (h i) (h i)))))
+      (test-approx "la8 QMF sum(h^2) = 1" s 1.0 1e-10)))
+
+  ;; Filter length function
+  (test-equal "wavelet-filter-length haar" (wavelet-filter-length "haar") 2)
+  (test-equal "wavelet-filter-length d10" (wavelet-filter-length "d10") 10)
+  (test-equal "wavelet-filter-length la16" (wavelet-filter-length "la16") 16)
+
+  ;; All supported filters load without error
+  (each ((name '("haar" "d4" "d6" "d8" "d10" "d12" "d14" "d16" "d18" "d20"
+                  "la8" "la10" "la12" "la14" "la16" "la18" "la20")))
+    (let ((g (wavelet-filter name)))
+      (test-check (sprintf "filter %s loads" name) (> (idx-dim g 0) 0))))
+)
+
+;; ================================================================
+;; 2. DWT Roundtrip
+;; ================================================================
+(test-suite "DWT Roundtrip"
+
+  ;; Daubechies-4 on length 256
+  (let* ((x (double-matrix 256)))
+    (for (i 0 255) (x i (sin (* 0.05 i))))
+    (let* ((c (dwt x "daubechies" 4))
+           (r (idwt c "daubechies" 4)))
+      (test-check "dwt d4 roundtrip < 1e-12" (< (max-abs-diff r x) 1e-12))))
+
+  ;; Haar on length 64
+  (let* ((x (double-matrix 64)))
+    (for (i 0 63) (x i (* i 0.1)))
+    (let* ((c (dwt x "haar" 2))
+           (r (idwt c "haar" 2)))
+      (test-check "dwt haar roundtrip < 1e-12" (< (max-abs-diff r x) 1e-12))))
+
+  ;; Daubechies-10 on length 128
+  (let* ((x (double-matrix 128)))
+    (for (i 0 127) (x i (+ (sin (* 0.1 i)) (* 0.3 (cos (* 0.05 i))))))
+    (let* ((c (dwt x "daubechies" 10))
+           (r (idwt c "daubechies" 10)))
+      (test-check "dwt d10 roundtrip < 1e-12" (< (max-abs-diff r x) 1e-12))))
+
+  ;; Bspline on length 32
+  (let* ((x (double-matrix 32)))
+    (for (i 0 31) (x i (* i i 0.01)))
+    (let* ((c (dwt x "bspline" 103))
+           (r (idwt c "bspline" 103)))
+      (test-check "dwt bspline-103 roundtrip < 1e-12" (< (max-abs-diff r x) 1e-12))))
+
+  ;; Power-of-2 check
+  (test-check "is-power-of-2: 1" (is-power-of-2 1))
+  (test-check "is-power-of-2: 2" (is-power-of-2 2))
+  (test-check "is-power-of-2: 256" (is-power-of-2 256))
+  (test-check "is-power-of-2: not 3" (not (is-power-of-2 3)))
+  (test-check "is-power-of-2: not 100" (not (is-power-of-2 100)))
+  (test-check "is-power-of-2: not 0" (not (is-power-of-2 0)))
+)
+
+;; ================================================================
+;; 3. MODWT Roundtrip
+;; ================================================================
+(test-suite "MODWT Roundtrip"
+
+  ;; Haar on non-power-of-2 (N=100)
+  (let* ((x (double-matrix 100)))
+    (for (i 0 99) (x i (sin (* 0.1 i))))
+    (let* ((coeffs (modwt x "haar" 3))
+           (r (imodwt coeffs "haar")))
+      (test-check "modwt haar N=100 roundtrip < 1e-12" (< (max-abs-diff r x) 1e-12))
+      (test-equal "modwt haar returns 4 components (3+1)" (length coeffs) 4)))
+
+  ;; D4 on N=64
+  (let* ((x (double-matrix 64)))
+    (for (i 0 63) (x i (* i i 0.001)))
+    (let* ((coeffs (modwt x "d4" 4))
+           (r (imodwt coeffs "d4")))
+      (test-check "modwt d4 N=64 roundtrip < 1e-12" (< (max-abs-diff r x) 1e-12))
+      (test-equal "modwt d4 returns 5 components (4+1)" (length coeffs) 5)))
+
+  ;; LA8 on N=200
+  (let* ((x (double-matrix 200)))
+    (for (i 0 199) (x i (+ (sin (* 0.05 i)) (* 0.3 (cos (* 0.2 i))))))
+    (let* ((coeffs (modwt x "la8" 4))
+           (r (imodwt coeffs "la8")))
+      (test-check "modwt la8 N=200 roundtrip < 1e-10" (< (max-abs-diff r x) 1e-10))))
+
+  ;; D8 on N=50 (short signal)
+  (let* ((x (double-matrix 50)))
+    (for (i 0 49) (x i (exp (* -0.1 i))))
+    (let* ((coeffs (modwt x "d8" 2))
+           (r (imodwt coeffs "d8")))
+      (test-check "modwt d8 N=50 nlevels=2 roundtrip < 1e-10"
+                  (< (max-abs-diff r x) 1e-10))))
+
+  ;; Each coefficient vector has same length as input
+  (let* ((x (double-matrix 73)))
+    (for (i 0 72) (x i i))
+    (let ((coeffs (modwt x "haar" 3)))
+      (each ((c coeffs))
+        (test-equal "modwt coeff length = input length" (idx-dim c 0) 73))))
+
+  ;; modwt-max-levels
+  (test-check "max-levels(256) >= 6" (>= (modwt-max-levels 256) 6))
+  (test-check "max-levels(16) >= 2" (>= (modwt-max-levels 16) 2))
+  (test-check "max-levels(4) >= 1" (>= (modwt-max-levels 4) 1))
+)
+
+;; ================================================================
+;; 4. MRA Reconstruction
+;; ================================================================
+(test-suite "MRA Reconstruction"
+
+  ;; Sum of MRA components = original signal
+  (let* ((x (double-matrix 100)))
+    (for (i 0 99) (x i (sin (* 0.1 i))))
+    (let* ((comps (mra x "haar" 3))
+           (recon (double-matrix 100)))
+      (each ((c comps)) (idx-add recon c recon))
+      (test-check "mra haar reconstruction < 1e-12" (< (max-abs-diff recon x) 1e-12))
+      (test-equal "mra haar returns 4 components" (length comps) 4)))
+
+  ;; MRA with la8
+  (let* ((x (double-matrix 128)))
+    (for (i 0 127) (x i (+ (sin (* 0.1 i)) (cos (* 0.3 i)))))
+    (let* ((comps (mra x "la8" 4))
+           (recon (double-matrix 128)))
+      (each ((c comps)) (idx-add recon c recon))
+      (test-check "mra la8 reconstruction < 1e-10" (< (max-abs-diff recon x) 1e-10))
+      (test-equal "mra la8 returns 5 components" (length comps) 5)))
+
+  ;; Each MRA component has same length as input
+  (let* ((x (double-matrix 100)))
+    (for (i 0 99) (x i i))
+    (let ((comps (mra x "d4" 3)))
+      (each ((c comps))
+        (test-equal "mra component length = input length" (idx-dim c 0) 100))))
+)
+
+;; ================================================================
+;; 5. Thresholding
+;; ================================================================
+(test-suite "Thresholding"
+
+  ;; Hard thresholding
+  (let ((x (double-matrix 5)))
+    (x 0 0.1) (x 1 -0.5) (x 2 2.0) (x 3 -3.0) (x 4 0.05)
+    (let ((h (threshold-hard x 0.3)))
+      (test-approx "hard: small pos -> 0" (h 0) 0.0 1e-15)
+      (test-approx "hard: large neg kept" (h 1) -0.5 1e-15)
+      (test-approx "hard: large pos kept" (h 2) 2.0 1e-15)
+      (test-approx "hard: large neg kept" (h 3) -3.0 1e-15)
+      (test-approx "hard: tiny pos -> 0" (h 4) 0.0 1e-15)))
+
+  ;; Soft thresholding
+  (let ((x (double-matrix 5)))
+    (x 0 0.1) (x 1 -0.5) (x 2 2.0) (x 3 -3.0) (x 4 0.05)
+    (let ((s (threshold-soft x 0.3)))
+      (test-approx "soft: small pos -> 0" (s 0) 0.0 1e-15)
+      (test-approx "soft: neg shrunk" (s 1) -0.2 1e-15)
+      (test-approx "soft: pos shrunk" (s 2) 1.7 1e-15)
+      (test-approx "soft: neg shrunk" (s 3) -2.7 1e-15)
+      (test-approx "soft: tiny pos -> 0" (s 4) 0.0 1e-15)))
+
+  ;; Zero threshold = identity
+  (let ((x (double-matrix 3)))
+    (x 0 1.0) (x 1 -2.0) (x 2 0.5)
+    (let ((h (threshold-hard x 0.0))
+          (s (threshold-soft x 0.0)))
+      (test-approx "hard lambda=0 preserves" (h 0) 1.0 1e-15)
+      (test-approx "soft lambda=0 preserves" (s 1) -2.0 1e-15)))
+
+  ;; Large threshold = all zero
+  (let ((x (double-matrix 3)))
+    (x 0 1.0) (x 1 -2.0) (x 2 0.5)
+    (let ((h (threshold-hard x 100.0)))
+      (test-approx "hard large lambda -> 0" (h 0) 0.0 1e-15)
+      (test-approx "hard large lambda -> 0" (h 1) 0.0 1e-15)))
+)
+
+;; ================================================================
+;; 6. Denoising
+;; ================================================================
+(test-suite "Denoising"
+
+  ;; Denoised signal has correct length
+  (let ((x (double-matrix 200)))
+    (for (i 0 199) (x i (sin (* 0.05 i))))
+    (let ((clean (wavelet-denoise x "haar" 3)))
+      (test-equal "denoise output length" (idx-dim clean 0) 200)))
+
+  ;; Hard denoising
+  (let ((x (double-matrix 200)))
+    (for (i 0 199) (x i (sin (* 0.05 i))))
+    (let ((clean (wavelet-denoise x "la8" 4 "hard")))
+      (test-equal "hard denoise output length" (idx-dim clean 0) 200)))
+
+  ;; Universal threshold is positive
+  (let ((x (double-matrix 100)))
+    (for (i 0 99) (x i (sin (* 0.1 i))))
+    (test-check "universal threshold > 0" (> (universal-threshold x) 0)))
+
+  ;; Denoising a clean signal should not distort much
+  (let* ((x (double-matrix 256))
+         (true-signal (double-matrix 256)))
+    ;; Pure low-frequency signal
+    (for (i 0 255)
+      (let ((v (sin (* 0.02 i))))
+        (x i v) (true-signal i v)))
+    (let ((clean (wavelet-denoise x "la8" 4)))
+      (test-check "denoise clean signal: low distortion"
+                  (< (max-abs-diff clean true-signal) 0.5))))
+)
+
+;; ================================================================
+;; 7. Wavelet Variance
+;; ================================================================
+(test-suite "Wavelet Variance"
+
+  ;; Returns correct number of levels
+  (let ((x (double-matrix 128)))
+    (for (i 0 127) (x i (sin (* 0.1 i))))
+    (let ((vars (wavelet-variance x "haar" 4)))
+      (test-equal "variance: 4 levels" (length vars) 4)))
+
+  ;; All variances are non-negative
+  (let ((x (double-matrix 128)))
+    (for (i 0 127) (x i (+ (sin (* 0.1 i)) (* 0.5 (cos (* 0.3 i))))))
+    (let ((vars (wavelet-variance x "la8" 3)))
+      (each ((v vars))
+        (test-check "variance >= 0" (>= v 0)))))
+
+  ;; Constant signal should have near-zero wavelet variance
+  (let ((x (double-matrix 64)))
+    (for (i 0 63) (x i 5.0))
+    (let ((vars (wavelet-variance x "haar" 3)))
+      (each ((v vars))
+        (test-check "constant signal: variance near 0" (< v 1e-20)))))
+)
+
+;; ================================================================
+;; 8. Edge Cases
+;; ================================================================
+(test-suite "Edge Cases"
+
+  ;; Minimum length: nlevels=1
+  (let* ((x (double-matrix 8)))
+    (for (i 0 7) (x i i))
+    (let* ((coeffs (modwt x "haar" 1))
+           (r (imodwt coeffs "haar")))
+      (test-check "modwt nlevels=1 roundtrip" (< (max-abs-diff r x) 1e-12))
+      (test-equal "modwt nlevels=1: 2 components" (length coeffs) 2)))
+
+  ;; DWT on length 8 (smallest practical)
+  (let* ((x (double-matrix 8)))
+    (for (i 0 7) (x i (1+ i)))
+    (let* ((c (dwt x "haar" 2))
+           (r (idwt c "haar" 2)))
+      (test-check "dwt length=8 roundtrip" (< (max-abs-diff r x) 1e-12))))
+
+  ;; MODWT on prime-length signal
+  (let* ((x (double-matrix 97)))
+    (for (i 0 96) (x i (sin (* 0.1 i))))
+    (let* ((coeffs (modwt x "d4" 3))
+           (r (imodwt coeffs "d4")))
+      (test-check "modwt prime length=97" (< (max-abs-diff r x) 1e-12))))
+
+  ;; QMF of haar
+  (let* ((g (wavelet-filter "haar"))
+         (h (wavelet-qmf g)))
+    (test-approx "haar QMF h[0]" (h 0) (/ 1.0 (sqrt 2)) 1e-15)
+    (test-approx "haar QMF h[1]" (h 1) (/ -1.0 (sqrt 2)) 1e-15))
+
+  ;; wavelet-ts with default nlevels
+  (let* ((x (double-matrix 64)))
+    (for (i 0 63) (x i i))
+    (let ((wts (new wavelet-ts x "haar")))
+      (test-check "wavelet-ts default nlevels > 0" (> :wts:nlevels 0))
+      (let ((c (==> wts decompose)))
+        (test-check "wavelet-ts decompose returns list" (listp c)))))
+)
+
+
+;; ================================================================
+;; Summary
+;; ================================================================
+(test-summary)

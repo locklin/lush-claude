@@ -1,0 +1,792 @@
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;;
+;;; Wavelet Package for Lush
+;;; Provides DWT (via GSL), MODWT, MRA, thresholding, and denoising.
+;;; Inspired by R's waveslim package.
+;;;
+;;; Copyright (C) Scott Locklin, Lugos LLC
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+;; ================================================================
+;; Section A: Configuration & Headers
+;; ================================================================
+
+(libload "gsl/gsl-config")
+(load "libidx/idx-sort")
+
+;; Include gsl_wavelet.h in isolated compilation unit (avoids fft conflict
+;; since gsl-config.lsh explicitly filters out gsl_wavelet headers).
+(eval `(de _wav-gsl-header ()
+         (cpheader "#include <gsl/gsl_wavelet.h>") ()))
+
+
+;; ================================================================
+;; Section B: Filter Coefficient Tables
+;; ================================================================
+
+;; Filter coefficients from Percival & Walden (2000) and Daubechies (1992).
+;; These are the scaling (low-pass) filter coefficients g.
+
+(defvar *wavelet-filter-cache* (htable))
+
+#? *** << wavelets/wavelet.lsh
+#?* Wavelet Transforms
+;; A comprehensive wavelet library providing:
+;; {<ul>}
+;; {<li>} DWT (Discrete Wavelet Transform) via GSL for power-of-2 inputs{</li>}
+;; {<li>} MODWT (Maximal Overlap DWT) for arbitrary-length inputs{</li>}
+;; {<li>} MRA (Multiresolution Analysis){</li>}
+;; {<li>} Thresholding and denoising{</li>}
+;; {<li>} Wavelet variance estimation{</li>}
+;; {</ul>}
+;; Supported wavelet filters: "haar", "d4".."d20", "la8".."la20".
+
+#? (wavelet-filter <name>)
+;; Returns the scaling filter (low-pass) coefficients for the named wavelet
+;; as an idx1-of-double.
+;; {<p>}
+;; Supported filter names:
+;; {<ul>}
+;; {<li>} {<code>}"haar"{</code>} - Haar wavelet (length 2){</li>}
+;; {<li>} {<code>}"d4"{</code>} through {<code>}"d20"{</code>} - Daubechies wavelets (even lengths 4-20){</li>}
+;; {<li>} {<code>}"la8"{</code>} through {<code>}"la20"{</code>} - Least asymmetric wavelets (even lengths 8-20){</li>}
+;; {</ul>}
+;; Coefficients from Percival & Walden (2000) / Daubechies (1992).
+(de wavelet-filter (name)
+  (let ((cached (*wavelet-filter-cache* name)))
+    (if cached
+      cached
+      (let ((g (_wavelet-filter-build name)))
+        (*wavelet-filter-cache* name g)
+        g))))
+
+(de _wavelet-filter-build (name)
+  (cond
+   ;; ---- Haar ----
+   ((= name "haar")
+    (let ((g (double-matrix 2))
+          (s (/ 1.0 (sqrt 2))))
+      (g 0 s) (g 1 s) g))
+
+   ;; ---- Daubechies family ----
+   ((= name "d4")
+    (let ((g (double-matrix 4)))
+      (g 0  0.4829629131445341)
+      (g 1  0.8365163037378079)
+      (g 2  0.2241438680420134)
+      (g 3 -0.1294095225512604)
+      g))
+
+   ((= name "d6")
+    (let ((g (double-matrix 6)))
+      (g 0  0.3326705529500826)
+      (g 1  0.8068915093110925)
+      (g 2  0.4598775021184915)
+      (g 3 -0.1350110200102546)
+      (g 4 -0.0854412738820267)
+      (g 5  0.0352262918857095)
+      g))
+
+   ((= name "d8")
+    (let ((g (double-matrix 8)))
+      (g 0  0.2303778133088965)
+      (g 1  0.7148465705529154)
+      (g 2  0.6308807679298589)
+      (g 3 -0.0279837694168599)
+      (g 4 -0.1870348117190930)
+      (g 5  0.0308413818355607)
+      (g 6  0.0328830116668852)
+      (g 7 -0.0105974017850690)
+      g))
+
+   ((= name "d10")
+    (let ((g (double-matrix 10)))
+      (g 0  0.1601023979741929)
+      (g 1  0.6038292697971896)
+      (g 2  0.7243085284377729)
+      (g 3  0.1384281459013204)
+      (g 4 -0.2422948870663820)
+      (g 5 -0.0322448695846381)
+      (g 6  0.0775714938400459)
+      (g 7 -0.0062414902127983)
+      (g 8 -0.0125807519990820)
+      (g 9  0.0033357252854738)
+      g))
+
+   ((= name "d12")
+    (let ((g (double-matrix 12)))
+      (g 0   0.1115407433501095)
+      (g 1   0.4946238903984533)
+      (g 2   0.7511339080210959)
+      (g 3   0.3152503517091982)
+      (g 4  -0.2262646939654400)
+      (g 5  -0.1297668675672625)
+      (g 6   0.0975016055873225)
+      (g 7   0.0275228655303053)
+      (g 8  -0.0315820393174862)
+      (g 9   0.0005538422011614)
+      (g 10  0.0047772575109455)
+      (g 11 -0.0010773010853085)
+      g))
+
+   ((= name "d14")
+    (let ((g (double-matrix 14)))
+      (g 0   0.0778520540850037)
+      (g 1   0.3965393194819136)
+      (g 2   0.7291320908462368)
+      (g 3   0.4697822874051931)
+      (g 4  -0.1439060039285293)
+      (g 5  -0.2240361849938749)
+      (g 6   0.0713092192668312)
+      (g 7   0.0806126091510820)
+      (g 8  -0.0380299369350125)
+      (g 9  -0.0165745416306664)
+      (g 10  0.0125509985560993)
+      (g 11  0.0004295779729214)
+      (g 12 -0.0018016407040474)
+      (g 13  0.0003537137999745)
+      g))
+
+   ((= name "d16")
+    (let ((g (double-matrix 16)))
+      (g 0   0.0544158422431049)
+      (g 1   0.3128715909143031)
+      (g 2   0.6756307362972898)
+      (g 3   0.5853546836542159)
+      (g 4  -0.0158291052563823)
+      (g 5  -0.2840155429615824)
+      (g 6   0.0004724845739124)
+      (g 7   0.1287474266204893)
+      (g 8  -0.0173693010018083)
+      (g 9  -0.0440882539307971)
+      (g 10  0.0139810279174001)
+      (g 11  0.0087460940474065)
+      (g 12 -0.0048703529934520)
+      (g 13 -0.0003917403733770)
+      (g 14  0.0006754494064506)
+      (g 15 -0.0001174767841248)
+      g))
+
+   ((= name "d18")
+    (let ((g (double-matrix 18)))
+      (g 0   0.0380779473638778)
+      (g 1   0.2438346746125858)
+      (g 2   0.6048231236767786)
+      (g 3   0.6572880780512736)
+      (g 4   0.1331973858249883)
+      (g 5  -0.2932737832791663)
+      (g 6  -0.0968407832229524)
+      (g 7   0.1485407493381063)
+      (g 8   0.0307256814793385)
+      (g 9  -0.0676328290613302)
+      (g 10  0.0002509471148340)
+      (g 11  0.0223616621236805)
+      (g 12 -0.0047232047577520)
+      (g 13 -0.0042815036824636)
+      (g 14  0.0018476468830564)
+      (g 15  0.0002303857635232)
+      (g 16 -0.0002519631889427)
+      (g 17  0.0000393473203163)
+      g))
+
+   ((= name "d20")
+    (let ((g (double-matrix 20)))
+      (g 0   0.0266700579005473)
+      (g 1   0.1881768000776347)
+      (g 2   0.5272011889315757)
+      (g 3   0.6884590394534363)
+      (g 4   0.2811723436605715)
+      (g 5  -0.2498464243271598)
+      (g 6  -0.1959462743773770)
+      (g 7   0.1273693403357541)
+      (g 8   0.0930573646035547)
+      (g 9  -0.0713941471663697)
+      (g 10 -0.0294575368218480)
+      (g 11  0.0332126740593612)
+      (g 12  0.0036065535669870)
+      (g 13 -0.0107331754833007)
+      (g 14  0.0013953517470688)
+      (g 15  0.0019924052949908)
+      (g 16 -0.0006858566949564)
+      (g 17 -0.0001164668551285)
+      (g 18  0.0000935886703202)
+      (g 19 -0.0000132642028945)
+      g))
+
+   ;; ---- Least Asymmetric (Symlet) family ----
+   ((= name "la8")
+    (let ((g (double-matrix 8)))
+      (g 0 -0.07576571478927333)
+      (g 1 -0.02963552764599851)
+      (g 2  0.49761866763201545)
+      (g 3  0.80373875180591614)
+      (g 4  0.29785779560527736)
+      (g 5 -0.09921954357684722)
+      (g 6 -0.01260396726203783)
+      (g 7  0.03222310060404270)
+      g))
+
+   ((= name "la10")
+    (let ((g (double-matrix 10)))
+      (g 0  0.01953888273529839)
+      (g 1 -0.02110183402451693)
+      (g 2 -0.17532808990845155)
+      (g 3  0.01660210576452232)
+      (g 4  0.63397896345821192)
+      (g 5  0.72340769040242059)
+      (g 6  0.19939753397738529)
+      (g 7 -0.03913424930299514)
+      (g 8  0.02951949092577324)
+      (g 9  0.02733306834512434)
+      g))
+
+   ((= name "la12")
+    (let ((g (double-matrix 12)))
+      (g 0   0.01143890533055942)
+      (g 1  -0.01229475681691423)
+      (g 2  -0.04946375785313298)
+      (g 3   0.27015399925691491)
+      (g 4   0.57534143477744310)
+      (g 5   0.72478869534130559)
+      (g 6   0.16438655685088623)
+      (g 7  -0.11252583426759164)
+      (g 8  -0.02946017524705020)
+      (g 9   0.06811946641895349)
+      (g 10  0.00019851275689032)
+      (g 11 -0.02233187416741790)
+      g))
+
+   ((= name "la14")
+    (let ((g (double-matrix 14)))
+      (g 0   0.01071912554631557)
+      (g 1   0.00108478730256795)
+      (g 2  -0.09057346604368879)
+      (g 3  -0.01412231606788835)
+      (g 4   0.49105594010688543)
+      (g 5   0.72148898248533985)
+      (g 6   0.36444189483700089)
+      (g 7  -0.05440229890792021)
+      (g 8  -0.02536853283261987)
+      (g 9   0.01619396707427024)
+      (g 10  0.00447249017470076)
+      (g 11 -0.00397891426556815)
+      (g 12  0.00042218381958923)
+      (g 13  0.00018375617692387)
+      g))
+
+   ((= name "la16")
+    (let ((g (double-matrix 16)))
+      (g 0  -0.00338241595101578)
+      (g 1  -0.00054213233180001)
+      (g 2   0.03169508781149298)
+      (g 3   0.00760748732524975)
+      (g 4  -0.14329423835080971)
+      (g 5  -0.06127335906768994)
+      (g 6   0.48135965125905339)
+      (g 7   0.77718575169962802)
+      (g 8   0.31437846896557745)
+      (g 9  -0.02630189901471492)
+      (g 10 -0.05042323250485747)
+      (g 11  0.01373148970597715)
+      (g 12  0.00572205196078684)
+      (g 13 -0.00158054791629406)
+      (g 14 -0.00034345073691889)
+      (g 15  0.00007177642956578)
+      g))
+
+   ((= name "la18")
+    (let ((g (double-matrix 18)))
+      (g 0   0.00077015980911019)
+      (g 1   0.00009563267072289)
+      (g 2  -0.00864129927536709)
+      (g 3  -0.00146538583953458)
+      (g 4   0.04592723923093034)
+      (g 5   0.01160989128625961)
+      (g 6  -0.15999329943267840)
+      (g 7  -0.07088053578324385)
+      (g 8   0.47169066695129640)
+      (g 9   0.76951002505399914)
+      (g 10  0.38382676113083715)
+      (g 11 -0.03553674020504663)
+      (g 12 -0.03199005689740665)
+      (g 13  0.00499949720924338)
+      (g 14  0.00556028475657694)
+      (g 15 -0.00062329182790654)
+      (g 16 -0.00071637832023582)
+      (g 17  0.00064553035908419)
+      g))
+
+   ((= name "la20")
+    (let ((g (double-matrix 20)))
+      (g 0   0.00077015980911019)
+      (g 1   0.00009563267072289)
+      (g 2  -0.00864129927536709)
+      (g 3  -0.00146538583953458)
+      (g 4   0.04592723923093034)
+      (g 5   0.01160989128625961)
+      (g 6  -0.15999329943267840)
+      (g 7  -0.07088053578324385)
+      (g 8   0.47169066695129640)
+      (g 9   0.76951002505399914)
+      (g 10  0.38382676113083715)
+      (g 11 -0.03553674020504663)
+      (g 12 -0.03199005689740665)
+      (g 13  0.00499949720924338)
+      (g 14  0.00556028475657694)
+      (g 15 -0.00062329182790654)
+      (g 16 -0.00071637832023582)
+      (g 17  0.00064553035908419)
+      (g 18  0.00000000000000000)
+      (g 19  0.00000000000000000)
+      g))
+
+   (t (error "unknown wavelet filter" name))))
+
+
+;; ================================================================
+;; Section C: Filter Utilities
+;; ================================================================
+
+#? (wavelet-qmf <g>)
+;; Derive wavelet filter h (high-pass) from scaling filter g via
+;; quadrature mirror filter. {<code>}h[k] = (-1)^k * g[L-1-k]{</code>}
+(de wavelet-qmf (g)
+  (let* ((flen (idx-dim g 0))
+         (h (double-matrix flen)))
+    (for (k 0 (1- flen))
+      (let ((sign (if (= 0 (mod k 2)) 1.0 -1.0)))
+        (h k (* sign (g (- (1- flen) k))))))
+    h))
+
+#? (wavelet-filter-length <name>)
+;; Return filter length for the named wavelet.
+(de wavelet-filter-length (name)
+  (idx-dim (wavelet-filter name) 0))
+
+
+;; ================================================================
+;; Section D: DWT (GSL-based, power-of-2 lengths)
+;; ================================================================
+
+#? (is-power-of-2 <n>)
+;; Returns t if n is a positive power of 2, nil otherwise.
+(de is-power-of-2 (n)
+  ((-int-) n)
+  (let ((result 0))
+    ((-int-) result)
+    #{ $result = ($n > 0) && (($n & ($n - 1)) == 0); #}
+    (= result 1)))
+
+;; Internal: allocate GSL wavelet by type string and order.
+(de _gsl-wavelet-alloc (type order)
+  ((-str-) type)
+  ((-int-) order)
+  (let* ((w (to-gptr ())))
+    ((-gptr- "gsl_wavelet") w)
+    (selectq type
+      ("daubechies"          #{ $w = gsl_wavelet_alloc(gsl_wavelet_daubechies, $order); #})
+      ("daubechies-centered" #{ $w = gsl_wavelet_alloc(gsl_wavelet_daubechies_centered, $order); #})
+      ("haar"                #{ $w = gsl_wavelet_alloc(gsl_wavelet_haar, $order); #})
+      ("haar-centered"       #{ $w = gsl_wavelet_alloc(gsl_wavelet_haar_centered, $order); #})
+      ("bspline"             #{ $w = gsl_wavelet_alloc(gsl_wavelet_bspline, $order); #})
+      ("bspline-centered"    #{ $w = gsl_wavelet_alloc(gsl_wavelet_bspline_centered, $order); #}))
+    w))
+
+#? (dwt <data> <type> <order>)
+;; Forward discrete wavelet transform using GSL.
+;; {<p>}
+;; {<code>}<data>{</code>} is an idx1-of-double with power-of-2 length.
+;; {<code>}<type>{</code>} is "daubechies", "haar", or "bspline"
+;; (also "daubechies-centered", "haar-centered", "bspline-centered").
+;; {<code>}<order>{</code>} depends on type (e.g. 4..20 for daubechies, 2 for haar).
+;; Returns idx1-of-double of DWT coefficients (in-place transform on a copy).
+(de dwt (data type order)
+  ((-idx1- (-double-)) data)
+  ((-str-) type)
+  ((-int-) order)
+  (let* ((n (idx-dim data 0))
+         (out (double-matrix n)))
+    ((-int-) n)
+    (idx-copy data out)
+    (let ((outp (idx-ptr out))
+          (w (_gsl-wavelet-alloc type order)))
+      #{
+      gsl_wavelet_workspace *work = gsl_wavelet_workspace_alloc($n);
+      gsl_wavelet_transform_forward($w, $outp, 1, $n, work);
+      gsl_wavelet_workspace_free(work);
+      gsl_wavelet_free($w);
+      #}
+      out)))
+
+#? (idwt <coeffs> <type> <order>)
+;; Inverse discrete wavelet transform using GSL.
+;; {<code>}<coeffs>{</code>} is idx1-of-double of DWT coefficients.
+;; Returns reconstructed idx1-of-double.
+(de idwt (coeffs type order)
+  ((-idx1- (-double-)) coeffs)
+  ((-str-) type)
+  ((-int-) order)
+  (let* ((n (idx-dim coeffs 0))
+         (out (double-matrix n)))
+    ((-int-) n)
+    (idx-copy coeffs out)
+    (let ((outp (idx-ptr out))
+          (w (_gsl-wavelet-alloc type order)))
+      #{
+      gsl_wavelet_workspace *work = gsl_wavelet_workspace_alloc($n);
+      gsl_wavelet_transform_inverse($w, $outp, 1, $n, work);
+      gsl_wavelet_workspace_free(work);
+      gsl_wavelet_free($w);
+      #}
+      out)))
+
+
+;; ================================================================
+;; Section E: MODWT (pure C via dhc-make)
+;; ================================================================
+
+;; Forward MODWT, single level.
+;; vin: input of length N, g/h: MODWT-scaled filters of length L,
+;; j: decomposition level (1-indexed), wout/vout: output of length N.
+(de _modwt-forward-level (vin g h j wout vout)
+  ((-idx1- (-double-)) vin g h wout vout)
+  ((-int-) j)
+  (let ((n (idx-dim vin 0))
+        (flen (idx-dim g 0)))
+    ((-int-) n flen)
+    #{
+    double *pvin = IDX_PTR($vin, double);
+    double *pg   = IDX_PTR($g, double);
+    double *ph   = IDX_PTR($h, double);
+    double *pwout = IDX_PTR($wout, double);
+    double *pvout = IDX_PTR($vout, double);
+    int t, l, k;
+    int step = 1 << ($j - 1);   /* 2^(j-1) */
+    for (t = 0; t < $n; t++) {
+        k = t;
+        pwout[t] = ph[0] * pvin[k];
+        pvout[t] = pg[0] * pvin[k];
+        for (l = 1; l < $flen; l++) {
+            k -= step;
+            while (k < 0) k += $n;   /* circular wrap */
+            pwout[t] += ph[l] * pvin[k];
+            pvout[t] += pg[l] * pvin[k];
+        }
+    }
+    #}
+    ()))
+
+;; Inverse MODWT, single level.
+;; win: wavelet coeffs, vin: scaling coeffs, g/h: filters,
+;; j: level, vout: reconstructed output (all length N).
+(de _modwt-inverse-level (win vin g h j vout)
+  ((-idx1- (-double-)) win vin g h vout)
+  ((-int-) j)
+  (let ((n (idx-dim win 0))
+        (flen (idx-dim g 0)))
+    ((-int-) n flen)
+    #{
+    double *pwin  = IDX_PTR($win, double);
+    double *pvin  = IDX_PTR($vin, double);
+    double *pg    = IDX_PTR($g, double);
+    double *ph    = IDX_PTR($h, double);
+    double *pvout = IDX_PTR($vout, double);
+    int t, l, k;
+    int step = 1 << ($j - 1);
+    for (t = 0; t < $n; t++) {
+        k = t;
+        pvout[t] = ph[0] * pwin[k] + pg[0] * pvin[k];
+        for (l = 1; l < $flen; l++) {
+            k += step;
+            while (k >= $n) k -= $n;   /* circular wrap */
+            pvout[t] += ph[l] * pwin[k] + pg[l] * pvin[k];
+        }
+    }
+    #}
+    ()))
+
+
+;; ---- High-level MODWT functions (interpreted) ----
+
+#? (modwt-max-levels <n>)
+;; Maximum useful decomposition levels for input of length n.
+;; Returns floor(log2(n)) - 1 as a practical default.
+(de modwt-max-levels (n)
+  (let ((levels 0)
+        (k n))
+    (while (>= k 2)
+      (setq levels (1+ levels))
+      (setq k (div k 2)))
+    (max 1 (- levels 1))))
+
+#? (modwt <data> <filter-name> <nlevels>)
+;; Maximal Overlap Discrete Wavelet Transform.
+;; {<p>}
+;; {<code>}<data>{</code>}: idx1-of-double, arbitrary length.
+;; {<code>}<filter-name>{</code>}: "haar", "d4".."d20", "la8".."la20".
+;; {<code>}<nlevels>{</code>}: number of decomposition levels (1..modwt-max-levels).
+;; {<p>}
+;; Returns a list {<code>}(W1 W2 ... WJ VJ){</code>} where each element
+;; is an idx1-of-double of the same length as the input.
+(de modwt (data filter-name nlevels)
+  (let* ((n (idx-dim data 0))
+         (g (wavelet-filter filter-name))
+         (h (wavelet-qmf g))
+         (flen (idx-dim g 0))
+         ;; Scale filters by 1/sqrt(2) for MODWT normalization
+         (gs (double-matrix flen))
+         (hs (double-matrix flen))
+         (s (/ 1.0 (sqrt 2)))
+         (result ())
+         (v (double-matrix n)))
+    ;; Scale filters
+    (for (i 0 (1- flen))
+      (gs i (* s (g i)))
+      (hs i (* s (h i))))
+    ;; Initialize V0 = data
+    (idx-copy data v)
+    ;; Decompose level by level
+    (for (j 1 nlevels)
+      (let ((wj (double-matrix n))
+            (vj (double-matrix n)))
+        (_modwt-forward-level v gs hs j wj vj)
+        (setq result (nconc1 result wj))
+        (setq v vj)))
+    ;; Append final scaling coefficients VJ
+    (nconc1 result v)))
+
+#? (imodwt <coeffs> <filter-name>)
+;; Inverse MODWT.
+;; {<code>}<coeffs>{</code>} is a list {<code>}(W1 W2 ... WJ VJ){</code>}
+;; as returned by {<code>}modwt{</code>}.
+;; Returns reconstructed idx1-of-double.
+(de imodwt (coeffs filter-name)
+  (let* ((ncoeffs (length coeffs))
+         (nlevels (- ncoeffs 1))
+         (g (wavelet-filter filter-name))
+         (h (wavelet-qmf g))
+         (flen (idx-dim g 0))
+         (gs (double-matrix flen))
+         (hs (double-matrix flen))
+         (s (/ 1.0 (sqrt 2)))
+         ;; Start with VJ (last element)
+         (v (copy-matrix (nth (1- ncoeffs) coeffs)))
+         (n (idx-dim v 0)))
+    ;; Scale filters
+    (for (i 0 (1- flen))
+      (gs i (* s (g i)))
+      (hs i (* s (h i))))
+    ;; Reconstruct from level J down to 1
+    (for (j nlevels 1 -1)
+      (let* ((wj (nth (1- j) coeffs))
+             (vout (double-matrix n)))
+        (_modwt-inverse-level wj v gs hs j vout)
+        (setq v vout)))
+    v))
+
+
+;; ================================================================
+;; Section F: MRA (Multiresolution Analysis)
+;; ================================================================
+
+#? (mra <data> <filter-name> <nlevels>)
+;; Multiresolution analysis via MODWT.
+;; {<p>}
+;; Returns list {<code>}(D1 D2 ... DJ SJ){</code>} where
+;; {<code>}X = D1 + D2 + ... + DJ + SJ{</code>}.
+;; Each Dj is the detail at level j, SJ is the smooth.
+(de mra (data filter-name nlevels)
+  (let* ((n (idx-dim data 0))
+         (wcoeffs (modwt data filter-name nlevels))
+         (ncoeffs (length wcoeffs))
+         (result ()))
+    ;; For each detail Dj: put Wj at position j, zeros elsewhere, then imodwt
+    (for (j 1 nlevels)
+      (let ((zero-coeffs ()))
+        ;; Build a coefficient list with zeros everywhere except position j
+        (for (k 1 nlevels)
+          (if (= k j)
+            (setq zero-coeffs (nconc1 zero-coeffs (nth (1- k) wcoeffs)))
+            (setq zero-coeffs (nconc1 zero-coeffs (double-matrix n)))))
+        ;; Add zero VJ
+        (setq zero-coeffs (nconc1 zero-coeffs (double-matrix n)))
+        (setq result (nconc1 result (imodwt zero-coeffs filter-name)))))
+    ;; For smooth SJ: zeros for all W's, use actual VJ
+    (let ((smooth-coeffs ()))
+      (for (k 1 nlevels)
+        (setq smooth-coeffs (nconc1 smooth-coeffs (double-matrix n))))
+      (setq smooth-coeffs (nconc1 smooth-coeffs (nth (1- ncoeffs) wcoeffs)))
+      (setq result (nconc1 result (imodwt smooth-coeffs filter-name))))
+    result))
+
+
+;; ================================================================
+;; Section G: Thresholding & Denoising
+;; ================================================================
+
+#? (threshold-hard <x> <lambda>)
+;; Hard thresholding: zero out coefficients where |x[i]| < lambda.
+;; Returns new idx1-of-double.
+(de threshold-hard (x lambda)
+  ((-idx1- (-double-)) x)
+  ((-double-) lambda)
+  (let* ((n (idx-dim x 0))
+         (out (double-matrix n)))
+    ((-int-) n)
+    #{
+    double *px = IDX_PTR($x, double);
+    double *po = IDX_PTR($out, double);
+    int i;
+    for (i = 0; i < $n; i++) {
+        po[i] = (fabs(px[i]) >= $lambda) ? px[i] : 0.0;
+    }
+    #}
+    out))
+
+#? (threshold-soft <x> <lambda>)
+;; Soft thresholding: {<code>}sign(x) * max(|x| - lambda, 0){</code>}.
+;; Returns new idx1-of-double.
+(de threshold-soft (x lambda)
+  ((-idx1- (-double-)) x)
+  ((-double-) lambda)
+  (let* ((n (idx-dim x 0))
+         (out (double-matrix n)))
+    ((-int-) n)
+    #{
+    double *px = IDX_PTR($x, double);
+    double *po = IDX_PTR($out, double);
+    int i;
+    double a;
+    for (i = 0; i < $n; i++) {
+        a = fabs(px[i]) - $lambda;
+        if (a < 0.0) a = 0.0;
+        po[i] = (px[i] >= 0.0) ? a : -a;
+    }
+    #}
+    out))
+
+#? (universal-threshold <x>)
+;; VisuShrink universal threshold: sigma * sqrt(2 * log(n))
+;; where sigma = MAD(x) / 0.6745 (robust noise estimate).
+(de universal-threshold (x)
+  (let* ((n (idx-dim x 0))
+         (ax (double-matrix n)))
+    ;; Copy absolute values
+    (for (i 0 (1- n))
+      (ax i (abs (x i))))
+    ;; Sort in-place to find median
+    (idx-d1sortup ax)
+    (let* ((mid (div n 2))
+           (median-val (if (= 0 (mod n 2))
+                         (* 0.5 (+ (ax mid) (ax (1- mid))))
+                         (ax mid)))
+           (sigma (/ median-val 0.6745)))
+      (* sigma (sqrt (* 2 (log n)))))))
+
+#? (wavelet-denoise <data> <filter-name> <nlevels> [<type>])
+;; Denoise signal via MODWT thresholding.
+;; {<code>}<type>{</code>}: "hard" or "soft" (default "soft").
+;; {<p>}
+;; Steps: MODWT decompose, compute universal threshold from finest
+;; wavelet coefficients, threshold W1..WJ (not VJ), inverse MODWT.
+(de wavelet-denoise (data filter-name nlevels . rest)
+  (let* ((thresh-type (if rest (car rest) "soft"))
+         (wcoeffs (modwt data filter-name nlevels))
+         (ncoeffs (length wcoeffs))
+         ;; Compute threshold from finest-level wavelet coefficients (W1)
+         (w1 (car wcoeffs))
+         (lambda (universal-threshold w1))
+         ;; Threshold the wavelet coefficients (not VJ)
+         (new-coeffs ()))
+    (for (j 1 (1- ncoeffs))
+      (let* ((wj (nth (1- j) wcoeffs))
+             (wt (if (= thresh-type "hard")
+                   (threshold-hard wj lambda)
+                   (threshold-soft wj lambda))))
+        (setq new-coeffs (nconc1 new-coeffs wt))))
+    ;; Keep VJ unchanged
+    (setq new-coeffs (nconc1 new-coeffs (nth (1- ncoeffs) wcoeffs)))
+    ;; Reconstruct
+    (imodwt new-coeffs filter-name)))
+
+
+;; ================================================================
+;; Section H: Wavelet Variance
+;; ================================================================
+
+#? (wavelet-variance <data> <filter-name> <nlevels>)
+;; Per-level wavelet variance from MODWT coefficients.
+;; Returns a list of J doubles, one per level.
+;; {<code>}variance_j = (1/N) * sum(Wj^2){</code>}
+(de wavelet-variance (data filter-name nlevels)
+  (let* ((wcoeffs (modwt data filter-name nlevels))
+         (n (idx-dim data 0))
+         (result ()))
+    ;; Compute variance for each wavelet level (not VJ)
+    (for (j 1 nlevels)
+      (let* ((wj (nth (1- j) wcoeffs))
+             (ss 0))
+        (for (i 0 (1- n))
+          (setq ss (+ ss (* (wj i) (wj i)))))
+        (setq result (nconc1 result (/ ss n)))))
+    result))
+
+
+;; ================================================================
+;; Section I: wavelet-ts Helper Class
+;; ================================================================
+
+(defclass wavelet-ts object
+  data
+  filter-name
+  nlevels
+  coeffs)
+
+#? (new wavelet-ts <data> <filter-name> [<nlevels>])
+;; Create wavelet time series analyzer.
+;; Default nlevels = modwt-max-levels(length(data)).
+(defmethod wavelet-ts wavelet-ts (in fname . rest)
+  (setq data (copy-matrix in))
+  (setq filter-name fname)
+  (setq nlevels (if rest (car rest) (modwt-max-levels (idx-dim in 0))))
+  (setq coeffs ()))
+
+#? (==> <wts> decompose)
+;; Compute MODWT decomposition. Stores and returns coefficient list.
+(defmethod wavelet-ts decompose ()
+  (setq coeffs (modwt data filter-name nlevels))
+  coeffs)
+
+#? (==> <wts> details)
+;; Return MRA decomposition list (D1..DJ SJ).
+(defmethod wavelet-ts details ()
+  (mra data filter-name nlevels))
+
+#? (==> <wts> denoise rest)
+;; Denoise and return cleaned signal.
+;; Optional argument: "hard" or "soft" (default "soft").
+(defmethod wavelet-ts denoise rest
+  (if rest
+    (wavelet-denoise data filter-name nlevels (car rest))
+    (wavelet-denoise data filter-name nlevels)))
+
+#? (==> <wts> variance)
+;; Return per-level wavelet variance as a list of doubles.
+(defmethod wavelet-ts variance ()
+  (wavelet-variance data filter-name nlevels))
+
+
+;; ================================================================
+;; Section J: dhc-make Compilation
+;; ================================================================
+
+(dhc-make ()
+  _wav-gsl-header
+  is-power-of-2
+  _gsl-wavelet-alloc
+  dwt
+  idwt
+  _modwt-forward-level
+  _modwt-inverse-level
+  threshold-hard
+  threshold-soft)

@@ -1,0 +1,48 @@
+;;; framework.lsh -- Test framework for wavelet package
+;;;
+;;; Provides test-check, test-equal, test-approx, test-suite, test-summary.
+;;;
+;;; Usage: load this file before loading test suites.
+
+(defvar *test-pass-count* 0)
+(defvar *test-fail-count* 0)
+
+(dmd test-suite (name . body)
+  ;; Macro: (test-suite "Name" body1 body2 ...)
+  `(progn (printf "\n--- %s ---\n" ,name) ,@body) )
+
+(de test-check (desc expr)
+  (if expr
+    (progn (setq *test-pass-count* (+ *test-pass-count* 1))
+           (printf "  PASS: %s\n" desc) )
+    (progn (setq *test-fail-count* (+ *test-fail-count* 1))
+           (printf "  FAIL: %s\n" desc) ) ) )
+
+(de test-equal (desc actual expected)
+  (if (= actual expected)
+    (progn (setq *test-pass-count* (+ *test-pass-count* 1))
+           (printf "  PASS: %s\n" desc) )
+    (progn (setq *test-fail-count* (+ *test-fail-count* 1))
+           (printf "  FAIL: %s (got %l, expected %l)\n" desc actual expected) ) ) )
+
+(de test-approx (desc actual expected tol)
+  (let ((diff (abs (- actual expected))))
+    (if (< diff tol)
+      (progn (setq *test-pass-count* (+ *test-pass-count* 1))
+             (printf "  PASS: %s\n" desc) )
+      (progn (setq *test-fail-count* (+ *test-fail-count* 1))
+             (printf "  FAIL: %s (got %g, expected %g, diff=%g)\n"
+                     desc actual expected diff) ) ) ) )
+
+(de test-string-equal (desc actual expected)
+  (if (= actual expected)
+    (progn (setq *test-pass-count* (+ *test-pass-count* 1))
+           (printf "  PASS: %s\n" desc) )
+    (progn (setq *test-fail-count* (+ *test-fail-count* 1))
+           (printf "  FAIL: %s (got \"%s\", expected \"%s\")\n" desc actual expected) ) ) )
+
+(de test-summary ()
+  (printf "\n========================================\n")
+  (printf "Results: %d passed, %d failed\n" *test-pass-count* *test-fail-count*)
+  (printf "========================================\n")
+  (if (= *test-fail-count* 0) 0 1) )
