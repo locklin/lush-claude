@@ -42,6 +42,32 @@ a non-`;;` line, or a blank line.
 Angle brackets `<x>` in the body are rendered bold/highlighted (use for
 parameter names and short code literals).
 
+## CRITICAL RULE: Only Use Valid Brace Tags
+
+The brace parser (`brace.read-tag` in `lsh/libstd/brace.lsh:182`) rejects
+any tag not in its hardcoded list.  Common HTML tags that are **NOT** valid
+Lush brace tags include: `<ol>`, `<table>`, `<tr>`, `<td>`, `<th>`,
+`<span>`, `<em>`, `<strong>`, `<hr>`, `<dl>`, `<dt>`, `<dd>`,
+`<blockquote>`, `<sup>`, `<sub>`, `<section>`, `<nav>`, `<article>`.
+
+Using any of these produces:
+`*** error : illegal tag in brace construct: <tagname>`
+
+**The complete list of valid tags** (plus their UPPERCASE equivalents):
+
+- Formatting: `p`, `pre`, `code`, `li`, `br`, `tt`, `b`, `i`, `u`, `c`,
+  `font`, `center`, `img`, `ul`, `div`
+- Headings: `h1`, `h2`, `h3`
+- Links: `hlink`, `see`
+- Conditional: `if-html`, `if-latex`, `if-ogre`, `if-text`
+- Metadata: `author`, `symbol`, `location`, `keywords`, `date`, `desc`,
+  `title`, `type`
+- Global: `lit`, `meta`, `ex`
+
+**Common mistake:** using `{<ol>}` for ordered lists.  Lush has no ordered
+list tag — use `{<ul>}` instead.  (Bug found and fixed in
+`packages/datatable/datatable-csv.lsh:238`.)
+
 ## CRITICAL RULE: Do Not Mix Tag Styles
 
 **Within a single entry body, you must use EITHER dot-tags OR brace-tags,
