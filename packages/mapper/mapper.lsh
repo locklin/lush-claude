@@ -76,6 +76,11 @@
 ;;.IP
 ;;   'min-intersection -- minimum shared points for an edge (default 1).
 ;;.PP
+;; For custom distance structures (e.g. Random Forest proximity),
+;; use the RF proximity method directly to get an NxN similarity
+;; matrix, then apply a spectral lens (Laplacian Eigenmaps,
+;; Diffusion Maps) or kNN density lens to that structure.
+;;.PP
 ;; Returns a MapperGraph object.
 ;;.SEE MapperGraph
 ;;.SEE (mapper-cover-fit <lens> <n-cubes> <perc-overlap>)
