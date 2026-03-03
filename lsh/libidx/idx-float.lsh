@@ -36,7 +36,18 @@
 ;; matrix multiplication macro
 
 #? (idx-f2timesf2 <A> <B> <C>)
-;; 2d x 2d matrix multiply: C = A * B
+;; Single-precision matrix multiply: {<c> C = A * B}.
+;; <A> is an idx2 of float (M x K), <B> is (K x N), <C> is (M x N).
+;; All three matrices must be pre-allocated.
+;;
+;; When {<b> libblas.so} is available (detected at load time via
+;; {<b> find-shared-library}), this calls BLAS {<b> sgemm} directly
+;; for optimal performance.  The row-major to column-major conversion
+;; is handled internally.
+;;
+;; On systems without BLAS, falls back to the generic
+;; {<b> idx-m2timesm2} column-loop implementation.
+;; {<see> (idx-d2timesd2 <A> <B> <C>)}
 (de idx-f2timesf2 (a b c)
   ((-idx2- (-float-)) a b c)
   (idx-m2timesm2 a b c))
@@ -722,3 +733,39 @@
 	  make-f2-place-target
           idx-f1range
 )
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; BLAS-accelerated matrix multiply (optional, ~100-300x faster)
+;;
+;; If libblas.so is found, redefine idx-f2timesf2 to use sgemm.
+;; Otherwise the fallback idx-m2timesm2 (column-loop) is kept.
+
+(let ((libblas (find-shared-library "libblas")))
+  (when (and libblas (filep libblas))
+
+    (de _idx-f2timesf2-blas (a b c)
+      ((-idx2- (-float-)) a b c)
+      (let ((m (idx-dim a 0))
+            (n (idx-dim b 1))
+            (k (idx-dim a 1)))
+        ((-int-) m n k)
+        (cpheader "extern void sgemm_(char*,char*,int*,int*,int*,float*,float*,int*,float*,int*,float*,float*,int*);")
+        #{
+        /* Row-major C = A*B  via col-major sgemm: C^T = B^T * A^T */
+        char ta = 'N', tb = 'N';
+        float alpha = 1.0f, beta = 0.0f;
+        int im = (int)$m, in_ = (int)$n, ik = (int)$k;
+        sgemm_(&ta, &tb, &in_, &im, &ik, &alpha,
+               IDX_PTR($b, float), &in_,
+               IDX_PTR($a, float), &ik,
+               &beta, IDX_PTR($c, float), &in_);
+        #}
+        () ))
+
+    (dhc-make-with-libs "idx_float_blas" (list libblas)
+      _idx-f2timesf2-blas)
+
+    ;; Replace the slow version with the BLAS version
+    (de idx-f2timesf2 (a b c)
+      (_idx-f2timesf2-blas a b c)) ))
