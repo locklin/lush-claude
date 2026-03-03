@@ -473,7 +473,7 @@
     (for (i 0 29)
       (for (j 0 3) (data i j (rand))))
 
-    ;; All lenses should return correct dimensions
+    ;; Spectral lenses
     (let ((l (mapper-lens-laplacian data)))
       (test-equal "lens-le 1d" (idx-dim l 1) 1))
     (let ((l (mapper-lens-laplacian2d data)))
@@ -487,9 +487,70 @@
     (let ((l (mapper-lens-kpca2d data)))
       (test-equal "lens-kpca 2d" (idx-dim l 1) 2))
 
+    ;; K-Means lenses
+    (let ((l (mapper-lens-kmeans data 3)))
+      (test-equal "lens-kmeans rows" (idx-dim l 0) 30)
+      (test-equal "lens-kmeans cols" (idx-dim l 1) 1)
+      ;; Values should be cluster IDs: 0, 1, or 2
+      (let ((ok t))
+        (for (i 0 29)
+          (let ((v (l i 0)))
+            (when (or (< v 0) (>= v 3)) (setq ok ()))))
+        (test-check "lens-kmeans valid IDs" ok)))
+
+    (let ((l (mapper-lens-kmeans-dist data 3)))
+      (test-equal "lens-kmeans-dist rows" (idx-dim l 0) 30)
+      (test-equal "lens-kmeans-dist cols" (idx-dim l 1) 1)
+      ;; All distances non-negative
+      (let ((ok t))
+        (for (i 0 29)
+          (when (< (l i 0) 0) (setq ok ())))
+        (test-check "lens-kmeans-dist non-neg" ok)))
+
+    ;; kNN density lens
+    (let ((l (mapper-lens-density data 5)))
+      (test-equal "lens-density rows" (idx-dim l 0) 30)
+      (test-equal "lens-density cols" (idx-dim l 1) 1)
+      ;; All densities positive
+      (let ((ok t))
+        (for (i 0 29)
+          (when (<= (l i 0) 0) (setq ok ())))
+        (test-check "lens-density positive" ok)))
+
     ;; All N rows
     (let ((l (mapper-lens-laplacian data)))
-      (test-equal "lens rows" (idx-dim l 0) 30))))
+      (test-equal "lens rows" (idx-dim l 0) 30)))
+
+  ;; K-Means cluster separation: clusters should get different IDs
+  (let ((data (double-matrix 40 3)))
+    (for (i 0 19) (for (j 0 2) (data i j (* 0.1 (rand)))))
+    (for (i 20 39) (for (j 0 2) (data i j (+ 10 (* 0.1 (rand))))))
+    (let* ((l (mapper-lens-kmeans data 2))
+           (id0 (l 0 0))
+           (same-a 0) (same-b 0))
+      ;; All points in cluster A should share an ID
+      (for (i 0 19)
+        (when (= (l i 0) id0) (incr same-a)))
+      ;; All points in cluster B should share a different ID
+      (let ((id1 (l 20 0)))
+        (for (i 20 39)
+          (when (= (l i 0) id1) (incr same-b))))
+      (test-equal "kmeans sep cluster A" same-a 20)
+      (test-equal "kmeans sep cluster B" same-b 20)))
+
+  ;; Density: dense cluster should have higher density than sparse
+  (let ((data (double-matrix 40 2)))
+    ;; Dense cluster: points in [0, 0.1]^2
+    (for (i 0 19) (for (j 0 1) (data i j (* 0.1 (rand)))))
+    ;; Sparse cluster: points in [10, 15]^2
+    (for (i 20 39) (for (j 0 1) (data i j (+ 10 (* 5 (rand))))))
+    (let* ((l (mapper-lens-density data 5))
+           (dense-avg 0) (sparse-avg 0))
+      (for (i 0 19) (incr dense-avg (l i 0)))
+      (for (i 20 39) (incr sparse-avg (l i 0)))
+      (setq dense-avg (/ dense-avg 20))
+      (setq sparse-avg (/ sparse-avg 20))
+      (test-check "density: dense > sparse" (> dense-avg sparse-avg)))))
 
 
 ;; ================================================================

@@ -357,6 +357,8 @@
       (printf "(libload \"mapper/lens\")\n")
       (printf "(libload \"mapper/umap\")\n")
       (printf "(libload \"libnum/spectral\")\n")
+      (printf "(libload \"libnum/kmeans\")\n")
+      (printf "(libload \"libnum/knn\")\n")
       (printf "\n")
 
       ;; --- JSON field extraction helpers (minimal, no full parser) ---
@@ -541,6 +543,12 @@
       (printf "                    (mapper-lens-l2norm td) )\n")
       (printf "                   ((= ltype \"column\")\n")
       (printf "                    (mapper-lens-column fd ccol) )\n")
+      (printf "                   ((= ltype \"kmeans\")\n")
+      (printf "                    (mapper-lens-kmeans td) )\n")
+      (printf "                   ((= ltype \"kmeans_dist\")\n")
+      (printf "                    (mapper-lens-kmeans-dist td) )\n")
+      (printf "                   ((= ltype \"density\")\n")
+      (printf "                    (mapper-lens-density td) )\n")
       (printf "                   ((= ltype \"umap\")\n")
       (printf "                    (mapper-lens-umap td) )\n")
       (printf "                   ((= ltype \"umap2d\")\n")

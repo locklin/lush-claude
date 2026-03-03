@@ -330,6 +330,92 @@
 
 
 ;; ============================================================
+;; K-Means lenses (from libnum)
+;; ============================================================
+
+#? (mapper-lens-kmeans <data> [<k>])
+;; K-Means cluster assignment as a 1D Mapper lens.
+;; Each point receives its cluster ID (0..k-1) as a real value.
+;; <k> defaults to 10 clusters.
+;; Returns an Nx1 double matrix.
+;;
+;; This lens partitions the data by K-Means clustering.
+;; The Mapper cover then creates overlapping intervals
+;; across cluster boundaries, revealing boundary structure.
+;; {<see> (kmeans <X> <k>)}
+;; {<see> (mapper-lens-kmeans-dist <data> [<k>])}
+
+(de mapper-lens-kmeans (data . rest)
+  (libload "libnum/kmeans")
+  (let* ((k (if rest (car rest) 10))
+         (n (idx-dim data 0))
+         (result (kmeans data k))
+         (labels (cadr result))
+         (out (double-matrix n 1)))
+    (for (i 0 (1- n))
+      (out i 0 (to-double (labels i))) )
+    out ))
+
+
+#? (mapper-lens-kmeans-dist <data> [<k>])
+;; Distance to nearest K-Means centroid as a 1D Mapper lens.
+;; Points near cluster centers have low values; points at
+;; cluster boundaries have high values.
+;; <k> defaults to 10 clusters.
+;; Returns an Nx1 double matrix.
+;; {<see> (mapper-lens-kmeans <data> [<k>])}
+
+(de mapper-lens-kmeans-dist (data . rest)
+  (libload "libnum/kmeans")
+  (let* ((k (if rest (car rest) 10))
+         (n (idx-dim data 0))
+         (d (idx-dim data 1))
+         (result (kmeans data k))
+         (centers (car result))
+         (labels (cadr result))
+         (out (double-matrix n 1)))
+    ;; Compute Euclidean distance from each point to its centroid
+    (for (i 0 (1- n))
+      (let ((s 0) (c (labels i)))
+        (for (j 0 (1- d))
+          (let ((diff (- (data i j) (centers c j))))
+            (incr s (* diff diff)) ) )
+        (out i 0 (sqrt s)) ) )
+    out ))
+
+
+;; ============================================================
+;; kNN density lens
+;; ============================================================
+
+#? (mapper-lens-density <data> [<n-neighbors>])
+;; Local density from kNN as a 1D Mapper lens.
+;; Density = 1 / mean distance to k nearest neighbors.
+;; Dense regions have high values; sparse regions have low values.
+;; <n-neighbors> defaults to 15.
+;; Returns an Nx1 double matrix.
+;;
+;; Useful for identifying core regions vs boundary/outlier points.
+;; {<see> (knn-search <data> <k>)}
+
+(de mapper-lens-density (data . rest)
+  (libload "libnum/knn")
+  (let* ((k (if rest (car rest) 15))
+         (n (idx-dim data 0))
+         (kk (min k (- n 1)))
+         (result (knn-search data kk))
+         (dists (cadr result))
+         (out (double-matrix n 1)))
+    (for (i 0 (1- n))
+      (let ((s 0))
+        (for (j 0 (1- kk))
+          (incr s (dists i j)) )
+        (let ((mean-d (/ s kk)))
+          (out i 0 (if (> mean-d 1e-15) (/ 1.0 mean-d) 1e15)) ) ) )
+    out ))
+
+
+;; ============================================================
 ;; UMAP lenses
 ;; ============================================================
 
