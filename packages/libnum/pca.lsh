@@ -1,0 +1,728 @@
+;;; pca.lsh -- Principal Component Analysis and Bivector Component Analysis
+;;;
+;;; Standard PCA via eigendecomposition of the covariance matrix.
+;;; Bivector Component Analysis (BCA) for detecting directed lead-lag
+;;; structure in multivariate time series via the antisymmetric part
+;;; of lagged second-moment matrices.
+;;;
+;;; Reference (BCA):
+;;;   Sudjianto, Narain & Setiawan (2025),
+;;;   "What PCA Can't See: Detecting Sector Rotation with Bivectors"
+;;;   SSRN: 6281738
+;;;
+;;; Copyright (C) 2026 Scott Locklin, Lugos LLC
+;;; Distributed under the GNU General Public License v2+.
+
+(libload "libnum/covariance")
+(libload "libnum/linalgebra")
+(libload "libidx/idx-double")
+(libload "libplot/plotter")
+
+
+;; ============================================================
+;; Compiled C helpers
+;; ============================================================
+
+;; Center data matrix using pre-computed means vector.
+;; x: N x P input (read-only), means: P input, xc: N x P output.
+(de _pca-center (x means xc)
+  ((-idx2- (-double-)) x xc)
+  ((-idx1- (-double-)) means)
+  (let ((n (idx-dim x 0))
+        (p (idx-dim x 1)))
+    ((-int-) n p)
+    #{
+    double *px = IDX_PTR($x, double);
+    double *pm = IDX_PTR($means, double);
+    double *pc = IDX_PTR($xc, double);
+    int sx0 = ($x)->mod[0];
+    int sx1 = ($x)->mod[1];
+    int sc0 = ($xc)->mod[0];
+    int sc1 = ($xc)->mod[1];
+    int i, j;
+    for (i = 0; i < $n; i++)
+        for (j = 0; j < $p; j++)
+            pc[i * sc0 + j * sc1] = px[i * sx0 + j * sx1] - pm[j];
+    #}
+    () ))
+
+;; Frobenius norm squared of a matrix: sum of all elements squared.
+(de _pca-frobenius-sq (m)
+  ((-idx2- (-double-)) m)
+  (let ((n (idx-dim m 0))
+        (p (idx-dim m 1))
+        (s 0))
+    ((-int-) n p)
+    ((-double-) s)
+    #{
+    double *pm = IDX_PTR($m, double);
+    int sm0 = ($m)->mod[0];
+    int sm1 = ($m)->mod[1];
+    int i, j;
+    for (i = 0; i < $n; i++)
+        for (j = 0; j < $p; j++) {
+            double v = pm[i * sm0 + j * sm1];
+            $s += v * v;
+        }
+    #}
+    s))
+
+(dhc-make ()
+  _pca-center
+  _pca-frobenius-sq)
+
+
+;; ============================================================
+#? *** Principal Component Analysis
+;; Standard PCA and Bivector Component Analysis (BCA).
+;;
+;; {<b> PCA} computes the principal components of an N x P data
+;; matrix via eigendecomposition of the covariance matrix.  It
+;; returns a model object that can project new data and reconstruct
+;; approximations.
+;;
+;; {<b> BCA} (Bivector Component Analysis) detects directed lead-lag
+;; structure in multivariate time series by decomposing lagged
+;; second-moment matrices into symmetric and antisymmetric parts.
+;; Standard PCA only sees the symmetric part; BCA extracts the
+;; antisymmetric part that encodes temporal ordering.
+;;
+;; Reference (BCA): Sudjianto, Narain & Setiawan (2025),
+;; "What PCA Can't See: Detecting Sector Rotation with Bivectors",
+;; SSRN 6281738.
+;;
+;; Example -- PCA on a data matrix:
+;; {<code>
+;;  (libload "libnum/pca")
+;;  (let* ((x [[1 2 3][4 5 6][7 8 10][10 11 9]])
+;;         (model (new pca-model x 2)))
+;;    (==> model summary)
+;;    (pretty (==> model project x)))
+;; </code>}
+
+
+;; ============================================================
+#? ** PCA
+
+#? * pca-model
+;; A fitted PCA model.  Created by {<c> (new pca-model X ncomp)}.
+;; Stores eigenvalues, loadings, column means, and explained variance.
+;; {<ul>
+;; {<li> {<b> eigenvalues} -- variance captured per component (idx1, ncomp)}
+;; {<li> {<b> loadings} -- eigenvector matrix (idx2, P x ncomp)}
+;; {<li> {<b> mean} -- column means used for centering (idx1, P)}
+;; {<li> {<b> explained-var} -- proportion of variance per component (idx1)}
+;; {<li> {<b> cumulative-var} -- cumulative proportion (idx1)}
+;; {<li> {<b> total-variance} -- total variance across all P dimensions}
+;; }
+
+(defclass pca-model object
+  eigenvalues
+  loadings
+  mean
+  explained-var
+  cumulative-var
+  total-variance
+  ncomp
+  p)
+
+#? (new pca-model <X> [<ncomp>])
+;; Fit a PCA model to the N x P data matrix <X>.
+;; <ncomp> is the number of principal components to retain (default P).
+;; <X> must have at least 2 rows.
+;;
+;; The model is fitted immediately by computing the covariance matrix
+;; and its eigendecomposition.  The top <ncomp> eigenvectors (sorted
+;; by decreasing eigenvalue) are stored as the loadings.
+;; {<see> (==> <pca-model> project <X>), (==> <pca-model> summary)}
+(defmethod pca-model pca-model (x . rest)
+  (let* ((nc (if rest (car rest) (idx-dim x 1)))
+         (nn (idx-dim x 0))
+         (pp (idx-dim x 1)))
+    (when (< nn 2) (error "PCA requires at least 2 observations"))
+    (when (or (< nc 1) (> nc pp))
+      (error "ncomp must be between 1 and P"))
+    (setq p pp)
+    (setq ncomp nc)
+    ;; column means
+    (setq mean (col-means x))
+    ;; covariance matrix and eigendecomposition
+    (let* ((c (cov-matrix x))
+           (eigvecs (double-matrix pp pp))
+           (eigvals (eigen-symmv c eigvecs)))
+      ;; total variance
+      (let ((tv 0))
+        (for (i 0 (- pp 1))
+          (setq tv (+ tv (eigvals i))))
+        (setq total-variance tv))
+      ;; store top ncomp
+      (setq eigenvalues (double-matrix nc))
+      (setq explained-var (double-matrix nc))
+      (setq cumulative-var (double-matrix nc))
+      (setq loadings (double-matrix pp nc))
+      (let ((cum 0))
+        (for (k 0 (- nc 1))
+          (eigenvalues k (eigvals k))
+          (let ((ratio (if (> total-variance 0)
+                         (/ (eigvals k) total-variance)
+                         0)))
+            (explained-var k ratio)
+            (setq cum (+ cum ratio))
+            (cumulative-var k cum))))
+      ;; copy eigenvector columns into loadings
+      (for (i 0 (- pp 1))
+        (for (k 0 (- nc 1))
+          (loadings i k (eigvecs i k))))
+      ;; sign convention: largest abs loading per component is positive
+      (for (k 0 (- nc 1))
+        (let ((max-abs 0) (max-val 0))
+          (for (i 0 (- pp 1))
+            (let ((v (loadings i k)))
+              (when (> (abs v) max-abs)
+                (setq max-abs (abs v))
+                (setq max-val v))))
+          (when (< max-val 0)
+            (for (i 0 (- pp 1))
+              (loadings i k (- 0 (loadings i k))))))))))
+
+#? (==> <pca-model> project <X>)
+;; Project the N x P data matrix <X> onto the principal components.
+;; Returns an N x ncomp score matrix.  The data is centered using
+;; the means from the training set.
+;; {<see> (==> <pca-model> reconstruct <scores>)}
+(defmethod pca-model project (x)
+  (let* ((nn (idx-dim x 0))
+         (pp (idx-dim x 1))
+         (xc (double-matrix nn pp))
+         (scores (double-matrix nn ncomp)))
+    (when (<> pp p)
+      (error "input has wrong number of variables"))
+    (_pca-center x mean xc)
+    (idx-d2timesd2 xc loadings scores)
+    scores))
+
+#? (==> <pca-model> reconstruct <scores>)
+;; Reconstruct a data matrix from the N x ncomp score matrix <scores>.
+;; Returns an N x P approximation by back-projecting through the
+;; loadings and adding back the column means.
+;; {<see> (==> <pca-model> project <X>)}
+(defmethod pca-model reconstruct (scores)
+  (let* ((nn (idx-dim scores 0))
+         (lt (double-matrix ncomp p))
+         (xr (double-matrix nn p)))
+    ;; transpose loadings
+    (_cov-transpose-d2 loadings lt)
+    ;; back-project: xr = scores * loadings'
+    (idx-d2timesd2 scores lt xr)
+    ;; add back means
+    (for (i 0 (- nn 1))
+      (for (j 0 (- p 1))
+        (xr i j (+ (xr i j) (mean j)))))
+    xr))
+
+#? (==> <pca-model> summary)
+;; Print a summary table of the PCA model showing eigenvalues,
+;; explained variance ratios, and cumulative variance.
+(defmethod pca-model summary ()
+  (printf "PCA Model: %d components from %d variables\n" ncomp p)
+  (printf "Total variance: %.4f\n" total-variance)
+  (printf "\n  Component  Eigenvalue  %%Var    Cumulative\n")
+  (printf "  ---------  ----------  ------  ----------\n")
+  (for (k 0 (- ncomp 1))
+    (printf "  PC%-6d  %10.4f  %5.1f%%   %5.1f%%\n"
+            (+ k 1)
+            (eigenvalues k)
+            (* 100 (explained-var k))
+            (* 100 (cumulative-var k)))))
+
+
+;; ============================================================
+#? ** Bivector Component Analysis (BCA)
+;; BCA decomposes the lagged second-moment matrix into symmetric
+;; and antisymmetric parts:
+;;
+;; {<c> M_tau = (1/T) X_t' X_{t+tau}}
+;;
+;; {<c> C_tau = (M_tau + M_tau') / 2}  (symmetric, what PCA sees)
+;;
+;; {<c> B_tau = (M_tau - M_tau') / 2}  (antisymmetric, what BCA sees)
+;;
+;; The antisymmetric part {<b> B_tau} encodes directed lead-lag
+;; relationships: {<c> B[i,j] > 0} means variable i tends to lead
+;; variable j by lag tau.  Standard PCA discards this information
+;; because the contemporaneous covariance matrix is symmetric.
+;;
+;; BCA eigendecomposes {<b> B_tau} via the Hermitian matrix
+;; {<c> iB} (which has real eigenvalues).  The eigenvalues come in
+;; pairs {<c> +/- omega_k} where {<b> omega_k} is the rotation
+;; strength.  Each eigenvector splits into a leading direction
+;; (real part) and a lagging direction (imaginary part).
+;;
+;; Example -- detecting lead-lag in a toy system:
+;; {<code>
+;;  (libload "libnum/pca")
+;;  ;; x1 leads x2 by 1 step, x3 is noise
+;;  (let* ((n 200)
+;;         (x (double-matrix n 3)))
+;;    (for (i 1 (- n 1))
+;;      (x i 0 (+ (* 0.9 (x (- i 1) 0)) (* 0.1 (rand))))
+;;      (x i 1 (+ (* 0.5 (x (- i 1) 0)) (* 0.1 (rand))))
+;;      (x i 2 (* 0.3 (rand))))
+;;    (let ((model (new bca-model x 1)))
+;;      (==> model summary)))
+;; </code>}
+
+#? * bca-model
+;; A fitted Bivector Component Analysis model.
+;; Created by {<c> (new bca-model X lag ncomp)}.
+;; {<ul>
+;; {<li> {<b> rotation-strengths} -- eigenvalues omega_k (idx1, ncomp)}
+;; {<li> {<b> leading} -- leading directions per rotation (idx2, P x ncomp)}
+;; {<li> {<b> lagging} -- lagging directions per rotation (idx2, P x ncomp)}
+;; {<li> {<b> sym-energy} -- Frobenius energy of symmetric part C_tau}
+;; {<li> {<b> antisym-energy} -- Frobenius energy of antisymmetric part B_tau}
+;; {<li> {<b> lag} -- the lag parameter tau used}
+;; {<li> {<b> btau} -- the antisymmetric matrix B_tau (idx2, P x P)}
+;; }
+
+(defclass bca-model object
+  rotation-strengths
+  leading
+  lagging
+  sym-energy
+  antisym-energy
+  btau
+  lag
+  mean
+  ncomp
+  p)
+
+#? (new bca-model <X> [<lag>] [<ncomp>])
+;; Fit a BCA model to the N x P time series matrix <X>.
+;; <lag> is the temporal lag tau (default 1).
+;; <ncomp> is the number of rotation pairs to extract
+;; (default floor(P/2), the maximum).
+;;
+;; <X> must have at least {<c> lag + 2} rows.  Columns are
+;; centered before computing the lagged cross-product.
+;; {<see> (==> <bca-model> summary), (==> <bca-model> net-lead-score)}
+(defmethod bca-model bca-model (x . rest)
+  (let* ((tau (if rest (car rest) 1))
+         (pp (idx-dim x 1))
+         (nn (idx-dim x 0))
+         (max-comp (/ pp 2))
+         (nc (if (and rest (cdr rest)) (cadr rest) max-comp)))
+    ;; validation
+    (when (< nn (+ tau 2))
+      (error "not enough observations for given lag"))
+    (when (< max-comp 1)
+      (error "BCA requires at least 2 variables"))
+    (when (or (< nc 1) (> nc max-comp))
+      (error (sprintf "ncomp must be between 1 and %d" max-comp)))
+    (setq p pp)
+    (setq ncomp nc)
+    (setq lag tau)
+    ;; center data
+    (setq mean (col-means x))
+    (let* ((xc (double-matrix nn pp))
+           (tt (- nn tau)))
+      (_pca-center x mean xc)
+      ;; lagged views
+      (let* ((x-t (narrow xc 0 tt 0))
+             (x-lag (narrow xc 0 tt tau))
+             ;; transpose x-t for multiplication
+             (x-t-tr (double-matrix pp tt))
+             ;; M_tau = (1/T) * x_t' * x_lag
+             (mtau (double-matrix pp pp)))
+        (_cov-transpose-d2 x-t x-t-tr)
+        (idx-d2timesd2 x-t-tr x-lag mtau)
+        (idx-d2dotc mtau (/ 1.0 (to-double tt)) mtau)
+        ;; decompose into symmetric C and antisymmetric B
+        (let ((ctau (double-matrix pp pp))
+              (b (double-matrix pp pp)))
+          (for (i 0 (- pp 1))
+            (for (j 0 (- pp 1))
+              (let ((mij (mtau i j))
+                    (mji (mtau j i)))
+                (ctau i j (* 0.5 (+ mij mji)))
+                (b i j (* 0.5 (- mij mji))))))
+          ;; store B_tau and Frobenius energies
+          (setq btau (idx-copy b))
+          (setq sym-energy (_pca-frobenius-sq ctau))
+          (setq antisym-energy (_pca-frobenius-sq b))
+          ;; eigendecompose B via Hermitian matrix iB
+          ;; iB is Hermitian: (iB)* = -iB' = -i(-B) = iB
+          ;; eigenvalues of iB are real, come in pairs +/- omega_k
+          (let ((ib (double-matrix pp pp 2))
+                (eigvecs (double-matrix pp pp 2))
+                (eigvals ()))
+            ;; build iB: real part = 0, imaginary part = B[i,j]
+            (for (i 0 (- pp 1))
+              (for (j 0 (- pp 1))
+                (ib i j 0 0)
+                (ib i j 1 (b i j))))
+            ;; Hermitian eigendecomposition (sorted descending)
+            (setq eigvals (eigen-hermv ib eigvecs))
+            ;; first nc eigenvalues are the positive rotation strengths
+            (setq rotation-strengths (double-matrix nc))
+            (setq leading (double-matrix pp nc))
+            (setq lagging (double-matrix pp nc))
+            (for (k 0 (- nc 1))
+              (rotation-strengths k (eigvals k))
+              ;; extract real/imaginary parts of eigenvector k
+              (let ((u (double-matrix pp))
+                    (w (double-matrix pp)))
+                (for (i 0 (- pp 1))
+                  (u i (eigvecs i k 0))
+                  (w i (eigvecs i k 1)))
+                ;; orthonormalize the pair
+                ;; u <- u / ||u||
+                (let ((norm-u 0))
+                  (for (i 0 (- pp 1))
+                    (setq norm-u (+ norm-u (* (u i) (u i)))))
+                  (setq norm-u (sqrt norm-u))
+                  (when (> norm-u 1e-12)
+                    (for (i 0 (- pp 1))
+                      (u i (/ (u i) norm-u)))))
+                ;; w <- w - (w . u) u, then w <- w / ||w||
+                (let ((dot-wu 0))
+                  (for (i 0 (- pp 1))
+                    (setq dot-wu (+ dot-wu (* (w i) (u i)))))
+                  (for (i 0 (- pp 1))
+                    (w i (- (w i) (* dot-wu (u i))))))
+                (let ((norm-w 0))
+                  (for (i 0 (- pp 1))
+                    (setq norm-w (+ norm-w (* (w i) (w i)))))
+                  (setq norm-w (sqrt norm-w))
+                  (when (> norm-w 1e-12)
+                    (for (i 0 (- pp 1))
+                      (w i (/ (w i) norm-w)))))
+                ;; sign convention: largest |leading| is positive
+                (let ((max-abs 0) (max-val 0))
+                  (for (i 0 (- pp 1))
+                    (when (> (abs (u i)) max-abs)
+                      (setq max-abs (abs (u i)))
+                      (setq max-val (u i))))
+                  (when (< max-val 0)
+                    (for (i 0 (- pp 1))
+                      (u i (- 0 (u i)))
+                      (w i (- 0 (w i))))))
+                ;; store
+                (for (i 0 (- pp 1))
+                  (leading i k (u i))
+                  (lagging i k (w i)))))))))))
+
+#? (==> <bca-model> lead-scores <X>)
+;; Project the N x P data matrix <X> onto the leading directions.
+;; Returns an N x ncomp score matrix.  Data is centered using
+;; the training means.
+;; {<see> (==> <bca-model> lag-scores <X>)}
+(defmethod bca-model lead-scores (x)
+  (let* ((nn (idx-dim x 0))
+         (pp (idx-dim x 1))
+         (xc (double-matrix nn pp))
+         (scores (double-matrix nn ncomp)))
+    (when (<> pp p)
+      (error "input has wrong number of variables"))
+    (_pca-center x mean xc)
+    (idx-d2timesd2 xc leading scores)
+    scores))
+
+#? (==> <bca-model> lag-scores <X>)
+;; Project the N x P data matrix <X> onto the lagging directions.
+;; Returns an N x ncomp score matrix.
+;; {<see> (==> <bca-model> lead-scores <X>)}
+(defmethod bca-model lag-scores (x)
+  (let* ((nn (idx-dim x 0))
+         (pp (idx-dim x 1))
+         (xc (double-matrix nn pp))
+         (scores (double-matrix nn ncomp)))
+    (when (<> pp p)
+      (error "input has wrong number of variables"))
+    (_pca-center x mean xc)
+    (idx-d2timesd2 xc lagging scores)
+    scores))
+
+#? (==> <bca-model> net-lead-score)
+;; Return a vector of net lead scores (idx1, length P).
+;; The net lead score for variable i is the row sum of B_tau:
+;; {<c> score_i = sum_j B_tau[i,j]}.
+;; Positive values indicate leading variables; negative values
+;; indicate lagging variables.
+(defmethod bca-model net-lead-score ()
+  (let* ((pp (idx-dim btau 0))
+         (scores (double-matrix pp)))
+    (for (i 0 (- pp 1))
+      (let ((s 0))
+        (for (j 0 (- pp 1))
+          (setq s (+ s (btau i j))))
+        (scores i s)))
+    scores))
+
+#? (==> <bca-model> summary)
+;; Print a summary of the BCA model showing rotation strengths,
+;; energy decomposition, and leading/lagging variable loadings.
+(defmethod bca-model summary ()
+  (let ((total-energy (+ sym-energy antisym-energy)))
+    (printf "BCA Model: %d rotation pairs from %d variables, lag = %d\n"
+            ncomp p lag)
+    (printf "Frobenius energy:  symmetric = %.4f (%.1f%%)  antisymmetric = %.4f (%.1f%%)\n"
+            sym-energy
+            (if (> total-energy 0) (* 100 (/ sym-energy total-energy)) 0)
+            antisym-energy
+            (if (> total-energy 0) (* 100 (/ antisym-energy total-energy)) 0))
+    (printf "\n  Rotation  Strength  Leading vars              Lagging vars\n")
+    (printf "  --------  --------  -------------------------  -------------------------\n")
+    (for (k 0 (- ncomp 1))
+      (printf "  R%-7d  %8.4f  " (+ k 1) (rotation-strengths k))
+      ;; find top 3 leading (largest positive real loadings)
+      ;; build index-value pairs and sort
+      (let ((lead-list ())
+            (lag-list ()))
+        (for (i 0 (- p 1))
+          (let ((lv (leading i k))
+                (gv (lagging i k)))
+            (setq lead-list (cons (list (abs lv) i lv) lead-list))
+            (setq lag-list (cons (list (abs gv) i gv) lag-list))))
+        ;; sort descending by abs value (manual top-3)
+        (let ((top-lead (sort-list lead-list
+                          (lambda (a b) (> (car a) (car b)))))
+              (top-lag (sort-list lag-list
+                         (lambda (a b) (> (car a) (car b))))))
+          ;; print top 3 leading
+          (let ((count 0))
+            (each ((item top-lead))
+              (when (< count 3)
+                (when (> count 0) (printf ", "))
+                (let ((v (caddr item)))
+                  (printf "v%d(%s%.2f)" (cadr item)
+                          (if (>= v 0) "+" "-") (abs v)))
+                (setq count (+ count 1)))))
+          (printf "  ")
+          ;; print top 3 lagging
+          (let ((count 0))
+            (each ((item top-lag))
+              (when (< count 3)
+                (when (> count 0) (printf ", "))
+                (let ((v (caddr item)))
+                  (printf "v%d(%s%.2f)" (cadr item)
+                          (if (>= v 0) "+" "-") (abs v)))
+                (setq count (+ count 1))))))
+        (printf "\n")))
+    ;; net lead scores
+    (printf "\n  Net lead scores:\n  ")
+    (let ((nls (==> this net-lead-score)))
+      (for (i 0 (- p 1))
+        (let ((v (nls i)))
+          (printf "v%d=%s%.4f " i (if (>= v 0) "+" "-") (abs v)))))
+    (printf "\n")))
+
+
+;; ============================================================
+#? ** Plotting
+;; Plot methods for {<c> pca-model} and {<c> bca-model}.
+;; These methods create and return {<c> Plotter} objects
+;; that can be further customized.
+;;
+;; A graphics window must be set before calling any plot method.
+;; Use {<c> new-window} for screen display or {<c> ps-window}
+;; for PostScript file output.
+;;
+;; Example (PostScript output):
+;; {<code>
+;;  (libload "libnum/pca")
+;;  (let ((window (ps-window "/tmp/scree.ps")))
+;;    (==> model plot-scree))
+;; </code>}
+;; {<see> Plotting Library}
+
+;; Helper: convert idx1 of doubles to a Lush list.
+(de _pca-idx1-to-list (v)
+  (let ((result ()))
+    (for (i (- (idx-dim v 0) 1) 0 -1)
+      (setq result (cons (v i) result)))
+    result))
+
+
+#? (==> <pca-model> plot-scree)
+;; Display a scree plot of eigenvalues per principal component.
+;; Each component is plotted as a point connected by lines.
+;; Returns the {<c> Plotter} object for further customization.
+;; {<see> (==> <pca-model> summary)}
+(defmethod pca-model plot-scree ()
+  (let* ((pl (new Plotter))
+         (xvals (range 1 ncomp))
+         (yvals (_pca-idx1-to-list eigenvalues)))
+    (==> pl PlotLists "eigenvalues" xvals yvals
+         (alloccolor 0.1 0.2 0.7) closed-circle)
+    (==> pl SetTitle "Scree Plot")
+    (==> pl SetXLabel "Component")
+    (==> pl SetYLabel "Eigenvalue")
+    (==> pl SetGrid 1)
+    (==> pl Redisplay)
+    pl))
+
+
+#? (==> <pca-model> plot-scores <X> [<labels>])
+;; Scatter plot of PC1 vs PC2 scores for data matrix <X>.
+;; <X> is projected onto the principal components; the first
+;; two component scores are plotted.
+;; <labels> is an optional list of N strings for point labels.
+;; Requires at least 2 components in the model.
+;; Returns the {<c> Plotter} object.
+;; {<see> (==> <pca-model> project <X>)}
+(defmethod pca-model plot-scores (x &optional labels)
+  (when (< ncomp 2)
+    (error "plot-scores requires at least 2 components"))
+  (let* ((scores (==> this project x))
+         (nn (idx-dim scores 0))
+         (pl (new Plotter))
+         (xvals ()) (yvals ()))
+    (for (i (- nn 1) 0 -1)
+      (setq xvals (cons (scores i 0) xvals))
+      (setq yvals (cons (scores i 1) yvals)))
+    (==> pl PlotLists "scores" xvals yvals
+         (alloccolor 0.1 0.2 0.7) closed-circle)
+    (==> pl SetCurveLine "scores" 0)
+    (when labels
+      (let ((idx 0))
+        (each ((lab labels))
+          (when (< idx nn)
+            (==> pl AddText (scores idx 0) (scores idx 1) lab))
+          (setq idx (+ idx 1)))))
+    (==> pl SetTitle "Score Plot")
+    (==> pl SetXLabel "PC1")
+    (==> pl SetYLabel "PC2")
+    (==> pl SetGrid 1)
+    (==> pl Redisplay)
+    pl))
+
+
+#? (==> <pca-model> plot-loadings [<labels>])
+;; Loading plot showing variable loadings on PC1 vs PC2.
+;; Lines are drawn from the origin to each loading vector.
+;; <labels> is an optional list of P variable name strings;
+;; if omitted, variables are labeled v0, v1, etc.
+;; Requires at least 2 components.
+;; Returns the {<c> Plotter} object.
+;; {<see> (==> <pca-model> plot-scores <X>)}
+(defmethod pca-model plot-loadings (&optional labels)
+  (when (< ncomp 2)
+    (error "plot-loadings requires at least 2 components"))
+  (let* ((pl (new Plotter))
+         (xvals ()) (yvals ())
+         (amax 0))
+    (for (i (- p 1) 0 -1)
+      (let ((lx (loadings i 0))
+            (ly (loadings i 1)))
+        (setq xvals (cons lx xvals))
+        (setq yvals (cons ly yvals))
+        (when (> (abs lx) amax) (setq amax (abs lx)))
+        (when (> (abs ly) amax) (setq amax (abs ly)))))
+    ;; symmetric scale centered on origin
+    (let ((lim (* 1.15 (max amax 0.01))))
+      (==> pl SetXScale (- lim) lim)
+      (==> pl SetYScale (- lim) lim))
+    (==> pl PlotLists "loadings" xvals yvals
+         (alloccolor 0.7 0.1 0.1) closed-circle)
+    (==> pl SetCurveLine "loadings" 0)
+    (for (i 0 (- p 1))
+      (let ((lx (loadings i 0))
+            (ly (loadings i 1))
+            (lab (if labels (nth i labels)
+                   (sprintf "v%d" i))))
+        (==> pl AddLine 0 0 lx ly)
+        (==> pl AddText lx ly lab)))
+    (==> pl SetTitle "Loading Plot")
+    (==> pl SetXLabel "PC1 Loading")
+    (==> pl SetYLabel "PC2 Loading")
+    (==> pl SetGrid 1)
+    (==> pl Redisplay)
+    pl))
+
+
+#? (==> <bca-model> plot-rotation [<k>] [<labels>])
+;; Plot leading vs lagging loadings for rotation pair <k>
+;; (0-indexed, default 0 for the strongest rotation).
+;; Lines from the origin show each variable's lead-lag direction.
+;; <labels> is an optional list of P variable name strings;
+;; if omitted, variables are labeled v0, v1, etc.
+;; Returns the {<c> Plotter} object.
+;; {<see> (==> <bca-model> summary)}
+(defmethod bca-model plot-rotation (&optional k labels)
+  (when ~k (setq k 0))
+  (when (or (< k 0) (>= k ncomp))
+    (error "rotation index out of range"))
+  (let ((pl (new Plotter))
+        (xvals ()) (yvals ())
+        (amax 0))
+    (for (i (- p 1) 0 -1)
+      (let ((lx (leading i k))
+            (ly (lagging i k)))
+        (setq xvals (cons lx xvals))
+        (setq yvals (cons ly yvals))
+        (when (> (abs lx) amax) (setq amax (abs lx)))
+        (when (> (abs ly) amax) (setq amax (abs ly)))))
+    ;; symmetric scale centered on origin
+    (let ((lim (* 1.15 (max amax 0.01))))
+      (==> pl SetXScale (- lim) lim)
+      (==> pl SetYScale (- lim) lim))
+    (==> pl PlotLists "rotation" xvals yvals
+         (alloccolor 0.1 0.5 0.2) closed-circle)
+    (==> pl SetCurveLine "rotation" 0)
+    (for (i 0 (- p 1))
+      (let ((lx (leading i k))
+            (ly (lagging i k))
+            (lab (if labels (nth i labels)
+                   (sprintf "v%d" i))))
+        (==> pl AddLine 0 0 lx ly)
+        (==> pl AddText lx ly lab)))
+    (==> pl SetTitle (sprintf "BCA Rotation %d (omega=%.4f)"
+                     (+ k 1) (rotation-strengths k)))
+    (==> pl SetXLabel "Leading Direction")
+    (==> pl SetYLabel "Lagging Direction")
+    (==> pl SetGrid 1)
+    (==> pl Redisplay)
+    pl))
+
+
+#? (==> <bca-model> plot-lead-lag [<labels>])
+;; Stem plot of net lead scores per variable.
+;; Positive scores indicate leading variables; negative scores
+;; indicate lagging variables.  Vertical lines connect each
+;; point to the zero baseline.
+;; <labels> is an optional list of P variable name strings;
+;; if omitted, variables are labeled v0, v1, etc.
+;; Returns the {<c> Plotter} object.
+;; {<see> (==> <bca-model> net-lead-score)}
+(defmethod bca-model plot-lead-lag (&optional labels)
+  (let* ((nls (==> this net-lead-score))
+         (pl (new Plotter))
+         (xvals ()) (yvals ()))
+    (for (i (- p 1) 0 -1)
+      (setq xvals (cons i xvals))
+      (setq yvals (cons (nls i) yvals)))
+    (==> pl PlotLists "scores" xvals yvals
+         (alloccolor 0.1 0.2 0.7) closed-circle)
+    (==> pl SetCurveLine "scores" 0)
+    ;; stems from zero
+    (for (i 0 (- p 1))
+      (==> pl AddLine i 0 i (nls i)))
+    ;; ensure y-axis includes zero
+    (let ((ymin 0) (ymax 0))
+      (for (i 0 (- p 1))
+        (let ((v (nls i)))
+          (when (< v ymin) (setq ymin v))
+          (when (> v ymax) (setq ymax v))))
+      (let ((pad (* 0.1 (max 1e-6 (- ymax ymin)))))
+        (==> pl SetYScale (- ymin pad) (+ ymax pad))))
+    ;; labels
+    (for (i 0 (- p 1))
+      (let ((lab (if labels (nth i labels) (sprintf "v%d" i))))
+        (==> pl AddText i (nls i) lab)))
+    (==> pl SetTitle "Net Lead Scores")
+    (==> pl SetXLabel "Variable")
+    (==> pl SetYLabel "Net Lead Score")
+    (==> pl SetGrid 1)
+    (==> pl Redisplay)
+    pl))

@@ -1,0 +1,280 @@
+;;; covariance.lsh -- Covariance and Correlation Matrices
+;;;
+;;; Computes covariance and correlation matrices from N x P data
+;;; matrices (N observations, P variables).  Uses BLAS-backed matrix
+;;; multiply (via idx-d2timesd2) for the heavy lifting and compiled C
+;;; for column centering and transposition.
+;;;
+;;; Copyright (C) 2026 Scott Locklin, Lugos LLC
+;;; Distributed under the GNU General Public License v2+.
+
+(libload "libidx/idx-double")
+(libload "libnum/stats")
+
+
+#? *** Covariance and Correlation Matrices
+;; Functions for computing covariance and correlation matrices from
+;; data matrices, plus column-wise summary statistics.
+;;
+;; A data matrix {<b> X} has {<b> N} rows (observations) and {<b> P}
+;; columns (variables).  The covariance matrix is a {<b> P x P}
+;; symmetric matrix where entry (i, j) is the sample covariance
+;; between variable i and variable j.
+;;
+;; The matrix multiply step uses BLAS {<b> dgemm} (via
+;; {<b> idx-d2timesd2}) when available, giving near-optimal
+;; performance for large matrices.
+;;
+;; Example -- covariance matrix of 3 variables:
+;; {<code>
+;;  (libload "libnum/covariance")
+;;  (let* ((x [[1 2 3][4 5 6][7 8 10][10 11 9]])
+;;         (c (cov-matrix x)))
+;;    (pretty c))
+;; </code>}
+
+
+;; ============================================================
+#? ** Column-Wise Statistics
+
+#? (col-means <X>)
+;; Return a vector of column means for the N x P data matrix <X>.
+;; The result is an idx1 of double with P elements.
+;; {<see> (col-sds <X>)}
+(de col-means (x)
+  ((-idx2- (-double-)) x)
+  (let* ((p (idx-dim x 1))
+         (means (double-matrix p)))
+    (for (j 0 (- p 1))
+      (means j (stat-mean (select x 1 j))))
+    means))
+
+#? (col-sds <X>)
+;; Return a vector of column standard deviations for the N x P
+;; data matrix <X>.  Uses sample standard deviation (denominator
+;; N - 1).  The result is an idx1 of double with P elements.
+;; {<see> (col-means <X>)}
+(de col-sds (x)
+  ((-idx2- (-double-)) x)
+  (let* ((p (idx-dim x 1))
+         (sds (double-matrix p)))
+    (for (j 0 (- p 1))
+      (sds j (stat-sd (select x 1 j))))
+    sds))
+
+
+;; ============================================================
+;; Compiled C helper functions
+;; ============================================================
+
+;; Center columns: compute column means, subtract from each row.
+;; x: N x P input (read-only)
+;; means: P output (column means)
+;; xc: N x P output (centered copy)
+(de _cov-center-cols (x means xc)
+  ((-idx2- (-double-)) x xc)
+  ((-idx1- (-double-)) means)
+  (let ((n (idx-dim x 0))
+        (p (idx-dim x 1)))
+    ((-int-) n p)
+    #{
+    double *px = IDX_PTR($x, double);
+    double *pm = IDX_PTR($means, double);
+    double *pc = IDX_PTR($xc, double);
+    int sx0 = ($x)->mod[0];
+    int sx1 = ($x)->mod[1];
+    int sc0 = ($xc)->mod[0];
+    int sc1 = ($xc)->mod[1];
+    int i, j;
+    /* compute column means */
+    for (j = 0; j < $p; j++) {
+        double sum = 0.0;
+        for (i = 0; i < $n; i++)
+            sum += px[i * sx0 + j * sx1];
+        pm[j] = sum / (double)$n;
+    }
+    /* center: xc[i,j] = x[i,j] - mean[j] */
+    for (i = 0; i < $n; i++)
+        for (j = 0; j < $p; j++)
+            pc[i * sc0 + j * sc1] = px[i * sx0 + j * sx1] - pm[j];
+    #}
+    () ))
+
+;; Physical transpose of a 2D matrix.
+;; x: N x P input, xt: P x N output.
+(de _cov-transpose-d2 (x xt)
+  ((-idx2- (-double-)) x xt)
+  (let ((n (idx-dim x 0))
+        (p (idx-dim x 1)))
+    ((-int-) n p)
+    #{
+    double *px = IDX_PTR($x, double);
+    double *pt = IDX_PTR($xt, double);
+    int sx0 = ($x)->mod[0];
+    int sx1 = ($x)->mod[1];
+    int st0 = ($xt)->mod[0];
+    int st1 = ($xt)->mod[1];
+    int i, j;
+    for (i = 0; i < $n; i++)
+        for (j = 0; j < $p; j++)
+            pt[j * st0 + i * st1] = px[i * sx0 + j * sx1];
+    #}
+    () ))
+
+;; Normalize a covariance matrix to a correlation matrix in-place.
+;; Computes cor[i,j] = cov[i,j] / sqrt(cov[i,i] * cov[j,j]).
+;; Diagonal elements with zero variance produce zero correlation.
+(de _cov-to-cor (c)
+  ((-idx2- (-double-)) c)
+  (let ((p (idx-dim c 0)))
+    ((-int-) p)
+    #{
+    double *pc = IDX_PTR($c, double);
+    int sc0 = ($c)->mod[0];
+    int sc1 = ($c)->mod[1];
+    int i, j;
+    /* extract sqrt of diagonal into temp array */
+    double sds[$p];
+    for (i = 0; i < $p; i++) {
+        double v = pc[i * sc0 + i * sc1];
+        sds[i] = (v > 0.0) ? sqrt(v) : 0.0;
+    }
+    /* normalize */
+    for (i = 0; i < $p; i++) {
+        for (j = 0; j < $p; j++) {
+            double d = sds[i] * sds[j];
+            if (d > 0.0)
+                pc[i * sc0 + j * sc1] /= d;
+            else
+                pc[i * sc0 + j * sc1] = 0.0;
+        }
+    }
+    #}
+    () ))
+
+
+;; ============================================================
+#? ** Covariance and Correlation
+
+#? (cov-matrix <X>)
+;; Compute the sample covariance matrix of the N x P data matrix <X>.
+;; Returns a P x P symmetric matrix where element (i, j) is
+;; {<c> cov(X_i, X_j) = (1/(N-1)) * sum((X_ki - mean_i)(X_kj - mean_j))}.
+;;
+;; <X> must have at least 2 rows (N >= 2).  The matrix multiply
+;; step uses BLAS {<b> dgemm} when available.
+;;
+;; Example:
+;; {<code>
+;;  (let ((x [[1 2][3 4][5 6]]))
+;;    (pretty (cov-matrix x)))
+;;  ;; = [[ 4.00  4.00 ]
+;;  ;;    [ 4.00  4.00 ]]
+;; </code>}
+;; {<see> (cor-matrix <X>), (stat-covariance <v1> <v2>)}
+(de cov-matrix (x)
+  ((-idx2- (-double-)) x)
+  (let* ((n (idx-dim x 0))
+         (p (idx-dim x 1))
+         (means (double-matrix p))
+         (xc (double-matrix n p))
+         (xt (double-matrix p n))
+         (c (double-matrix p p)))
+    (when (< n 2) (error "cov-matrix requires at least 2 observations"))
+    ;; center columns
+    (_cov-center-cols x means xc)
+    ;; physical transpose: xt = xc'
+    (_cov-transpose-d2 xc xt)
+    ;; C = Xc' * Xc  (P x N * N x P = P x P)
+    (idx-d2timesd2 xt xc c)
+    ;; scale by 1/(N-1) for sample covariance
+    (idx-d2dotc c (/ 1.0 (to-double (- n 1))) c)
+    c))
+
+#? (cor-matrix <X>)
+;; Compute the sample correlation matrix of the N x P data matrix <X>.
+;; Returns a P x P symmetric matrix where element (i, j) is
+;; the Pearson correlation coefficient between variables i and j.
+;; Diagonal elements are 1.0; variables with zero variance produce
+;; 0.0 correlations.
+;;
+;; Equivalent to normalizing the covariance matrix:
+;; {<c> cor(i,j) = cov(i,j) / (sd_i * sd_j)}.
+;;
+;; Example:
+;; {<code>
+;;  (let ((x [[1 2 5][3 4 6][5 6 7]]))
+;;    (pretty (cor-matrix x)))
+;;  ;; = [[ 1.0000  1.0000  1.0000 ]
+;;  ;;    [ 1.0000  1.0000  1.0000 ]
+;;  ;;    [ 1.0000  1.0000  1.0000 ]]
+;; </code>}
+;; {<see> (cov-matrix <X>)}
+(de cor-matrix (x)
+  ((-idx2- (-double-)) x)
+  (let ((c (cov-matrix x)))
+    (_cov-to-cor c)
+    c))
+
+#? (cov-matrix-weighted <X> <w>)
+;; Compute the weighted covariance matrix of the N x P data matrix
+;; <X> with weight vector <w> (idx1 of double, length N).
+;;
+;; Uses the formula:
+;; {<c> cov_w(i,j) = (sum(w) / (sum(w)^2 - sum(w^2))) * sum(w_k * (X_ki - m_i)(X_kj - m_j))}
+;; where {<c> m_i = sum(w_k * X_ki) / sum(w_k)} is the weighted mean.
+;;
+;; This gives the unbiased (reliability-weighted) estimator that
+;; reduces to the standard sample covariance when all weights are
+;; equal.
+;; {<see> (cov-matrix <X>), (stat-wmean <v> <w>)}
+(de cov-matrix-weighted (x w)
+  ((-idx2- (-double-)) x)
+  ((-idx1- (-double-)) w)
+  (let* ((n (idx-dim x 0))
+         (p (idx-dim x 1)))
+    (when (<> n (idx-dim w 0))
+      (error "weight vector length must equal number of rows"))
+    (when (< n 2)
+      (error "cov-matrix-weighted requires at least 2 observations"))
+    ;; compute sum(w) and sum(w^2)
+    (let* ((sw 0) (sw2 0)
+           (wmeans (double-matrix p))
+           (c (double-matrix p p)))
+      ((-double-) sw sw2)
+      (for (i 0 (- n 1))
+        (let ((wi (w i)))
+          (setq sw (+ sw wi))
+          (setq sw2 (+ sw2 (* wi wi)))))
+      (when (<= sw 0) (error "sum of weights must be positive"))
+      ;; weighted column means
+      (for (j 0 (- p 1))
+        (let ((s 0))
+          ((-double-) s)
+          (for (i 0 (- n 1))
+            (setq s (+ s (* (w i) (x i j)))))
+          (wmeans j (/ s sw))))
+      ;; weighted cross-product sum
+      (for (i 0 (- p 1))
+        (for (j i (- p 1))
+          (let ((s 0))
+            ((-double-) s)
+            (for (k 0 (- n 1))
+              (setq s (+ s (* (w k)
+                              (- (x k i) (wmeans i))
+                              (- (x k j) (wmeans j))))))
+            ;; scale: reliability weights unbiased estimator
+            (let ((val (/ (* sw s) (- (* sw sw) sw2))))
+              (c i j val)
+              (when (<> i j) (c j i val))))))
+      c)))
+
+
+;; ============================================================
+;; Compile performance-critical C functions
+;; ============================================================
+
+(dhc-make ()
+  _cov-center-cols
+  _cov-transpose-d2
+  _cov-to-cor)

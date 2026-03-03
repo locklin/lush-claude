@@ -1,0 +1,323 @@
+;;; test-model-selection.lsh -- Tests for model-selection.lsh
+;;;
+;;; Run: ./src/lush packages/libnum/tests/test-model-selection.lsh
+
+(addpath "packages")
+(load "packages/libnum/tests/framework.lsh")
+(libload "libnum/model-selection")
+
+
+;; ============================================================
+(test-suite "shuffle-idx"
+
+  (seed 42)
+  (let ((perm (shuffle-idx 10)))
+    (test-equal "returns 10 elements" (idx-dim perm 0) 10)
+    ;; check it's a permutation (all values 0-9 present)
+    (let ((seen (int-matrix 10)))
+      (for (i 0 9) (seen (perm i) 1))
+      (let ((allseen t))
+        (for (i 0 9) (when (= (seen i) 0) (setq allseen ())))
+        (test-check "is a permutation of 0..9" allseen))))
+
+  ;; shuffle of 1 element
+  (let ((perm (shuffle-idx 1)))
+    (test-equal "shuffle(1) length" (idx-dim perm 0) 1)
+    (test-equal "shuffle(1) value" (perm 0) 0))
+
+  ;; reproducibility
+  (seed 42)
+  (let ((p1 (shuffle-idx 20)))
+    (seed 42)
+    (let ((p2 (shuffle-idx 20)))
+      (let ((same t))
+        (for (i 0 19) (when (<> (p1 i) (p2 i)) (setq same ())))
+        (test-check "same seed gives same shuffle" same))))
+)
+
+
+;; ============================================================
+(test-suite "select-rows"
+
+  ;; select-rows-d2
+  (let* ((x [[1.0 2.0][3.0 4.0][5.0 6.0][7.0 8.0][9.0 10.0]])
+         (idx [i 0 2 4])
+         (sub (select-rows-d2 x idx)))
+    (test-equal "d2 rows" (idx-dim sub 0) 3)
+    (test-equal "d2 cols" (idx-dim sub 1) 2)
+    (test-approx "d2[0,0]" (sub 0 0) 1.0 1e-10)
+    (test-approx "d2[1,0]" (sub 1 0) 5.0 1e-10)
+    (test-approx "d2[2,1]" (sub 2 1) 10.0 1e-10))
+
+  ;; select-rows-i1
+  (let* ((v [i 10 20 30 40 50])
+         (idx [i 1 3])
+         (sub (select-rows-i1 v idx)))
+    (test-equal "i1 length" (idx-dim sub 0) 2)
+    (test-equal "i1[0]" (sub 0) 20)
+    (test-equal "i1[1]" (sub 1) 40))
+
+  ;; select-rows-d1
+  (let* ((v [d 1.5 2.5 3.5 4.5])
+         (idx [i 0 3])
+         (sub (select-rows-d1 v idx)))
+    (test-equal "d1 length" (idx-dim sub 0) 2)
+    (test-approx "d1[0]" (sub 0) 1.5 1e-10)
+    (test-approx "d1[1]" (sub 1) 4.5 1e-10))
+)
+
+
+;; ============================================================
+(test-suite "train-test-split"
+
+  (seed 42)
+  (let* ((split (train-test-split 100 0.2))
+         (train-idx (car split))
+         (test-idx (cadr split)))
+    (test-equal "train size 80" (idx-dim train-idx 0) 80)
+    (test-equal "test size 20" (idx-dim test-idx 0) 20)
+
+    ;; all indices should be unique and in [0,99]
+    (let ((seen (int-matrix 100)) (ok t))
+      (for (i 0 79)
+        (let ((v (train-idx i)))
+          (when (or (< v 0) (> v 99) (= (seen v) 1)) (setq ok ()))
+          (seen v 1)))
+      (for (i 0 19)
+        (let ((v (test-idx i)))
+          (when (or (< v 0) (> v 99) (= (seen v) 1)) (setq ok ()))
+          (seen v 1)))
+      (test-check "all 100 unique indices covered" ok)))
+
+  ;; edge case: n=2
+  (seed 1)
+  (let* ((split (train-test-split 2 0.5))
+         (train-idx (car split))
+         (test-idx (cadr split)))
+    (test-equal "n=2 train" (idx-dim train-idx 0) 1)
+    (test-equal "n=2 test" (idx-dim test-idx 0) 1))
+
+  ;; edge: very small test fraction
+  (let* ((split (train-test-split 100 0.001))
+         (test-idx (cadr split)))
+    (test-equal "min 1 test obs" (idx-dim test-idx 0) 1))
+
+  ;; edge: very large test fraction
+  (let* ((split (train-test-split 100 0.999))
+         (train-idx (car split)))
+    (test-equal "min 1 train obs" (idx-dim train-idx 0) 1))
+)
+
+
+;; ============================================================
+(test-suite "kfold-indices"
+
+  (seed 42)
+  (let ((folds (kfold-indices 100 5)))
+    (test-equal "5 folds" (length folds) 5)
+
+    ;; check fold sizes
+    (each ((fold folds))
+      (let ((ntrain (idx-dim (car fold) 0))
+            (ntest (idx-dim (cadr fold) 0)))
+        (test-equal "fold train+test=100" (+ ntrain ntest) 100)
+        (test-equal "fold test=20" ntest 20)))
+
+    ;; check that all test sets partition 0..99
+    (let ((seen (int-matrix 100)))
+      (each ((fold folds))
+        (let ((test-idx (cadr fold)))
+          (for (i 0 (- (idx-dim test-idx 0) 1))
+            (seen (test-idx i) (+ (seen (test-idx i)) 1)))))
+      (let ((ok t))
+        (for (i 0 99)
+          (when (<> (seen i) 1) (setq ok ())))
+        (test-check "test sets partition all indices" ok))))
+
+  ;; uneven fold sizes
+  (seed 42)
+  (let ((folds (kfold-indices 13 5)))
+    (test-equal "13/5 folds count" (length folds) 5)
+    ;; total test indices should be 13
+    (let ((total 0))
+      (each ((fold folds))
+        (incr total (idx-dim (cadr fold) 0)))
+      (test-equal "13/5 total test=13" total 13)))
+
+  ;; k=n (leave-one-out)
+  (seed 42)
+  (let ((folds (kfold-indices 10 10)))
+    (test-equal "LOO 10 folds" (length folds) 10)
+    (each ((fold folds))
+      (test-equal "LOO test=1" (idx-dim (cadr fold) 0) 1)
+      (test-equal "LOO train=9" (idx-dim (car fold) 0) 9)))
+)
+
+
+;; ============================================================
+(test-suite "stratified-train-test-split"
+
+  ;; imbalanced: 70 class-0, 30 class-1
+  (seed 42)
+  (let* ((y (int-matrix 100)))
+    (for (i 70 99) (y i 1))
+    (let* ((split (stratified-train-test-split y 0.2))
+           (train-idx (car split))
+           (test-idx (cadr split))
+           (y-test (select-rows-i1 y test-idx)))
+      (test-equal "strat train+test=100"
+                  (+ (idx-dim train-idx 0) (idx-dim test-idx 0)) 100)
+      ;; check class proportions in test
+      (let ((c0 0) (c1 0))
+        (for (i 0 (- (idx-dim y-test 0) 1))
+          (if (= (y-test i) 0) (incr c0) (incr c1)))
+        (test-equal "strat test class-0=14" c0 14)
+        (test-equal "strat test class-1=6" c1 6))))
+
+  ;; 3 classes
+  (seed 42)
+  (let* ((y (int-matrix 90)))
+    (for (i 30 59) (y i 1))
+    (for (i 60 89) (y i 2))
+    (let* ((split (stratified-train-test-split y 0.2))
+           (test-idx (cadr split))
+           (y-test (select-rows-i1 y test-idx))
+           (c0 0) (c1 0) (c2 0))
+      (for (i 0 (- (idx-dim y-test 0) 1))
+        (let ((v (y-test i)))
+          (cond ((= v 0) (incr c0))
+                ((= v 1) (incr c1))
+                (t (incr c2)))))
+      (test-equal "3-class test c0=6" c0 6)
+      (test-equal "3-class test c1=6" c1 6)
+      (test-equal "3-class test c2=6" c2 6)))
+)
+
+
+;; ============================================================
+(test-suite "stratified-kfold-indices"
+
+  (seed 42)
+  (let* ((y (int-matrix 100)))
+    (for (i 70 99) (y i 1))
+    (let ((folds (stratified-kfold-indices y 5)))
+      (test-equal "5 strat folds" (length folds) 5)
+
+      ;; check each fold has correct class proportions
+      (each ((fold folds))
+        (let* ((test-idx (cadr fold))
+               (y-test (select-rows-i1 y test-idx))
+               (c0 0) (c1 0))
+          (for (i 0 (- (idx-dim y-test 0) 1))
+            (if (= (y-test i) 0) (incr c0) (incr c1)))
+          (test-equal "strat fold c0=14" c0 14)
+          (test-equal "strat fold c1=6" c1 6)))))
+)
+
+
+;; ============================================================
+(test-suite "accuracy"
+
+  (let ((yt [i 0 1 0 1 1 0 1 1 0 0])
+        (yp [i 0 1 1 1 0 0 1 1 0 0]))
+    (test-approx "accuracy 8/10" (accuracy yt yp) 0.8 1e-10))
+
+  ;; perfect accuracy
+  (let ((y [i 1 2 3 4 5]))
+    (test-approx "perfect accuracy" (accuracy y y) 1.0 1e-10))
+
+  ;; zero accuracy
+  (let ((yt [i 0 0 0])
+        (yp [i 1 1 1]))
+    (test-approx "zero accuracy" (accuracy yt yp) 0.0 1e-10))
+)
+
+
+;; ============================================================
+(test-suite "regression metrics"
+
+  (let ((yt [d 1.0 2.0 3.0 4.0 5.0])
+        (yp [d 1.1 2.2 2.8 4.1 5.0]))
+    (test-approx "mse" (mse yt yp) 0.02 1e-10)
+    (test-approx "rmse" (rmse yt yp) (sqrt 0.02) 1e-10)
+    (test-approx "mae" (mae yt yp) 0.12 1e-10))
+
+  ;; r-squared
+  (let ((yt [d 1.0 2.0 3.0 4.0 5.0])
+        (yp [d 1.0 2.0 3.0 4.0 5.0]))
+    (test-approx "R^2 perfect" (r-squared yt yp) 1.0 1e-10))
+
+  (let ((yt [d 1.0 2.0 3.0 4.0 5.0])
+        (yp [d 1.1 1.9 3.1 3.9 5.1]))
+    (test-check "R^2 near 1" (> (r-squared yt yp) 0.99)))
+
+  ;; R^2 can be negative (worse than mean)
+  (let ((yt [d 1.0 2.0 3.0])
+        (yp [d 10.0 10.0 10.0]))
+    (test-check "R^2 negative" (< (r-squared yt yp) 0)))
+)
+
+
+;; ============================================================
+(test-suite "cross-validate"
+
+  ;; simple test: nearest centroid on well-separated clusters
+  (seed 42)
+  (let* ((n 200) (p 2)
+         (x (double-matrix n p))
+         (y (int-matrix n)))
+    (for (i 0 (- n 1))
+      (let ((cls (if (< i (/ n 2)) 0 1)))
+        (y i cls)
+        (x i 0 (+ (if (= cls 0) -3.0 3.0) (* 0.3 (gauss))))
+        (x i 1 (+ (if (= cls 0) -3.0 3.0) (* 0.3 (gauss))))))
+
+    (de _test-nc-score (xtrain ytrain xtest ytest)
+      (let* ((ntrain (idx-dim xtrain 0))
+             (ntest (idx-dim xtest 0))
+             (p (idx-dim xtrain 1))
+             (c0 (double-matrix p)) (n0 0)
+             (c1 (double-matrix p)) (n1 0)
+             (correct 0))
+        (for (i 0 (- ntrain 1))
+          (if (= (ytrain i) 0)
+              (progn (incr n0) (for (j 0 (- p 1)) (c0 j (+ (c0 j) (xtrain i j)))))
+            (progn (incr n1) (for (j 0 (- p 1)) (c1 j (+ (c1 j) (xtrain i j)))))))
+        (for (j 0 (- p 1))
+          (c0 j (/ (c0 j) (to-double n0)))
+          (c1 j (/ (c1 j) (to-double n1))))
+        (for (i 0 (- ntest 1))
+          (let ((d0 0) (d1 0))
+            (for (j 0 (- p 1))
+              (let ((diff0 (- (xtest i j) (c0 j)))
+                    (diff1 (- (xtest i j) (c1 j))))
+                (incr d0 (* diff0 diff0))
+                (incr d1 (* diff1 diff1))))
+            (when (= (if (<= d0 d1) 0 1) (ytest i)) (incr correct))))
+        (/ (to-double correct) (to-double ntest))))
+
+    (let ((result (cross-validate x y 5 _test-nc-score)))
+      (test-check "CV mean > 0.95" (> (car result) 0.95))
+      (test-equal "CV 5 scores" (length (cadr result)) 5)
+      ;; each fold should also be > 0.90
+      (let ((all-high t))
+        (each ((s (cadr result)))
+          (when (< s 0.90) (setq all-high ())))
+        (test-check "all folds > 0.90" all-high))))
+)
+
+
+;; ============================================================
+(test-suite "cross-validate-indices"
+
+  (seed 42)
+  (de _dummy-idx-score (train-idx test-idx)
+    (to-double (idx-dim test-idx 0)))
+  (let ((result (cross-validate-indices 100 5 _dummy-idx-score)))
+    (test-approx "idx CV mean=20" (car result) 20.0 1e-10)
+    (test-equal "idx CV 5 scores" (length (cadr result)) 5))
+)
+
+
+;; ============================================================
+(test-summary)

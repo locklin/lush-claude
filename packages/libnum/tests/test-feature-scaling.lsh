@@ -1,0 +1,127 @@
+;;; test-feature-scaling.lsh -- Tests for feature-scaling.lsh
+;;;
+;;; Run: ./src/lush packages/libnum/tests/test-feature-scaling.lsh
+
+(addpath "packages")
+(load "packages/libnum/tests/framework.lsh")
+(libload "libnum/feature-scaling")
+
+
+;; ============================================================
+(test-suite "StandardScaler"
+
+  (let* ((x [[1.0 10.0][2.0 20.0][3.0 30.0][4.0 40.0][5.0 50.0]])
+         (scaler (new standard-scaler))
+         (xs (==> scaler fit-transform x)))
+    (test-equal "ss rows" (idx-dim xs 0) 5)
+    (test-equal "ss cols" (idx-dim xs 1) 2)
+
+    ;; column means should be 0
+    (let ((m0 0) (m1 0))
+      (for (i 0 4) (incr m0 (xs i 0)) (incr m1 (xs i 1)))
+      (test-approx "ss mean col0=0" (/ m0 5.0) 0.0 1e-10)
+      (test-approx "ss mean col1=0" (/ m1 5.0) 0.0 1e-10))
+
+    ;; column std should be ~1 (sample sd of z-scores)
+    (let ((ss0 0) (ss1 0))
+      (for (i 0 4)
+        (incr ss0 (* (xs i 0) (xs i 0)))
+        (incr ss1 (* (xs i 1) (xs i 1))))
+      ;; variance of z-scores = sum(z^2)/n = 1.0 (pop) or sum(z^2)/(n-1) = n/(n-1) (sample)
+      ;; since we use sample sd, sum(z^2) = n-1 = 4
+      (test-approx "ss sumsq col0=4" ss0 4.0 1e-10))
+
+    ;; inverse transform recovers original
+    (let ((xi (==> scaler inverse-transform xs)))
+      (test-approx "ss inv[0,0]" (xi 0 0) 1.0 1e-10)
+      (test-approx "ss inv[4,1]" (xi 4 1) 50.0 1e-10)
+      (test-approx "ss inv[2,0]" (xi 2 0) 3.0 1e-10)))
+
+  ;; fit on train, transform on test
+  (let* ((x-train [[0.0][2.0][4.0]])
+         (x-test [[6.0]])
+         (scaler (new standard-scaler)))
+    (==> scaler fit x-train)
+    (let ((xs (==> scaler transform x-test)))
+      ;; mean=2, sd=2 => (6-2)/2 = 2.0
+      (test-approx "ss train/test" (xs 0 0) 2.0 1e-10)))
+
+  ;; zero variance column
+  (let* ((x [[5.0 1.0][5.0 2.0][5.0 3.0]])
+         (scaler (new standard-scaler))
+         (xs (==> scaler fit-transform x)))
+    (test-approx "ss zero-var=0" (xs 0 0) 0.0 1e-10)
+    (test-approx "ss zero-var=0" (xs 1 0) 0.0 1e-10))
+)
+
+
+;; ============================================================
+(test-suite "MinMaxScaler"
+
+  (let* ((x [[1.0 10.0][2.0 20.0][3.0 30.0][4.0 40.0][5.0 50.0]])
+         (scaler (new minmax-scaler))
+         (xs (==> scaler fit-transform x)))
+    ;; min should be 0, max should be 1
+    (test-approx "mm min col0" (xs 0 0) 0.0 1e-10)
+    (test-approx "mm min col1" (xs 0 1) 0.0 1e-10)
+    (test-approx "mm max col0" (xs 4 0) 1.0 1e-10)
+    (test-approx "mm max col1" (xs 4 1) 1.0 1e-10)
+    ;; middle value
+    (test-approx "mm mid col0" (xs 2 0) 0.5 1e-10)
+    ;; inverse
+    (let ((xi (==> scaler inverse-transform xs)))
+      (test-approx "mm inv[0,0]" (xi 0 0) 1.0 1e-10)
+      (test-approx "mm inv[4,1]" (xi 4 1) 50.0 1e-10)))
+
+  ;; extrapolation beyond training range
+  (let* ((x-train [[0.0][10.0]])
+         (x-test [[20.0]])
+         (scaler (new minmax-scaler)))
+    (==> scaler fit x-train)
+    (let ((xs (==> scaler transform x-test)))
+      ;; (20-0)/(10-0) = 2.0
+      (test-approx "mm extrapolate" (xs 0 0) 2.0 1e-10)))
+
+  ;; constant column
+  (let* ((x [[5.0][5.0][5.0]])
+         (scaler (new minmax-scaler))
+         (xs (==> scaler fit-transform x)))
+    (test-approx "mm const=0" (xs 0 0) 0.0 1e-10))
+)
+
+
+;; ============================================================
+(test-suite "RobustScaler"
+
+  (let* ((x [[1.0][2.0][3.0][4.0][5.0]])
+         (scaler (new robust-scaler))
+         (xs (==> scaler fit-transform x)))
+    ;; median=3, Q1=2, Q3=4, IQR=2
+    ;; (1-3)/2 = -1.0, (3-3)/2 = 0.0, (5-3)/2 = 1.0
+    (test-approx "rs min" (xs 0 0) -1.0 1e-10)
+    (test-approx "rs mid" (xs 2 0) 0.0 1e-10)
+    (test-approx "rs max" (xs 4 0) 1.0 1e-10))
+
+  ;; robust to outliers
+  (let* ((x [[1.0][2.0][3.0][4.0][5.0][100.0]])
+         (scaler (new robust-scaler))
+         (xs (==> scaler fit-transform x)))
+    ;; median=3.5, Q1=2, Q3=5 (approx), IQR=~2.5 or 3
+    ;; the outlier should be scaled to a large value
+    (test-check "rs outlier large" (> (xs 5 0) 10.0))
+    ;; inverse should recover
+    (let ((xi (==> scaler inverse-transform xs)))
+      (test-approx "rs inv outlier" (xi 5 0) 100.0 1e-6)
+      (test-approx "rs inv[0]" (xi 0 0) 1.0 1e-6)))
+
+  ;; multi-column
+  (let* ((x [[1.0 100.0][2.0 200.0][3.0 300.0][4.0 400.0][5.0 500.0]])
+         (scaler (new robust-scaler))
+         (xs (==> scaler fit-transform x)))
+    (test-approx "rs 2col mid0" (xs 2 0) 0.0 1e-10)
+    (test-approx "rs 2col mid1" (xs 2 1) 0.0 1e-10))
+)
+
+
+;; ============================================================
+(test-summary)

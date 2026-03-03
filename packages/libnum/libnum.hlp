@@ -17,6 +17,16 @@ and lower memory consumption that the functions in this section.
 
 #? *** << libnum/stats.lsh
 
+#? *** << libnum/cdf.lsh
+
+#? *** << libnum/covariance.lsh
+
+#? *** << libnum/pca.lsh
+
+#? *** << libnum/model-selection.lsh
+
+#? *** << libnum/feature-scaling.lsh
+
 #? *** << libnum/linalgebra.lsh
 
 #? *** << libnum/polynomials.lsh

@@ -1,0 +1,754 @@
+;;; cdf.lsh -- Cumulative Distribution Functions
+;;;
+;;; High-level wrappers around the GSL CDF library (gsl_cdf.h).
+;;; Provides P (lower-tail CDF), Q (upper-tail, 1-P), and where
+;;; available Pinv/Qinv (quantile / inverse CDF) for all standard
+;;; probability distributions.
+;;;
+;;; Copyright (C) 2026 Scott Locklin, Lugos LLC
+;;; Distributed under the GNU General Public License v2+.
+
+(libload "gsl/gsl-config")
+
+;; inject GSL headers into the C compilation unit
+(eval `(de dummy_cdf () ,gsl-cpheader-cmd ()))
+
+
+#? *** Cumulative Distribution Functions
+;; Wrappers around the GSL CDF library providing cumulative distribution
+;; functions (CDFs) and their inverses (quantile functions) for all
+;; standard probability distributions.
+;;
+;; Each distribution provides up to four functions:
+;; {<ul>
+;; {<li> {<b> cdf-DIST-p} -- lower-tail CDF: P(X <= x)}
+;; {<li> {<b> cdf-DIST-q} -- upper-tail CDF: P(X > x) = 1 - P}
+;; {<li> {<b> cdf-DIST-pinv} -- inverse lower-tail (quantile function)}
+;; {<li> {<b> cdf-DIST-qinv} -- inverse upper-tail}
+;; }
+;;
+;; Discrete distributions (binomial, Poisson, etc.) provide only
+;; {<b> cdf-DIST-p} and {<b> cdf-DIST-q} since the inverse is not
+;; uniquely defined.
+;;
+;; {<b> Prerequisites:} Requires GSL (libgsl).
+;;
+;; Example -- computing a two-sided p-value for a t-test:
+;; {<code>
+;;  (libload "libnum/cdf")
+;;  (let* ((t-stat 2.5)
+;;         (df 29)
+;;         (p-value (* 2 (cdf-tdist-q (abs t-stat) df))))
+;;    (printf "t = %.3f, df = %d, p = %.4f\n" t-stat df p-value))
+;; </code>}
+;;
+;; Example -- finding a 95% confidence interval z-value:
+;; {<code>
+;;  (let ((z (cdf-ugaussian-pinv 0.975)))
+;;    (printf "z_0.975 = %.4f\n" z))  ;; 1.9600
+;; </code>}
+
+
+;; ============================================================
+#? ** Gaussian (Normal) Distribution
+;; The standard normal and parameterized normal distributions.
+
+#? (cdf-ugaussian-p <x>)
+;; Lower-tail CDF of the unit Gaussian (mean 0, sigma 1).
+;; Returns P(X <= <x>).
+(de cdf-ugaussian-p (x)
+  ((-double-) x)
+  (to-double #{ gsl_cdf_ugaussian_P($x) #}))
+
+#? (cdf-ugaussian-q <x>)
+;; Upper-tail CDF of the unit Gaussian.
+;; Returns P(X > <x>) = 1 - P(X <= <x>).
+(de cdf-ugaussian-q (x)
+  ((-double-) x)
+  (to-double #{ gsl_cdf_ugaussian_Q($x) #}))
+
+#? (cdf-ugaussian-pinv <p>)
+;; Inverse lower-tail CDF (quantile) of the unit Gaussian.
+;; Returns x such that P(X <= x) = <p>.
+(de cdf-ugaussian-pinv (p)
+  ((-double-) p)
+  (to-double #{ gsl_cdf_ugaussian_Pinv($p) #}))
+
+#? (cdf-ugaussian-qinv <q>)
+;; Inverse upper-tail CDF of the unit Gaussian.
+;; Returns x such that P(X > x) = <q>.
+(de cdf-ugaussian-qinv (q)
+  ((-double-) q)
+  (to-double #{ gsl_cdf_ugaussian_Qinv($q) #}))
+
+#? (cdf-gaussian-p <x> <sigma>)
+;; Lower-tail CDF of the Gaussian with standard deviation <sigma>.
+;; Returns P(X <= <x>).
+(de cdf-gaussian-p (x sigma)
+  ((-double-) x sigma)
+  (to-double #{ gsl_cdf_gaussian_P($x, $sigma) #}))
+
+#? (cdf-gaussian-q <x> <sigma>)
+;; Upper-tail CDF of the Gaussian with standard deviation <sigma>.
+(de cdf-gaussian-q (x sigma)
+  ((-double-) x sigma)
+  (to-double #{ gsl_cdf_gaussian_Q($x, $sigma) #}))
+
+#? (cdf-gaussian-pinv <p> <sigma>)
+;; Inverse lower-tail CDF of the Gaussian with standard deviation <sigma>.
+(de cdf-gaussian-pinv (p sigma)
+  ((-double-) p sigma)
+  (to-double #{ gsl_cdf_gaussian_Pinv($p, $sigma) #}))
+
+#? (cdf-gaussian-qinv <q> <sigma>)
+;; Inverse upper-tail CDF of the Gaussian with standard deviation <sigma>.
+(de cdf-gaussian-qinv (q sigma)
+  ((-double-) q sigma)
+  (to-double #{ gsl_cdf_gaussian_Qinv($q, $sigma) #}))
+
+
+;; ============================================================
+#? ** Gamma Distribution
+
+#? (cdf-gamma-p <x> <a> <b>)
+;; Lower-tail CDF of the Gamma distribution with shape <a> and scale <b>.
+(de cdf-gamma-p (x a b)
+  ((-double-) x a b)
+  (to-double #{ gsl_cdf_gamma_P($x, $a, $b) #}))
+
+#? (cdf-gamma-q <x> <a> <b>)
+;; Upper-tail CDF of the Gamma distribution.
+(de cdf-gamma-q (x a b)
+  ((-double-) x a b)
+  (to-double #{ gsl_cdf_gamma_Q($x, $a, $b) #}))
+
+#? (cdf-gamma-pinv <p> <a> <b>)
+;; Inverse lower-tail CDF of the Gamma distribution.
+(de cdf-gamma-pinv (p a b)
+  ((-double-) p a b)
+  (to-double #{ gsl_cdf_gamma_Pinv($p, $a, $b) #}))
+
+#? (cdf-gamma-qinv <q> <a> <b>)
+;; Inverse upper-tail CDF of the Gamma distribution.
+(de cdf-gamma-qinv (q a b)
+  ((-double-) q a b)
+  (to-double #{ gsl_cdf_gamma_Qinv($q, $a, $b) #}))
+
+
+;; ============================================================
+#? ** Chi-Squared Distribution
+
+#? (cdf-chisq-p <x> <nu>)
+;; Lower-tail CDF of the chi-squared distribution with <nu> degrees
+;; of freedom.
+(de cdf-chisq-p (x nu)
+  ((-double-) x nu)
+  (to-double #{ gsl_cdf_chisq_P($x, $nu) #}))
+
+#? (cdf-chisq-q <x> <nu>)
+;; Upper-tail CDF of the chi-squared distribution.
+(de cdf-chisq-q (x nu)
+  ((-double-) x nu)
+  (to-double #{ gsl_cdf_chisq_Q($x, $nu) #}))
+
+#? (cdf-chisq-pinv <p> <nu>)
+;; Inverse lower-tail CDF of the chi-squared distribution.
+(de cdf-chisq-pinv (p nu)
+  ((-double-) p nu)
+  (to-double #{ gsl_cdf_chisq_Pinv($p, $nu) #}))
+
+#? (cdf-chisq-qinv <q> <nu>)
+;; Inverse upper-tail CDF of the chi-squared distribution.
+(de cdf-chisq-qinv (q nu)
+  ((-double-) q nu)
+  (to-double #{ gsl_cdf_chisq_Qinv($q, $nu) #}))
+
+
+;; ============================================================
+#? ** Student's t Distribution
+
+#? (cdf-tdist-p <x> <nu>)
+;; Lower-tail CDF of Student's t distribution with <nu> degrees
+;; of freedom.
+(de cdf-tdist-p (x nu)
+  ((-double-) x nu)
+  (to-double #{ gsl_cdf_tdist_P($x, $nu) #}))
+
+#? (cdf-tdist-q <x> <nu>)
+;; Upper-tail CDF of Student's t distribution.
+(de cdf-tdist-q (x nu)
+  ((-double-) x nu)
+  (to-double #{ gsl_cdf_tdist_Q($x, $nu) #}))
+
+#? (cdf-tdist-pinv <p> <nu>)
+;; Inverse lower-tail CDF of Student's t distribution.
+(de cdf-tdist-pinv (p nu)
+  ((-double-) p nu)
+  (to-double #{ gsl_cdf_tdist_Pinv($p, $nu) #}))
+
+#? (cdf-tdist-qinv <q> <nu>)
+;; Inverse upper-tail CDF of Student's t distribution.
+(de cdf-tdist-qinv (q nu)
+  ((-double-) q nu)
+  (to-double #{ gsl_cdf_tdist_Qinv($q, $nu) #}))
+
+
+;; ============================================================
+#? ** F Distribution
+
+#? (cdf-fdist-p <x> <nu1> <nu2>)
+;; Lower-tail CDF of the F distribution with <nu1> and <nu2> degrees
+;; of freedom.
+(de cdf-fdist-p (x nu1 nu2)
+  ((-double-) x nu1 nu2)
+  (to-double #{ gsl_cdf_fdist_P($x, $nu1, $nu2) #}))
+
+#? (cdf-fdist-q <x> <nu1> <nu2>)
+;; Upper-tail CDF of the F distribution.
+(de cdf-fdist-q (x nu1 nu2)
+  ((-double-) x nu1 nu2)
+  (to-double #{ gsl_cdf_fdist_Q($x, $nu1, $nu2) #}))
+
+#? (cdf-fdist-pinv <p> <nu1> <nu2>)
+;; Inverse lower-tail CDF of the F distribution.
+(de cdf-fdist-pinv (p nu1 nu2)
+  ((-double-) p nu1 nu2)
+  (to-double #{ gsl_cdf_fdist_Pinv($p, $nu1, $nu2) #}))
+
+#? (cdf-fdist-qinv <q> <nu1> <nu2>)
+;; Inverse upper-tail CDF of the F distribution.
+(de cdf-fdist-qinv (q nu1 nu2)
+  ((-double-) q nu1 nu2)
+  (to-double #{ gsl_cdf_fdist_Qinv($q, $nu1, $nu2) #}))
+
+
+;; ============================================================
+#? ** Beta Distribution
+
+#? (cdf-beta-p <x> <a> <b>)
+;; Lower-tail CDF of the Beta distribution with parameters <a> and <b>.
+(de cdf-beta-p (x a b)
+  ((-double-) x a b)
+  (to-double #{ gsl_cdf_beta_P($x, $a, $b) #}))
+
+#? (cdf-beta-q <x> <a> <b>)
+;; Upper-tail CDF of the Beta distribution.
+(de cdf-beta-q (x a b)
+  ((-double-) x a b)
+  (to-double #{ gsl_cdf_beta_Q($x, $a, $b) #}))
+
+#? (cdf-beta-pinv <p> <a> <b>)
+;; Inverse lower-tail CDF of the Beta distribution.
+(de cdf-beta-pinv (p a b)
+  ((-double-) p a b)
+  (to-double #{ gsl_cdf_beta_Pinv($p, $a, $b) #}))
+
+#? (cdf-beta-qinv <q> <a> <b>)
+;; Inverse upper-tail CDF of the Beta distribution.
+(de cdf-beta-qinv (q a b)
+  ((-double-) q a b)
+  (to-double #{ gsl_cdf_beta_Qinv($q, $a, $b) #}))
+
+
+;; ============================================================
+#? ** Exponential Distribution
+
+#? (cdf-exponential-p <x> <mu>)
+;; Lower-tail CDF of the exponential distribution with mean <mu>.
+(de cdf-exponential-p (x mu)
+  ((-double-) x mu)
+  (to-double #{ gsl_cdf_exponential_P($x, $mu) #}))
+
+#? (cdf-exponential-q <x> <mu>)
+;; Upper-tail CDF of the exponential distribution.
+(de cdf-exponential-q (x mu)
+  ((-double-) x mu)
+  (to-double #{ gsl_cdf_exponential_Q($x, $mu) #}))
+
+#? (cdf-exponential-pinv <p> <mu>)
+;; Inverse lower-tail CDF of the exponential distribution.
+(de cdf-exponential-pinv (p mu)
+  ((-double-) p mu)
+  (to-double #{ gsl_cdf_exponential_Pinv($p, $mu) #}))
+
+#? (cdf-exponential-qinv <q> <mu>)
+;; Inverse upper-tail CDF of the exponential distribution.
+(de cdf-exponential-qinv (q mu)
+  ((-double-) q mu)
+  (to-double #{ gsl_cdf_exponential_Qinv($q, $mu) #}))
+
+
+;; ============================================================
+#? ** Cauchy Distribution
+
+#? (cdf-cauchy-p <x> <a>)
+;; Lower-tail CDF of the Cauchy distribution with scale <a>.
+(de cdf-cauchy-p (x a)
+  ((-double-) x a)
+  (to-double #{ gsl_cdf_cauchy_P($x, $a) #}))
+
+#? (cdf-cauchy-q <x> <a>)
+;; Upper-tail CDF of the Cauchy distribution.
+(de cdf-cauchy-q (x a)
+  ((-double-) x a)
+  (to-double #{ gsl_cdf_cauchy_Q($x, $a) #}))
+
+#? (cdf-cauchy-pinv <p> <a>)
+;; Inverse lower-tail CDF of the Cauchy distribution.
+(de cdf-cauchy-pinv (p a)
+  ((-double-) p a)
+  (to-double #{ gsl_cdf_cauchy_Pinv($p, $a) #}))
+
+#? (cdf-cauchy-qinv <q> <a>)
+;; Inverse upper-tail CDF of the Cauchy distribution.
+(de cdf-cauchy-qinv (q a)
+  ((-double-) q a)
+  (to-double #{ gsl_cdf_cauchy_Qinv($q, $a) #}))
+
+
+;; ============================================================
+#? ** Laplace Distribution
+
+#? (cdf-laplace-p <x> <a>)
+;; Lower-tail CDF of the Laplace distribution with width <a>.
+(de cdf-laplace-p (x a)
+  ((-double-) x a)
+  (to-double #{ gsl_cdf_laplace_P($x, $a) #}))
+
+#? (cdf-laplace-q <x> <a>)
+;; Upper-tail CDF of the Laplace distribution.
+(de cdf-laplace-q (x a)
+  ((-double-) x a)
+  (to-double #{ gsl_cdf_laplace_Q($x, $a) #}))
+
+#? (cdf-laplace-pinv <p> <a>)
+;; Inverse lower-tail CDF of the Laplace distribution.
+(de cdf-laplace-pinv (p a)
+  ((-double-) p a)
+  (to-double #{ gsl_cdf_laplace_Pinv($p, $a) #}))
+
+#? (cdf-laplace-qinv <q> <a>)
+;; Inverse upper-tail CDF of the Laplace distribution.
+(de cdf-laplace-qinv (q a)
+  ((-double-) q a)
+  (to-double #{ gsl_cdf_laplace_Qinv($q, $a) #}))
+
+
+;; ============================================================
+#? ** Rayleigh Distribution
+
+#? (cdf-rayleigh-p <x> <sigma>)
+;; Lower-tail CDF of the Rayleigh distribution with scale <sigma>.
+(de cdf-rayleigh-p (x sigma)
+  ((-double-) x sigma)
+  (to-double #{ gsl_cdf_rayleigh_P($x, $sigma) #}))
+
+#? (cdf-rayleigh-q <x> <sigma>)
+;; Upper-tail CDF of the Rayleigh distribution.
+(de cdf-rayleigh-q (x sigma)
+  ((-double-) x sigma)
+  (to-double #{ gsl_cdf_rayleigh_Q($x, $sigma) #}))
+
+#? (cdf-rayleigh-pinv <p> <sigma>)
+;; Inverse lower-tail CDF of the Rayleigh distribution.
+(de cdf-rayleigh-pinv (p sigma)
+  ((-double-) p sigma)
+  (to-double #{ gsl_cdf_rayleigh_Pinv($p, $sigma) #}))
+
+#? (cdf-rayleigh-qinv <q> <sigma>)
+;; Inverse upper-tail CDF of the Rayleigh distribution.
+(de cdf-rayleigh-qinv (q sigma)
+  ((-double-) q sigma)
+  (to-double #{ gsl_cdf_rayleigh_Qinv($q, $sigma) #}))
+
+
+;; ============================================================
+#? ** Lognormal Distribution
+
+#? (cdf-lognormal-p <x> <zeta> <sigma>)
+;; Lower-tail CDF of the lognormal distribution with parameters
+;; <zeta> (location) and <sigma> (scale).
+(de cdf-lognormal-p (x zeta sigma)
+  ((-double-) x zeta sigma)
+  (to-double #{ gsl_cdf_lognormal_P($x, $zeta, $sigma) #}))
+
+#? (cdf-lognormal-q <x> <zeta> <sigma>)
+;; Upper-tail CDF of the lognormal distribution.
+(de cdf-lognormal-q (x zeta sigma)
+  ((-double-) x zeta sigma)
+  (to-double #{ gsl_cdf_lognormal_Q($x, $zeta, $sigma) #}))
+
+#? (cdf-lognormal-pinv <p> <zeta> <sigma>)
+;; Inverse lower-tail CDF of the lognormal distribution.
+(de cdf-lognormal-pinv (p zeta sigma)
+  ((-double-) p zeta sigma)
+  (to-double #{ gsl_cdf_lognormal_Pinv($p, $zeta, $sigma) #}))
+
+#? (cdf-lognormal-qinv <q> <zeta> <sigma>)
+;; Inverse upper-tail CDF of the lognormal distribution.
+(de cdf-lognormal-qinv (q zeta sigma)
+  ((-double-) q zeta sigma)
+  (to-double #{ gsl_cdf_lognormal_Qinv($q, $zeta, $sigma) #}))
+
+
+;; ============================================================
+#? ** Weibull Distribution
+
+#? (cdf-weibull-p <x> <a> <b>)
+;; Lower-tail CDF of the Weibull distribution with scale <a>
+;; and exponent <b>.
+(de cdf-weibull-p (x a b)
+  ((-double-) x a b)
+  (to-double #{ gsl_cdf_weibull_P($x, $a, $b) #}))
+
+#? (cdf-weibull-q <x> <a> <b>)
+;; Upper-tail CDF of the Weibull distribution.
+(de cdf-weibull-q (x a b)
+  ((-double-) x a b)
+  (to-double #{ gsl_cdf_weibull_Q($x, $a, $b) #}))
+
+#? (cdf-weibull-pinv <p> <a> <b>)
+;; Inverse lower-tail CDF of the Weibull distribution.
+(de cdf-weibull-pinv (p a b)
+  ((-double-) p a b)
+  (to-double #{ gsl_cdf_weibull_Pinv($p, $a, $b) #}))
+
+#? (cdf-weibull-qinv <q> <a> <b>)
+;; Inverse upper-tail CDF of the Weibull distribution.
+(de cdf-weibull-qinv (q a b)
+  ((-double-) q a b)
+  (to-double #{ gsl_cdf_weibull_Qinv($q, $a, $b) #}))
+
+
+;; ============================================================
+#? ** Pareto Distribution
+
+#? (cdf-pareto-p <x> <a> <b>)
+;; Lower-tail CDF of the Pareto distribution with exponent <a>
+;; and scale <b>.
+(de cdf-pareto-p (x a b)
+  ((-double-) x a b)
+  (to-double #{ gsl_cdf_pareto_P($x, $a, $b) #}))
+
+#? (cdf-pareto-q <x> <a> <b>)
+;; Upper-tail CDF of the Pareto distribution.
+(de cdf-pareto-q (x a b)
+  ((-double-) x a b)
+  (to-double #{ gsl_cdf_pareto_Q($x, $a, $b) #}))
+
+#? (cdf-pareto-pinv <p> <a> <b>)
+;; Inverse lower-tail CDF of the Pareto distribution.
+(de cdf-pareto-pinv (p a b)
+  ((-double-) p a b)
+  (to-double #{ gsl_cdf_pareto_Pinv($p, $a, $b) #}))
+
+#? (cdf-pareto-qinv <q> <a> <b>)
+;; Inverse upper-tail CDF of the Pareto distribution.
+(de cdf-pareto-qinv (q a b)
+  ((-double-) q a b)
+  (to-double #{ gsl_cdf_pareto_Qinv($q, $a, $b) #}))
+
+
+;; ============================================================
+#? ** Logistic Distribution
+
+#? (cdf-logistic-p <x> <a>)
+;; Lower-tail CDF of the logistic distribution with scale <a>.
+(de cdf-logistic-p (x a)
+  ((-double-) x a)
+  (to-double #{ gsl_cdf_logistic_P($x, $a) #}))
+
+#? (cdf-logistic-q <x> <a>)
+;; Upper-tail CDF of the logistic distribution.
+(de cdf-logistic-q (x a)
+  ((-double-) x a)
+  (to-double #{ gsl_cdf_logistic_Q($x, $a) #}))
+
+#? (cdf-logistic-pinv <p> <a>)
+;; Inverse lower-tail CDF of the logistic distribution.
+(de cdf-logistic-pinv (p a)
+  ((-double-) p a)
+  (to-double #{ gsl_cdf_logistic_Pinv($p, $a) #}))
+
+#? (cdf-logistic-qinv <q> <a>)
+;; Inverse upper-tail CDF of the logistic distribution.
+(de cdf-logistic-qinv (q a)
+  ((-double-) q a)
+  (to-double #{ gsl_cdf_logistic_Qinv($q, $a) #}))
+
+
+;; ============================================================
+#? ** Uniform (Flat) Distribution
+
+#? (cdf-flat-p <x> <a> <b>)
+;; Lower-tail CDF of the uniform distribution on [<a>, <b>].
+(de cdf-flat-p (x a b)
+  ((-double-) x a b)
+  (to-double #{ gsl_cdf_flat_P($x, $a, $b) #}))
+
+#? (cdf-flat-q <x> <a> <b>)
+;; Upper-tail CDF of the uniform distribution.
+(de cdf-flat-q (x a b)
+  ((-double-) x a b)
+  (to-double #{ gsl_cdf_flat_Q($x, $a, $b) #}))
+
+#? (cdf-flat-pinv <p> <a> <b>)
+;; Inverse lower-tail CDF of the uniform distribution.
+(de cdf-flat-pinv (p a b)
+  ((-double-) p a b)
+  (to-double #{ gsl_cdf_flat_Pinv($p, $a, $b) #}))
+
+#? (cdf-flat-qinv <q> <a> <b>)
+;; Inverse upper-tail CDF of the uniform distribution.
+(de cdf-flat-qinv (q a b)
+  ((-double-) q a b)
+  (to-double #{ gsl_cdf_flat_Qinv($q, $a, $b) #}))
+
+
+;; ============================================================
+#? ** Exponential Power Distribution
+
+#? (cdf-exppow-p <x> <a> <b>)
+;; Lower-tail CDF of the exponential power distribution with
+;; scale <a> and exponent <b>.
+;; No inverse is available for this distribution.
+(de cdf-exppow-p (x a b)
+  ((-double-) x a b)
+  (to-double #{ gsl_cdf_exppow_P($x, $a, $b) #}))
+
+#? (cdf-exppow-q <x> <a> <b>)
+;; Upper-tail CDF of the exponential power distribution.
+(de cdf-exppow-q (x a b)
+  ((-double-) x a b)
+  (to-double #{ gsl_cdf_exppow_Q($x, $a, $b) #}))
+
+
+;; ============================================================
+#? ** Gumbel Type I Distribution
+
+#? (cdf-gumbel1-p <x> <a> <b>)
+;; Lower-tail CDF of the Gumbel Type I (minimum) distribution
+;; with parameters <a> and <b>.
+(de cdf-gumbel1-p (x a b)
+  ((-double-) x a b)
+  (to-double #{ gsl_cdf_gumbel1_P($x, $a, $b) #}))
+
+#? (cdf-gumbel1-q <x> <a> <b>)
+;; Upper-tail CDF of the Gumbel Type I distribution.
+(de cdf-gumbel1-q (x a b)
+  ((-double-) x a b)
+  (to-double #{ gsl_cdf_gumbel1_Q($x, $a, $b) #}))
+
+#? (cdf-gumbel1-pinv <p> <a> <b>)
+;; Inverse lower-tail CDF of the Gumbel Type I distribution.
+(de cdf-gumbel1-pinv (p a b)
+  ((-double-) p a b)
+  (to-double #{ gsl_cdf_gumbel1_Pinv($p, $a, $b) #}))
+
+#? (cdf-gumbel1-qinv <q> <a> <b>)
+;; Inverse upper-tail CDF of the Gumbel Type I distribution.
+(de cdf-gumbel1-qinv (q a b)
+  ((-double-) q a b)
+  (to-double #{ gsl_cdf_gumbel1_Qinv($q, $a, $b) #}))
+
+
+;; ============================================================
+#? ** Gumbel Type II Distribution
+
+#? (cdf-gumbel2-p <x> <a> <b>)
+;; Lower-tail CDF of the Gumbel Type II (Frechet) distribution
+;; with parameters <a> and <b>.
+(de cdf-gumbel2-p (x a b)
+  ((-double-) x a b)
+  (to-double #{ gsl_cdf_gumbel2_P($x, $a, $b) #}))
+
+#? (cdf-gumbel2-q <x> <a> <b>)
+;; Upper-tail CDF of the Gumbel Type II distribution.
+(de cdf-gumbel2-q (x a b)
+  ((-double-) x a b)
+  (to-double #{ gsl_cdf_gumbel2_Q($x, $a, $b) #}))
+
+#? (cdf-gumbel2-pinv <p> <a> <b>)
+;; Inverse lower-tail CDF of the Gumbel Type II distribution.
+(de cdf-gumbel2-pinv (p a b)
+  ((-double-) p a b)
+  (to-double #{ gsl_cdf_gumbel2_Pinv($p, $a, $b) #}))
+
+#? (cdf-gumbel2-qinv <q> <a> <b>)
+;; Inverse upper-tail CDF of the Gumbel Type II distribution.
+(de cdf-gumbel2-qinv (q a b)
+  ((-double-) q a b)
+  (to-double #{ gsl_cdf_gumbel2_Qinv($q, $a, $b) #}))
+
+
+;; ============================================================
+#? ** Discrete Distributions
+;; Discrete distributions provide only P (lower-tail) and Q (upper-tail)
+;; CDFs. The integer argument <k> is passed as an {<b> int} and cast
+;; to {<c> unsigned int} internally.
+
+;; ============================================================
+#? ** Binomial Distribution
+
+#? (cdf-binomial-p <k> <p> <n>)
+;; Lower-tail CDF of the binomial distribution.
+;; Returns P(X <= <k>) for <n> trials with success probability <p>.
+(de cdf-binomial-p (k prob n)
+  ((-int-) k n)
+  ((-double-) prob)
+  (to-double #{ gsl_cdf_binomial_P((unsigned int)$k, $prob, (unsigned int)$n) #}))
+
+#? (cdf-binomial-q <k> <p> <n>)
+;; Upper-tail CDF of the binomial distribution.
+;; Returns P(X > <k>).
+(de cdf-binomial-q (k prob n)
+  ((-int-) k n)
+  ((-double-) prob)
+  (to-double #{ gsl_cdf_binomial_Q((unsigned int)$k, $prob, (unsigned int)$n) #}))
+
+
+;; ============================================================
+#? ** Poisson Distribution
+
+#? (cdf-poisson-p <k> <mu>)
+;; Lower-tail CDF of the Poisson distribution with mean <mu>.
+;; Returns P(X <= <k>).
+(de cdf-poisson-p (k mu)
+  ((-int-) k)
+  ((-double-) mu)
+  (to-double #{ gsl_cdf_poisson_P((unsigned int)$k, $mu) #}))
+
+#? (cdf-poisson-q <k> <mu>)
+;; Upper-tail CDF of the Poisson distribution.
+;; Returns P(X > <k>).
+(de cdf-poisson-q (k mu)
+  ((-int-) k)
+  ((-double-) mu)
+  (to-double #{ gsl_cdf_poisson_Q((unsigned int)$k, $mu) #}))
+
+
+;; ============================================================
+#? ** Geometric Distribution
+
+#? (cdf-geometric-p <k> <p>)
+;; Lower-tail CDF of the geometric distribution with success
+;; probability <p>.  Returns P(X <= <k>).
+(de cdf-geometric-p (k prob)
+  ((-int-) k)
+  ((-double-) prob)
+  (to-double #{ gsl_cdf_geometric_P((unsigned int)$k, $prob) #}))
+
+#? (cdf-geometric-q <k> <p>)
+;; Upper-tail CDF of the geometric distribution.
+(de cdf-geometric-q (k prob)
+  ((-int-) k)
+  ((-double-) prob)
+  (to-double #{ gsl_cdf_geometric_Q((unsigned int)$k, $prob) #}))
+
+
+;; ============================================================
+#? ** Negative Binomial Distribution
+
+#? (cdf-negative-binomial-p <k> <p> <n>)
+;; Lower-tail CDF of the negative binomial distribution.
+;; Returns P(X <= <k>) for <n> successes with probability <p>.
+(de cdf-negative-binomial-p (k prob n)
+  ((-int-) k)
+  ((-double-) prob n)
+  (to-double #{ gsl_cdf_negative_binomial_P((unsigned int)$k, $prob, $n) #}))
+
+#? (cdf-negative-binomial-q <k> <p> <n>)
+;; Upper-tail CDF of the negative binomial distribution.
+(de cdf-negative-binomial-q (k prob n)
+  ((-int-) k)
+  ((-double-) prob n)
+  (to-double #{ gsl_cdf_negative_binomial_Q((unsigned int)$k, $prob, $n) #}))
+
+
+;; ============================================================
+#? ** Pascal Distribution
+
+#? (cdf-pascal-p <k> <p> <n>)
+;; Lower-tail CDF of the Pascal distribution.
+;; Returns P(X <= <k>) for <n> successes with probability <p>.
+(de cdf-pascal-p (k prob n)
+  ((-int-) k n)
+  ((-double-) prob)
+  (to-double #{ gsl_cdf_pascal_P((unsigned int)$k, $prob, (unsigned int)$n) #}))
+
+#? (cdf-pascal-q <k> <p> <n>)
+;; Upper-tail CDF of the Pascal distribution.
+(de cdf-pascal-q (k prob n)
+  ((-int-) k n)
+  ((-double-) prob)
+  (to-double #{ gsl_cdf_pascal_Q((unsigned int)$k, $prob, (unsigned int)$n) #}))
+
+
+;; ============================================================
+#? ** Hypergeometric Distribution
+
+#? (cdf-hypergeometric-p <k> <n1> <n2> <t>)
+;; Lower-tail CDF of the hypergeometric distribution.
+;; Returns P(X <= <k>) where <n1> is the number of type 1 objects,
+;; <n2> is the number of type 2 objects, and <t> is the number drawn.
+(de cdf-hypergeometric-p (k n1 n2 tt)
+  ((-int-) k n1 n2 tt)
+  (to-double #{ gsl_cdf_hypergeometric_P((unsigned int)$k, (unsigned int)$n1, (unsigned int)$n2, (unsigned int)$tt) #}))
+
+#? (cdf-hypergeometric-q <k> <n1> <n2> <t>)
+;; Upper-tail CDF of the hypergeometric distribution.
+(de cdf-hypergeometric-q (k n1 n2 tt)
+  ((-int-) k n1 n2 tt)
+  (to-double #{ gsl_cdf_hypergeometric_Q((unsigned int)$k, (unsigned int)$n1, (unsigned int)$n2, (unsigned int)$tt) #}))
+
+
+;; ============================================================
+;; Compile all CDF wrappers
+;; ============================================================
+
+(dhc-make ()
+  dummy_cdf
+  ;; Gaussian
+  cdf-ugaussian-p cdf-ugaussian-q cdf-ugaussian-pinv cdf-ugaussian-qinv
+  cdf-gaussian-p cdf-gaussian-q cdf-gaussian-pinv cdf-gaussian-qinv
+  ;; Gamma
+  cdf-gamma-p cdf-gamma-q cdf-gamma-pinv cdf-gamma-qinv
+  ;; Chi-squared
+  cdf-chisq-p cdf-chisq-q cdf-chisq-pinv cdf-chisq-qinv
+  ;; Student's t
+  cdf-tdist-p cdf-tdist-q cdf-tdist-pinv cdf-tdist-qinv
+  ;; F
+  cdf-fdist-p cdf-fdist-q cdf-fdist-pinv cdf-fdist-qinv
+  ;; Beta
+  cdf-beta-p cdf-beta-q cdf-beta-pinv cdf-beta-qinv
+  ;; Exponential
+  cdf-exponential-p cdf-exponential-q cdf-exponential-pinv cdf-exponential-qinv
+  ;; Cauchy
+  cdf-cauchy-p cdf-cauchy-q cdf-cauchy-pinv cdf-cauchy-qinv
+  ;; Laplace
+  cdf-laplace-p cdf-laplace-q cdf-laplace-pinv cdf-laplace-qinv
+  ;; Rayleigh
+  cdf-rayleigh-p cdf-rayleigh-q cdf-rayleigh-pinv cdf-rayleigh-qinv
+  ;; Lognormal
+  cdf-lognormal-p cdf-lognormal-q cdf-lognormal-pinv cdf-lognormal-qinv
+  ;; Weibull
+  cdf-weibull-p cdf-weibull-q cdf-weibull-pinv cdf-weibull-qinv
+  ;; Pareto
+  cdf-pareto-p cdf-pareto-q cdf-pareto-pinv cdf-pareto-qinv
+  ;; Logistic
+  cdf-logistic-p cdf-logistic-q cdf-logistic-pinv cdf-logistic-qinv
+  ;; Flat (uniform)
+  cdf-flat-p cdf-flat-q cdf-flat-pinv cdf-flat-qinv
+  ;; Exponential power (no inverse)
+  cdf-exppow-p cdf-exppow-q
+  ;; Gumbel
+  cdf-gumbel1-p cdf-gumbel1-q cdf-gumbel1-pinv cdf-gumbel1-qinv
+  cdf-gumbel2-p cdf-gumbel2-q cdf-gumbel2-pinv cdf-gumbel2-qinv
+  ;; Discrete
+  cdf-binomial-p cdf-binomial-q
+  cdf-poisson-p cdf-poisson-q
+  cdf-geometric-p cdf-geometric-q
+  cdf-negative-binomial-p cdf-negative-binomial-q
+  cdf-pascal-p cdf-pascal-q
+  cdf-hypergeometric-p cdf-hypergeometric-q
+)
