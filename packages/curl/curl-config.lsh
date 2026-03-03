@@ -1,19 +1,28 @@
 ;;; curl-config.lsh -- Compile curl C wrapper into shared library
 ;;;
 ;;; This file compiles curl-c.c into a shared library linked against
-;;; the locally-built curl (with WebSocket support) in dist/.
-;;; It must be loaded before curl.lsh.
+;;; curl 8.12.1 (with WebSocket support) built via lush-pkg into
+;;; ~/.lush/local/.  It must be loaded before curl.lsh.
+
+(libload "lush-pkg/lush-pkg")
+(lush-pkg-ensure "curl"
+  '((version . "8.12.1")
+    (url . "https://curl.se/download/curl-8.12.1.tar.gz")
+    (sha256 . "7b40ea64947e0b440716a4d7f0b7aa56230a5341c8377d7b609649d4aea8dbcf")
+    (build . autotools)
+    (configure-args . "--enable-websockets --with-openssl --disable-ldap --disable-ldaps --disable-rtsp --disable-dict --disable-telnet --disable-tftp --disable-pop3 --disable-imap --disable-smb --disable-smtp --disable-gopher --disable-mqtt --disable-manual --disable-docs --without-brotli --without-zstd --without-libpsl --without-libidn2 --without-nghttp2 --silent")
+    (check . "lib/libcurl.so")))
 
 (libload "libc/make")
 
 (let ((dir (dirname file-being-loaded)))
   (let ((lm (new lushmake))
         (cc (or (getconf "CC") "gcc")))
-    (==> lm setflags (concat " -I" dir "/dist/include -O2 -fPIC"))
+    ;; -I flags come from c-include-path (lush-pkg added ~/.lush/local/include)
+    (==> lm setflags " -O2 -fPIC")
     (==> lm rule "curl-c.o" '("curl-c.c" "curl-c.h"))
     (==> lm rule "curl-c.so" '("curl-c.o")
          (concat cc " -shared -o $OBJ $SOURCES"
-                 " -L" dir "/dist/lib -lcurl -lssl -lcrypto -lpthread"
-                 " -Wl,-rpath," dir "/dist/lib"))
+                 " " (lush-pkg-link-flags) " -lcurl -lssl -lcrypto -lpthread"))
     (==> lm make)
     (==> lm load "curl-c.so") ) )

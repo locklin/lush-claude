@@ -46,8 +46,8 @@
 ;;      (xgb-free-dmatrix dm)))
 ;; </code>}
 ;;
-;; {<b> Prerequisites:} Run {<c> install-xgboost-locally.sh} first to
-;; build the xgboost shared library into {<c> dist/}.
+;; {<b> Prerequisites:} The xgboost shared library (3.2.0) is
+;; downloaded and built automatically by {<b> lush-pkg} on first load.
 
 ;; ============================================================
 ;; DHC-compiled wrappers (gptr <-> C)
@@ -163,8 +163,7 @@
 
 ;; Compile all DHC wrappers
 (let ((dhc-make-lushflags
-       (concat dhc-make-lushflags " -I" (dirname file-being-loaded)
-               " -I" (dirname file-being-loaded) "/dist/include")))
+       (concat dhc-make-lushflags " -I" (dirname file-being-loaded))))
   (dhc-make-with-libs () t
     #{ #include "xgboost-c.h" #}
     _xgb-dmatrix-create _xgb-dmatrix-set-labels _xgb-dmatrix-free

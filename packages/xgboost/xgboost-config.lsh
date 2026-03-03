@@ -1,19 +1,43 @@
 ;;; xgboost-config.lsh -- Compile xgboost C wrapper into shared library
 ;;;
 ;;; This file compiles xgboost-c.c into a shared library linked against
-;;; the locally-built xgboost in dist/.
+;;; xgboost 3.2.0 built via lush-pkg into ~/.lush/local/.
 ;;; It must be loaded before xgboost.lsh.
+
+#? ** Build Configuration
+;; Compiles the Lush C wrapper layer into a shared library linked
+;; against xgboost 3.2.0 using {<b> lushmake}.  xgboost itself is
+;; downloaded and built automatically by {<b> lush-pkg} on first load.
+;; This file is loaded automatically by <xgboost.lsh> and should not be
+;; loaded directly.
+;;
+;; The build produces a single shared library:
+;; {<ul>
+;; {<li> <xgboost-c.so>: Lush-specific wrapper with opaque handle
+;; management, linked against libxgboost.so in
+;; ~/.lush/local/lib/.}
+;; }
+
+(libload "lush-pkg/lush-pkg")
+(lush-pkg-ensure "xgboost"
+  '((version . "3.2.0")
+    (url . "https://github.com/dmlc/xgboost/releases/download/v3.2.0/xgboost-src-3.2.0.tar.gz")
+    (sha256 . "16a31dfbc0c54544c9c36ab5f696fa7b646c125f161c52c814d757a58241a404")
+    (build . cmake)
+    (cmake-args . "-DBUILD_STATIC_LIB=OFF")
+    (srcdir . "xgboost")
+    (check . "lib/libxgboost.so")))
 
 (libload "libc/make")
 
 (let ((dir (dirname file-being-loaded)))
   (let ((lm (new lushmake))
         (cc (or (getconf "CC") "gcc")))
-    (==> lm setflags (concat " -I" dir "/dist/include -O2 -fPIC"))
+    ;; Headers found via c-include-path (lush-pkg added ~/.lush/local/include)
+    (==> lm setflags " -O2 -fPIC")
     (==> lm rule "xgboost-c.o" '("xgboost-c.c" "xgboost-c.h"))
     (==> lm rule "xgboost-c.so" '("xgboost-c.o")
          (concat cc " -shared -o $OBJ $SOURCES"
-                 " -L" dir "/dist/lib -lxgboost"
-                 " -Wl,-rpath," dir "/dist/lib"))
+                 " " (lush-pkg-link-flags) " -lxgboost"))
     (==> lm make)
     (==> lm load "xgboost-c.so") ) )

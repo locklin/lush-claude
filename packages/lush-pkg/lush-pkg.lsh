@@ -1,0 +1,191 @@
+;;; lush-pkg.lsh -- Download, build, and install external C libraries
+;;;
+;;; A utility library for Lush packages that depend on external C libraries
+;;; (xgboost, curl, libuv, etc.).  Each package declares its own dependency
+;;; spec inline in its *-config.lsh file.  lush-pkg provides the machinery
+;;; to download, verify, build, and install the library into a per-user
+;;; prefix (~/.lush/local/).
+;;;
+;;; Usage from a package's *-config.lsh:
+;;;
+;;;   (libload "lush-pkg/lush-pkg")
+;;;   (lush-pkg-ensure "curl"
+;;;     '((version . "8.12.1")
+;;;       (url . "https://curl.se/download/curl-8.12.1.tar.gz")
+;;;       (sha256 . "7b40ea64...")
+;;;       (build . autotools)
+;;;       (configure-args . "--enable-websockets --with-openssl")
+;;;       (check . "lib/libcurl.so")))
+;;;
+;;; External tool requirements: wget, sha256sum, tar, make, gcc.
+;;; cmake is required only for cmake-type packages.
+
+;; ============================================================
+;; Prefix setup
+;; ============================================================
+
+;; Default prefix: ~/.lush/local
+;; Override in lushrc.lsh: (defvar *lush-pkg-prefix* "/other/path")
+(defvar *lush-pkg-prefix*
+  (concat-fname (concat-fname (getenv "HOME") ".lush") "local"))
+
+;; Prepend to global search paths so dhc-make, lushmake,
+;; find-shared-library, and find-c-include all find locally-built
+;; libraries automatically.  Idempotent (safe to load multiple times).
+(let ((incdir (concat-fname *lush-pkg-prefix* "include"))
+      (libdir (concat-fname *lush-pkg-prefix* "lib")))
+  (when (not (member incdir c-include-path))
+    (setq c-include-path (cons incdir c-include-path)))
+  (when (not (member libdir shared-library-path))
+    (setq shared-library-path (cons libdir shared-library-path))))
+
+;; ============================================================
+;; Public API
+;; ============================================================
+
+#? (lush-pkg-prefix)
+;; Return the current prefix path (default ~/.lush/local).
+(de lush-pkg-prefix ()
+  *lush-pkg-prefix*)
+
+#? (lush-pkg-link-flags)
+;; Return "-L<prefix>/lib -Wl,-rpath,<prefix>/lib" for use in
+;; lushmake link rules.  The -Wl,-rpath ensures the dynamic linker
+;; finds our libraries at runtime, not system versions.
+(de lush-pkg-link-flags ()
+  (let ((libdir (concat-fname *lush-pkg-prefix* "lib")))
+    (concat "-L" libdir " -Wl,-rpath," libdir)))
+
+#? (lush-pkg-installed-p <check>)
+;; Return t if <check> (a path relative to the prefix, e.g.
+;; "lib/libcurl.so") exists.
+(de lush-pkg-installed-p (check)
+  (filep (concat-fname *lush-pkg-prefix* check)))
+
+#? (lush-pkg-ensure <name> <spec>)
+;; Ensure an external C library is built and installed.
+;; {<p>
+;;   <name> is a human-readable string for progress messages.
+;;   <spec> is an alist with keys:
+;; {<ul>
+;;   {<li> {<b> version} -- version string (for messages)}
+;;   {<li> {<b> url} -- tarball download URL}
+;;   {<li> {<b> sha256} -- expected SHA-256 hex digest of the tarball}
+;;   {<li> {<b> build} -- build strategy: {<b> cmake} or {<b> autotools}}
+;;   {<li> {<b> cmake-args} -- (optional) extra cmake flags}
+;;   {<li> {<b> configure-args} -- (optional) extra configure flags}
+;;   {<li> {<b> check} -- relative path to verify installation
+;;     (e.g. "lib/libcurl.so")}
+;;   {<li> {<b> srcdir} -- (optional) name of extracted directory if
+;;     it differs from the tarball name minus .tar.gz}
+;; }
+;; }
+;; {<p>
+;;   If the check artifact already exists, returns immediately.
+;;   Otherwise downloads the tarball (cached), verifies the SHA-256
+;;   checksum, extracts, builds, and installs to the prefix.
+;;   Progress messages are printed throughout.
+;; }
+(de lush-pkg-ensure (name spec)
+  (let* ((check (alist-get 'check spec)))
+    (when (not (lush-pkg-installed-p check))
+      (let* ((version (alist-get 'version spec))
+             (url (alist-get 'url spec))
+             (sha256 (alist-get 'sha256 spec))
+             (build-type (alist-get 'build spec))
+             (prefix *lush-pkg-prefix*)
+             (tardir (concat-fname prefix "tarballs"))
+             (srcparent (concat-fname prefix "src"))
+             (tarball-name (_lush-pkg-url-basename url))
+             (tarball-path (concat-fname tardir tarball-name))
+             (srcdir-name (or (alist-get 'srcdir spec)
+                              (_lush-pkg-strip-tar-suffix tarball-name)))
+             (srcdir (concat-fname srcparent srcdir-name)))
+        (printf "[lush-pkg] %s %s not found, installing...\n" name version)
+        ;; Create directory tree
+        (_lush-pkg-run
+         (concat "mkdir -p " tardir " " srcparent
+                 " " (concat-fname prefix "include")
+                 " " (concat-fname prefix "lib")))
+        ;; Download (skip if tarball already cached)
+        (when (not (filep tarball-path))
+          (printf "[lush-pkg] Downloading %s...\n" tarball-name)
+          (_lush-pkg-run (concat "wget -q -O " tarball-path " " url)))
+        ;; Verify SHA-256 checksum
+        (printf "[lush-pkg] Verifying checksum...\n")
+        (_lush-pkg-run
+         (concat "echo '" sha256 "  " tarball-path
+                 "' | sha256sum --check --quiet"))
+        ;; Extract
+        (printf "[lush-pkg] Extracting...\n")
+        (_lush-pkg-run (concat "tar xzf " tarball-path " -C " srcparent))
+        ;; Build
+        (printf "[lush-pkg] Building with %s (this may take a few minutes)...\n"
+                (pname build-type))
+        (selectq build-type
+          (cmake
+           (_lush-pkg-build-cmake srcdir prefix
+                                  (alist-get 'cmake-args spec)))
+          (autotools
+           (_lush-pkg-build-autotools srcdir prefix
+                                      (alist-get 'configure-args spec)))
+          (t (error "lush-pkg"
+                    (concat "Unknown build type: " (pname build-type)))))
+        ;; Verify installation
+        (when (not (lush-pkg-installed-p check))
+          (error "lush-pkg"
+                 (concat "Build completed but check artifact not found: "
+                         check)))
+        (printf "[lush-pkg] Installed %s %s to %s\n"
+                name version prefix)))))
+
+;; ============================================================
+;; Internal helpers
+;; ============================================================
+
+;; Run a shell command.  Error if exit code is non-zero.
+(de _lush-pkg-run (cmd)
+  (let ((rc (sys cmd)))
+    (when (<> rc 0)
+      (error "lush-pkg"
+             (concat "Command failed (exit " (str rc) "): " cmd)))))
+
+;; Extract filename from a URL.
+;; "https://example.com/path/foo-1.0.tar.gz" -> "foo-1.0.tar.gz"
+(de _lush-pkg-url-basename (url)
+  (basename url))
+
+;; Strip .tar.gz or .tgz suffix from a filename.
+;; "foo-1.0.tar.gz" -> "foo-1.0"
+(de _lush-pkg-strip-tar-suffix (name)
+  (let ((n (len name)))
+    (cond
+     ((and (>= n 7) (= (right name 7) ".tar.gz"))
+      (left name (- n 7)))
+     ((and (>= n 4) (= (right name 4) ".tgz"))
+      (left name (- n 4)))
+     (t name))))
+
+;; ============================================================
+;; Build strategies
+;; ============================================================
+
+;; cmake: mkdir build, cmake, make, make install
+(de _lush-pkg-build-cmake (srcdir prefix cmake-args)
+  (let ((builddir (concat-fname srcdir "build")))
+    (_lush-pkg-run (concat "mkdir -p " builddir))
+    (_lush-pkg-run
+     (concat "cd " builddir
+             " && cmake .. -DCMAKE_INSTALL_PREFIX=" prefix
+             " " (or cmake-args "")))
+    (_lush-pkg-run (concat "cd " builddir " && make -j$(nproc)"))
+    (_lush-pkg-run (concat "cd " builddir " && make install"))))
+
+;; autotools: configure, make, make install
+(de _lush-pkg-build-autotools (srcdir prefix configure-args)
+  (_lush-pkg-run
+   (concat "cd " srcdir
+           " && ./configure --prefix=" prefix
+           " " (or configure-args "")))
+  (_lush-pkg-run (concat "cd " srcdir " && make -j$(nproc)"))
+  (_lush-pkg-run (concat "cd " srcdir " && make install")))

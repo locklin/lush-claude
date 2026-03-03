@@ -29,8 +29,7 @@
 
 (defvar *wavelet-filter-cache* (htable))
 
-#? *** << wavelets/wavelet.lsh
-#?* Wavelet Transforms
+#? *** Wavelet Transforms
 ;; A comprehensive wavelet library providing:
 ;; {<ul>}
 ;; {<li>} DWT (Discrete Wavelet Transform) via GSL for power-of-2 inputs{</li>}

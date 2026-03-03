@@ -53,7 +53,7 @@
   { "LN_S", "ln -s" }, \
   { "TOUCH", "/usr/bin/touch" }, \
   { "RANLIB", "ranlib" }, \
-  { "X_LIBS", "  -lX11 " }, \
+  { "X_LIBS", "  -lSM -lICE -lX11 " }, \
   { "X_CFLAGS", "" }, \
   { "CC_PIC_FLAG", "-fPIC" }, \
   { "CC_EXP_FLAG", "-Wl,-export-dynamic" }, \

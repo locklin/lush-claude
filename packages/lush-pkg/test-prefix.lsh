@@ -1,0 +1,82 @@
+;;; test-prefix.lsh -- Verify that ~/.lush/local/{include,lib} paths
+;;; are picked up by the compiler infrastructure.
+;;;
+;;; Usage:
+;;;   ./src/lush <<'LUSHEOF'
+;;;   (addpath "packages")
+;;;   (load "packages/lush-pkg/test-prefix.lsh")
+;;;   LUSHEOF
+
+(printf "=== lush-pkg prefix path test ===\n\n")
+
+(let ((prefix (concat-fname (concat-fname (getenv "HOME") ".lush") "local"))
+      (pass 0)
+      (fail 0))
+
+  (let ((incdir (concat-fname prefix "include"))
+        (libdir (concat-fname prefix "lib")))
+
+    ;; Show current state
+    (printf "Prefix: %s\n" prefix)
+    (printf "incdir: %s  exists: %l\n" incdir (dirp incdir))
+    (printf "libdir: %s  exists: %l\n\n" libdir (dirp libdir))
+
+    ;; 1. Check c-include-path before
+    (printf "--- c-include-path BEFORE prepend ---\n")
+    (each ((p c-include-path)) (printf "  %s\n" p))
+
+    ;; Prepend
+    (when (not (member incdir c-include-path))
+      (setq c-include-path (cons incdir c-include-path)))
+    (when (not (member libdir shared-library-path))
+      (setq shared-library-path (cons libdir shared-library-path)))
+
+    ;; 2. Check c-include-path after
+    (printf "\n--- c-include-path AFTER prepend ---\n")
+    (each ((p c-include-path)) (printf "  %s\n" p))
+
+    ;; 3. Check shared-library-path after
+    (printf "\n--- shared-library-path AFTER prepend ---\n")
+    (each ((p shared-library-path)) (printf "  %s\n" p))
+
+    ;; 4. Call dhc-generate-include-flags and check output
+    (printf "\n--- dhc-generate-include-flags output ---\n")
+    (let ((flags (dhc-generate-include-flags)))
+      (printf "  \"%s\"\n" flags)
+
+      ;; Test: does it contain our include dir?
+      ;; Use simple substring search: look for "-I<incdir>" in flags
+      (printf "\n--- Tests ---\n")
+      (let* ((needle (concat "-I" incdir))
+             (nlen (len needle))
+             (flen (len flags))
+             (found ()))
+        (for (i 0 (- flen nlen))
+          (when (= (mid flags i nlen) needle)
+            (setq found t)))
+        (if found
+          (progn (printf "PASS: incdir found in include flags\n") (incr pass))
+          (progn (printf "FAIL: incdir NOT found in include flags\n") (incr fail)))))
+
+    ;; 5. Test member in c-include-path
+    (if (member incdir c-include-path)
+      (progn (printf "PASS: incdir is in c-include-path\n") (incr pass))
+      (progn (printf "FAIL: incdir NOT in c-include-path\n") (incr fail)))
+
+    ;; 6. Test member in shared-library-path
+    (if (member libdir shared-library-path)
+      (progn (printf "PASS: libdir is in shared-library-path\n") (incr pass))
+      (progn (printf "FAIL: libdir NOT in shared-library-path\n") (incr fail)))
+
+    ;; 7. Test idempotent prepend (do it again, check no duplicates)
+    (when (not (member incdir c-include-path))
+      (setq c-include-path (cons incdir c-include-path)))
+    (let ((count 0))
+      (each ((p c-include-path))
+        (when (= p incdir) (incr count)))
+      (if (= count 1)
+        (progn (printf "PASS: no duplicate in c-include-path after second prepend\n") (incr pass))
+        (progn (printf "FAIL: %d copies of incdir in c-include-path\n" count) (incr fail))))
+
+    ;; Summary
+    (printf "\n=== %d passed, %d failed ===\n" pass fail)))

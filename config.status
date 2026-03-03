@@ -426,7 +426,7 @@ Copyright (C) 2021 Free Software Foundation, Inc.
 This config.status script is free software; the Free Software Foundation
 gives unlimited permission to copy, distribute and modify it."
 
-ac_pwd='/home/scottl/src/lush-claude'
+ac_pwd='/home/scott/src/claude-sandbox/lush-claude'
 srcdir='.'
 INSTALL='/usr/bin/install -c'
 test -n "$AWK" || AWK=awk
@@ -613,8 +613,8 @@ S["PTHREAD_LIBS"]=""
 S["X_YES"]=""
 S["PKGCONFIG"]="/usr/bin/pkg-config"
 S["X_EXTRA_LIBS"]=""
-S["X_LIBS"]="  -lX11 "
-S["X_PRE_LIBS"]=""
+S["X_LIBS"]="  -lSM -lICE -lX11 "
+S["X_PRE_LIBS"]=" -lSM -lICE"
 S["X_CFLAGS"]=""
 S["XMKMF"]=""
 S["BFD_YES"]=""
