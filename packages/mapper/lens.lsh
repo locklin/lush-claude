@@ -327,3 +327,112 @@
             ((-int-) c)
             (out i c (X i (var-idx c))) ) ) )
       out ) ) )
+
+
+;; ============================================================
+;; UMAP lenses
+;; ============================================================
+
+#? (mapper-lens-umap <data> [<n-neighbors> [<min-dist>]])
+;; UMAP 1D projection as a Mapper lens.
+;; Projects the data into 1 dimension using UMAP.
+;; <data> is an NxD double matrix.
+;; <n-neighbors> defaults to 15; <min-dist> defaults to 0.1.
+;; Returns an Nx1 double matrix.
+;;
+;; UMAP captures nonlinear manifold structure, making it
+;; a good lens for revealing topological features that
+;; linear lenses (PCA, L2 norm) miss.
+;; {<see> (mapper-lens-umap2d <data> [<n-neighbors> [<min-dist>]])}
+;; {<see> (umap <data> <out-dim> [<n-neighbors> [<min-dist> [<n-epochs>]]])}
+
+(de mapper-lens-umap (data . rest)
+  (libload "mapper/umap")
+  (let ((k (if rest (car rest) 15))
+        (md (if (and rest (cdr rest)) (cadr rest) 0.1)))
+    (umap data 1 k md) ))
+
+
+#? (mapper-lens-umap2d <data> [<n-neighbors> [<min-dist>]])
+;; UMAP 2D projection as a Mapper lens (for dual-lens mapper).
+;; Projects the data into 2 dimensions using UMAP.
+;; <data> is an NxD double matrix.
+;; <n-neighbors> defaults to 15; <min-dist> defaults to 0.1.
+;; Returns an Nx2 double matrix.
+;; {<see> (mapper-lens-umap <data> [<n-neighbors> [<min-dist>]])}
+
+(de mapper-lens-umap2d (data . rest)
+  (libload "mapper/umap")
+  (let ((k (if rest (car rest) 15))
+        (md (if (and rest (cdr rest)) (cadr rest) 0.1)))
+    (umap data 2 k md) ))
+
+
+;; ============================================================
+;; Spectral lenses (from libnum)
+;; ============================================================
+
+#? (mapper-lens-laplacian <data> [<n-neighbors>])
+;; Laplacian Eigenmaps 1D projection as a Mapper lens.
+;; <n-neighbors> defaults to 15.
+;; Returns an Nx1 double matrix.
+;; {<see> (laplacian-eigenmaps <data> <out-dim> [<n-neighbors> [<sigma>]])}
+
+(de mapper-lens-laplacian (data . rest)
+  (libload "libnum/spectral")
+  (let ((k (if rest (car rest) 15)))
+    (laplacian-eigenmaps data 1 k) ))
+
+
+#? (mapper-lens-laplacian2d <data> [<n-neighbors>])
+;; Laplacian Eigenmaps 2D projection as a Mapper lens.
+;; Returns an Nx2 double matrix.
+
+(de mapper-lens-laplacian2d (data . rest)
+  (libload "libnum/spectral")
+  (let ((k (if rest (car rest) 15)))
+    (laplacian-eigenmaps data 2 k) ))
+
+
+#? (mapper-lens-diffusion <data> [<n-neighbors>])
+;; Diffusion Maps 1D projection as a Mapper lens.
+;; <n-neighbors> defaults to 15.
+;; Returns an Nx1 double matrix.
+;; {<see> (diffusion-maps <data> <out-dim> [<n-neighbors> [<sigma> [<t>]]])}
+
+(de mapper-lens-diffusion (data . rest)
+  (libload "libnum/spectral")
+  (let ((k (if rest (car rest) 15)))
+    (diffusion-maps data 1 k) ))
+
+
+#? (mapper-lens-diffusion2d <data> [<n-neighbors>])
+;; Diffusion Maps 2D projection as a Mapper lens.
+;; Returns an Nx2 double matrix.
+
+(de mapper-lens-diffusion2d (data . rest)
+  (libload "libnum/spectral")
+  (let ((k (if rest (car rest) 15)))
+    (diffusion-maps data 2 k) ))
+
+
+#? (mapper-lens-kpca <data> [<gamma>])
+;; Kernel PCA 1D projection (RBF kernel) as a Mapper lens.
+;; <gamma> defaults to 1/D.
+;; Returns an Nx1 double matrix.
+;; {<see> (kernel-pca <data> <out-dim> [<kernel> [<gamma> [<degree> [<coef0>]]]])}
+
+(de mapper-lens-kpca (data . rest)
+  (libload "libnum/spectral")
+  (let ((gamma (if rest (car rest) (/ 1.0 (idx-dim data 1)))))
+    (kernel-pca data 1 "rbf" gamma) ))
+
+
+#? (mapper-lens-kpca2d <data> [<gamma>])
+;; Kernel PCA 2D projection (RBF kernel) as a Mapper lens.
+;; Returns an Nx2 double matrix.
+
+(de mapper-lens-kpca2d (data . rest)
+  (libload "libnum/spectral")
+  (let ((gamma (if rest (car rest) (/ 1.0 (idx-dim data 1)))))
+    (kernel-pca data 2 "rbf" gamma) ))

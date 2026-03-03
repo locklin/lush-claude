@@ -1,0 +1,735 @@
+;;; umap.lsh -- Uniform Manifold Approximation and Projection
+;;;
+;;; UMAP dimensionality reduction for use as a standalone tool
+;;; or as a Mapper lens.  Constructs a weighted k-NN graph,
+;;; builds a fuzzy simplicial set, then optimizes a low-dimensional
+;;; layout via SGD with negative sampling.
+;;;
+;;; All heavy computation is in compiled C (inline via dhc-make).
+;;; No external library required.
+;;;
+;;; Reference: McInnes, Healy, Melville (2018),
+;;; "UMAP: Uniform Manifold Approximation and Projection
+;;;  for Dimension Reduction", arXiv:1802.03426
+;;;
+;;; Copyright (C) 2026 Scott Locklin, Lugos LLC
+;;; Distributed under the GNU General Public License v2+.
+
+(libload "libidx/idx-double")
+(libload "libidx/idx-int")
+
+;; ============================================================
+;; Helptool documentation
+;; ============================================================
+
+#? *** UMAP: Uniform Manifold Approximation and Projection
+;; UMAP is a nonlinear dimensionality reduction algorithm that
+;; projects high-dimensional data into a low-dimensional space
+;; (typically 1D or 2D) for visualization or as a Mapper lens.
+;;
+;; The algorithm:
+;; {<ul>
+;; {<li> Builds a k-nearest-neighbor graph in the original space.}
+;; {<li> Converts distances to fuzzy membership weights via per-point
+;;   bandwidth calibration (smooth k-NN distances).}
+;; {<li> Symmetrizes the graph to form a fuzzy simplicial set.}
+;; {<li> Initializes a low-dimensional embedding (spectral or random).}
+;; {<li> Optimizes the embedding via SGD with negative sampling to
+;;   preserve the fuzzy topological structure.}
+;; }
+;;
+;; {<b> Usage:}
+;; {<code>
+;;  (libload "mapper/umap")
+;;  ;; Reduce 100 points in 50D to 2D
+;;  (let* ((data (double-matrix 100 50))
+;;         (emb (umap data 2)))
+;;    (printf "Embedding: %d x %d\n"
+;;            (idx-dim emb 0) (idx-dim emb 1)))
+;; </code>}
+;;
+;; {<b> As a Mapper lens:}
+;; {<code>
+;;  (libload "mapper/lens")
+;;  (let ((lens (mapper-lens-umap data)))   ; 1D UMAP
+;;    (mapper-run data lens ...))
+;; </code>}
+;;
+;; {<see> (umap <data> <out-dim> [<n-neighbors> [<min-dist> [<n-epochs>]]])}
+;; {<see> (mapper-lens-umap <data> [<n-neighbors> [<min-dist>]])}
+
+;; ============================================================
+;; Compiled C helpers
+;; ============================================================
+
+#? ** UMAP Internals
+;; Low-level compiled functions used by {<c> umap}.  These are
+;; not typically called directly.
+
+;; Brute-force k-NN: for each of N points find k nearest neighbors.
+;; data: N x D double matrix
+;; knn-idx: N x k int matrix (output: neighbor indices)
+;; knn-dist: N x k double matrix (output: neighbor distances)
+(de _umap-knn (data k knn-idx knn-dist)
+  ((-idx2- (-double-)) data knn-dist)
+  ((-int-) k)
+  ((-idx2- (-int-)) knn-idx)
+  (let ((n (idx-dim data 0))
+        (d (idx-dim data 1)))
+    ((-int-) n d)
+    #{
+    double *pdata = IDX_PTR($data, double);
+    int sd0 = ($data)->mod[0], sd1 = ($data)->mod[1];
+    int *pidx = IDX_PTR($knn_idx, int);
+    int si0 = ($knn_idx)->mod[0], si1 = ($knn_idx)->mod[1];
+    double *pdist = IDX_PTR($knn_dist, double);
+    int sdi0 = ($knn_dist)->mod[0], sdi1 = ($knn_dist)->mod[1];
+    int i, j, m, dim;
+
+    /* Temporary arrays for one row's distances */
+    double *all_dist = (double *)malloc($n * sizeof(double));
+    int *all_idx = (int *)malloc($n * sizeof(int));
+    if (!all_dist || !all_idx) {
+        if (all_dist) free(all_dist);
+        if (all_idx) free(all_idx);
+        run_time_error("umap_knn: malloc failed");
+    }
+
+    for (i = 0; i < $n; i++) {
+        /* Compute Euclidean distances from point i to all others */
+        for (j = 0; j < $n; j++) {
+            double s = 0.0;
+            for (dim = 0; dim < $d; dim++) {
+                double diff = pdata[i*sd0 + dim*sd1] - pdata[j*sd0 + dim*sd1];
+                s += diff * diff;
+            }
+            all_dist[j] = sqrt(s);
+            all_idx[j] = j;
+        }
+        /* Set self-distance to infinity so we don't pick self */
+        all_dist[i] = 1e30;
+
+        /* Partial sort: find k smallest distances.
+           Simple selection: for each of k positions, find minimum
+           in remaining array. O(n*k) which is fine for n < 10k. */
+        for (m = 0; m < $k; m++) {
+            int best = m;
+            double best_d = all_dist[m];
+            for (j = m + 1; j < $n; j++) {
+                if (all_dist[j] < best_d) {
+                    best_d = all_dist[j];
+                    best = j;
+                }
+            }
+            /* Swap into position m */
+            if (best != m) {
+                double tmpd = all_dist[m];
+                int tmpi = all_idx[m];
+                all_dist[m] = all_dist[best];
+                all_idx[m] = all_idx[best];
+                all_dist[best] = tmpd;
+                all_idx[best] = tmpi;
+            }
+            pidx[i*si0 + m*si1] = all_idx[m];
+            pdist[i*sdi0 + m*sdi1] = all_dist[m];
+        }
+    }
+    free(all_dist);
+    free(all_idx);
+    #}
+    () ))
+
+
+;; Smooth k-NN distances: binary search per point for sigma_i
+;; so that sum_j exp(-(d(i,j) - rho_i) / sigma_i) = log2(k).
+;; knn-dist: N x k double matrix (input distances)
+;; weights: N x k double matrix (output: fuzzy membership weights)
+;; sigmas: N x 1 double matrix (output: per-point bandwidths)
+(de _umap-smooth-knn (knn-dist k weights sigmas)
+  ((-idx2- (-double-)) knn-dist weights)
+  ((-int-) k)
+  ((-idx1- (-double-)) sigmas)
+  (let ((n (idx-dim knn-dist 0)))
+    ((-int-) n)
+    #{
+    double *pd = IDX_PTR($knn_dist, double);
+    int sdd0 = ($knn_dist)->mod[0], sdd1 = ($knn_dist)->mod[1];
+    double *pw = IDX_PTR($weights, double);
+    int sw0 = ($weights)->mod[0], sw1 = ($weights)->mod[1];
+    double *ps = IDX_PTR($sigmas, double);
+    int ss0 = ($sigmas)->mod[0];
+    int i, j, iter;
+    double target = log((double)$k) / log(2.0);  /* log2(k) */
+
+    for (i = 0; i < $n; i++) {
+        /* rho_i = distance to nearest neighbor */
+        double rho = pd[i*sdd0 + 0*sdd1];
+        if (rho < 0.0) rho = 0.0;
+
+        /* Binary search for sigma */
+        double lo = 1e-5, hi = 1000.0;
+        double sigma = 1.0;
+
+        for (iter = 0; iter < 64; iter++) {
+            sigma = (lo + hi) / 2.0;
+            double sum = 0.0;
+            for (j = 0; j < $k; j++) {
+                double d = pd[i*sdd0 + j*sdd1] - rho;
+                if (d <= 0.0)
+                    sum += 1.0;
+                else
+                    sum += exp(-d / sigma);
+            }
+            if (fabs(sum - target) < 1e-5)
+                break;
+            if (sum > target)
+                hi = sigma;
+            else
+                lo = sigma;
+        }
+        ps[i*ss0] = sigma;
+
+        /* Compute weights for this row */
+        for (j = 0; j < $k; j++) {
+            double d = pd[i*sdd0 + j*sdd1] - rho;
+            if (d <= 0.0)
+                pw[i*sw0 + j*sw1] = 1.0;
+            else
+                pw[i*sw0 + j*sw1] = exp(-d / sigma);
+        }
+    }
+    #}
+    () ))
+
+
+;; Build symmetrized edge list from k-NN graph.
+;; knn-idx: N x k int matrix (neighbor indices)
+;; knn-weights: N x k double matrix (fuzzy weights per neighbor)
+;; head, tail: output int vectors (edge endpoints) — must be pre-allocated
+;;   to max possible size = N*k (will use n-edges of them)
+;; edge-weights: output double vector (symmetrized edge weight)
+;; Returns number of edges actually used.
+(de _umap-symmetrize (knn-idx knn-weights n k head tail edge-weights)
+  ((-idx2- (-int-)) knn-idx)
+  ((-idx2- (-double-)) knn-weights)
+  ((-int-) n k)
+  ((-idx1- (-int-)) head tail)
+  ((-idx1- (-double-)) edge-weights)
+  (let ((n-edges 0))
+    ((-int-) n-edges)
+    #{
+    /* Build a dense N x N weight matrix (asymmetric first),
+       then symmetrize with w_ij + w_ji - w_ij * w_ji.
+       For N < 10k this fits in memory (~800MB at N=10k). */
+    int *pi = IDX_PTR($knn_idx, int);
+    int si0 = ($knn_idx)->mod[0], si1 = ($knn_idx)->mod[1];
+    double *pw = IDX_PTR($knn_weights, double);
+    int sw0 = ($knn_weights)->mod[0], sw1 = ($knn_weights)->mod[1];
+    int *ph = IDX_PTR($head, int);
+    int sh0 = ($head)->mod[0];
+    int *pt = IDX_PTR($tail, int);
+    int st0 = ($tail)->mod[0];
+    double *pe = IDX_PTR($edge_weights, double);
+    int se0 = ($edge_weights)->mod[0];
+    int i, j, m;
+
+    /* Allocate sparse-ish NxN via hash or just use upper triangle scan.
+       For simplicity, use a flat N*N array if N < 8192, else edge-list merge. */
+    if ($n <= 8192) {
+        double *W = (double *)calloc((size_t)$n * $n, sizeof(double));
+        if (!W) run_time_error("umap_symmetrize: malloc failed");
+
+        /* Fill asymmetric weights */
+        for (i = 0; i < $n; i++) {
+            for (m = 0; m < $k; m++) {
+                int j2 = pi[i*si0 + m*si1];
+                double wt = pw[i*sw0 + m*sw1];
+                if (wt > W[i*$n + j2])
+                    W[i*$n + j2] = wt;
+            }
+        }
+        /* Symmetrize and extract edges */
+        int ne = 0;
+        for (i = 0; i < $n; i++) {
+            for (j = i+1; j < $n; j++) {
+                double wij = W[i*$n + j];
+                double wji = W[j*$n + i];
+                if (wij > 0.0 || wji > 0.0) {
+                    double ws = wij + wji - wij * wji;
+                    if (ws > 1e-10) {
+                        ph[ne*sh0] = i;
+                        pt[ne*st0] = j;
+                        pe[ne*se0] = ws;
+                        ne++;
+                    }
+                }
+            }
+        }
+        $n_edges = ne;
+        free(W);
+    } else {
+        /* For large N, do edge-list merge without dense matrix.
+           Process kNN list directly, using sorted edge pairs. */
+        /* Simple approach: iterate all (i, knn[i][m]) pairs,
+           keep a running edge list. For now, use the dense method
+           which handles up to N=8192 (~500MB).  Above that, the user
+           should use approximate kNN anyway. */
+        run_time_error("umap: N > 8192 not yet supported (use approximate kNN)");
+    }
+    #}
+    n-edges ))
+
+
+;; Spectral initialization via graph Laplacian eigenvectors.
+;; Uses power iteration on (D^{-1/2} W D^{-1/2}) to find
+;; the top eigenvectors (corresponding to smallest non-trivial
+;; Laplacian eigenvalues).
+;; head, tail, weights: edge list (n-edges entries)
+;; n, out-dim: number of points, output dimensions
+;; embedding: N x out-dim output (modified in place)
+;; Returns 1 on success, 0 on failure (fallback to random).
+(de _umap-spectral-init (head tail weights n-edges n out-dim embedding)
+  ((-idx1- (-int-)) head tail)
+  ((-idx1- (-double-)) weights)
+  ((-int-) n-edges n out-dim)
+  ((-idx2- (-double-)) embedding)
+  (let ((ok 1))
+    ((-int-) ok)
+    #{
+    int *ph = IDX_PTR($head, int);
+    int sh0 = ($head)->mod[0];
+    int *pt = IDX_PTR($tail, int);
+    int st0 = ($tail)->mod[0];
+    double *pw = IDX_PTR($weights, double);
+    int sew0 = ($weights)->mod[0];
+    double *pemb = IDX_PTR($embedding, double);
+    int se0 = ($embedding)->mod[0], se1 = ($embedding)->mod[1];
+    int i, j, e, dim, iter;
+
+    /* Compute degree vector */
+    double *deg = (double *)calloc($n, sizeof(double));
+    if (!deg) { $ok = 0; goto spectral_done; }
+
+    for (e = 0; e < $n_edges; e++) {
+        int h = ph[e*sh0], t = pt[e*st0];
+        double w = pw[e*sew0];
+        deg[h] += w;
+        deg[t] += w;
+    }
+
+    /* Check for isolated nodes */
+    for (i = 0; i < $n; i++) {
+        if (deg[i] < 1e-10) {
+            $ok = 0;
+            free(deg);
+            goto spectral_done;
+        }
+    }
+
+    /* Compute D^{-1/2} */
+    double *dinvsqrt = (double *)malloc($n * sizeof(double));
+    if (!dinvsqrt) { free(deg); $ok = 0; goto spectral_done; }
+    for (i = 0; i < $n; i++)
+        dinvsqrt[i] = 1.0 / sqrt(deg[i]);
+    free(deg);
+
+    /* Power iteration on normalized adjacency D^{-1/2} W D^{-1/2}
+       to find top eigenvectors (which correspond to smallest
+       non-trivial Laplacian eigenvectors).
+       We deflate the trivial eigenvector (constant vector) after
+       each iteration. */
+
+    /* We need out_dim eigenvectors.  Compute them one at a time
+       with deflation. */
+    double **evecs = (double **)malloc(($out_dim + 1) * sizeof(double *));
+    if (!evecs) { free(dinvsqrt); $ok = 0; goto spectral_done; }
+
+    /* First eigenvector is trivial: D^{1/2} * 1 / ||...|| */
+    evecs[0] = (double *)malloc($n * sizeof(double));
+    if (!evecs[0]) { free(dinvsqrt); free(evecs); $ok = 0; goto spectral_done; }
+    {
+        double norm0 = 0.0;
+        for (i = 0; i < $n; i++) {
+            evecs[0][i] = 1.0 / dinvsqrt[i];  /* D^{1/2} * 1 */
+            norm0 += evecs[0][i] * evecs[0][i];
+        }
+        norm0 = sqrt(norm0);
+        for (i = 0; i < $n; i++) evecs[0][i] /= norm0;
+    }
+
+    for (dim = 1; dim <= $out_dim; dim++) {
+        evecs[dim] = (double *)malloc($n * sizeof(double));
+        if (!evecs[dim]) { $ok = 0; break; }
+
+        /* Random-ish init (deterministic seed for reproducibility) */
+        unsigned int seed = 42 + dim * 1013;
+        for (i = 0; i < $n; i++) {
+            seed = seed * 1103515245 + 12345;
+            evecs[dim][i] = ((double)(seed >> 16) / 32768.0) - 1.0;
+        }
+
+        /* Power iteration: 300 iterations */
+        double *tmp = (double *)calloc($n, sizeof(double));
+        if (!tmp) { $ok = 0; break; }
+
+        for (iter = 0; iter < 300; iter++) {
+            /* tmp = D^{-1/2} W D^{-1/2} * v */
+            for (i = 0; i < $n; i++) tmp[i] = 0.0;
+
+            for (e = 0; e < $n_edges; e++) {
+                int h = ph[e*sh0], t = pt[e*st0];
+                double w = pw[e*sew0];
+                /* Normalized adjacency: dinvsqrt[h] * w * dinvsqrt[t] */
+                double nw = dinvsqrt[h] * w * dinvsqrt[t];
+                tmp[h] += nw * evecs[dim][t];
+                tmp[t] += nw * evecs[dim][h];
+            }
+
+            /* Deflate: subtract projections onto previous eigenvectors */
+            for (j = 0; j < dim; j++) {
+                double proj = 0.0;
+                for (i = 0; i < $n; i++)
+                    proj += tmp[i] * evecs[j][i];
+                for (i = 0; i < $n; i++)
+                    tmp[i] -= proj * evecs[j][i];
+            }
+
+            /* Normalize */
+            double norm = 0.0;
+            for (i = 0; i < $n; i++) norm += tmp[i] * tmp[i];
+            norm = sqrt(norm);
+            if (norm < 1e-10) { $ok = 0; break; }
+            for (i = 0; i < $n; i++) evecs[dim][i] = tmp[i] / norm;
+        }
+        free(tmp);
+        if (!$ok) break;
+    }
+
+    /* Copy eigenvectors to embedding, scale to [-10, 10] */
+    if ($ok) {
+        for (dim = 0; dim < $out_dim; dim++) {
+            double mn = 1e30, mx = -1e30;
+            for (i = 0; i < $n; i++) {
+                double v = evecs[dim+1][i];
+                if (v < mn) mn = v;
+                if (v > mx) mx = v;
+            }
+            double range = mx - mn;
+            if (range < 1e-10) range = 1.0;
+            for (i = 0; i < $n; i++) {
+                pemb[i*se0 + dim*se1] = 20.0 * (evecs[dim+1][i] - mn) / range - 10.0;
+            }
+        }
+    }
+
+    /* Cleanup */
+    for (dim = 0; dim <= $out_dim; dim++) {
+        if (evecs[dim]) free(evecs[dim]);
+    }
+    free(evecs);
+    free(dinvsqrt);
+
+    spectral_done: ;
+    #}
+    ok ))
+
+
+;; Random initialization fallback.
+;; Seeds embedding with uniform random in [-10, 10].
+(de _umap-random-init (embedding n out-dim)
+  ((-idx2- (-double-)) embedding)
+  ((-int-) n out-dim)
+  #{
+  double *pe = IDX_PTR($embedding, double);
+  int se0 = ($embedding)->mod[0], se1 = ($embedding)->mod[1];
+  int i, dim;
+  unsigned int seed = 12345;
+  for (i = 0; i < $n; i++) {
+      for (dim = 0; dim < $out_dim; dim++) {
+          seed = seed * 1103515245 + 12345;
+          pe[i*se0 + dim*se1] = 20.0 * ((double)(seed >> 16) / 65536.0) - 10.0;
+      }
+  }
+  #}
+  () )
+
+
+;; SGD layout optimization with negative sampling.
+;; head, tail: edge endpoint vectors (n-edges entries)
+;; weights: edge weights (n-edges entries)
+;; embedding: N x out-dim (initialized, modified in-place)
+;; a, b: UMAP curve parameters (derived from min_dist)
+;; n-epochs: number of optimization epochs
+;; lr: initial learning rate
+;; neg-samples: negative samples per positive edge
+(de _umap-optimize (head tail weights n-edges
+                    embedding n out-dim
+                    a b n-epochs lr neg-samples)
+  ((-idx1- (-int-)) head tail)
+  ((-idx1- (-double-)) weights)
+  ((-int-) n-edges n out-dim n-epochs neg-samples)
+  ((-idx2- (-double-)) embedding)
+  ((-double-) a b lr)
+  #{
+  int *ph = IDX_PTR($head, int);
+  int sh0 = ($head)->mod[0];
+  int *pt = IDX_PTR($tail, int);
+  int st0 = ($tail)->mod[0];
+  double *pw = IDX_PTR($weights, double);
+  int sew0 = ($weights)->mod[0];
+  double *pemb = IDX_PTR($embedding, double);
+  int se0 = ($embedding)->mod[0], se1 = ($embedding)->mod[1];
+  int epoch, e, s, dim;
+  unsigned int rng_state = 42;
+
+  /* Compute epochs-per-sample: edges with higher weight are sampled
+     more often.  max_weight edge is sampled every epoch. */
+  double max_w = 0.0;
+  for (e = 0; e < $n_edges; e++) {
+      if (pw[e*sew0] > max_w) max_w = pw[e*sew0];
+  }
+
+  double *epochs_per_sample = (double *)malloc($n_edges * sizeof(double));
+  double *epoch_of_next_sample = (double *)malloc($n_edges * sizeof(double));
+  if (!epochs_per_sample || !epoch_of_next_sample) {
+      if (epochs_per_sample) free(epochs_per_sample);
+      if (epoch_of_next_sample) free(epoch_of_next_sample);
+      run_time_error("umap_optimize: malloc failed");
+  }
+
+  for (e = 0; e < $n_edges; e++) {
+      double w = pw[e*sew0];
+      if (w > 0.0)
+          epochs_per_sample[e] = (double)$n_epochs / (w / max_w * $n_epochs);
+      else
+          epochs_per_sample[e] = (double)$n_epochs + 1.0;
+      epoch_of_next_sample[e] = epochs_per_sample[e];
+  }
+
+  double clip_val = 4.0;
+
+  for (epoch = 0; epoch < $n_epochs; epoch++) {
+      double alpha = $lr * (1.0 - (double)epoch / (double)$n_epochs);
+      if (alpha < 0.0001) alpha = 0.0001;
+
+      for (e = 0; e < $n_edges; e++) {
+          if (epoch_of_next_sample[e] > (double)epoch)
+              continue;
+
+          int h = ph[e*sh0];
+          int t = pt[e*st0];
+
+          /* Compute squared distance in embedding */
+          double dist_sq = 0.0;
+          for (dim = 0; dim < $out_dim; dim++) {
+              double diff = pemb[h*se0 + dim*se1] - pemb[t*se0 + dim*se1];
+              dist_sq += diff * diff;
+          }
+          if (dist_sq < 1e-10) dist_sq = 1e-10;
+
+          /* Attractive force */
+          double grad_coeff = -2.0 * $a * $b * pow(dist_sq, $b - 1.0);
+          grad_coeff /= (1.0 + $a * pow(dist_sq, $b));
+
+          for (dim = 0; dim < $out_dim; dim++) {
+              double diff = pemb[h*se0 + dim*se1] - pemb[t*se0 + dim*se1];
+              double grad = grad_coeff * diff;
+              if (grad > clip_val) grad = clip_val;
+              if (grad < -clip_val) grad = -clip_val;
+              pemb[h*se0 + dim*se1] += alpha * grad;
+              pemb[t*se0 + dim*se1] -= alpha * grad;
+          }
+
+          /* Negative sampling */
+          for (s = 0; s < $neg_samples; s++) {
+              rng_state = rng_state * 1103515245 + 12345;
+              int neg = (rng_state >> 16) % $n;
+              if (neg == h) continue;
+
+              dist_sq = 0.0;
+              for (dim = 0; dim < $out_dim; dim++) {
+                  double diff = pemb[h*se0 + dim*se1] - pemb[neg*se0 + dim*se1];
+                  dist_sq += diff * diff;
+              }
+              if (dist_sq < 1e-10) dist_sq = 1e-10;
+
+              /* Repulsive force */
+              double rep_coeff = 2.0 * $b;
+              rep_coeff /= ((1e-3 + dist_sq) * (1.0 + $a * pow(dist_sq, $b)));
+
+              for (dim = 0; dim < $out_dim; dim++) {
+                  double diff = pemb[h*se0 + dim*se1] - pemb[neg*se0 + dim*se1];
+                  double grad = rep_coeff * diff;
+                  if (grad > clip_val) grad = clip_val;
+                  if (grad < -clip_val) grad = -clip_val;
+                  pemb[h*se0 + dim*se1] += alpha * grad;
+              }
+          }
+
+          epoch_of_next_sample[e] += epochs_per_sample[e];
+      }
+  }
+
+  free(epochs_per_sample);
+  free(epoch_of_next_sample);
+  #}
+  () )
+
+
+;; ============================================================
+;; Lush-side orchestration
+;; ============================================================
+
+#? (umap-fit-ab <min-dist>)
+;; Compute the UMAP curve parameters <a> and <b> from <min-dist>.
+;; The curve family is: 1 / (1 + a * d^(2b)).
+;; For min_dist=0.001, (a,b) approx (1.929, 0.7915).
+;; For min_dist=0.1,   (a,b) approx (1.929, 0.7915).
+;; For min_dist=0.5,   (a,b) approx (1.577, 0.8951).
+;; For min_dist=1.0,   (a,b) approx (0.5, 1.5).
+;;
+;; Uses a simple piecewise approximation that matches the
+;; reference implementation's curve fitting.
+;; Returns a list (a b).
+(de umap-fit-ab (min-dist)
+  ;; Piecewise approximation from curve fitting the reference
+  ;; implementation's scipy.optimize.curve_fit results.
+  ;; For min_dist in [0.001, 0.1]: a ~= 1.929, b ~= 0.7915
+  ;; For min_dist in (0.1, 0.5]: interpolate
+  ;; For min_dist > 0.5: different regime
+  (let ((a 1.0) (b 1.0))
+    (cond
+     ((<= min-dist 0.001)
+      (setq a 1.929)
+      (setq b 0.7915) )
+     ((<= min-dist 0.1)
+      ;; Nearly constant in this range
+      (setq a 1.929)
+      (setq b 0.7915) )
+     ((<= min-dist 0.5)
+      ;; Linear interpolation from (0.1 -> 0.5) in log space
+      (let ((t (/ (- min-dist 0.1) 0.4)))
+        (setq a (+ 1.929 (* t (- 1.577 1.929))))
+        (setq b (+ 0.7915 (* t (- 0.8951 0.7915)))) ) )
+     ((<= min-dist 1.0)
+      ;; Interpolation from 0.5 -> 1.0
+      (let ((t (/ (- min-dist 0.5) 0.5)))
+        (setq a (+ 1.577 (* t (- 0.5 1.577))))
+        (setq b (+ 0.8951 (* t (- 1.5 0.8951)))) ) )
+     (t
+      ;; min_dist > 1.0: extrapolate gently
+      (setq a (/ 0.5 min-dist))
+      (setq b 1.5) ) )
+    (list a b) ))
+
+
+#? (umap <data> <out-dim> [<n-neighbors> [<min-dist> [<n-epochs>]]])
+;; Run UMAP dimensionality reduction.
+;;
+;; {<b> Arguments:}
+;; {<ul>
+;; {<li> <data>: N x D double matrix of input data.}
+;; {<li> <out-dim>: output dimensionality (1 or 2).}
+;; {<li> <n-neighbors>: size of local neighborhood (default 15).
+;;   Larger values capture more global structure.}
+;; {<li> <min-dist>: minimum distance between points in the
+;;   embedding (default 0.1).  Smaller values pack points
+;;   tighter; larger values spread them out.}
+;; {<li> <n-epochs>: number of SGD optimization epochs
+;;   (default 200).  More epochs give better embeddings
+;;   but take longer.}
+;; }
+;;
+;; Returns an N x <out-dim> double matrix (the embedding).
+;;
+;; {<b> Example:}
+;; {<code>
+;;  (libload "mapper/umap")
+;;  ;; Two 20-point clusters in 5D
+;;  (let ((data (double-matrix 40 5)))
+;;    (for (i 0 19)
+;;      (for (j 0 4)
+;;        (data i j (+ 0.0 (* 0.1 (rand)))) ))
+;;    (for (i 20 39)
+;;      (for (j 0 4)
+;;        (data i j (+ 5.0 (* 0.1 (rand)))) ))
+;;    (let ((emb (umap data 2 10 0.1 200)))
+;;      (printf "Embedding: %d x %d\n"
+;;              (idx-dim emb 0) (idx-dim emb 1)) ))
+;; </code>}
+;;
+;; {<see> (umap-fit-ab <min-dist>)}
+;; {<see> (mapper-lens-umap <data> [<n-neighbors> [<min-dist>]])}
+
+(de umap (data out-dim . rest)
+  ;; Parse optional arguments
+  (let* ((n (idx-dim data 0))
+         (d (idx-dim data 1))
+         (k (if rest (car rest) 15))
+         (min-dist (if (and rest (cdr rest)) (cadr rest) 0.1))
+         (n-epochs (if (and rest (cdr rest) (cddr rest)) (caddr rest) 200)) )
+    ;; Clamp k to n-1
+    (when (>= k n)
+      (setq k (- n 1)) )
+    (when (< k 2)
+      (error "umap: need at least 3 points (n_neighbors >= 2)") )
+
+    ;; Step 1: Build k-NN graph
+    (let ((knn-idx (int-matrix n k))
+          (knn-dist (double-matrix n k)) )
+      (_umap-knn data k knn-idx knn-dist)
+
+      ;; Step 2: Smooth k-NN distances
+      (let ((knn-weights (double-matrix n k))
+            (sigmas (double-matrix n)) )
+        (_umap-smooth-knn knn-dist k knn-weights sigmas)
+
+        ;; Step 3: Symmetrize into edge list
+        (let* ((max-edges (* n k))
+               (head (int-matrix max-edges))
+               (tail (int-matrix max-edges))
+               (edge-weights (double-matrix max-edges))
+               (n-edges (_umap-symmetrize knn-idx knn-weights n k
+                                           head tail edge-weights)) )
+          (when (<= n-edges 0)
+            (error "umap: no edges in graph (try increasing n_neighbors)") )
+
+          ;; Trim edge arrays to actual size
+          (let ((head-trim (narrow head 0 n-edges 0))
+                (tail-trim (narrow tail 0 n-edges 0))
+                (ew-trim (narrow edge-weights 0 n-edges 0)) )
+
+            ;; Step 4: Initialize embedding
+            (let ((embedding (double-matrix n out-dim)))
+              (let ((ok (_umap-spectral-init head-trim tail-trim ew-trim
+                                              n-edges n out-dim embedding)))
+                (when (= ok 0)
+                  ;; Spectral failed, use random init
+                  (_umap-random-init embedding n out-dim) ) )
+
+              ;; Step 5: Compute a, b from min_dist
+              (let* ((ab (umap-fit-ab min-dist))
+                     (a (car ab))
+                     (b (cadr ab)) )
+
+                ;; Step 6: SGD optimization
+                (_umap-optimize head-trim tail-trim ew-trim n-edges
+                                embedding n out-dim
+                                a b n-epochs 1.0 5)
+
+                ;; Return embedding
+                embedding ) ) ) ) ) ) ) )
+
+
+;; ============================================================
+;; Compilation
+;; ============================================================
+
+(let ((dhc-make-lushflags (concat dhc-make-lushflags " -O2 -lm")))
+  (dhc-make ()
+    _umap-knn
+    _umap-smooth-knn
+    _umap-symmetrize
+    _umap-spectral-init
+    _umap-random-init
+    _umap-optimize ) )

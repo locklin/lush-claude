@@ -190,6 +190,16 @@ numerical packages.
 
 #? ** << libnum/libnum.hlp
 
+#? ** << libnum/knn.lsh
+
+#? ** << libnum/naive-bayes.lsh
+
+#? ** << libnum/rf.lsh
+
+#? ** << libnum/spectral.lsh
+
+#? ** << sparse/sparse.lsh
+
 #? ** << fftw/fftw.lsh
 
 #? ** << lap/lap.lsh
@@ -380,6 +390,8 @@ lenses, metrics, statistical tests, and visualization.
 #? ** << mapper/mapper-db.lsh
 
 #? ** << mapper/mapper-viz.lsh
+
+#? ** << mapper/umap.lsh
 
 #? ** << mapper/visualize.lsh
 

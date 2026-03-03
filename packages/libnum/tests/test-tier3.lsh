@@ -1,0 +1,498 @@
+;;; test-tier3.lsh -- Tests for Tier 3 ML modules
+;;;
+;;; Covers: sparse matrices, kNN, naive bayes, random forest,
+;;; spectral methods, and mapper lens integration.
+;;;
+;;; Run via: src/lush packages/libnum/tests/test-tier3.lsh
+
+(addpath "packages")
+
+;; Inline test framework
+(defvar *test-pass-count* 0)
+(defvar *test-fail-count* 0)
+
+(dmd test-suite (name . body)
+  `(progn (printf "\n--- %s ---\n" ,name) ,@body) )
+
+(de test-check (desc expr)
+  (if expr
+    (progn (setq *test-pass-count* (+ *test-pass-count* 1))
+           (printf "  PASS: %s\n" desc) )
+    (progn (setq *test-fail-count* (+ *test-fail-count* 1))
+           (printf "  FAIL: %s\n" desc) ) ) )
+
+(de test-equal (desc actual expected)
+  (if (= actual expected)
+    (progn (setq *test-pass-count* (+ *test-pass-count* 1))
+           (printf "  PASS: %s\n" desc) )
+    (progn (setq *test-fail-count* (+ *test-fail-count* 1))
+           (printf "  FAIL: %s (got %l, expected %l)\n" desc actual expected) ) ) )
+
+(de test-approx (desc actual expected tol)
+  (let ((diff (abs (- actual expected))))
+    (if (< diff tol)
+      (progn (setq *test-pass-count* (+ *test-pass-count* 1))
+             (printf "  PASS: %s\n" desc) )
+      (progn (setq *test-fail-count* (+ *test-fail-count* 1))
+             (printf "  FAIL: %s (got %g, expected %g, diff=%g)\n"
+                     desc actual expected diff) ) ) ) )
+
+(de test-summary ()
+  (printf "\n========================================\n")
+  (printf "Results: %d passed, %d failed\n" *test-pass-count* *test-fail-count*)
+  (printf "========================================\n")
+  (if (= *test-fail-count* 0) 0 1) )
+
+
+;; Load all modules
+(libload "sparse/sparse")
+(libload "libnum/knn")
+(libload "libnum/naive-bayes")
+(libload "libnum/rf")
+(libload "libnum/spectral")
+(libload "mapper/lens")
+
+
+;; ================================================================
+;; 1. Sparse Matrices
+;; ================================================================
+(test-suite "Sparse CSR"
+
+  ;; Dense -> CSR -> Dense roundtrip
+  (let ((d (double-matrix 4 5)))
+    (d 0 1 2.0) (d 0 4 3.0)
+    (d 1 0 1.0)
+    (d 2 2 7.0) (d 2 3 4.0)
+    (d 3 1 5.0)
+    (let* ((sp (sparse-from-dense d))
+           (d2 (==> sp to-dense)))
+      (test-equal "roundtrip nrows" :sp:nrows 4)
+      (test-equal "roundtrip ncols" :sp:ncols 5)
+      (test-equal "roundtrip nnz" :sp:nnz 6)
+      (let ((ok t))
+        (for (i 0 3) (for (j 0 4)
+          (when (<> (d i j) (d2 i j)) (setq ok ()))))
+        (test-check "roundtrip values" ok))))
+
+  ;; SpMV
+  (let ((d (double-matrix 3 3)))
+    (d 0 0 1) (d 0 1 2)
+    (d 1 1 3) (d 1 2 4)
+    (d 2 0 5) (d 2 2 6)
+    (let* ((sp (sparse-from-dense d))
+           (x (double-matrix 3))
+           (y ()))
+      (x 0 1) (x 1 2) (x 2 3)
+      (setq y (==> sp mv x))
+      (test-approx "SpMV row 0" (y 0) 5.0 1e-10)
+      (test-approx "SpMV row 1" (y 1) 18.0 1e-10)
+      (test-approx "SpMV row 2" (y 2) 23.0 1e-10)))
+
+  ;; Transpose
+  (let ((d (double-matrix 2 3)))
+    (d 0 0 1) (d 0 2 2)
+    (d 1 1 3)
+    (let* ((sp (sparse-from-dense d))
+           (st (==> sp transpose))
+           (dt (==> st to-dense)))
+      (test-equal "transpose nrows" :st:nrows 3)
+      (test-equal "transpose ncols" :st:ncols 2)
+      (test-approx "transpose [0,0]" (dt 0 0) 1.0 1e-10)
+      (test-approx "transpose [2,0]" (dt 2 0) 2.0 1e-10)
+      (test-approx "transpose [1,1]" (dt 1 1) 3.0 1e-10)))
+
+  ;; Transpose MV
+  (let ((d (double-matrix 2 3)))
+    (d 0 0 1) (d 0 2 2)
+    (d 1 1 3)
+    (let* ((sp (sparse-from-dense d))
+           (x (double-matrix 2)))
+      (x 0 1) (x 1 2)
+      (let ((y (==> sp tmv x)))
+        (test-approx "tmv [0]" (y 0) 1.0 1e-10)
+        (test-approx "tmv [1]" (y 1) 6.0 1e-10)
+        (test-approx "tmv [2]" (y 2) 2.0 1e-10))))
+
+  ;; Triplets
+  (let ((rows (int-matrix 3))
+        (cols (int-matrix 3))
+        (vals (double-matrix 3)))
+    (rows 0 0) (cols 0 0) (vals 0 1.0)
+    (rows 1 1) (cols 1 2) (vals 1 3.0)
+    (rows 2 0) (cols 2 0) (vals 2 2.0)  ;; duplicate -> sum
+    (let ((sp (sparse-from-triplets 2 3 rows cols vals)))
+      (test-approx "triplet dup sum" (==> sp get 0 0) 3.0 1e-10)))
+
+  ;; Scale
+  (let ((d (double-matrix 2 2)))
+    (d 0 0 4) (d 1 1 6)
+    (let ((sp (sparse-from-dense d)))
+      (==> sp scale 0.5)
+      (test-approx "scale [0,0]" (==> sp get 0 0) 2.0 1e-10)
+      (test-approx "scale [1,1]" (==> sp get 1 1) 3.0 1e-10)))
+
+  ;; Density
+  (let ((d (double-matrix 10 10)))
+    (d 0 0 1) (d 5 5 1) (d 9 9 1)
+    (let ((sp (sparse-from-dense d)))
+      (test-approx "density" (==> sp density) 0.03 1e-10)))
+
+  ;; Empty matrix
+  (let* ((d (double-matrix 3 3))
+         (sp (sparse-from-dense d)))
+    (test-equal "empty nnz" :sp:nnz 0))
+)
+
+
+;; ================================================================
+;; 2. k-NN
+;; ================================================================
+(test-suite "k-NN"
+
+  ;; Points on a line
+  (let ((data (double-matrix 20 2)))
+    (for (i 0 19)
+      (data i 0 (to-double i)) (data i 1 0))
+
+    ;; Brute force
+    (let* ((r (knn-search data 3 "brute"))
+           (dist (cadr r)))
+      (test-approx "brute nn dist" (dist 5 0) 1.0 0.01))
+
+    ;; VP-tree
+    (let* ((r (knn-search data 3 "vptree"))
+           (dist (cadr r)))
+      (test-approx "vptree nn dist" (dist 5 0) 1.0 0.01))
+
+    ;; KD-tree
+    (let* ((r (knn-search data 3 "kdtree"))
+           (dist (cadr r)))
+      (test-approx "kdtree nn dist" (dist 5 0) 1.0 0.01))
+
+    ;; VP-tree matches brute force
+    (let* ((rb (knn-search data 5 "brute"))
+           (rv (knn-search data 5 "vptree"))
+           (max-err 0))
+      (for (i 0 19)
+        (for (m 0 4)
+          (let ((err (abs (- ((cadr rb) i m) ((cadr rv) i m)))))
+            (when (> err max-err) (setq max-err err)))))
+      (test-check "vptree exact match" (< max-err 1e-10)))
+
+    ;; KD-tree matches brute force
+    (let* ((rb (knn-search data 5 "brute"))
+           (rk (knn-search data 5 "kdtree"))
+           (max-err 0))
+      (for (i 0 19)
+        (for (m 0 4)
+          (let ((err (abs (- ((cadr rb) i m) ((cadr rk) i m)))))
+            (when (> err max-err) (setq max-err err)))))
+      (test-check "kdtree exact match" (< max-err 1e-10))))
+
+  ;; KD-tree cluster separation
+  (let ((data (double-matrix 40 3)))
+    (for (i 0 19)
+      (for (j 0 2) (data i j (* 0.1 (rand)))))
+    (for (i 20 39)
+      (for (j 0 2) (data i j (+ 10 (* 0.1 (rand))))))
+    (let* ((r (knn-search data 5 "kdtree"))
+           (idx (car r))
+           (correct 0))
+      (for (i 0 19)
+        (for (j 0 4)
+          (when (< (idx i j) 20) (incr correct))))
+      (for (i 20 39)
+        (for (j 0 4)
+          (when (>= (idx i j) 20) (incr correct))))
+      (test-equal "kdtree cluster sep" correct 200)))
+
+  ;; KD-tree higher dimensions
+  (let ((data (double-matrix 50 10)))
+    (for (i 0 49) (for (j 0 9)
+      (data i j (* 10 (sin (+ (* i 7.3) (* j 3.1)))))))
+    (let* ((rb (knn-search data 5 "brute"))
+           (rk (knn-search data 5 "kdtree"))
+           (max-err 0))
+      (for (i 0 49)
+        (for (m 0 4)
+          (let ((err (abs (- ((cadr rb) i m) ((cadr rk) i m)))))
+            (when (> err max-err) (setq max-err err)))))
+      (test-check "kdtree 10D exact" (< max-err 1e-10))))
+
+  ;; HNSW approximate search
+  (let ((data (double-matrix 60 5)))
+    (for (i 0 59) (for (j 0 4)
+      (data i j (* 10 (sin (+ (* i 7.3) (* j 3.1)))))))
+    (let* ((rb (knn-search data 5 "brute"))
+           (rh (knn-search data 5 "hnsw"))
+           (close 0))
+      (for (i 0 59)
+        (for (m 0 4)
+          (when (< (abs (- ((cadr rb) i m) ((cadr rh) i m))) 0.1)
+            (incr close))))
+      ;; HNSW should match brute on this small dataset
+      (test-check "hnsw approx match >= 90%" (>= close (* 0.9 300)))))
+
+  ;; HNSW cluster separation
+  (let ((data (double-matrix 60 5)))
+    (for (i 0 29)
+      (for (j 0 4) (data i j (* 0.1 (rand)))))
+    (for (i 30 59)
+      (for (j 0 4) (data i j (+ 20 (* 0.1 (rand))))))
+    (let* ((r (knn-search data 5 "hnsw"))
+           (idx (car r))
+           (correct 0))
+      (for (i 0 29)
+        (for (j 0 4)
+          (when (< (idx i j) 30) (incr correct))))
+      (for (i 30 59)
+        (for (j 0 4)
+          (when (>= (idx i j) 30) (incr correct))))
+      (test-equal "hnsw cluster sep" correct 300)))
+
+  ;; kNN classifier
+  (let ((train (double-matrix 20 2))
+        (labels (int-matrix 20))
+        (test (double-matrix 2 2)))
+    (for (i 0 9)
+      (train i 0 (* 0.1 (rand))) (train i 1 (* 0.1 (rand)))
+      (labels i 0))
+    (for (i 10 19)
+      (train i 0 (+ 5.0 (* 0.1 (rand)))) (train i 1 (+ 5.0 (* 0.1 (rand))))
+      (labels i 1))
+    (test 0 0 0.05) (test 0 1 0.05)
+    (test 1 0 5.05) (test 1 1 5.05)
+    (let ((preds (knn-classify train labels test 3)))
+      (test-equal "knn classify 0" (preds 0) 0)
+      (test-equal "knn classify 1" (preds 1) 1)))
+)
+
+
+;; ================================================================
+;; 3. Naive Bayes
+;; ================================================================
+(test-suite "Gaussian Naive Bayes"
+  (let ((data (double-matrix 40 2))
+        (labels (int-matrix 40)))
+    (for (i 0 19)
+      (data i 0 (* 0.3 (- (rand) 0.5)))
+      (data i 1 (* 0.3 (- (rand) 0.5)))
+      (labels i 0))
+    (for (i 20 39)
+      (data i 0 (+ 5.0 (* 0.3 (- (rand) 0.5))))
+      (data i 1 (+ 5.0 (* 0.3 (- (rand) 0.5))))
+      (labels i 1))
+    (let ((gnb (new GaussianNB)))
+      (==> gnb fit data labels)
+      (let ((preds (==> gnb predict data))
+            (correct 0))
+        (for (i 0 39)
+          (when (= (preds i) (labels i)) (incr correct)))
+        (test-equal "gnb accuracy" correct 40))
+      ;; predict-proba
+      (let ((proba (==> gnb predict-proba data)))
+        (test-equal "proba rows" (idx-dim proba 0) 40)
+        (test-equal "proba cols" (idx-dim proba 1) 2)
+        ;; Probabilities sum to 1
+        (let ((ok t))
+          (for (i 0 39)
+            (let ((s (+ (proba i 0) (proba i 1))))
+              (when (> (abs (- s 1.0)) 0.001) (setq ok ()))))
+          (test-check "proba sums to 1" ok))))))
+
+(test-suite "Multinomial Naive Bayes"
+  (let ((data (double-matrix 20 4))
+        (labels (int-matrix 20)))
+    (for (i 0 9)
+      (data i 0 5) (data i 1 3) (data i 2 0) (data i 3 1) (labels i 0))
+    (for (i 10 19)
+      (data i 0 0) (data i 1 1) (data i 2 4) (data i 3 6) (labels i 1))
+    (let ((mnb (new MultinomialNB)))
+      (==> mnb fit data labels)
+      (let ((test (double-matrix 2 4)))
+        (test 0 0 4) (test 0 1 2) (test 0 2 0) (test 0 3 0)
+        (test 1 0 0) (test 1 1 0) (test 1 2 3) (test 1 3 5)
+        (let ((preds (==> mnb predict test)))
+          (test-equal "mnb class 0" (preds 0) 0)
+          (test-equal "mnb class 1" (preds 1) 1))))))
+
+(test-suite "Bernoulli Naive Bayes"
+  (let ((data (double-matrix 20 4))
+        (labels (int-matrix 20)))
+    (for (i 0 9)
+      (data i 0 1) (data i 1 1) (data i 2 0) (data i 3 0) (labels i 0))
+    (for (i 10 19)
+      (data i 0 0) (data i 1 0) (data i 2 1) (data i 3 1) (labels i 1))
+    (let ((bnb (new BernoulliNB)))
+      (==> bnb fit data labels)
+      (let ((test (double-matrix 2 4)))
+        (test 0 0 1) (test 0 1 1) (test 0 2 0) (test 0 3 0)
+        (test 1 0 0) (test 1 1 0) (test 1 2 1) (test 1 3 1)
+        (let ((preds (==> bnb predict test)))
+          (test-equal "bnb class 0" (preds 0) 0)
+          (test-equal "bnb class 1" (preds 1) 1)))))
+
+  ;; EM test
+  (let ((ldata (double-matrix 6 4))
+        (llabels (int-matrix 6))
+        (udata (double-matrix 14 4)))
+    (for (i 0 2)
+      (ldata i 0 1) (ldata i 1 1) (ldata i 2 0) (ldata i 3 0) (llabels i 0))
+    (for (i 3 5)
+      (ldata i 0 0) (ldata i 1 0) (ldata i 2 1) (ldata i 3 1) (llabels i 1))
+    (for (i 0 6)
+      (udata i 0 1) (udata i 1 1) (udata i 2 0) (udata i 3 0))
+    (for (i 7 13)
+      (udata i 0 0) (udata i 1 0) (udata i 2 1) (udata i 3 1))
+    (let ((bnb (new BernoulliNB)))
+      (==> bnb fit-em ldata llabels udata 5)
+      (let ((test (double-matrix 2 4)))
+        (test 0 0 1) (test 0 1 1) (test 0 2 0) (test 0 3 0)
+        (test 1 0 0) (test 1 1 0) (test 1 2 1) (test 1 3 1)
+        (let ((preds (==> bnb predict test)))
+          (test-equal "bnb-em class 0" (preds 0) 0)
+          (test-equal "bnb-em class 1" (preds 1) 1))))))
+
+
+;; ================================================================
+;; 4. Random Forest
+;; ================================================================
+(test-suite "Random Forest Classification"
+  (let ((data (double-matrix 80 4))
+        (targets (double-matrix 80)))
+    (for (i 0 39)
+      (for (j 0 3) (data i j (* 0.3 (- (rand) 0.5))))
+      (targets i 0))
+    (for (i 40 79)
+      (for (j 0 3) (data i j (+ 5.0 (* 0.3 (- (rand) 0.5)))))
+      (targets i 1))
+    (let ((rf (new RandomForest 20 "classify" 10)))
+      (==> rf fit data targets)
+      (let ((preds (==> rf predict data))
+            (correct 0))
+        (for (i 0 79)
+          (when (= (preds i) (int (targets i))) (incr correct)))
+        (test-check "rf classify >= 75/80" (>= correct 75)))
+      ;; OOB
+      (let ((oob (==> rf oob-error data targets)))
+        (test-check "rf oob < 0.1" (< oob 0.1)))
+      ;; Proximity
+      (let ((prox (==> rf proximity data)))
+        (test-check "rf prox same class high" (> (prox 0 1) 0.3))
+        (test-check "rf prox diff class low" (< (prox 0 50) 0.3)))
+      ;; Importance
+      (let ((imp (==> rf importance)))
+        (test-equal "rf importance dim" (idx-dim imp 0) 4))
+      ;; Conformal
+      (let ((test-d (double-matrix 2 4)))
+        (test-d 0 0 0.1) (test-d 0 1 0.1) (test-d 0 2 0.1) (test-d 0 3 0.1)
+        (test-d 1 0 5.1) (test-d 1 1 5.1) (test-d 1 2 5.1) (test-d 1 3 5.1)
+        (let ((sets (==> rf conformal-predict data targets test-d 0.1)))
+          (test-check "conformal returns list" (listp sets))
+          (test-equal "conformal 2 sets" (length sets) 2))))))
+
+(test-suite "Random Forest Regression"
+  (let ((data (double-matrix 60 2))
+        (targets (double-matrix 60)))
+    (for (i 0 59)
+      (data i 0 (/ (to-double i) 60.0))
+      (data i 1 (* 0.05 (rand)))
+      (targets i (* 2.0 (data i 0))))
+    (let ((rf (new RandomForest 20 "regress" 10)))
+      (==> rf fit data targets)
+      (let ((preds (==> rf predict data))
+            (mse 0))
+        (for (i 0 59)
+          (incr mse (* (- (preds i) (targets i)) (- (preds i) (targets i)))))
+        (setq mse (/ mse 60))
+        (test-check "rf regress mse < 0.05" (< mse 0.05))))))
+
+
+;; ================================================================
+;; 5. Spectral Methods
+;; ================================================================
+(test-suite "Laplacian Eigenmaps"
+  (let ((data (double-matrix 40 5)))
+    (for (i 0 19)
+      (for (j 0 4) (data i j (* 0.2 (rand)))))
+    (for (i 20 39)
+      (for (j 0 4) (data i j (+ 5.0 (* 0.2 (rand))))))
+    (let ((emb (laplacian-eigenmaps data 2 10)))
+      (test-equal "le rows" (idx-dim emb 0) 40)
+      (test-equal "le cols" (idx-dim emb 1) 2)
+      ;; All finite
+      (let ((ok t))
+        (for (i 0 39) (for (j 0 1)
+          (when (nanp (emb i j)) (setq ok ()))))
+        (test-check "le all finite" ok)))
+    (let ((emb (laplacian-eigenmaps data 1 10)))
+      (test-equal "le 1d cols" (idx-dim emb 1) 1))))
+
+(test-suite "Diffusion Maps"
+  (let ((data (double-matrix 40 5)))
+    (for (i 0 19)
+      (for (j 0 4) (data i j (* 0.2 (rand)))))
+    (for (i 20 39)
+      (for (j 0 4) (data i j (+ 5.0 (* 0.2 (rand))))))
+    (let ((emb (diffusion-maps data 2 10)))
+      (test-equal "dm rows" (idx-dim emb 0) 40)
+      (test-equal "dm cols" (idx-dim emb 1) 2)
+      (let ((ok t))
+        (for (i 0 39) (for (j 0 1)
+          (when (nanp (emb i j)) (setq ok ()))))
+        (test-check "dm all finite" ok)))))
+
+(test-suite "Kernel PCA"
+  (let ((data (double-matrix 40 5)))
+    (for (i 0 19)
+      (for (j 0 4) (data i j (* 0.2 (rand)))))
+    (for (i 20 39)
+      (for (j 0 4) (data i j (+ 5.0 (* 0.2 (rand))))))
+
+    ;; RBF
+    (let ((emb (kernel-pca data 2 "rbf" 0.01)))
+      (test-equal "kpca rbf rows" (idx-dim emb 0) 40)
+      (test-equal "kpca rbf cols" (idx-dim emb 1) 2))
+
+    ;; Polynomial
+    (let ((emb (kernel-pca data 2 "poly" 0.01 2 1.0)))
+      (test-equal "kpca poly rows" (idx-dim emb 0) 40)
+      (test-equal "kpca poly cols" (idx-dim emb 1) 2))
+
+    ;; Linear (should approximate standard PCA)
+    (let ((emb (kernel-pca data 2 "linear")))
+      (test-equal "kpca linear rows" (idx-dim emb 0) 40)
+      (test-equal "kpca linear cols" (idx-dim emb 1) 2))))
+
+
+;; ================================================================
+;; 6. Mapper Lens Integration
+;; ================================================================
+(test-suite "Mapper Lens Integration"
+  (let ((data (double-matrix 30 4)))
+    (for (i 0 29)
+      (for (j 0 3) (data i j (rand))))
+
+    ;; All lenses should return correct dimensions
+    (let ((l (mapper-lens-laplacian data)))
+      (test-equal "lens-le 1d" (idx-dim l 1) 1))
+    (let ((l (mapper-lens-laplacian2d data)))
+      (test-equal "lens-le 2d" (idx-dim l 1) 2))
+    (let ((l (mapper-lens-diffusion data)))
+      (test-equal "lens-dm 1d" (idx-dim l 1) 1))
+    (let ((l (mapper-lens-diffusion2d data)))
+      (test-equal "lens-dm 2d" (idx-dim l 1) 2))
+    (let ((l (mapper-lens-kpca data)))
+      (test-equal "lens-kpca 1d" (idx-dim l 1) 1))
+    (let ((l (mapper-lens-kpca2d data)))
+      (test-equal "lens-kpca 2d" (idx-dim l 1) 2))
+
+    ;; All N rows
+    (let ((l (mapper-lens-laplacian data)))
+      (test-equal "lens rows" (idx-dim l 0) 30))))
+
+
+;; ================================================================
+;; Summary
+;; ================================================================
+(test-summary)

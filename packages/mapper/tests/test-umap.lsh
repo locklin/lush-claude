@@ -1,0 +1,347 @@
+;;; test-umap.lsh -- Tests for the UMAP implementation
+;;;
+;;; Run via: src/lush packages/mapper/tests/test-umap.lsh
+
+(addpath "packages")
+
+;; Inline test framework (same as wavelet tests)
+(defvar *test-pass-count* 0)
+(defvar *test-fail-count* 0)
+
+(dmd test-suite (name . body)
+  `(progn (printf "\n--- %s ---\n" ,name) ,@body) )
+
+(de test-check (desc expr)
+  (if expr
+    (progn (setq *test-pass-count* (+ *test-pass-count* 1))
+           (printf "  PASS: %s\n" desc) )
+    (progn (setq *test-fail-count* (+ *test-fail-count* 1))
+           (printf "  FAIL: %s\n" desc) ) ) )
+
+(de test-equal (desc actual expected)
+  (if (= actual expected)
+    (progn (setq *test-pass-count* (+ *test-pass-count* 1))
+           (printf "  PASS: %s\n" desc) )
+    (progn (setq *test-fail-count* (+ *test-fail-count* 1))
+           (printf "  FAIL: %s (got %l, expected %l)\n" desc actual expected) ) ) )
+
+(de test-approx (desc actual expected tol)
+  (let ((diff (abs (- actual expected))))
+    (if (< diff tol)
+      (progn (setq *test-pass-count* (+ *test-pass-count* 1))
+             (printf "  PASS: %s\n" desc) )
+      (progn (setq *test-fail-count* (+ *test-fail-count* 1))
+             (printf "  FAIL: %s (got %g, expected %g, diff=%g)\n"
+                     desc actual expected diff) ) ) ) )
+
+(de test-summary ()
+  (printf "\n========================================\n")
+  (printf "Results: %d passed, %d failed\n" *test-pass-count* *test-fail-count*)
+  (printf "========================================\n")
+  (if (= *test-fail-count* 0) 0 1) )
+
+
+;; Load UMAP
+(libload "mapper/umap")
+(libload "mapper/lens")
+
+
+;; Helper: make two well-separated clusters in high-D
+;; First half of points near origin, second half near (offset, offset, ...)
+(de make-two-clusters (n d offset noise)
+  (let ((data (double-matrix n d))
+        (half (/ n 2)))
+    ;; Cluster 1: near origin
+    (for (i 0 (1- half))
+      (for (j 0 (1- d))
+        (data i j (* noise (- (rand) 0.5))) ))
+    ;; Cluster 2: near (offset, offset, ...)
+    (for (i half (1- n))
+      (for (j 0 (1- d))
+        (data i j (+ offset (* noise (- (rand) 0.5)))) ))
+    data ))
+
+
+;; ================================================================
+;; 1. k-NN Graph
+;; ================================================================
+(test-suite "k-NN Graph"
+
+  ;; Simple case: 10 points on a line in 2D
+  (let* ((n 10)
+         (d 2)
+         (k 3)
+         (data (double-matrix n d))
+         (knn-idx (int-matrix n k))
+         (knn-dist (double-matrix n k)))
+    ;; Place points at (0,0), (1,0), (2,0), ..., (9,0)
+    (for (i 0 (1- n))
+      (data i 0 (to-double i))
+      (data i 1 0) )
+    (_umap-knn data k knn-idx knn-dist)
+
+    ;; Point 5 should have neighbors 4, 6 as nearest
+    (let ((has-4 ())
+          (has-6 ()))
+      (for (m 0 (1- k))
+        (when (= (knn-idx 5 m) 4) (setq has-4 t))
+        (when (= (knn-idx 5 m) 6) (setq has-6 t)) )
+      (test-check "knn: point 5 has neighbor 4" has-4)
+      (test-check "knn: point 5 has neighbor 6" has-6) )
+
+    ;; Nearest neighbor distance for point 5 should be 1.0
+    (test-approx "knn: point 5 nn dist = 1.0" (knn-dist 5 0) 1.0 0.01)
+
+    ;; All distances should be positive
+    (let ((all-pos t))
+      (for (i 0 (1- n))
+        (for (m 0 (1- k))
+          (when (<= (knn-dist i m) 0)
+            (setq all-pos ()) ) ) )
+      (test-check "knn: all distances positive" all-pos) )
+
+    ;; Distances should be sorted (ascending) per row
+    (let ((sorted t))
+      (for (i 0 (1- n))
+        (for (m 0 (- k 2))
+          (when (> (knn-dist i m) (knn-dist i (+ m 1)))
+            (setq sorted ()) ) ) )
+      (test-check "knn: distances sorted ascending per row" sorted) ) )
+)
+
+
+;; ================================================================
+;; 2. Smooth k-NN Distances
+;; ================================================================
+(test-suite "Smooth k-NN"
+
+  ;; After smoothing, weights should sum to approximately log2(k) per row
+  (let* ((n 30)
+         (d 5)
+         (k 10)
+         (data (make-two-clusters n d 5.0 0.5))
+         (knn-idx (int-matrix n k))
+         (knn-dist (double-matrix n k))
+         (knn-weights (double-matrix n k))
+         (sigmas (double-matrix n)))
+    (_umap-knn data k knn-idx knn-dist)
+    (_umap-smooth-knn knn-dist k knn-weights sigmas)
+
+    ;; Target sum per row is log2(k)
+    (let ((target (/ (log 10) (log 2)))
+          (max-err 0))
+      (for (i 0 (1- n))
+        (let ((s 0))
+          (for (m 0 (1- k))
+            (incr s (knn-weights i m)) )
+          (let ((err (abs (- s target))))
+            (when (> err max-err) (setq max-err err)) ) ) )
+      (test-check "smooth: weight sums near log2(k)" (< max-err 0.5)) )
+
+    ;; All weights should be in [0, 1]
+    (let ((ok t))
+      (for (i 0 (1- n))
+        (for (m 0 (1- k))
+          (let ((w (knn-weights i m)))
+            (when (or (< w 0) (> w 1.001))
+              (setq ok ()) ) ) ) )
+      (test-check "smooth: all weights in [0, 1]" ok) )
+
+    ;; First weight per row should be 1.0 (nearest neighbor has d <= rho)
+    (let ((ok t))
+      (for (i 0 (1- n))
+        (when (< (knn-weights i 0) 0.99)
+          (setq ok ()) ) )
+      (test-check "smooth: nearest neighbor weight ~= 1.0" ok) )
+
+    ;; All sigmas positive
+    (let ((ok t))
+      (for (i 0 (1- n))
+        (when (<= (sigmas i) 0)
+          (setq ok ()) ) )
+      (test-check "smooth: all sigmas positive" ok) ) )
+)
+
+
+;; ================================================================
+;; 3. Cluster Separation (UMAP 2D)
+;; ================================================================
+(test-suite "Cluster Separation (2D)"
+
+  ;; Two well-separated clusters in 10D should remain separated in 2D
+  (let* ((data (make-two-clusters 60 10 10.0 0.5))
+         (emb (umap data 2 10 0.1 200)))
+
+    (test-equal "2d embed rows" (idx-dim emb 0) 60)
+    (test-equal "2d embed cols" (idx-dim emb 1) 2)
+
+    ;; Compute cluster centroids
+    (let ((c1x 0) (c1y 0) (c2x 0) (c2y 0))
+      (for (i 0 29)
+        (incr c1x (emb i 0))
+        (incr c1y (emb i 1)) )
+      (for (i 30 59)
+        (incr c2x (emb i 0))
+        (incr c2y (emb i 1)) )
+      (setq c1x (/ c1x 30)) (setq c1y (/ c1y 30))
+      (setq c2x (/ c2x 30)) (setq c2y (/ c2y 30))
+      (let ((sep (sqrt (+ (* (- c2x c1x) (- c2x c1x))
+                          (* (- c2y c1y) (- c2y c1y))))))
+        (printf "    cluster separation = %.4f\n" sep)
+        (test-check "2d: clusters separated (dist > 1)" (> sep 1.0)) ) ) )
+)
+
+
+;; ================================================================
+;; 4. 1D Lens Output
+;; ================================================================
+(test-suite "1D Lens"
+
+  (let* ((data (make-two-clusters 40 5 5.0 0.3))
+         (emb (umap data 1 8 0.1 150)))
+
+    (test-equal "1d rows" (idx-dim emb 0) 40)
+    (test-equal "1d cols" (idx-dim emb 1) 1)
+
+    ;; All values should be finite
+    (let ((ok t))
+      (for (i 0 39)
+        (let ((v (emb i 0)))
+          (when (or (nanp v) (> (abs v) 1e15))
+            (setq ok ()) ) ) )
+      (test-check "1d: all values finite" ok) )
+
+    ;; Cluster centroids should differ in 1D too
+    (let ((c1 0) (c2 0))
+      (for (i 0 19) (incr c1 (emb i 0)))
+      (for (i 20 39) (incr c2 (emb i 0)))
+      (setq c1 (/ c1 20)) (setq c2 (/ c2 20))
+      (let ((sep (abs (- c2 c1))))
+        (printf "    1d cluster separation = %.4f\n" sep)
+        (test-check "1d: clusters separated" (> sep 0.5)) ) ) )
+)
+
+
+;; ================================================================
+;; 5. Mapper Lens Wrappers
+;; ================================================================
+(test-suite "Mapper Lens Wrappers"
+
+  (let ((data (make-two-clusters 30 4 3.0 0.2)))
+    ;; mapper-lens-umap returns Nx1
+    (let ((lens1 (mapper-lens-umap data 8 0.1)))
+      (test-equal "lens-umap rows" (idx-dim lens1 0) 30)
+      (test-equal "lens-umap cols" (idx-dim lens1 1) 1) )
+
+    ;; mapper-lens-umap2d returns Nx2
+    (let ((lens2 (mapper-lens-umap2d data 8 0.1)))
+      (test-equal "lens-umap2d rows" (idx-dim lens2 0) 30)
+      (test-equal "lens-umap2d cols" (idx-dim lens2 1) 2) )
+
+    ;; Default arguments work
+    (let ((lens-default (mapper-lens-umap data)))
+      (test-equal "lens-umap default rows" (idx-dim lens-default 0) 30)
+      (test-equal "lens-umap default cols" (idx-dim lens-default 1) 1) ) )
+)
+
+
+;; ================================================================
+;; 6. umap-fit-ab Parameters
+;; ================================================================
+(test-suite "umap-fit-ab"
+
+  ;; Known values
+  (let ((ab (umap-fit-ab 0.1)))
+    (test-approx "ab(0.1): a" (car ab) 1.929 0.01)
+    (test-approx "ab(0.1): b" (cadr ab) 0.7915 0.01) )
+
+  (let ((ab (umap-fit-ab 0.5)))
+    (test-approx "ab(0.5): a" (car ab) 1.577 0.01)
+    (test-approx "ab(0.5): b" (cadr ab) 0.8951 0.01) )
+
+  ;; a and b should always be positive
+  (let ((ok t))
+    (each ((md '(0.001 0.01 0.05 0.1 0.2 0.5 0.8 1.0 2.0)))
+      (let ((ab (umap-fit-ab md)))
+        (when (or (<= (car ab) 0) (<= (cadr ab) 0))
+          (setq ok ()) ) ) )
+    (test-check "ab: always positive" ok) )
+)
+
+
+;; ================================================================
+;; 7. Edge Cases
+;; ================================================================
+(test-suite "Edge Cases"
+
+  ;; Small N: 5 points (k must be clamped to n-1=4)
+  (let* ((data (double-matrix 5 3))
+         (emb ()))
+    (for (i 0 4)
+      (for (j 0 2)
+        (data i j (* 10.0 (rand))) ))
+    (setq emb (umap data 2 15 0.1 50))  ;; k=15 > n=5, should clamp
+    (test-equal "small N: rows" (idx-dim emb 0) 5)
+    (test-equal "small N: cols" (idx-dim emb 1) 2) )
+
+  ;; Minimal N: 3 points
+  (let* ((data (double-matrix 3 2))
+         (emb ()))
+    (data 0 0 0) (data 0 1 0)
+    (data 1 0 1) (data 1 1 0)
+    (data 2 0 0) (data 2 1 1)
+    (setq emb (umap data 2 2 0.1 50))
+    (test-equal "minimal N=3: rows" (idx-dim emb 0) 3)
+    (test-equal "minimal N=3: cols" (idx-dim emb 1) 2) )
+
+  ;; 1D input data
+  (let* ((data (double-matrix 20 1))
+         (emb ()))
+    (for (i 0 19)
+      (data i 0 (to-double i)) )
+    (setq emb (umap data 1 5 0.1 100))
+    (test-equal "1d input: rows" (idx-dim emb 0) 20)
+    (test-equal "1d input: cols" (idx-dim emb 1) 1) )
+
+  ;; High-D input (100 dims, 30 points)
+  (let* ((data (double-matrix 30 100))
+         (emb ()))
+    (for (i 0 29)
+      (for (j 0 99)
+        (data i j (rand)) ))
+    (setq emb (umap data 2 10 0.1 100))
+    (test-equal "high-d input: rows" (idx-dim emb 0) 30)
+    (test-equal "high-d input: cols" (idx-dim emb 1) 2)
+    ;; All finite
+    (let ((ok t))
+      (for (i 0 29)
+        (for (j 0 1)
+          (when (nanp (emb i j)) (setq ok ())) ))
+      (test-check "high-d input: all finite" ok) ) )
+)
+
+
+;; ================================================================
+;; 8. Determinism (same seed → same result)
+;; ================================================================
+(test-suite "Reproducibility"
+
+  ;; Same input should give same output (no external randomness)
+  (let ((data (double-matrix 20 3)))
+    (for (i 0 19)
+      (data i 0 (to-double i))
+      (data i 1 (* 0.5 (to-double i)))
+      (data i 2 (* 0.1 (to-double i))) )
+    (let ((emb1 (umap data 2 5 0.1 100))
+          (emb2 (umap data 2 5 0.1 100)))
+      ;; Check a few points for exact equality
+      (test-approx "repro: point 0 dim 0" (emb1 0 0) (emb2 0 0) 1e-10)
+      (test-approx "repro: point 10 dim 1" (emb1 10 1) (emb2 10 1) 1e-10)
+      (test-approx "repro: point 19 dim 0" (emb1 19 0) (emb2 19 0) 1e-10) ) )
+)
+
+
+;; ================================================================
+;; Summary
+;; ================================================================
+(test-summary)
