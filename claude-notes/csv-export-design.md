@@ -229,6 +229,162 @@ Test cases:
 7. Empty table (0 rows, header only)
 8. Single column / single row edge cases
 
+## Potential New Column Types
+
+### What Lush Already Supports
+
+Lush's storage layer (src/storage.c) supports more numeric types than
+DataTable currently uses:
+
+| Lush Type | C Type | Size | Matrix Constructor | DataTable Uses? |
+|-----------|--------|------|--------------------|-----------------|
+| `(-double-)` | double | 8B | `double-matrix` | yes (`'real`) |
+| `(-float-)` | float | 4B | `float-matrix` | yes (`'float`) |
+| `(-int-)` | int32 | 4B | `int-matrix` | yes (`'int`) |
+| `(-long-)` | int64 | 8B | `long-matrix` | yes (`'stamp`) |
+| `(-short-)` | int16 | 2B | `short-matrix` | **no** |
+| `(-byte-)` | int8 | 1B | `byte-matrix` | **no** |
+| `(-ubyte-)` | uint8 | 1B | `ubyte-matrix` | **no** |
+
+There is no native boolean type.  Lush uses `t`/`()` (nil) at the
+interpreter level and integers in compiled code.
+
+### `'ubyte` Column — Unsigned Byte (0-255)
+
+**Storage:** `idx1 of (-ubyte-)`, 1 byte per row.
+
+**Use cases:**
+- Boolean/flag columns (0/1) — 8x smaller than `'int`
+- Categorical codes with < 256 levels (e.g., exchange ID, trade condition)
+- Raw byte data (protocol flags, bitfields)
+- Age, count, or score columns with small range
+
+**Null sentinel:** 255 (0xFF).  Leaves 0-254 as valid values.  Alternatively
+use 0 if the column is 1-indexed (but 255 is more conventional — it's the
+unsigned equivalent of using INT_MIN / INT64_MIN for signed types).
+
+**Memory savings:** A 10M-row boolean column:
+- As `'int`: 40 MB
+- As `'ubyte`: 10 MB
+- As `'intcol` (dictionary, 2 values): 40 MB codes + 8 bytes pool ≈ 40 MB
+  (dictionary encoding doesn't help when cardinality is low but every row
+  still needs a 4-byte code)
+
+So `'ubyte` beats both `'int` and `'intcol` for small-range data.
+
+**What's already built out for ubyte:**
+- Basic creation: `ubyte-matrix`, `ubyte-matrix-nc`
+- Arithmetic: `idx-ub1add`, `idx-ub2add`, `idx-ub2mul` (limited set)
+- Fill: `idx-ub1fill`, `idx-ub2fill`
+- **No sorting** — `idx-sort.lsh` only has float/double/int sorts.
+  Would need `idx-u1sortup` / `idx-u1sortdown` (trivial to add via
+  counting sort — only 256 buckets, O(n) instead of O(n log n)).
+
+**CSV format:** `sprintf "%u"` for 0-255 values.  Or for booleans,
+optionally output "true"/"false" or "0"/"1".
+
+**DataTable integration points:**
+- `add-column`: `(ubyte-matrix capacity)` allocation
+- `append-row`: `(ubyte val)` coercion — need bounds checking
+- `get` / `set`: direct idx access (same as int)
+- `grow-capacity`: `narrow` + `ubyte-matrix` like other numeric types
+- `csv-read`: would need a type detection heuristic (all values 0-255
+  and integer → promote to ubyte instead of int)
+- `csv-write`: `sprintf "%u"` or `sprintf "%d"` for byte
+
+### `'short` Column — Signed 16-bit Integer
+
+**Storage:** `idx1 of (-short-)`, 2 bytes per row.
+
+**Use cases:**
+- Port numbers, small counts, year values
+- Columns that would waste space as 4-byte int but need > 255 range
+- Audio samples (16-bit PCM)
+
+**Null sentinel:** -32768 (INT16_MIN), analogous to INT_MIN for `'int`.
+
+**Memory:** 2 bytes/row vs 4 bytes/row for `'int` — 2x savings.
+
+**Sorting:** Not built out.  Would need `idx-s1sortup` etc.
+
+### `'byte` Column — Signed 8-bit Integer (-128 to 127)
+
+Less useful than `'ubyte` in practice.  Most byte-oriented data is
+unsigned (pixel values, flags, ASCII codes).  Could be added for
+completeness but `'ubyte` covers the primary use case.
+
+### `'bool` Column — Boolean (Packed Bits?)
+
+No native Lush boolean type exists.  Two options:
+
+**Option A: `'ubyte`-backed boolean.**  Use `'ubyte` with values 0/1
+and null=255.  Simple, no new infrastructure.  1 byte per row.
+
+**Option B: Bitpacked boolean.**  Store 8 booleans per byte using bit
+operations.  For a 10M-row column: 1.25 MB vs 10 MB for ubyte.  But
+requires custom bit-manipulation code for get/set/where, can't use
+idx operations directly, and null handling is awkward (need a separate
+null bitmap or sacrifice one bit).  The complexity isn't worth it unless
+we have many boolean columns on very large tables.
+
+**Recommendation:** Use `'ubyte` for booleans.  1 byte per row is cheap
+enough, and it requires zero new infrastructure beyond the ubyte column
+type.
+
+### Impact on CSV Export
+
+Adding new column types to `csv-write` is straightforward — just add
+cases to the type switch in the C writer:
+
+```c
+case TYPE_UBYTE: {
+    unsigned char val = ((unsigned char *)col_data[c])[r];
+    if (val == 255) fputs(null_str, fp);  // null sentinel
+    else fprintf(fp, "%u", val);
+    break;
+}
+case TYPE_SHORT: {
+    short val = ((short *)col_data[c])[r];
+    if (val == -32768) fputs(null_str, fp);
+    else fprintf(fp, "%d", val);
+    break;
+}
+```
+
+### Implementation Priority
+
+1. **`'ubyte`** — most useful, covers booleans and small categoricals.
+   Main gap is the lack of sorting support, which is a simple addition
+   (counting sort for 256-value range).
+2. **`'short`** — nice to have, 2x savings over int for medium-range values.
+3. **`'byte`** / **`'bool`** — low priority, covered by ubyte.
+
+### Counting Sort for ubyte
+
+Since ubyte has only 256 possible values, a counting sort is optimal:
+
+```c
+// O(n) counting sort for ubyte column, producing permutation
+void ubyte_counting_sort(unsigned char *data, int *perm, int n, int desc) {
+    int counts[256] = {0};
+    int offsets[256];
+    for (int i = 0; i < n; i++) counts[data[i]]++;
+    // Prefix sum (ascending or descending order)
+    if (!desc) {
+        offsets[0] = 0;
+        for (int i = 1; i < 256; i++) offsets[i] = offsets[i-1] + counts[i-1];
+    } else {
+        offsets[255] = 0;
+        for (int i = 254; i >= 0; i--) offsets[i] = offsets[i+1] + counts[i+1];
+    }
+    for (int i = 0; i < n; i++) perm[offsets[data[i]]++] = i;
+}
+```
+
+This is faster than comparison-based sort (O(n) vs O(n log n)) and
+produces a stable permutation index compatible with DataTable's
+`grade` / `sort-by` methods.
+
 ## Alternatives Considered
 
 **Pure Lush (interpreted) export:** Would work for small tables but
