@@ -1,0 +1,403 @@
+;;; linalgebra-extra.lsh -- Additional Linear Algebra Functions
+;;;
+;;; QR decomposition, general (non-symmetric) eigendecomposition,
+;;; pseudoinverse, matrix rank, condition number, and matrix norms.
+;;; Built on top of GSL and the existing linalgebra.lsh wrappers.
+;;;
+;;; Copyright (C) 2026 Scott Locklin, Lugos LLC
+;;; Distributed under the GNU General Public License v2+.
+
+(libload "libnum/libnum-config")
+(libload "libnum/linalgebra")
+(libload "libidx/idx-double")
+(libload "libidx/idx-sort")
+
+;; GSL headers for this compilation unit
+(eval `(de dummy_linalgebra_extra ()
+         (cpheader "#include <gsl/gsl_eigen.h>")
+         (cpheader "#include <gsl/gsl_linalg.h>")
+         ,libnum-cmacros) ())
+
+
+;; ============================================================
+;; Compiled C helpers
+;; ============================================================
+
+;; Physical transpose: x (M x N) -> xt (N x M)
+(de _la-transpose-d2 (x xt)
+  ((-idx2- (-double-)) x xt)
+  (let ((m (idx-dim x 0))
+        (n (idx-dim x 1)))
+    ((-int-) m n)
+    #{
+    double *px = IDX_PTR($x, double);
+    double *pt = IDX_PTR($xt, double);
+    int sx0 = ($x)->mod[0], sx1 = ($x)->mod[1];
+    int st0 = ($xt)->mod[0], st1 = ($xt)->mod[1];
+    int i, j;
+    for (i = 0; i < $m; i++)
+        for (j = 0; j < $n; j++)
+            pt[j * st0 + i * st1] = px[i * sx0 + j * sx1];
+    #}
+    () ))
+
+;; Frobenius norm squared: sum of all a_ij^2
+(de _la-frobenius-sq (a)
+  ((-idx2- (-double-)) a)
+  (let ((m (idx-dim a 0))
+        (n (idx-dim a 1))
+        (s 0))
+    ((-int-) m n)
+    ((-double-) s)
+    #{
+    double *pa = IDX_PTR($a, double);
+    int sa0 = ($a)->mod[0], sa1 = ($a)->mod[1];
+    int i, j;
+    for (i = 0; i < $m; i++)
+        for (j = 0; j < $n; j++) {
+            double v = pa[i * sa0 + j * sa1];
+            $s += v * v;
+        }
+    #}
+    s))
+
+;; 1-norm: max column absolute sum
+(de _la-norm-1 (a)
+  ((-idx2- (-double-)) a)
+  (let ((m (idx-dim a 0))
+        (n (idx-dim a 1))
+        (result 0))
+    ((-int-) m n)
+    ((-double-) result)
+    #{
+    double *pa = IDX_PTR($a, double);
+    int sa0 = ($a)->mod[0], sa1 = ($a)->mod[1];
+    int i, j;
+    for (j = 0; j < $n; j++) {
+        double col_sum = 0.0;
+        for (i = 0; i < $m; i++)
+            col_sum += fabs(pa[i * sa0 + j * sa1]);
+        if (col_sum > $result) $result = col_sum;
+    }
+    #}
+    result))
+
+;; Infinity-norm: max row absolute sum
+(de _la-norm-inf (a)
+  ((-idx2- (-double-)) a)
+  (let ((m (idx-dim a 0))
+        (n (idx-dim a 1))
+        (result 0))
+    ((-int-) m n)
+    ((-double-) result)
+    #{
+    double *pa = IDX_PTR($a, double);
+    int sa0 = ($a)->mod[0], sa1 = ($a)->mod[1];
+    int i, j;
+    for (i = 0; i < $m; i++) {
+        double row_sum = 0.0;
+        for (j = 0; j < $n; j++)
+            row_sum += fabs(pa[i * sa0 + j * sa1]);
+        if (row_sum > $result) $result = row_sum;
+    }
+    #}
+    result))
+
+;; Scale row i of matrix A by scalar s: A[i,:] *= s
+;; Used internally for pinv construction.
+(de _la-scale-row (a i s)
+  ((-idx2- (-double-)) a)
+  ((-int-) i)
+  ((-double-) s)
+  (let ((n (idx-dim a 1)))
+    ((-int-) n)
+    #{
+    double *pa = IDX_PTR($a, double);
+    int sa0 = ($a)->mod[0], sa1 = ($a)->mod[1];
+    int j;
+    for (j = 0; j < $n; j++)
+        pa[$i * sa0 + j * sa1] *= $s;
+    #}
+    () ))
+
+;; Zero out row i of matrix A: A[i,:] = 0
+(de _la-zero-row (a i)
+  ((-idx2- (-double-)) a)
+  ((-int-) i)
+  (let ((n (idx-dim a 1)))
+    ((-int-) n)
+    #{
+    double *pa = IDX_PTR($a, double);
+    int sa0 = ($a)->mod[0], sa1 = ($a)->mod[1];
+    int j;
+    for (j = 0; j < $n; j++)
+        pa[$i * sa0 + j * sa1] = 0.0;
+    #}
+    () ))
+
+
+;; ============================================================
+#? *** Additional Linear Algebra
+;; QR decomposition, general eigendecomposition, pseudoinverse,
+;; matrix rank, condition number, and matrix norms.
+;; Built on top of GSL and the existing linear algebra wrappers.
+;;
+;; Example -- pseudoinverse:
+;; {<code>
+;;  (libload "libnum/linalgebra-extra")
+;;  (let* ((a [[1 2][3 4][5 6]])
+;;         (ai (pinv a)))
+;;    (pretty ai))
+;; </code>}
+
+
+;; ============================================================
+#? ** QR Decomposition
+
+#? (qr-decomp <A> <Q> <R>)
+;; Compute the QR decomposition of the M x N matrix <A> (M >= N).
+;; The orthogonal matrix <Q> (M x M) and the upper triangular
+;; matrix <R> (M x N) are written to pre-allocated arguments.
+;; The input <A> is not modified.
+;; {<see> (qr-decomp-inplace <A> <Q> <R>)}
+(dmd qr-decomp (a q r)
+  `(qr-decomp-inplace (idx-copy ,a) ,q ,r))
+
+#? (qr-decomp-inplace <A> <Q> <R>)
+;; Compute the QR decomposition of M x N matrix <A> (M >= N).
+;; <A> is destroyed in the process.  <Q> must be M x M and
+;; <R> must be M x N, both pre-allocated.
+;; Returns 0 on success.
+(de qr-decomp-inplace (a q r)
+  ((-idx2- (-double-)) a q r)
+  (let* ((m (idx-dim a 0))
+         (n (idx-dim a 1))
+         (mn (if (< m n) m n))
+         (ret 0))
+    ((-int-) m n mn ret)
+    (when (< m n) (error "QR decomposition requires M >= N"))
+    (when (or (<> m (idx-dim q 0)) (<> m (idx-dim q 1)))
+      (error "Q must be M x M"))
+    (when (or (<> m (idx-dim r 0)) (<> n (idx-dim r 1)))
+      (error "R must be M x N"))
+    #{{ gsl_matrix ga;
+        gsl_matrix gq;
+        gsl_matrix gr;
+        gsl_vector *tau;
+        IDX2GSL_MATRIX($a, ga, double);
+        IDX2GSL_MATRIX($q, gq, double);
+        IDX2GSL_MATRIX($r, gr, double);
+        tau = gsl_vector_alloc($mn);
+        $ret = gsl_linalg_QR_decomp(&ga, tau);
+        if ($ret == 0)
+            $ret = gsl_linalg_QR_unpack(&ga, tau, &gq, &gr);
+        gsl_vector_free(tau);
+    }#}
+    ret))
+
+
+;; ============================================================
+#? ** General Eigendecomposition
+
+#? (eigen-nonsymmv <M> <eigenvec>)
+;; Compute eigenvalues and eigenvectors of a general (non-symmetric)
+;; real square matrix <M>.  Returns complex eigenvalues as an N x 2
+;; matrix (column 0 = real parts, column 1 = imaginary parts).
+;; Complex eigenvectors are written to <eigenvec>, which must be
+;; an N x N x 2 idx3 (each (:, k, :) is a complex eigenvector).
+;; Eigenvalues are sorted by decreasing absolute value.
+;; {<see> (eigen-symmv <m> <eigenvec>)}
+(dmd eigen-nonsymmv (m ev)
+  `(let ((v (double-matrix (idx-dim ,m 0) 2)))
+     (eigen-nonsymmv-inplace (idx-copy ,m) ,ev v) v))
+
+#? (eigen-nonsymmv-inplace <M> <eigenvec> <eigenval>)
+;; Low-level general eigendecomposition.  <M> is destroyed.
+;; <eigenval> must be N x 2 (complex eigenvalues).
+;; <eigenvec> must be N x N x 2 (complex eigenvectors).
+;; Returns 0 on success.
+(de eigen-nonsymmv-inplace (m ev v)
+  ((-idx2- (-double-)) m v)
+  ((-idx3- (-double-)) ev)
+  (let* ((n (idx-dim m 0))
+         (ret 0))
+    ((-int-) n ret)
+    (when (or (<> n (idx-dim m 1))
+              (<> n (idx-dim ev 0)) (<> n (idx-dim ev 1))
+              (<> 2 (idx-dim ev 2))
+              (<> n (idx-dim v 0)) (<> 2 (idx-dim v 1)))
+      (error "arguments have incompatible sizes"))
+    #{{ gsl_eigen_nonsymmv_workspace *w = gsl_eigen_nonsymmv_alloc($n);
+        gsl_matrix gm;
+        gsl_vector_complex gv;
+        gsl_matrix_complex gev;
+        IDX2GSL_MATRIX($m, gm, double);
+        IDX2GSL_VECTOR_COMPLEX($v, gv, double);
+        IDX2GSL_MATRIX_COMPLEX($ev, gev, double);
+        gsl_eigen_nonsymmv_params(1, w);
+        $ret = gsl_eigen_nonsymmv(&gm, &gv, &gev, w);
+        if ($ret == 0)
+            gsl_eigen_nonsymmv_sort(&gv, &gev, GSL_EIGEN_SORT_ABS_DESC);
+        gsl_eigen_nonsymmv_free(w);
+    }#}
+    ret))
+
+
+;; ============================================================
+#? ** Pseudoinverse, Rank, Condition Number
+
+;; Internal: compute singular values of any M x N matrix.
+(de _svd-values (a)
+  (let* ((m (idx-dim a 0))
+         (n (idx-dim a 1)))
+    (if (>= m n)
+      (let* ((u (idx-copy a))
+             (v (double-matrix n n))
+             (s (double-matrix n)))
+        (svd-inplace u v s) s)
+      ;; M < N: take SVD of A'
+      (let* ((at (double-matrix n m)))
+        (_la-transpose-d2 a at)
+        (let* ((u (idx-copy at))
+               (v (double-matrix m m))
+               (s (double-matrix m)))
+          (svd-inplace u v s) s)))))
+
+
+#? (pinv <A> [<tol>])
+;; Compute the Moore-Penrose pseudoinverse of the M x N matrix <A>
+;; via singular value decomposition.  Singular values smaller than
+;; <tol> are treated as zero.  Default <tol> is
+;; {<c> max(M,N) * s_max * eps} where eps = 2.2e-16.
+;;
+;; Returns an N x M matrix.
+;;
+;; Example:
+;; {<code>
+;;  (let* ((a [[1 0][0 2][0 0]])
+;;         (ai (pinv a)))
+;;    (pretty ai))
+;;  ;; = [[1.00  0.00  0.00]
+;;  ;;    [0.00  0.50  0.00]]
+;; </code>}
+;; {<see> (matrix-rank <A>), (matrix-cond <A>)}
+(de pinv (a . rest)
+  (let* ((tol (if rest (car rest) ()))
+         (m (idx-dim a 0))
+         (n (idx-dim a 1)))
+    (if (>= m n)
+      ;; direct SVD: A = U S V', pinv = V * diag(1/s) * U'
+      (let* ((u (idx-copy a))
+             (v (double-matrix n n))
+             (s (double-matrix n)))
+        (svd-inplace u v s)
+        (let ((threshold (if tol tol
+                           (* (max m n) (s 0) 2.2e-16)))
+              (ut (double-matrix n m))
+              (result (double-matrix n m)))
+          ;; ut = U' (transposed), then scale rows by 1/s_i
+          (_la-transpose-d2 u ut)
+          (for (i 0 (- n 1))
+            (if (> (s i) threshold)
+              (_la-scale-row ut i (/ 1.0 (s i)))
+              (_la-zero-row ut i)))
+          ;; result = V * scaled_ut
+          (idx-d2timesd2 v ut result)
+          result))
+      ;; M < N: compute pinv(A') then transpose
+      (let* ((at (double-matrix n m)))
+        (_la-transpose-d2 a at)
+        (let* ((u (idx-copy at))
+               (v (double-matrix m m))
+               (s (double-matrix m)))
+          (svd-inplace u v s)
+          (let ((threshold (if tol tol
+                             (* (max m n) (s 0) 2.2e-16)))
+                (ut (double-matrix m n))
+                (pinv-at (double-matrix m n))
+                (result (double-matrix n m)))
+            (_la-transpose-d2 u ut)
+            (for (i 0 (- m 1))
+              (if (> (s i) threshold)
+                (_la-scale-row ut i (/ 1.0 (s i)))
+                (_la-zero-row ut i)))
+            (idx-d2timesd2 v ut pinv-at)
+            (_la-transpose-d2 pinv-at result)
+            result))))))
+
+
+#? (matrix-rank <A> [<tol>])
+;; Compute the numerical rank of matrix <A> via SVD.
+;; Singular values below <tol> are treated as zero.
+;; Default <tol> is {<c> max(M,N) * s_max * eps}.
+;; Returns an integer.
+;; {<see> (pinv <A>), (matrix-cond <A>)}
+(de matrix-rank (a . rest)
+  (let* ((s (_svd-values a))
+         (k (idx-dim s 0))
+         (m (idx-dim a 0))
+         (n (idx-dim a 1))
+         (tol (if rest (car rest)
+                (* (max m n) (s 0) 2.2e-16)))
+         (r 0))
+    (for (i 0 (- k 1))
+      (when (> (s i) tol) (setq r (+ r 1))))
+    r))
+
+
+#? (matrix-cond <A>)
+;; Compute the 2-norm condition number of matrix <A> via SVD.
+;; The condition number is the ratio of the largest to smallest
+;; singular value: {<c> cond(A) = s_max / s_min}.
+;; A singular matrix returns a very large number (1e308).
+;; {<see> (matrix-rank <A>), (pinv <A>)}
+(de matrix-cond (a)
+  (let* ((s (_svd-values a))
+         (k (idx-dim s 0))
+         (smax (s 0))
+         (smin (s (- k 1))))
+    (if (> smin 0) (/ smax smin) 1e308)))
+
+
+;; ============================================================
+#? ** Matrix Norms
+
+#? (matrix-norm-frobenius <A>)
+;; Compute the Frobenius norm of matrix <A>:
+;; {<c> ||A||_F = sqrt(sum(a_ij^2))}.
+;; {<see> (matrix-norm-1 <A>), (matrix-norm-inf <A>)}
+(de matrix-norm-frobenius (a)
+  (sqrt (_la-frobenius-sq a)))
+
+#? (matrix-norm-1 <A>)
+;; Compute the 1-norm (maximum column absolute sum) of matrix <A>:
+;; {<c> ||A||_1 = max_j sum_i |a_ij|}.
+;; {<see> (matrix-norm-frobenius <A>), (matrix-norm-inf <A>)}
+(de matrix-norm-1 (a)
+  (_la-norm-1 a))
+
+#? (matrix-norm-inf <A>)
+;; Compute the infinity-norm (maximum row absolute sum) of matrix <A>:
+;; {<c> ||A||_inf = max_i sum_j |a_ij|}.
+;; {<see> (matrix-norm-frobenius <A>), (matrix-norm-1 <A>)}
+(de matrix-norm-inf (a)
+  (_la-norm-inf a))
+
+
+;; ============================================================
+;; Compile
+;; ============================================================
+
+(dhc-make-with-libs
+ ()
+ (list libnum-libgslcblas libnum-libgsl)
+
+ dummy_linalgebra_extra
+ _la-transpose-d2
+ _la-frobenius-sq
+ _la-norm-1
+ _la-norm-inf
+ _la-scale-row
+ _la-zero-row
+ qr-decomp-inplace
+ eigen-nonsymmv-inplace)

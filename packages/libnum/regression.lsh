@@ -1,0 +1,1054 @@
+;;; regression.lsh -- Linear Regression, Ridge, Lasso, Elastic Net, Logistic, GLMnet
+;;;
+;;; High-level regression models with R-style summary output and
+;;; diagnostic plots.  Includes:
+;;; - lm-model: OLS linear regression via SVD (R-style summary)
+;;; - ridge: Ridge regression via SVD
+;;; - Logistic regression via IRLS
+;;; - glmnet-model: Elastic net regularization path for gaussian
+;;;   and binomial families with cross-validation and plots.
+;;;
+;;; Copyright (C) 2026 Scott Locklin, Lugos LLC
+;;; Distributed under the GNU General Public License v2+.
+
+(libload "libnum/linalgebra")
+(libload "libnum/covariance")
+(libload "libnum/cdf")
+(libload "libnum/optimizers")
+(libload "libnum/model-selection")
+(libload "libidx/idx-double")
+(libload "libidx/idx-sort")
+(libload "libplot/plotter")
+
+
+;; ============================================================
+;; Internal helpers
+;; ============================================================
+
+;; idx1 to list (for Plotter)
+(de _reg-idx1-to-list (v)
+  (let ((result ()))
+    (for (i (- (idx-dim v 0) 1) 0 -1)
+      (setq result (cons (v i) result)))
+    result))
+
+;; Significance stars for p-values
+(de _reg-signif-stars (p)
+  (cond
+    ((< p 0.001) "***")
+    ((< p 0.01)  "** ")
+    ((< p 0.05)  "*  ")
+    ((< p 0.1)   ".  ")
+    (t            "   ")))
+
+;; Prepend intercept column: X_aug = [1 | X], N x (P+1)
+(de _reg-add-intercept (x)
+  (let* ((n (idx-dim x 0))
+         (p (idx-dim x 1))
+         (xa (double-matrix n (+ p 1))))
+    (for (i 0 (- n 1))
+      (xa i 0 1.0)
+      (for (j 0 (- p 1))
+        (xa i (+ j 1) (x i j))))
+    xa))
+
+;; Quantile of a sorted vector (linear interpolation)
+(de _reg-quantile (sorted-v q)
+  (let* ((n (idx-dim sorted-v 0))
+         (h (* q (- n 1)))
+         (lo (int h))
+         (hi (+ lo 1))
+         (frac (- h lo)))
+    (if (>= lo (- n 1))
+      (sorted-v (- n 1))
+      (+ (* (- 1 frac) (sorted-v lo))
+         (* frac (sorted-v hi))))))
+
+
+;; ============================================================
+#? *** Regression Models
+;; Linear regression, Ridge, Lasso, Elastic Net, logistic regression,
+;; and GLMnet regularization paths.  All regression models provide
+;; R-style summary methods and diagnostic plots.
+;;
+;; Example -- ordinary least squares:
+;; {<code>
+;;  (libload "libnum/regression")
+;;  (let* ((x [[1 2][3 4][5 6][7 8][9 10]])
+;;         (y [3.1 7.0 10.8 15.1 18.9])
+;;         (model (new lm-model x y)))
+;;    (==> model summary))
+;; </code>}
+
+;; ============================================================
+#? ** Linear Regression (OLS)
+
+#? * lm-model
+;; Ordinary least squares linear regression fitted via SVD.
+;; Provides R-style summary output with coefficients, standard
+;; errors, t-values, p-values, R-squared, F-statistic, and
+;; diagnostic plots.
+;; {<ul>
+;; {<li> {<b> coefficients} -- parameter estimates (idx1, P+1 with intercept)}
+;; {<li> {<b> std-errors} -- standard errors (idx1)}
+;; {<li> {<b> t-values} -- t-statistics (idx1)}
+;; {<li> {<b> p-values} -- two-sided p-values (idx1)}
+;; {<li> {<b> r-squared} -- coefficient of determination}
+;; {<li> {<b> adj-r-squared} -- adjusted R-squared}
+;; {<li> {<b> f-stat} -- overall F-statistic}
+;; {<li> {<b> f-pvalue} -- p-value for F-test}
+;; {<li> {<b> sigma} -- residual standard error}
+;; {<li> {<b> residuals} -- residual vector (idx1)}
+;; {<li> {<b> fitted} -- fitted values (idx1)}
+;; }
+
+(defclass lm-model object
+  coefficients
+  std-errors
+  t-values
+  p-values
+  r-squared
+  adj-r-squared
+  f-stat
+  f-pvalue
+  sigma
+  residuals
+  fitted
+  hat-diag
+  n-obs
+  n-pred
+  df-residual
+  df-model
+  has-intercept
+  x-aug)
+
+#? (new lm-model <X> <y> [<intercept>])
+;; Fit an OLS linear regression model.
+;; <X> is an N x P data matrix, <y> is an N-vector of responses.
+;; <intercept> (default t) controls whether an intercept is included.
+;;
+;; The model is fitted immediately via singular value decomposition,
+;; which is numerically stable even for ill-conditioned designs.
+;; {<see> (==> <lm-model> summary), (==> <lm-model> predict <X>)}
+(defmethod lm-model lm-model (x y . rest)
+  (let* ((add-int (if rest (car rest) t))
+         (xa (if add-int (_reg-add-intercept x) (idx-copy x)))
+         (nn (idx-dim xa 0))
+         (pp (idx-dim xa 1))
+         (u (idx-copy xa))
+         (v (double-matrix pp pp))
+         (s (double-matrix pp)))
+    (setq has-intercept add-int)
+    (setq x-aug xa)
+    (setq n-obs nn)
+    (setq n-pred (if add-int (- pp 1) pp))
+    (setq df-model (if add-int (- pp 1) pp))
+    (setq df-residual (- nn pp))
+    (when (<= df-residual 0)
+      (error "not enough observations for the number of predictors"))
+    ;; SVD: xa = U S V'
+    (svd-inplace u v s)
+    ;; beta = V * diag(1/s) * U' * y
+    (setq coefficients (double-matrix pp))
+    (for (j 0 (- pp 1))
+      (let ((c 0))
+        (for (i 0 (- nn 1))
+          (setq c (+ c (* (u i j) (y i)))))
+        (when (> (s j) 1e-14)
+          (setq c (/ c (s j))))
+        ;; accumulate into coefficients
+        (for (k 0 (- pp 1))
+          (coefficients k (+ (coefficients k) (* (v k j) c))))))
+    ;; fitted values and residuals
+    (setq fitted (double-matrix nn))
+    (setq residuals (double-matrix nn))
+    (for (i 0 (- nn 1))
+      (let ((yhat 0))
+        (for (j 0 (- pp 1))
+          (setq yhat (+ yhat (* (xa i j) (coefficients j)))))
+        (fitted i yhat)
+        (residuals i (- (y i) yhat))))
+    ;; RSS and TSS
+    (let ((rss 0) (tss 0) (ymean 0))
+      (for (i 0 (- nn 1)) (setq ymean (+ ymean (y i))))
+      (setq ymean (/ ymean nn))
+      (for (i 0 (- nn 1))
+        (setq rss (+ rss (* (residuals i) (residuals i))))
+        (setq tss (+ tss (* (- (y i) ymean) (- (y i) ymean)))))
+      ;; R-squared
+      (setq r-squared (if (> tss 0) (- 1 (/ rss tss)) 0))
+      (setq adj-r-squared (- 1 (* (/ (- 1 r-squared) (/ (to-double (- nn 1)) (to-double df-residual))))))
+      ;; sigma (residual standard error)
+      (setq sigma (sqrt (/ rss df-residual)))
+      ;; Standard errors: Var(beta) = sigma^2 * V * diag(1/s^2) * V'
+      ;; SE(beta_j) = sigma * sqrt(sum_k (V_jk / s_k)^2)
+      (setq std-errors (double-matrix pp))
+      (for (j 0 (- pp 1))
+        (let ((ss 0))
+          (for (k 0 (- pp 1))
+            (when (> (s k) 1e-14)
+              (let ((vjs (/ (v j k) (s k))))
+                (setq ss (+ ss (* vjs vjs))))))
+          (std-errors j (* sigma (sqrt ss)))))
+      ;; t-values and p-values
+      (setq t-values (double-matrix pp))
+      (setq p-values (double-matrix pp))
+      (for (j 0 (- pp 1))
+        (let ((tv (if (> (std-errors j) 0)
+                    (/ (coefficients j) (std-errors j))
+                    0)))
+          (t-values j tv)
+          (p-values j (* 2 (cdf-tdist-q (abs tv) (to-double df-residual))))))
+      ;; F-statistic
+      (if (and (> df-model 0) (> tss 0))
+        (let ((msr (/ (- tss rss) df-model))
+              (mse (/ rss df-residual)))
+          (setq f-stat (if (> mse 0) (/ msr mse) 0))
+          (setq f-pvalue (cdf-fdist-q f-stat (to-double df-model) (to-double df-residual))))
+        (progn (setq f-stat 0) (setq f-pvalue 1)))
+      ;; hat matrix diagonal: h_ii = sum_k (U_ik)^2
+      (setq hat-diag (double-matrix nn))
+      (for (i 0 (- nn 1))
+        (let ((h 0))
+          (for (k 0 (- pp 1))
+            (setq h (+ h (* (u i k) (u i k)))))
+          (hat-diag i h))))))
+
+
+#? (==> <lm-model> summary)
+;; Print an R-style regression summary with coefficient table,
+;; significance stars, R-squared, and F-statistic.
+(defmethod lm-model summary ()
+  (let* ((pp (idx-dim coefficients 0)))
+    (printf "\nCoefficients:\n")
+    (printf "             %12s %11s %9s %11s\n"
+            "Estimate" "Std. Error" "t value" "Pr(>|t|)")
+    (printf "  ---------- ------------ ----------- --------- -----------\n")
+    (for (j 0 (- pp 1))
+      (let ((name (if (and has-intercept (= j 0)) "(Intercept)"
+                    (sprintf "x%-10d" (if has-intercept j (+ j 1))))))
+        (printf "  %-11s %12.5f %11.5f %9.3f %11.4g %s\n"
+                name
+                (coefficients j)
+                (std-errors j)
+                (t-values j)
+                (p-values j)
+                (_reg-signif-stars (p-values j)))))
+    (printf "  ---\n")
+    (printf "  Signif. codes: 0 '***' 0.001 '**' 0.01 '*' 0.05 '.' 0.1 ' ' 1\n\n")
+    ;; Residual summary
+    (let ((sorted-r (idx-copy residuals)))
+      (idx-d1sortup sorted-r)
+      (printf "Residuals:\n")
+      (printf "     Min       1Q   Median       3Q      Max\n")
+      (printf "  %7.4f  %7.4f  %7.4f  %7.4f  %7.4f\n"
+              (sorted-r 0)
+              (_reg-quantile sorted-r 0.25)
+              (_reg-quantile sorted-r 0.5)
+              (_reg-quantile sorted-r 0.75)
+              (sorted-r (- (idx-dim sorted-r 0) 1))))
+    (printf "\nResidual standard error: %.4f on %d degrees of freedom\n"
+            sigma df-residual)
+    (printf "Multiple R-squared: %.4f,  Adjusted R-squared: %.4f\n"
+            r-squared adj-r-squared)
+    (printf "F-statistic: %.2f on %d and %d DF,  p-value: %.4g\n"
+            f-stat df-model df-residual f-pvalue)))
+
+
+#? (==> <lm-model> predict <X>)
+;; Predict responses for new data matrix <X> (N x P).
+;; Returns an N-vector of predicted values.
+;; {<see> (new lm-model <X> <y>)}
+(defmethod lm-model predict (x)
+  (let* ((xa (if has-intercept (_reg-add-intercept x) (idx-copy x)))
+         (nn (idx-dim xa 0))
+         (pp (idx-dim xa 1))
+         (pred (double-matrix nn)))
+    (when (<> pp (idx-dim coefficients 0))
+      (error "predictor matrix has wrong number of columns"))
+    (for (i 0 (- nn 1))
+      (let ((yhat 0))
+        (for (j 0 (- pp 1))
+          (setq yhat (+ yhat (* (xa i j) (coefficients j)))))
+        (pred i yhat)))
+    pred))
+
+
+;; ============================================================
+#? ** lm Diagnostic Plots
+;; R-style diagnostic plots for {<c> lm-model}.
+;; A graphics window must be set before calling (use {<c> new-window}
+;; or {<c> ps-window}).
+
+#? (==> <lm-model> plot-residuals)
+;; Residuals vs Fitted values plot.  Useful for detecting
+;; non-linearity and heteroscedasticity.
+;; Returns the {<c> Plotter} object.
+(defmethod lm-model plot-residuals ()
+  (let* ((pl (new Plotter))
+         (xvals (_reg-idx1-to-list fitted))
+         (yvals (_reg-idx1-to-list residuals)))
+    (==> pl PlotLists "residuals" xvals yvals
+         (alloccolor 0.2 0.2 0.7) closed-circle)
+    (==> pl SetCurveLine "residuals" 0)
+    ;; zero line
+    (let ((xmin (fitted 0)) (xmax (fitted 0)))
+      (for (i 1 (- n-obs 1))
+        (when (< (fitted i) xmin) (setq xmin (fitted i)))
+        (when (> (fitted i) xmax) (setq xmax (fitted i))))
+      (==> pl AddLine xmin 0 xmax 0))
+    (==> pl SetTitle "Residuals vs Fitted")
+    (==> pl SetXLabel "Fitted values")
+    (==> pl SetYLabel "Residuals")
+    (==> pl SetGrid 1)
+    (==> pl Redisplay)
+    pl))
+
+#? (==> <lm-model> plot-qq)
+;; Normal Q-Q plot of standardized residuals.  Points should
+;; lie close to the diagonal if residuals are normally distributed.
+;; Returns the {<c> Plotter} object.
+(defmethod lm-model plot-qq ()
+  (let* ((nn n-obs)
+         (std-resid (double-matrix nn))
+         (sorted-idx (int-matrix nn))
+         (theoretical (double-matrix nn))
+         (pl (new Plotter)))
+    ;; standardized residuals
+    (for (i 0 (- nn 1))
+      (std-resid i (if (> sigma 0) (/ (residuals i) sigma) 0)))
+    ;; sort standardized residuals
+    (let ((sorted (idx-copy std-resid)))
+      (idx-d1sortup sorted)
+      ;; theoretical quantiles from standard normal
+      (for (i 0 (- nn 1))
+        (let ((p (/ (+ i 0.5) (to-double nn))))
+          (theoretical i (cdf-ugaussian-pinv p))))
+      ;; plot
+      (let ((xvals (_reg-idx1-to-list theoretical))
+            (yvals (_reg-idx1-to-list sorted)))
+        (==> pl PlotLists "qq" xvals yvals
+             (alloccolor 0.2 0.2 0.7) closed-circle)
+        (==> pl SetCurveLine "qq" 0)))
+    ;; reference line (y = x)
+    (let ((lo (cdf-ugaussian-pinv (/ 0.5 nn)))
+          (hi (cdf-ugaussian-pinv (- 1 (/ 0.5 nn)))))
+      (==> pl AddLine lo lo hi hi))
+    (==> pl SetTitle "Normal Q-Q")
+    (==> pl SetXLabel "Theoretical Quantiles")
+    (==> pl SetYLabel "Standardized Residuals")
+    (==> pl SetGrid 1)
+    (==> pl Redisplay)
+    pl))
+
+#? (==> <lm-model> plot-scale-location)
+;; Scale-Location plot: sqrt(|standardized residuals|) vs fitted
+;; values.  Useful for detecting heteroscedasticity.
+;; Returns the {<c> Plotter} object.
+(defmethod lm-model plot-scale-location ()
+  (let* ((nn n-obs)
+         (sq-std-resid (double-matrix nn))
+         (pl (new Plotter)))
+    (for (i 0 (- nn 1))
+      (let ((sr (if (> sigma 0) (/ (residuals i) sigma) 0)))
+        (sq-std-resid i (sqrt (abs sr)))))
+    (let ((xvals (_reg-idx1-to-list fitted))
+          (yvals (_reg-idx1-to-list sq-std-resid)))
+      (==> pl PlotLists "scale-loc" xvals yvals
+           (alloccolor 0.2 0.2 0.7) closed-circle)
+      (==> pl SetCurveLine "scale-loc" 0))
+    (==> pl SetTitle "Scale-Location")
+    (==> pl SetXLabel "Fitted values")
+    (==> pl SetYLabel "sqrt(|Standardized Residuals|)")
+    (==> pl SetGrid 1)
+    (==> pl Redisplay)
+    pl))
+
+#? (==> <lm-model> plot-leverage)
+;; Residuals vs Leverage plot with Cook's distance contours.
+;; Points with high leverage and large residuals are influential.
+;; Returns the {<c> Plotter} object.
+(defmethod lm-model plot-leverage ()
+  (let* ((nn n-obs)
+         (pp (idx-dim coefficients 0))
+         (std-resid (double-matrix nn))
+         (pl (new Plotter)))
+    ;; standardized residuals (internally studentized)
+    (for (i 0 (- nn 1))
+      (let ((hi (hat-diag i))
+            (denom (* sigma (sqrt (max 1e-20 (- 1 hi))))))
+        (std-resid i (if (> denom 0) (/ (residuals i) denom) 0))))
+    (let ((xvals (_reg-idx1-to-list hat-diag))
+          (yvals (_reg-idx1-to-list std-resid)))
+      (==> pl PlotLists "leverage" xvals yvals
+           (alloccolor 0.2 0.2 0.7) closed-circle)
+      (==> pl SetCurveLine "leverage" 0))
+    ;; zero line
+    (==> pl AddLine 0 0 1 0)
+    (==> pl SetTitle "Residuals vs Leverage")
+    (==> pl SetXLabel "Leverage")
+    (==> pl SetYLabel "Standardized Residuals")
+    (==> pl SetGrid 1)
+    (==> pl Redisplay)
+    pl))
+
+
+;; ============================================================
+#? ** Ridge Regression
+
+#? (ridge <X> <y> <lambda> [<intercept>])
+;; Ridge regression via SVD.  Solves:
+;; {<c> min ||y - X*beta||^2 + lambda * ||beta||^2}
+;;
+;; Returns the coefficient vector (P+1 with intercept, or P without).
+;; The intercept (if included) is not penalized.
+;; {<see> (new lm-model <X> <y>)}
+(de ridge (x y lambda . rest)
+  (let* ((add-int (if rest (car rest) t))
+         (nn (idx-dim x 0))
+         (pp (idx-dim x 1)))
+    (if (not add-int)
+      ;; no intercept: standard SVD ridge on raw X
+      (let* ((u (idx-copy x))
+             (v (double-matrix pp pp))
+             (s (double-matrix pp))
+             (beta (double-matrix pp)))
+        (svd-inplace u v s)
+        (for (j 0 (- pp 1))
+          (let* ((sj (s j))
+                 (shrink (/ sj (+ (* sj sj) lambda)))
+                 (c 0))
+            (for (i 0 (- nn 1))
+              (setq c (+ c (* (u i j) (y i)))))
+            (setq c (* c shrink))
+            (for (k 0 (- pp 1))
+              (beta k (+ (beta k) (* (v k j) c))))))
+        beta)
+      ;; with intercept: center, ridge on centered, recover intercept
+      (let* ((x-mean (double-matrix pp))
+             (y-mean 0)
+             (xc (double-matrix nn pp))
+             (yc (double-matrix nn)))
+        ;; compute means
+        (for (j 0 (- pp 1))
+          (let ((s 0))
+            (for (i 0 (- nn 1))
+              (setq s (+ s (x i j))))
+            (x-mean j (/ s nn))))
+        (for (i 0 (- nn 1))
+          (setq y-mean (+ y-mean (y i))))
+        (setq y-mean (/ y-mean nn))
+        ;; center
+        (for (i 0 (- nn 1))
+          (yc i (- (y i) y-mean))
+          (for (j 0 (- pp 1))
+            (xc i j (- (x i j) (x-mean j)))))
+        ;; SVD ridge on centered data
+        (let* ((u (idx-copy xc))
+               (v (double-matrix pp pp))
+               (s (double-matrix pp))
+               (beta-c (double-matrix pp)))
+          (svd-inplace u v s)
+          (for (j 0 (- pp 1))
+            (let* ((sj (s j))
+                   (shrink (/ sj (+ (* sj sj) lambda)))
+                   (c 0))
+              (for (i 0 (- nn 1))
+                (setq c (+ c (* (u i j) (yc i)))))
+              (setq c (* c shrink))
+              (for (k 0 (- pp 1))
+                (beta-c k (+ (beta-c k) (* (v k j) c))))))
+          ;; intercept = y_mean - x_mean' * beta_c
+          (let* ((int-val y-mean)
+                 (result (double-matrix (+ pp 1))))
+            (for (j 0 (- pp 1))
+              (setq int-val (- int-val (* (x-mean j) (beta-c j)))))
+            (result 0 int-val)
+            (for (j 0 (- pp 1))
+              (result (+ j 1) (beta-c j)))
+            result))))))
+
+
+;; ============================================================
+#? ** Logistic Regression
+
+#? (logistic-regression <X> <y> [<max-iter>] [<tol>])
+;; Fit logistic regression via Iteratively Reweighted Least Squares
+;; (IRLS).  <y> must be binary (0 or 1).  An intercept is always
+;; included.
+;;
+;; Returns a list {<c> (coefficients std-errors z-values p-values)}
+;; where each is an idx1 of length P+1 (intercept first).
+;;
+;; Example:
+;; {<code>
+;;  (let* ((x [[1][2][3][4][5][6][7][8]])
+;;         (y [i 0 0 0 1 0 1 1 1])
+;;         (result (logistic-regression x y)))
+;;    (printf "Coefficients: ") (pretty (car result)))
+;; </code>}
+;; {<see> (new glmnet-model <X> <y> <alpha> <family>)}
+(de logistic-regression (x y . rest)
+  (let* ((max-iter (if rest (car rest) 25))
+         (tol (if (and rest (cdr rest)) (cadr rest) 1e-8))
+         (xa (_reg-add-intercept x))
+         (nn (idx-dim xa 0))
+         (pp (idx-dim xa 1))
+         (beta (double-matrix pp))
+         (eta (double-matrix nn))
+         (mu (double-matrix nn))
+         (w (double-matrix nn))
+         (z (double-matrix nn))
+         (converged ()))
+    ;; IRLS iterations
+    (let ((iter 0))
+      (while (and (< iter max-iter) (not converged))
+        ;; linear predictor: eta = X * beta
+        (_opt-linear-pred xa beta 0 eta)
+        ;; mu = sigmoid(eta)
+        (_opt-sigmoid eta mu)
+        ;; working weights: w = mu * (1 - mu)
+        ;; working response: z = eta + (y - mu) / w
+        (for (i 0 (- nn 1))
+          (let* ((wi (* (mu i) (- 1 (mu i)))))
+            (w i (max wi 1e-10))
+            (z i (+ (eta i) (/ (- (y i) (mu i)) (max wi 1e-10))))))
+        ;; solve weighted least squares: (X' W X) beta_new = X' W z
+        ;; via SVD of sqrt(W) * X
+        (let* ((wx (double-matrix nn pp))
+               (wz (double-matrix nn))
+               (u (double-matrix nn pp))
+               (v (double-matrix pp pp))
+               (s (double-matrix pp))
+               (beta-new (double-matrix pp)))
+          ;; form sqrt(W) * X and sqrt(W) * z
+          (for (i 0 (- nn 1))
+            (let ((sw (sqrt (w i))))
+              (wz i (* sw (z i)))
+              (for (j 0 (- pp 1))
+                (wx i j (* sw (xa i j))))))
+          (idx-copy wx u)
+          (svd-inplace u v s)
+          ;; beta_new = V * diag(1/s) * U' * wz
+          (for (j 0 (- pp 1))
+            (let ((c 0))
+              (for (i 0 (- nn 1))
+                (setq c (+ c (* (u i j) (wz i)))))
+              (when (> (s j) 1e-14)
+                (setq c (/ c (s j))))
+              (for (k 0 (- pp 1))
+                (beta-new k (+ (beta-new k) (* (v k j) c))))))
+          ;; check convergence
+          (let ((max-change 0))
+            (for (j 0 (- pp 1))
+              (let ((d (abs (- (beta-new j) (beta j)))))
+                (when (> d max-change) (setq max-change d))))
+            (when (< max-change tol) (setq converged t)))
+          (idx-copy beta-new beta))
+        (setq iter (+ iter 1))))
+    ;; compute standard errors from final Fisher information
+    ;; I = X' W X, Var(beta) = I^{-1}
+    ;; Using SVD of sqrt(W)*X: Var(beta) = V * diag(1/s^2) * V'
+    (_opt-linear-pred xa beta 0 eta)
+    (_opt-sigmoid eta mu)
+    (for (i 0 (- nn 1))
+      (w i (max (* (mu i) (- 1 (mu i))) 1e-10)))
+    (let* ((wx (double-matrix nn pp))
+           (u (double-matrix nn pp))
+           (v (double-matrix pp pp))
+           (s (double-matrix pp))
+           (se (double-matrix pp))
+           (zval (double-matrix pp))
+           (pval (double-matrix pp)))
+      (for (i 0 (- nn 1))
+        (let ((sw (sqrt (w i))))
+          (for (j 0 (- pp 1))
+            (wx i j (* sw (xa i j))))))
+      (idx-copy wx u)
+      (svd-inplace u v s)
+      ;; SE(beta_j) = sqrt(sum_k (V_jk / s_k)^2)
+      (for (j 0 (- pp 1))
+        (let ((ss 0))
+          (for (k 0 (- pp 1))
+            (when (> (s k) 1e-14)
+              (let ((vks (/ (v j k) (s k))))
+                (setq ss (+ ss (* vks vks))))))
+          (se j (sqrt ss))
+          (let ((zv (if (> (se j) 0) (/ (beta j) (se j)) 0)))
+            (zval j zv)
+            (pval j (* 2 (cdf-ugaussian-q (abs zv)))))))
+      (list (idx-copy beta) se zval pval))))
+
+
+;; ============================================================
+#? ** GLMnet (Elastic Net Regularization Path)
+
+#? * glmnet-model
+;; Elastic net regularization path for gaussian or binomial families.
+;; Fits a sequence of models across a grid of lambda values using
+;; coordinate descent with warm starts.
+;; {<ul>
+;; {<li> {<b> family}: "gaussian" or "binomial"}
+;; {<li> {<b> alpha}: elastic net mixing parameter (1=Lasso, 0=Ridge)}
+;; {<li> {<b> lambdas}: list of lambda values (decreasing)}
+;; {<li> {<b> coef-path}: list of coefficient vectors (one per lambda)}
+;; {<li> {<b> intercept-path}: list of intercept values}
+;; {<li> {<b> dev-path}: list of deviance values}
+;; {<li> {<b> df-path}: list of nonzero coefficient counts}
+;; }
+
+(defclass glmnet-model object
+  family
+  alpha
+  lambdas
+  coef-path
+  intercept-path
+  dev-path
+  df-path
+  x-mean
+  x-sd
+  y-mean
+  n-obs
+  n-pred)
+
+
+#? (new glmnet-model <X> <y> <alpha> [<family>] [<nlambda>] [<lambda-ratio>])
+;; Fit a regularization path.
+;; <X> is N x P data matrix, <y> is N-vector.
+;; <alpha> in [0,1]: 1 = Lasso, 0 = Ridge, between = Elastic Net.
+;; <family>: "gaussian" (default) or "binomial".
+;; <nlambda>: number of lambda values (default 100).
+;; <lambda-ratio>: ratio lambda_min/lambda_max (default 1e-4).
+;; {<see> (==> <glmnet-model> predict <X> <lambda>), (==> <glmnet-model> plot-path)}
+(defmethod glmnet-model glmnet-model (x y a . rest)
+  (let* ((fam (if rest (car rest) "gaussian"))
+         (nlam (if (and rest (cdr rest)) (cadr rest) 100))
+         (lratio (if (and rest (cdr rest) (cddr rest)) (caddr rest) 1e-4))
+         (nn (idx-dim x 0))
+         (pp (idx-dim x 1)))
+    (setq family fam)
+    (setq alpha a)
+    (setq n-obs nn)
+    (setq n-pred pp)
+    ;; standardize X
+    (setq x-mean (col-means x))
+    (setq x-sd (col-sds x))
+    (let ((xs (double-matrix nn pp)))
+      (for (i 0 (- nn 1))
+        (for (j 0 (- pp 1))
+          (let ((sd (x-sd j)))
+            (xs i j (if (> sd 0) (/ (- (x i j) (x-mean j)) sd) 0)))))
+      (if (= family "gaussian")
+        ;; Gaussian path
+        (let* ((ymean 0) (yc (double-matrix nn)))
+          (for (i 0 (- nn 1)) (setq ymean (+ ymean (y i))))
+          (setq ymean (/ ymean nn))
+          (setq y-mean ymean)
+          (for (i 0 (- nn 1)) (yc i (- (y i) ymean)))
+          ;; fit path
+          (let ((result (elastic-net-path xs yc alpha nlam lratio)))
+            (_glmnet-store-gaussian this result xs yc)))
+        ;; Binomial path (logistic elastic net via IRLS + CD)
+        (progn
+          (setq y-mean 0)
+          (_glmnet-fit-binomial this xs y nlam lratio))))))
+
+
+;; Gaussian path storage: unstandardize coefficients
+(de _glmnet-store-gaussian (model result xs yc)
+  (let* ((lams (car result))
+         (betas (cadr result))
+         (nn (idx-dim xs 0))
+         (pp (idx-dim xs 1))
+         (cpath ())
+         (ipath ())
+         (dpath ())
+         (dfpath ()))
+    (each ((lam lams) (b betas))
+      ;; unstandardize: beta_orig_j = beta_std_j / sd_j
+      (let ((b-orig (double-matrix pp))
+            (intercept (scope model y-mean))
+            (nz 0))
+        (for (j 0 (- pp 1))
+          (let ((sd ((scope model x-sd) j)))
+            (if (> sd 0)
+              (let ((bj (/ (b j) sd)))
+                (b-orig j bj)
+                (setq intercept (- intercept (* bj ((scope model x-mean) j))))
+                (when (<> bj 0) (setq nz (+ nz 1))))
+              (b-orig j 0))))
+        ;; deviance = RSS / n
+        (let ((dev 0))
+          (for (i 0 (- nn 1))
+            (let ((pred 0))
+              (for (j 0 (- pp 1))
+                (setq pred (+ pred (* (xs i j) (b j)))))
+              (let ((r (- (yc i) pred)))
+                (setq dev (+ dev (* r r))))))
+          (setq dev (/ dev nn))
+          (setq cpath (cons b-orig cpath))
+          (setq ipath (cons intercept ipath))
+          (setq dpath (cons dev dpath))
+          (setq dfpath (cons nz dfpath)))))
+    (setq (scope model lambdas) (reverse lams))
+    (setq (scope model coef-path) (reverse cpath))
+    (setq (scope model intercept-path) (reverse ipath))
+    (setq (scope model dev-path) (reverse dpath))
+    (setq (scope model df-path) (reverse dfpath))))
+
+
+;; Binomial (logistic) path via IRLS outer loop + CD inner loop
+(de _glmnet-fit-binomial (model xs y nlam lratio)
+  (let* ((nn (scope model n-obs))
+         (pp (scope model n-pred))
+         (al (scope model alpha))
+         ;; compute lambda_max for binomial
+         ;; lambda_max = max|X'(y - ybar)| / (n * alpha)
+         (ybar 0))
+    (for (i 0 (- nn 1)) (setq ybar (+ ybar (y i))))
+    (setq ybar (/ ybar nn))
+    (let* ((lmax 0))
+      (for (j 0 (- pp 1))
+        (let ((dot 0))
+          (for (i 0 (- nn 1))
+            (setq dot (+ dot (* (xs i j) (- (y i) ybar)))))
+          (let ((v (abs (/ dot nn))))
+            (when (> v lmax) (setq lmax v)))))
+      (when (> al 0) (setq lmax (/ lmax (max al 1e-10))))
+      (let* ((lmin (* lmax lratio))
+             (log-lmax (log lmax))
+             (log-lmin (log lmin))
+             (lam-list ())
+             (cpath ())
+             (ipath ())
+             (dpath ())
+             (dfpath ())
+             (beta (double-matrix pp))
+             (intercept (log (/ (max ybar 1e-10) (max (- 1 ybar) 1e-10))))
+             (eta (double-matrix nn))
+             (mu (double-matrix nn))
+             (w (double-matrix nn))
+             (z (double-matrix nn)))
+        ;; generate lambda grid
+        (for (k (- nlam 1) 0 -1)
+          (let ((lam (exp (+ log-lmin
+                            (* (/ (to-double k) (to-double (max 1 (- nlam 1))))
+                               (- log-lmax log-lmin))))))
+            (setq lam-list (cons lam lam-list))))
+        ;; fit path
+        (each ((lam lam-list))
+          ;; IRLS outer loop (max 25 iterations)
+          (for (outer 0 24)
+            ;; compute eta, mu, w, z
+            (_opt-linear-pred xs beta intercept eta)
+            (_opt-sigmoid eta mu)
+            (for (i 0 (- nn 1))
+              (let ((wi (max (* (mu i) (- 1 (mu i))) 1e-10)))
+                (w i wi)
+                (z i (+ (eta i) (/ (- (y i) (mu i)) wi)))))
+            ;; working response centered: z_c = z - intercept
+            (let ((wz-mean 0) (wsum 0))
+              (for (i 0 (- nn 1))
+                (setq wsum (+ wsum (w i)))
+                (setq wz-mean (+ wz-mean (* (w i) (z i)))))
+              (setq wz-mean (/ wz-mean (max wsum 1e-10)))
+              ;; update intercept
+              (setq intercept wz-mean))
+            ;; compute weighted working residual for CD
+            (let ((residual (double-matrix nn))
+                  (xwnorm (double-matrix pp)))
+              (for (i 0 (- nn 1))
+                (let ((pred intercept))
+                  (for (j 0 (- pp 1))
+                    (setq pred (+ pred (* (xs i j) (beta j)))))
+                  (residual i (- (z i) pred))))
+              ;; one full CD sweep
+              (_opt-weighted-col-norms xs w xwnorm)
+              (_opt-cd-sweep xs beta residual w xwnorm al lam)))
+          ;; store results (unstandardize)
+          (let ((b-orig (double-matrix pp))
+                (int-orig intercept)
+                (nz 0))
+            (for (j 0 (- pp 1))
+              (let ((sd ((scope model x-sd) j)))
+                (if (> sd 0)
+                  (let ((bj (/ (beta j) sd)))
+                    (b-orig j bj)
+                    (setq int-orig (- int-orig (* bj ((scope model x-mean) j))))
+                    (when (<> bj 0) (setq nz (+ nz 1))))
+                  (b-orig j 0))))
+            ;; deviance = -2/n * sum(y*log(mu) + (1-y)*log(1-mu))
+            (_opt-linear-pred xs beta intercept eta)
+            (_opt-sigmoid eta mu)
+            (let ((dev 0))
+              (for (i 0 (- nn 1))
+                (let ((yi (y i))
+                      (pi (mu i)))
+                  (setq dev (- dev (+ (* yi (log (max pi 1e-10)))
+                                      (* (- 1 yi) (log (max (- 1 pi) 1e-10))))))))
+              (setq dev (* 2 (/ dev nn)))
+              (setq cpath (cons b-orig cpath))
+              (setq ipath (cons int-orig ipath))
+              (setq dpath (cons dev dpath))
+              (setq dfpath (cons nz dfpath)))))
+        (setq (scope model lambdas) (reverse lam-list))
+        (setq (scope model coef-path) (reverse cpath))
+        (setq (scope model intercept-path) (reverse ipath))
+        (setq (scope model dev-path) (reverse dpath))
+        (setq (scope model df-path) (reverse dfpath))))))
+
+
+#? (==> <glmnet-model> coef <lambda>)
+;; Extract coefficients at a specific lambda value (by nearest match).
+;; Returns a list {<c> (intercept coefficients)} where coefficients
+;; is an idx1 of length P.
+;; {<see> (==> <glmnet-model> predict <X> <lambda>)}
+(defmethod glmnet-model coef (lam)
+  (let ((best-idx 0)
+        (best-diff 1e308)
+        (idx 0))
+    (each ((l lambdas))
+      (let ((d (abs (- l lam))))
+        (when (< d best-diff)
+          (setq best-diff d)
+          (setq best-idx idx)))
+      (setq idx (+ idx 1)))
+    (list (nth best-idx intercept-path)
+          (nth best-idx coef-path))))
+
+
+#? (==> <glmnet-model> predict <X> <lambda>)
+;; Predict responses at a given lambda.  For gaussian family,
+;; returns predicted values.  For binomial, returns probabilities.
+;; {<see> (==> <glmnet-model> coef <lambda>)}
+(defmethod glmnet-model predict (x lam)
+  (let* ((c (==> this coef lam))
+         (int (car c))
+         (beta (cadr c))
+         (nn (idx-dim x 0))
+         (pred (double-matrix nn)))
+    (for (i 0 (- nn 1))
+      (let ((v int))
+        (for (j 0 (- n-pred 1))
+          (setq v (+ v (* (x i j) (beta j)))))
+        (pred i v)))
+    (if (= family "binomial")
+      ;; return probabilities
+      (let ((probs (double-matrix nn)))
+        (_opt-sigmoid pred probs)
+        probs)
+      pred)))
+
+
+#? (==> <glmnet-model> summary)
+;; Print a summary of the regularization path.
+(defmethod glmnet-model summary ()
+  (printf "glmnet model: family=%s, alpha=%.2f\n" family alpha)
+  (printf "%d lambda values, %d predictors, %d observations\n"
+          (length lambdas) n-pred n-obs)
+  (printf "\n   Lambda      Df    Deviance\n")
+  (printf "   ----------  ----  ----------\n")
+  (let ((idx 0)
+        (step (max 1 (/ (length lambdas) 20))))
+    (each ((lam lambdas) (df df-path) (dev dev-path))
+      (when (= 0 (mod idx step))
+        (printf "   %10.5f  %4d  %10.5f\n" lam df dev))
+      (setq idx (+ idx 1)))))
+
+
+;; ============================================================
+#? ** GLMnet Plots
+;; Diagnostic plots for model selection in elastic net regularization.
+
+#? (==> <glmnet-model> plot-path [<labels>])
+;; Coefficient path plot: coefficient values vs log(lambda).
+;; Each coefficient gets a separate line.  Useful for seeing
+;; which variables enter the model at different regularization
+;; strengths.
+;; <labels> is an optional list of P variable name strings.
+;; Returns the {<c> Plotter} object.
+;; {<see> (==> <glmnet-model> summary)}
+(defmethod glmnet-model plot-path (&optional labels)
+  (let* ((pl (new Plotter))
+         (nlam (length lambdas))
+         ;; colors for different coefficients
+         (colors (list (alloccolor 0.1 0.2 0.8)
+                       (alloccolor 0.8 0.1 0.1)
+                       (alloccolor 0.1 0.7 0.2)
+                       (alloccolor 0.7 0.5 0.0)
+                       (alloccolor 0.5 0.1 0.7)
+                       (alloccolor 0.0 0.6 0.6)
+                       (alloccolor 0.6 0.3 0.1)
+                       (alloccolor 0.3 0.3 0.3))))
+    ;; build log-lambda x-axis
+    (let ((log-lams ()))
+      (each ((l lambdas))
+        (setq log-lams (nconc1 log-lams (log l))))
+      ;; plot each coefficient
+      (for (j 0 (- n-pred 1))
+        (let ((yvals ())
+              (name (if labels (nth j labels) (sprintf "x%d" (+ j 1))))
+              (color (nth (mod j (length colors)) colors)))
+          (each ((b coef-path))
+            (setq yvals (nconc1 yvals (b j))))
+          (==> pl PlotLists name log-lams yvals color 0))))
+    ;; zero reference line
+    (let ((l1 (log (car lambdas)))
+          (l2 (log (nth (- (length lambdas) 1) lambdas))))
+      (==> pl AddLine l1 0 l2 0))
+    (==> pl SetTitle (sprintf "Coefficient Path (alpha=%.2f)" alpha))
+    (==> pl SetXLabel "log(lambda)")
+    (==> pl SetYLabel "Coefficients")
+    (==> pl SetGrid 1)
+    (==> pl Redisplay)
+    pl))
+
+
+#? (==> <glmnet-model> cv <X> <y> [<nfolds>])
+;; K-fold cross-validation to select the optimal lambda.
+;; Returns a list {<c> (lambda-min lambda-1se cv-mean cv-se)}
+;; where:
+;; {<ul>
+;; {<li> {<b> lambda-min}: lambda with minimum mean CV error}
+;; {<li> {<b> lambda-1se}: largest lambda within 1 SE of minimum}
+;; {<li> {<b> cv-mean}: list of mean CV errors per lambda}
+;; {<li> {<b> cv-se}: list of SE of CV errors per lambda}
+;; }
+;; {<see> (==> <glmnet-model> plot-cv <X> <y>)}
+(defmethod glmnet-model cv (x y . rest)
+  (let* ((nfolds (if rest (car rest) 10))
+         (nn (idx-dim x 0))
+         (nlam (length lambdas))
+         ;; create fold assignments
+         (folds (int-matrix nn))
+         (fold-size (/ nn nfolds)))
+    ;; simple cyclic fold assignment
+    (for (i 0 (- nn 1))
+      (folds i (mod i nfolds)))
+    ;; accumulate errors per fold per lambda
+    (let ((cv-errors (double-matrix nfolds nlam)))
+      (for (fold 0 (- nfolds 1))
+        ;; split train/test
+        (let ((n-test 0) (n-train 0))
+          (for (i 0 (- nn 1))
+            (if (= (folds i) fold)
+              (setq n-test (+ n-test 1))
+              (setq n-train (+ n-train 1))))
+          (let ((x-train (double-matrix n-train (idx-dim x 1)))
+                (y-train (double-matrix n-train))
+                (x-test (double-matrix n-test (idx-dim x 1)))
+                (y-test (double-matrix n-test))
+                (ti 0) (te 0))
+            (for (i 0 (- nn 1))
+              (if (= (folds i) fold)
+                (progn
+                  (for (j 0 (- (idx-dim x 1) 1))
+                    (x-test te j (x i j)))
+                  (y-test te (y i))
+                  (setq te (+ te 1)))
+                (progn
+                  (for (j 0 (- (idx-dim x 1) 1))
+                    (x-train ti j (x i j)))
+                  (y-train ti (y i))
+                  (setq ti (+ ti 1)))))
+            ;; fit model on training data
+            (let ((fold-model (new glmnet-model x-train y-train alpha family nlam)))
+              ;; evaluate on test data at each lambda
+              (let ((li 0))
+                (each ((lam lambdas))
+                  (let ((pred (==> fold-model predict x-test lam))
+                        (err 0))
+                    (if (= family "binomial")
+                      ;; binomial deviance
+                      (for (i 0 (- n-test 1))
+                        (let ((yi (y-test i))
+                              (pi (max 1e-10 (min (- 1 1e-10) (pred i)))))
+                          (setq err (- err (+ (* yi (log pi))
+                                              (* (- 1 yi) (log (- 1 pi))))))))
+                      ;; MSE for gaussian
+                      (for (i 0 (- n-test 1))
+                        (let ((r (- (y-test i) (pred i))))
+                          (setq err (+ err (* r r))))))
+                    (cv-errors fold li (/ err n-test)))
+                  (setq li (+ li 1))))))))
+      ;; compute mean and SE across folds
+      (let ((cv-mean ())
+            (cv-se ())
+            (min-err 1e308)
+            (min-idx 0))
+        (for (li 0 (- nlam 1))
+          (let ((mean-val 0) (var-val 0))
+            (for (fold 0 (- nfolds 1))
+              (setq mean-val (+ mean-val (cv-errors fold li))))
+            (setq mean-val (/ mean-val nfolds))
+            (for (fold 0 (- nfolds 1))
+              (let ((d (- (cv-errors fold li) mean-val)))
+                (setq var-val (+ var-val (* d d)))))
+            (setq var-val (/ var-val (max 1 (- nfolds 1))))
+            (let ((se-val (/ (sqrt var-val) (sqrt (to-double nfolds)))))
+              (setq cv-mean (nconc1 cv-mean mean-val))
+              (setq cv-se (nconc1 cv-se se-val))
+              (when (< mean-val min-err)
+                (setq min-err mean-val)
+                (setq min-idx li)))))
+        ;; lambda.min
+        (let ((lam-min (nth min-idx lambdas))
+              ;; lambda.1se: largest lambda within 1 SE of minimum
+              (threshold (+ min-err (nth min-idx cv-se)))
+              (lam-1se (nth min-idx lambdas)))
+          ;; search from largest lambda down
+          (let ((li 0))
+            (each ((lam lambdas) (m cv-mean))
+              (when (and (<= m threshold) (= lam-1se (nth min-idx lambdas)))
+                (setq lam-1se lam))
+              (setq li (+ li 1))))
+          (list lam-min lam-1se cv-mean cv-se))))))
+
+
+#? (==> <glmnet-model> plot-cv <X> <y> [<nfolds>])
+;; Cross-validation plot: mean CV error vs log(lambda) with
+;; +/- 1 SE error bars.  Vertical lines mark lambda.min and
+;; lambda.1se.
+;; Returns a list {<c> (plotter lambda-min lambda-1se)}.
+;; {<see> (==> <glmnet-model> cv <X> <y>)}
+(defmethod glmnet-model plot-cv (x y . rest)
+  (let* ((nfolds (if rest (car rest) 10))
+         (cv-result (==> this cv x y nfolds))
+         (lam-min (car cv-result))
+         (lam-1se (cadr cv-result))
+         (cv-mean (caddr cv-result))
+         (cv-se (cadddr cv-result))
+         (pl (new Plotter))
+         (log-lams ())
+         (mean-vals ())
+         (upper-vals ())
+         (lower-vals ()))
+    ;; build plot data
+    (each ((l lambdas) (m cv-mean) (s cv-se))
+      (setq log-lams (nconc1 log-lams (log l)))
+      (setq mean-vals (nconc1 mean-vals m))
+      (setq upper-vals (nconc1 upper-vals (+ m s)))
+      (setq lower-vals (nconc1 lower-vals (- m s))))
+    ;; plot mean error
+    (==> pl PlotLists "CV mean" log-lams mean-vals
+         (alloccolor 0.8 0.1 0.1) closed-circle)
+    ;; plot error bands
+    (==> pl PlotLists "upper" log-lams upper-vals
+         (alloccolor 0.7 0.7 0.7) 0)
+    (==> pl PlotLists "lower" log-lams lower-vals
+         (alloccolor 0.7 0.7 0.7) 0)
+    ;; vertical lines at lambda.min and lambda.1se
+    (let ((ymin (car cv-mean)) (ymax (car cv-mean)))
+      (each ((m cv-mean) (s cv-se))
+        (when (< (- m s) ymin) (setq ymin (- m s)))
+        (when (> (+ m s) ymax) (setq ymax (+ m s))))
+      (==> pl AddLine (log lam-min) ymin (log lam-min) ymax)
+      (==> pl AddLine (log lam-1se) ymin (log lam-1se) ymax)
+      (==> pl AddText (log lam-min) ymax "min")
+      (==> pl AddText (log lam-1se) ymax "1se"))
+    (==> pl SetTitle (sprintf "CV (%d-fold, alpha=%.2f)" nfolds alpha))
+    (==> pl SetXLabel "log(lambda)")
+    (==> pl SetYLabel (if (= family "binomial") "Binomial Deviance" "Mean Squared Error"))
+    (==> pl SetGrid 1)
+    (==> pl Redisplay)
+    (list pl lam-min lam-1se)))

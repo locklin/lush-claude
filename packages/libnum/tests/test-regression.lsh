@@ -1,0 +1,176 @@
+;;; test-regression.lsh -- Tests for regression, optimizers, glmnet
+;;;
+;;; Run: ./src/lush packages/libnum/tests/test-regression.lsh
+
+(addpath "packages")
+(load "packages/libnum/tests/framework.lsh")
+(libload "libnum/regression")
+
+
+;; ============================================================
+(test-suite "OLS Linear Regression (lm-model)"
+
+  ;; perfect linear relationship: y = 2 + 3*x
+  (let* ((x [[1.0][2.0][3.0][4.0][5.0]])
+         (y [5.0 8.0 11.0 14.0 17.0])
+         (model (new lm-model x y)))
+    ;; coefficients: intercept=2, slope=3
+    (test-approx "lm intercept" (:model:coefficients 0) 2.0 1e-10)
+    (test-approx "lm slope" (:model:coefficients 1) 3.0 1e-10)
+    ;; R-squared should be 1
+    (test-approx "lm R2" :model:r-squared 1.0 1e-10)
+    ;; residuals should be 0
+    (test-approx "lm resid[0]" (:model:residuals 0) 0.0 1e-10)
+    ;; prediction
+    (let ((pred (==> model predict [[6.0]])))
+      (test-approx "lm predict" (pred 0) 20.0 1e-10)))
+
+  ;; 2-predictor case with noise
+  (let* ((x [[1.0 1.0][2.0 1.0][3.0 2.0][4.0 2.0][5.0 3.0]])
+         (y [3.1 5.0 7.2 8.9 11.1])
+         (model (new lm-model x y)))
+    (test-check "lm 2pred R2>0.99" (> :model:r-squared 0.99))
+    (test-equal "lm 2pred ncoef" (idx-dim :model:coefficients 0) 3)
+    ;; summary should run without error
+    (test-check "lm summary" (progn (==> model summary) t)))
+
+  ;; no intercept
+  (let* ((x [[1.0][2.0][3.0][4.0]])
+         (y [2.0 4.0 6.0 8.0])
+         (model (new lm-model x y ())))
+    (test-equal "lm noint ncoef" (idx-dim :model:coefficients 0) 1)
+    (test-approx "lm noint coef" (:model:coefficients 0) 2.0 1e-10))
+)
+
+
+;; ============================================================
+(test-suite "Ridge regression"
+
+  ;; with lambda=0, should match OLS
+  (let* ((x [[1.0][2.0][3.0][4.0][5.0]])
+         (y [5.0 8.0 11.0 14.0 17.0])
+         (beta (ridge x y 0)))
+    (test-approx "ridge lam0 int" (beta 0) 2.0 1e-8)
+    (test-approx "ridge lam0 slope" (beta 1) 3.0 1e-8))
+
+  ;; with large lambda, coefficients should shrink toward 0
+  (let* ((x [[1.0][2.0][3.0][4.0][5.0]])
+         (y [5.0 8.0 11.0 14.0 17.0])
+         (beta0 (ridge x y 0))
+         (beta1 (ridge x y 100)))
+    (test-check "ridge shrinks" (< (abs (beta1 1)) (abs (beta0 1)))))
+)
+
+
+;; ============================================================
+(test-suite "Coordinate descent / Elastic net"
+
+  ;; soft thresholding
+  (test-approx "soft-thresh +" (soft-threshold 3.0 1.0) 2.0 1e-10)
+  (test-approx "soft-thresh -" (soft-threshold -3.0 1.0) -2.0 1e-10)
+  (test-approx "soft-thresh 0" (soft-threshold 0.5 1.0) 0.0 1e-10)
+
+  ;; Lasso (alpha=1) on centered data
+  (let* ((x [[1.0 0.0][-1.0 0.0][0.0 1.0][0.0 -1.0]])
+         (y [2.0 -2.0 0.1 -0.1])
+         ;; center y
+         (ymean 0))
+    (for (i 0 3) (setq ymean (+ ymean (y i))))
+    (setq ymean (/ ymean 4))
+    (let* ((yc (double-matrix 4)))
+      (for (i 0 3) (yc i (- (y i) ymean)))
+      ;; with small lambda, first coefficient should be strong, second weak
+      (let ((beta (coordinate-descent x yc 1.0 0.01)))
+        (test-check "lasso strong coef" (> (abs (beta 0)) 1.0))
+        (test-check "lasso weak coef" (< (abs (beta 1)) 0.5)))))
+
+  ;; elastic-net-path runs without error
+  (let* ((x [[1.0 0.0][0.0 1.0][-1.0 0.0][0.0 -1.0]])
+         (y [1.0 0.5 -1.0 -0.5])
+         (result (elastic-net-path x y 0.5 10)))
+    (test-check "enet path lambdas" (> (length (car result)) 0))
+    (test-check "enet path betas" (> (length (cadr result)) 0)))
+)
+
+
+;; ============================================================
+(test-suite "Logistic regression"
+
+  ;; separable data
+  (let* ((x [[1.0][2.0][3.0][4.0][5.0][6.0][7.0][8.0]])
+         (y [i 0 0 0 0 1 1 1 1])
+         ;; convert int to double for y
+         (yd (double-matrix 8)))
+    (for (i 0 7) (yd i (to-double (y i))))
+    (let* ((result (logistic-regression x yd))
+           (beta (car result))
+           (se (cadr result))
+           (zval (caddr result))
+           (pval (nth 3 result)))
+      ;; slope should be positive (higher x -> more likely y=1)
+      (test-check "logit positive slope" (> (beta 1) 0))
+      ;; should have intercept + 1 coef
+      (test-equal "logit ncoef" (idx-dim beta 0) 2)
+      ;; standard errors should be positive
+      (test-check "logit se>0" (> (se 0) 0))
+      (test-check "logit se>0 slope" (> (se 1) 0))))
+)
+
+
+;; ============================================================
+(test-suite "GLMnet gaussian"
+
+  ;; fit gaussian elastic net
+  (let* ((x [[1.0 0.0][0.0 1.0][1.0 1.0][-1.0 0.0][0.0 -1.0][-1.0 -1.0]])
+         (y [1.0 0.5 1.5 -1.0 -0.5 -1.5])
+         (model (new glmnet-model x y 1.0 "gaussian" 20)))
+    (test-check "glmnet gaussian lambdas" (> (length :model:lambdas) 0))
+    (test-check "glmnet gaussian path" (> (length :model:coef-path) 0))
+    ;; at smallest lambda, should have nonzero coefficients
+    (let* ((last-beta (nth (- (length :model:coef-path) 1) :model:coef-path)))
+      (test-check "glmnet nonzero" (or (<> (last-beta 0) 0) (<> (last-beta 1) 0))))
+    ;; predict should work
+    (let ((pred (==> model predict [[2.0 0.0]] (nth (- (length :model:lambdas) 1) :model:lambdas))))
+      (test-check "glmnet predict" (> (abs (pred 0)) 0)))
+    ;; summary should run
+    (test-check "glmnet summary" (progn (==> model summary) t)))
+)
+
+
+;; ============================================================
+(test-suite "GLMnet binomial"
+
+  ;; fit binomial elastic net (logistic with penalty)
+  (let* ((x [[1.0 0.0][2.0 0.0][3.0 1.0][4.0 1.0]
+             [5.0 1.0][6.0 0.0][7.0 1.0][8.0 1.0]])
+         (y [0.0 0.0 0.0 1.0 0.0 1.0 1.0 1.0])
+         (model (new glmnet-model x y 0.5 "binomial" 20)))
+    (test-check "glmnet binom lambdas" (> (length :model:lambdas) 0))
+    ;; predict returns probabilities
+    (let ((pred (==> model predict [[5.0 1.0]]
+                     (nth (- (length :model:lambdas) 1) :model:lambdas))))
+      (test-check "glmnet binom prob range" (and (> (pred 0) 0) (< (pred 0) 1))))
+    ;; coef extraction
+    (let* ((c (==> model coef (nth 0 :model:lambdas)))
+           (int (car c))
+           (beta (cadr c)))
+      (test-check "glmnet binom coef" (= (idx-dim beta 0) 2))))
+)
+
+
+;; ============================================================
+(test-suite "lambda-max-gaussian"
+
+  ;; lambda max should zero out all coefficients
+  (let* ((x [[1.0 0.0][0.0 1.0][-1.0 0.0][0.0 -1.0]])
+         (y [1.0 0.5 -1.0 -0.5])
+         (lmax (lambda-max-gaussian x y 1.0))
+         (beta (coordinate-descent x y 1.0 (* lmax 1.01))))
+    ;; at lambda > lambda_max, all coefficients should be 0
+    (test-approx "lmax zero0" (beta 0) 0.0 1e-10)
+    (test-approx "lmax zero1" (beta 1) 0.0 1e-10))
+)
+
+
+;; ============================================================
+(test-summary)

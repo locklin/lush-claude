@@ -1,0 +1,159 @@
+;;; test-linalgebra-extra.lsh -- Tests for QR, general eigen, pinv, rank, cond, norms
+;;;
+;;; Run: ./src/lush packages/libnum/tests/test-linalgebra-extra.lsh
+
+(addpath "packages")
+(load "packages/libnum/tests/framework.lsh")
+(libload "libnum/linalgebra-extra")
+
+
+;; ============================================================
+(test-suite "QR decomposition"
+
+  ;; square matrix
+  (let* ((a [[1.0 2.0][3.0 4.0]])
+         (q (double-matrix 2 2))
+         (r (double-matrix 2 2)))
+    (qr-decomp a q r)
+    ;; Q should be orthogonal: Q'Q = I
+    (let ((qtq (double-matrix 2 2)))
+      (let ((qt (double-matrix 2 2)))
+        (_la-transpose-d2 q qt)
+        (idx-d2timesd2 qt q qtq))
+      (test-approx "QR Q'Q[0,0]=1" (qtq 0 0) 1.0 1e-10)
+      (test-approx "QR Q'Q[0,1]=0" (qtq 0 1) 0.0 1e-10)
+      (test-approx "QR Q'Q[1,1]=1" (qtq 1 1) 1.0 1e-10))
+    ;; R should be upper triangular
+    (test-approx "QR R lower=0" (r 1 0) 0.0 1e-10)
+    ;; Q*R should reconstruct A
+    (let ((qr (double-matrix 2 2)))
+      (idx-d2timesd2 q r qr)
+      (test-approx "QR recon[0,0]" (qr 0 0) 1.0 1e-10)
+      (test-approx "QR recon[0,1]" (qr 0 1) 2.0 1e-10)
+      (test-approx "QR recon[1,0]" (qr 1 0) 3.0 1e-10)
+      (test-approx "QR recon[1,1]" (qr 1 1) 4.0 1e-10)))
+
+  ;; tall matrix
+  (let* ((a [[1.0 2.0][3.0 4.0][5.0 6.0]])
+         (q (double-matrix 3 3))
+         (r (double-matrix 3 2)))
+    (qr-decomp a q r)
+    ;; Q*R should reconstruct A
+    (let ((qr (double-matrix 3 2)))
+      (idx-d2timesd2 q r qr)
+      (test-approx "QR tall recon[0,0]" (qr 0 0) 1.0 1e-10)
+      (test-approx "QR tall recon[2,1]" (qr 2 1) 6.0 1e-10)))
+)
+
+
+;; ============================================================
+(test-suite "General eigendecomposition"
+
+  ;; symmetric matrix (eigenvalues should be real)
+  (let* ((a [[2.0 1.0][1.0 3.0]])
+         (ev (double-matrix 2 2 2))
+         (vals (eigen-nonsymmv a ev)))
+    ;; eigenvalues: (3+sqrt(2))/1 ≈ 3.618, (3-sqrt(2))/1 ≈ 1.382
+    ;; sorted by absolute value descending
+    (test-approx "eigen-ns val0 real" (vals 0 0) 3.618 0.01)
+    (test-approx "eigen-ns val0 imag" (vals 0 1) 0.0 1e-10)
+    (test-approx "eigen-ns val1 real" (vals 1 0) 1.382 0.01)
+    (test-approx "eigen-ns val1 imag" (vals 1 1) 0.0 1e-10))
+
+  ;; matrix with complex eigenvalues
+  (let* ((a [[0.0 -1.0][1.0 0.0]])   ;; rotation matrix, eigenvalues = +/- i
+         (ev (double-matrix 2 2 2))
+         (vals (eigen-nonsymmv a ev)))
+    ;; eigenvalues should be 0+i and 0-i (abs = 1 both)
+    (test-approx "eigen-cx val0 re" (vals 0 0) 0.0 1e-10)
+    (test-approx "eigen-cx |val0 im|" (abs (vals 0 1)) 1.0 1e-10)
+    (test-approx "eigen-cx val1 re" (vals 1 0) 0.0 1e-10)
+    (test-approx "eigen-cx |val1 im|" (abs (vals 1 1)) 1.0 1e-10))
+)
+
+
+;; ============================================================
+(test-suite "Pseudoinverse"
+
+  ;; square invertible: pinv ≈ inverse
+  (let* ((a [[1.0 2.0][3.0 4.0]])
+         (ai (pinv a)))
+    ;; inverse of [[1,2],[3,4]] = [[-2,1],[1.5,-0.5]]
+    (test-approx "pinv sq[0,0]" (ai 0 0) -2.0 1e-10)
+    (test-approx "pinv sq[0,1]" (ai 0 1) 1.0 1e-10)
+    (test-approx "pinv sq[1,0]" (ai 1 0) 1.5 1e-10)
+    (test-approx "pinv sq[1,1]" (ai 1 1) -0.5 1e-10))
+
+  ;; tall matrix: A * pinv(A) * A ≈ A
+  (let* ((a [[1.0 0.0][0.0 2.0][0.0 0.0]])
+         (ai (pinv a))
+         (aia (double-matrix 3 2))
+         (aiaa (double-matrix 3 2)))
+    (test-equal "pinv tall rows" (idx-dim ai 0) 2)
+    (test-equal "pinv tall cols" (idx-dim ai 1) 3)
+    ;; pinv should be [[1,0,0],[0,0.5,0]]
+    (test-approx "pinv tall[0,0]" (ai 0 0) 1.0 1e-10)
+    (test-approx "pinv tall[1,1]" (ai 1 1) 0.5 1e-10))
+
+  ;; wide matrix: M < N
+  (let* ((a [[1.0 0.0 0.0][0.0 2.0 0.0]])
+         (ai (pinv a)))
+    (test-equal "pinv wide rows" (idx-dim ai 0) 3)
+    (test-equal "pinv wide cols" (idx-dim ai 1) 2)
+    (test-approx "pinv wide[0,0]" (ai 0 0) 1.0 1e-10)
+    (test-approx "pinv wide[1,1]" (ai 1 1) 0.5 1e-10))
+)
+
+
+;; ============================================================
+(test-suite "Matrix rank"
+
+  (let ((a [[1.0 2.0][3.0 4.0]]))
+    (test-equal "rank full" (matrix-rank a) 2))
+
+  (let ((a [[1.0 2.0][2.0 4.0]]))
+    (test-equal "rank deficient" (matrix-rank a) 1))
+
+  (let ((a [[1.0 0.0 0.0][0.0 1.0 0.0][0.0 0.0 0.0]]))
+    (test-equal "rank 3x3" (matrix-rank a) 2))
+)
+
+
+;; ============================================================
+(test-suite "Condition number"
+
+  ;; identity: cond = 1
+  (let ((a [[1.0 0.0][0.0 1.0]]))
+    (test-approx "cond identity" (matrix-cond a) 1.0 1e-10))
+
+  ;; diagonal: cond = max/min diagonal
+  (let ((a [[3.0 0.0][0.0 1.0]]))
+    (test-approx "cond diag" (matrix-cond a) 3.0 1e-10))
+
+  ;; near-singular: high condition number
+  (let ((a [[1.0 0.0][0.0 1e-10]]))
+    (test-check "cond near-singular" (> (matrix-cond a) 1e9)))
+)
+
+
+;; ============================================================
+(test-suite "Matrix norms"
+
+  (let ((a [[1.0 -2.0][3.0 4.0]]))
+    ;; Frobenius: sqrt(1+4+9+16) = sqrt(30) ≈ 5.477
+    (test-approx "norm-F" (matrix-norm-frobenius a) (sqrt 30) 1e-10)
+    ;; 1-norm: max(|1|+|3|, |-2|+|4|) = max(4, 6) = 6
+    (test-approx "norm-1" (matrix-norm-1 a) 6.0 1e-10)
+    ;; inf-norm: max(|1|+|-2|, |3|+|4|) = max(3, 7) = 7
+    (test-approx "norm-inf" (matrix-norm-inf a) 7.0 1e-10))
+
+  ;; identity norms
+  (let ((a [[1.0 0.0][0.0 1.0]]))
+    (test-approx "norm-F id" (matrix-norm-frobenius a) (sqrt 2) 1e-10)
+    (test-approx "norm-1 id" (matrix-norm-1 a) 1.0 1e-10)
+    (test-approx "norm-inf id" (matrix-norm-inf a) 1.0 1e-10))
+)
+
+
+;; ============================================================
+(test-summary)

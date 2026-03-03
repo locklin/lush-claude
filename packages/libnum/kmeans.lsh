@@ -1,0 +1,288 @@
+;;; kmeans.lsh -- K-Means Clustering
+;;;
+;;; K-Means clustering with k-means++ initialization.  The inner
+;;; distance computation and assignment step are compiled C for
+;;; speed.  Supports multiple random restarts.
+;;;
+;;; Copyright (C) 2026 Scott Locklin, Lugos LLC
+;;; Distributed under the GNU General Public License v2+.
+
+(libload "libidx/idx-double")
+(libload "libidx/idx-sort")
+
+
+;; ============================================================
+;; Compiled C helpers
+;; ============================================================
+
+;; Compute squared Euclidean distances from each point to each centroid.
+;; x: N x P data, centers: K x P centroids, dists: N x K output.
+(de _km-distances (x centers dists)
+  ((-idx2- (-double-)) x centers dists)
+  (let ((n (idx-dim x 0))
+        (p (idx-dim x 1))
+        (k (idx-dim centers 0)))
+    ((-int-) n p k)
+    #{
+    double *px = IDX_PTR($x, double);
+    double *pc = IDX_PTR($centers, double);
+    double *pd = IDX_PTR($dists, double);
+    int sx0 = ($x)->mod[0], sx1 = ($x)->mod[1];
+    int sc0 = ($centers)->mod[0], sc1 = ($centers)->mod[1];
+    int sd0 = ($dists)->mod[0], sd1 = ($dists)->mod[1];
+    int i, j, c;
+    for (i = 0; i < $n; i++) {
+        for (c = 0; c < $k; c++) {
+            double d = 0.0;
+            for (j = 0; j < $p; j++) {
+                double diff = px[i*sx0 + j*sx1] - pc[c*sc0 + j*sc1];
+                d += diff * diff;
+            }
+            pd[i*sd0 + c*sd1] = d;
+        }
+    }
+    #}
+    () ))
+
+;; Assign each point to nearest centroid.  Returns total inertia.
+;; dists: N x K squared distances, labels: N output (int).
+(de _km-assign (dists labels)
+  ((-idx2- (-double-)) dists)
+  ((-idx1- (-int-)) labels)
+  (let ((n (idx-dim dists 0))
+        (k (idx-dim dists 1))
+        (inertia 0))
+    ((-int-) n k)
+    ((-double-) inertia)
+    #{
+    double *pd = IDX_PTR($dists, double);
+    int *pl = IDX_PTR($labels, int);
+    int sd0 = ($dists)->mod[0], sd1 = ($dists)->mod[1];
+    int sl0 = ($labels)->mod[0];
+    int i, c;
+    for (i = 0; i < $n; i++) {
+        double best = pd[i*sd0];
+        int best_c = 0;
+        for (c = 1; c < $k; c++) {
+            double d = pd[i*sd0 + c*sd1];
+            if (d < best) { best = d; best_c = c; }
+        }
+        pl[i * sl0] = best_c;
+        $inertia += best;
+    }
+    #}
+    inertia))
+
+;; Update centroids by computing cluster means.
+;; x: N x P, labels: N (int), centers: K x P output, counts: K output.
+(de _km-update-centers (x labels centers counts)
+  ((-idx2- (-double-)) x centers)
+  ((-idx1- (-int-)) labels counts)
+  (let ((n (idx-dim x 0))
+        (p (idx-dim x 1))
+        (k (idx-dim centers 0)))
+    ((-int-) n p k)
+    #{
+    double *px = IDX_PTR($x, double);
+    int *pl = IDX_PTR($labels, int);
+    double *pc = IDX_PTR($centers, double);
+    int *pn = IDX_PTR($counts, int);
+    int sx0 = ($x)->mod[0], sx1 = ($x)->mod[1];
+    int sl0 = ($labels)->mod[0];
+    int sc0 = ($centers)->mod[0], sc1 = ($centers)->mod[1];
+    int sn0 = ($counts)->mod[0];
+    int i, j, c;
+    /* zero accumulators */
+    for (c = 0; c < $k; c++) {
+        pn[c * sn0] = 0;
+        for (j = 0; j < $p; j++)
+            pc[c*sc0 + j*sc1] = 0.0;
+    }
+    /* accumulate */
+    for (i = 0; i < $n; i++) {
+        c = pl[i * sl0];
+        pn[c * sn0]++;
+        for (j = 0; j < $p; j++)
+            pc[c*sc0 + j*sc1] += px[i*sx0 + j*sx1];
+    }
+    /* divide by count */
+    for (c = 0; c < $k; c++) {
+        if (pn[c * sn0] > 0) {
+            double inv = 1.0 / (double)pn[c * sn0];
+            for (j = 0; j < $p; j++)
+                pc[c*sc0 + j*sc1] *= inv;
+        }
+    }
+    #}
+    () ))
+
+;; Compute min distance from each point to existing centroids.
+;; x: N x P, centers: K x P (only first nc rows used), mindist: N output.
+(de _km-min-distances (x centers nc mindist)
+  ((-idx2- (-double-)) x centers)
+  ((-int-) nc)
+  ((-idx1- (-double-)) mindist)
+  (let ((n (idx-dim x 0))
+        (p (idx-dim x 1)))
+    ((-int-) n p)
+    #{
+    double *px = IDX_PTR($x, double);
+    double *pc = IDX_PTR($centers, double);
+    double *pm = IDX_PTR($mindist, double);
+    int sx0 = ($x)->mod[0], sx1 = ($x)->mod[1];
+    int sc0 = ($centers)->mod[0], sc1 = ($centers)->mod[1];
+    int sm0 = ($mindist)->mod[0];
+    int i, j, c;
+    for (i = 0; i < $n; i++) {
+        double best = 1e308;
+        for (c = 0; c < $nc; c++) {
+            double d = 0.0;
+            for (j = 0; j < $p; j++) {
+                double diff = px[i*sx0 + j*sx1] - pc[c*sc0 + j*sc1];
+                d += diff * diff;
+            }
+            if (d < best) best = d;
+        }
+        pm[i * sm0] = best;
+    }
+    #}
+    () ))
+
+
+;; ============================================================
+#? *** K-Means Clustering
+;; K-Means clustering with k-means++ initialization for fast
+;; convergence and better solutions.  The distance computation
+;; and assignment steps use compiled C for speed.
+;;
+;; Example:
+;; {<code>
+;;  (libload "libnum/kmeans")
+;;  (let* ((x [[1 1][1.5 2][3 4][5 7][3.5 5][4.5 5]])
+;;         (result (kmeans x 2)))
+;;    (printf "Centers:\n") (pretty (car result))
+;;    (printf "Labels: ") (pretty (cadr result))
+;;    (printf "Inertia: %.4f\n" (caddr result)))
+;; </code>}
+
+#? (kmeans <X> <k> [<max-iter>] [<n-init>] [<tol>])
+;; Partition the N x P data matrix <X> into <k> clusters.
+;; Uses k-means++ initialization and Lloyd's algorithm.
+;;
+;; {<ul>
+;; {<li> <max-iter>: maximum iterations per run (default 300)}
+;; {<li> <n-init>: number of random restarts, best result kept (default 10)}
+;; {<li> <tol>: convergence tolerance on inertia change (default 1e-6)}
+;; }
+;;
+;; Returns a list {<c> (centers labels inertia)} where:
+;; {<ul>
+;; {<li> {<b> centers}: K x P matrix of cluster centroids}
+;; {<li> {<b> labels}: N-vector of int cluster assignments (0..K-1)}
+;; {<li> {<b> inertia}: within-cluster sum of squared distances}
+;; }
+;; {<see> (kmeans-pp-init <X> <k>)}
+(de kmeans (x k . rest)
+  (let* ((max-iter (if rest (car rest) 300))
+         (n-init (if (and rest (cdr rest)) (cadr rest) 10))
+         (tol (if (and rest (cdr rest) (cddr rest)) (caddr rest) 1e-6))
+         (n (idx-dim x 0))
+         (p (idx-dim x 1))
+         (best-centers ())
+         (best-labels ())
+         (best-inertia 1e308))
+    (when (< n k) (error "more clusters than data points"))
+    ;; run n-init times, keep best
+    (for (init 0 (- n-init 1))
+      (let* ((centers (kmeans-pp-init x k))
+             (labels (int-matrix n))
+             (dists (double-matrix n k))
+             (counts (int-matrix k))
+             (prev-inertia 1e308)
+             (converged ()))
+        ;; Lloyd iterations
+        (let ((iter 0))
+          (while (and (< iter max-iter) (not converged))
+            (_km-distances x centers dists)
+            (let ((inertia (_km-assign dists labels)))
+              (_km-update-centers x labels centers counts)
+              ;; check for empty clusters: reinitialize from farthest point
+              (for (c 0 (- k 1))
+                (when (= (counts c) 0)
+                  ;; find point farthest from its centroid
+                  (let ((max-d 0) (max-i 0))
+                    (for (i 0 (- n 1))
+                      (let ((d (dists i (labels i))))
+                        (when (> d max-d)
+                          (setq max-d d)
+                          (setq max-i i))))
+                    (for (j 0 (- p 1))
+                      (centers c j (x max-i j))))))
+              ;; convergence check
+              (when (< (abs (- prev-inertia inertia))
+                       (* tol (max 1.0 (abs inertia))))
+                (setq converged t))
+              (setq prev-inertia inertia))
+            (setq iter (+ iter 1))))
+        ;; final assignment
+        (_km-distances x centers dists)
+        (let ((inertia (_km-assign dists labels)))
+          (when (< inertia best-inertia)
+            (setq best-inertia inertia)
+            (setq best-centers (idx-copy centers))
+            (setq best-labels (idx-copy labels))))))
+    (list best-centers best-labels best-inertia)))
+
+
+#? (kmeans-pp-init <X> <k>)
+;; K-means++ initialization: choose <k> initial centroids from
+;; the N x P data matrix <X> with probability proportional to
+;; squared distance from nearest existing centroid.
+;; Returns a K x P matrix of initial centroids.
+;; {<see> (kmeans <X> <k>)}
+(de kmeans-pp-init (x k)
+  (let* ((n (idx-dim x 0))
+         (p (idx-dim x 1))
+         (centers (double-matrix k p))
+         (mindist (double-matrix n))
+         (cumprob (double-matrix n)))
+    ;; choose first centroid uniformly at random
+    (let ((idx (int (rand 0 n))))
+      (when (>= idx n) (setq idx (- n 1)))
+      (for (j 0 (- p 1))
+        (centers 0 j (x idx j))))
+    ;; choose remaining centroids
+    (for (c 1 (- k 1))
+      ;; compute min distance to existing centroids
+      (_km-min-distances x centers c mindist)
+      ;; build cumulative probability distribution
+      (let ((total 0))
+        (for (i 0 (- n 1))
+          (setq total (+ total (mindist i)))
+          (cumprob i total))
+        ;; sample proportional to distance^2
+        (let ((r (rand 0 total))
+              (chosen 0))
+          ;; binary search for chosen index
+          (let ((lo 0) (hi (- n 1)))
+            (while (< lo hi)
+              (let ((mid (/ (+ lo hi) 2)))
+                (if (< (cumprob mid) r)
+                  (setq lo (+ mid 1))
+                  (setq hi mid))))
+            (setq chosen lo))
+          ;; copy chosen point to centers
+          (for (j 0 (- p 1))
+            (centers c j (x chosen j))))))
+    centers))
+
+
+;; ============================================================
+;; Compile
+;; ============================================================
+
+(dhc-make ()
+  _km-distances
+  _km-assign
+  _km-update-centers
+  _km-min-distances)
