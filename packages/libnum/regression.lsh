@@ -275,6 +275,149 @@
 
 
 ;; ============================================================
+#? ** Robust (Sandwich) Standard Errors
+;; Heteroscedasticity-consistent (HC) standard errors via
+;; the Huber-White sandwich estimator.  These are valid even
+;; when the errors are heteroscedastic.
+
+#? (==> <lm-model> robust-vcov [<type>])
+;; Compute the heteroscedasticity-consistent variance-covariance
+;; matrix using the sandwich estimator:
+;; {<c> V_HC = (X'X)^{-1} X' Omega X (X'X)^{-1}}
+;; where Omega depends on the HC variant.
+;;
+;; <type> selects the variant (default "HC1"):
+;; {<ul>
+;; {<li> {<b> "HC0"}: White (1980). Omega = diag(e_i^2).}
+;; {<li> {<b> "HC1"}: With small-sample correction n/(n-p). Default, matches Stata's {<c> robust}.}
+;; {<li> {<b> "HC2"}: Omega = diag(e_i^2 / (1 - h_ii)). Unbiased under correct specification.}
+;; {<li> {<b> "HC3"}: Omega = diag(e_i^2 / (1 - h_ii)^2). Most conservative, approximates jackknife.}
+;; }
+;; Returns a P x P idx2 of the robust variance-covariance matrix
+;; (where P includes the intercept if present).
+;; {<see> (==> <lm-model> robust-se), (==> <lm-model> robust-summary)}
+(defmethod lm-model robust-vcov (. rest)
+  (let* ((type (if rest (car rest) "HC1"))
+         (nn n-obs)
+         (pp (idx-dim coefficients 0))
+         ;; recompute SVD of design matrix for bread
+         (u (idx-copy x-aug))
+         (v (double-matrix pp pp))
+         (s (double-matrix pp))
+         ;; output matrices
+         (meat (double-matrix pp pp))
+         (bread (double-matrix pp pp))
+         (tmp (double-matrix pp pp))
+         (vcov (double-matrix pp pp)))
+    (svd-inplace u v s)
+    ;; meat = X' Omega X = sum_i w_i * x_i x_i'
+    (for (i 0 (- nn 1))
+      (let* ((ei (residuals i))
+             (hi (hat-diag i))
+             (e2 (* ei ei))
+             (wi (cond
+                   ((= type "HC0") e2)
+                   ((= type "HC1") e2)
+                   ((= type "HC2") (/ e2 (max 1e-20 (- 1 hi))))
+                   ((= type "HC3") (/ e2 (max 1e-20 (* (- 1 hi) (- 1 hi)))))
+                   (t e2))))
+        (for (j 0 (- pp 1))
+          (for (k j (- pp 1))
+            (let ((val (* wi (x-aug i j) (x-aug i k))))
+              (meat j k (+ (meat j k) val))
+              (when (<> j k)
+                (meat k j (+ (meat k j) val))))))))
+    ;; HC1 small-sample correction: multiply meat by n/(n-p)
+    (when (= type "HC1")
+      (let ((cf (/ (to-double nn) (to-double (max 1 (- nn pp))))))
+        (for (j 0 (- pp 1))
+          (for (k 0 (- pp 1))
+            (meat j k (* cf (meat j k)))))))
+    ;; bread = (X'X)^{-1} = V diag(1/s^2) V'
+    (for (j 0 (- pp 1))
+      (for (k j (- pp 1))
+        (let ((sum 0))
+          (for (l 0 (- pp 1))
+            (when (> (s l) 1e-14)
+              (setq sum (+ sum (/ (* (v j l) (v k l))
+                                  (* (s l) (s l)))))))
+          (bread j k sum)
+          (bread k j sum))))
+    ;; vcov = bread * meat * bread
+    ;; step 1: tmp = bread * meat
+    (for (i 0 (- pp 1))
+      (for (j 0 (- pp 1))
+        (let ((sum 0))
+          (for (k 0 (- pp 1))
+            (setq sum (+ sum (* (bread i k) (meat k j)))))
+          (tmp i j sum))))
+    ;; step 2: vcov = tmp * bread
+    (for (i 0 (- pp 1))
+      (for (j 0 (- pp 1))
+        (let ((sum 0))
+          (for (k 0 (- pp 1))
+            (setq sum (+ sum (* (tmp i k) (bread k j)))))
+          (vcov i j sum))))
+    vcov))
+
+
+#? (==> <lm-model> robust-se [<type>])
+;; Compute heteroscedasticity-consistent standard errors.
+;; Returns an idx1 of robust standard errors.
+;; <type> is one of "HC0", "HC1" (default), "HC2", "HC3".
+;; {<see> (==> <lm-model> robust-vcov), (==> <lm-model> robust-summary)}
+(defmethod lm-model robust-se (. rest)
+  (let* ((type (if rest (car rest) "HC1"))
+         (vcov (==> this robust-vcov type))
+         (pp (idx-dim vcov 0))
+         (se (double-matrix pp)))
+    (for (j 0 (- pp 1))
+      (se j (sqrt (max 0 (vcov j j)))))
+    se))
+
+
+#? (==> <lm-model> robust-summary [<type>])
+;; Print an R-style regression summary using robust (HC) standard
+;; errors instead of the classical OLS standard errors.
+;; Inference uses z-statistics (asymptotically normal) rather than
+;; t-statistics, following the convention of {<c> sandwich} / {<c> lmtest}
+;; in R.
+;; {<see> (==> <lm-model> summary), (==> <lm-model> robust-se)}
+(defmethod lm-model robust-summary (. rest)
+  (let* ((type (if rest (car rest) "HC1"))
+         (se-r (==> this robust-se type))
+         (pp (idx-dim coefficients 0))
+         (z-vals (double-matrix pp))
+         (p-vals (double-matrix pp)))
+    ;; z-values and p-values (asymptotic normal)
+    (for (j 0 (- pp 1))
+      (let ((zv (if (> (se-r j) 0)
+                   (/ (coefficients j) (se-r j))
+                   0)))
+        (z-vals j zv)
+        (p-vals j (* 2 (cdf-ugaussian-q (abs zv))))))
+    ;; print
+    (printf "\nCoefficients (%s robust standard errors):\n" type)
+    (printf "             %12s %11s %9s %11s\n"
+            "Estimate" "Robust SE" "z value" "Pr(>|z|)")
+    (printf "  ---------- ------------ ----------- --------- -----------\n")
+    (for (j 0 (- pp 1))
+      (let ((name (if (and has-intercept (= j 0)) "(Intercept)"
+                    (sprintf "x%-10d" (if has-intercept j (+ j 1))))))
+        (printf "  %-11s %12.5f %11.5f %9.3f %11.4g %s\n"
+                name
+                (coefficients j)
+                (se-r j)
+                (z-vals j)
+                (p-vals j)
+                (_reg-signif-stars (p-vals j)))))
+    (printf "  ---\n")
+    (printf "  Signif. codes: 0 '***' 0.001 '**' 0.01 '*' 0.05 '.' 0.1 ' ' 1\n\n")
+    (printf "Multiple R-squared: %.4f,  Adjusted R-squared: %.4f\n"
+            r-squared adj-r-squared)))
+
+
+;; ============================================================
 #? ** lm Diagnostic Plots
 ;; R-style diagnostic plots for {<c> lm-model}.
 ;; A graphics window must be set before calling (use {<c> new-window}
