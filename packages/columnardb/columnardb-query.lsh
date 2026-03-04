@@ -25,7 +25,7 @@
 ;;
 ;; Pipeline architecture:
 ;; {<code>
-;;   from -> where -> order-by -> limit -> materialize -> project
+;;   from -> join -> where -> group-by -> having -> order-by -> limit -> computed -> project
 ;; </code>}
 ;;
 ;; Stages pass sorted row-index arrays (idx1) between steps.
@@ -35,7 +35,7 @@
 ;; The WHERE stage uses compiled C filter functions and an index-aware
 ;; query planner that reorders conditions by cost:
 ;; {<ul>
-;; {<li> {<b> CSR index} (O(1)) -- string equality via inverted index}
+;; {<li> {<b> CSR index} (O(1)) -- string equality and IN via inverted index}
 ;; {<li> {<b> Binary search} (O(log n)) -- comparisons on sorted columns}
 ;; {<li> {<b> Compiled scan} (O(n)) -- vectorized C filter on unsorted columns}
 ;; }
@@ -43,11 +43,16 @@
 ;; Supported clauses:
 ;; {<ul>
 ;; {<li> {<b> from} -- source DataTable or Database table}
-;; {<li> {<b> where} -- filter with =, <, >, <=, >=, <>, and, or, between}
+;; {<li> {<b> join} -- left, right, or as-of join with another table}
+;; {<li> {<b> where} -- filter with =, <, >, <=, >=, <>, and, or, between, in, not-in, like}
+;; {<li> {<b> group-by} -- grouped aggregation (count, sum, mean, min, max)}
+;; {<li> {<b> having} -- filter groups by aggregate values}
 ;; {<li> {<b> order-by} -- sort ascending or descending}
 ;; {<li> {<b> limit} -- take first N rows}
-;; {<li> {<b> group-by} -- grouped aggregation (count, sum, mean, min, max)}
 ;; }
+;;
+;; Computed columns: use {<b> (as <expr> "alias")} in the column list
+;; to add derived columns with arithmetic expressions.
 ;;
 ;; Example:
 ;; {<code>
@@ -98,6 +103,24 @@
             (hi (nth 3 pred)) )
         `(list (list 'range ,col ,lo ,hi)) ))
 
+     ;; IN: (in col (val1 val2 ...)) -> ((in col (val1 val2 ...)))
+     ((= op 'in)
+      (let ((col (cadr pred))
+            (vals (caddr pred)) )
+        `(list (list 'in ,col ',vals)) ))
+
+     ;; NOT-IN: (not-in col (val1 val2 ...)) -> ((not-in col (val1 val2 ...)))
+     ((= op 'not-in)
+      (let ((col (cadr pred))
+            (vals (caddr pred)) )
+        `(list (list 'not-in ,col ',vals)) ))
+
+     ;; LIKE: (like col pattern) -> ((like col pattern))
+     ((= op 'like)
+      (let ((col (cadr pred))
+            (pat (caddr pred)) )
+        `(list (list 'like ,col ,pat)) ))
+
      ;; Simple predicate: (op col val) -> ((op col val))
      ;; op and col are quoted; val is evaluated (supports variables)
      (t
@@ -135,6 +158,14 @@
           (each ((spec agg-specs))
             (setq quoted-specs (nconc1 quoted-specs `',spec)) )
           `(list 'group-by ,group-col ,@quoted-specs) )))
+
+     ;; (join dt2 "col" ['right|'asof]) -- all args evaluated
+     ((= keyword 'join)
+      `(list 'join ,@(cdr clause)) )
+
+     ;; (having pred) -- predicate transformed like where
+     ((= keyword 'having)
+      `(list 'having ,(_query-macro-transform-pred (cadr clause))) )
 
      (t (error "db-select" "unknown clause" keyword)) )))
 
@@ -208,6 +239,18 @@
        ;; String equality → CSR index
        ((and (= op '=) (= type 'string))
         'csr)
+       ;; String IN → CSR index (union of CSR lookups)
+       ((and (= op 'in) (= type 'string))
+        'csr)
+       ;; LIKE → scan (must check all pool entries)
+       ((= op 'like)
+        'scan)
+       ;; NOT IN → scan
+       ((= op 'not-in)
+        'scan)
+       ;; Numeric IN → scan
+       ((= op 'in)
+        'scan)
        ;; Range on sorted column → binary search
        ((and (= op 'range)
              (member (==> dt col-index col-name) sorted-cols))
@@ -259,6 +302,88 @@
             (when branch-idx
               (setq result (_multi-index-union result branch-idx)) )))))
     result ) )
+
+
+;; Check if column spec list contains (as ...) computed column forms.
+;; Called at macro expansion time.
+(de _query-has-computed-cols (columns)
+  (let ((found ()))
+    (each ((c columns))
+      (when (and (listp c) (= (car c) 'as))
+        (setq found t) ) )
+    found ) )
+
+
+;; Evaluate a computed column expression for a single row.
+;; expr can be:
+;;   "col-name" -> fetch column value
+;;   number -> literal
+;;   (op arg1 arg2) -> binary arithmetic
+;;   (func arg) -> unary function
+(de _query-eval-expr (dt expr row)
+  (cond
+   ((stringp expr) (==> dt get row expr))
+   ((numberp expr) expr)
+   ((listp expr)
+    (let ((op (car expr)))
+      (cond
+       ;; Binary arithmetic
+       ((and (member op '(+ - * /)) (= (length expr) 3))
+        (let ((a (_query-eval-expr dt (cadr expr) row))
+              (b (_query-eval-expr dt (nth 2 expr) row)) )
+          (cond ((= op '+) (+ a b))
+                ((= op '-) (- a b))
+                ((= op '*) (* a b))
+                ((= op '/) (/ a b)) )))
+       ;; Unary functions
+       ((= op 'abs) (abs (_query-eval-expr dt (cadr expr) row)))
+       ((= op 'sqrt) (sqrt (_query-eval-expr dt (cadr expr) row)))
+       ((= op 'log) (log (_query-eval-expr dt (cadr expr) row)))
+       ((= op 'floor) (floor (_query-eval-expr dt (cadr expr) row)))
+       ((= op 'ceil) (ceil (_query-eval-expr dt (cadr expr) row)))
+       ;; Unary minus
+       ((and (= op '-) (= (length expr) 2))
+        (- 0 (_query-eval-expr dt (cadr expr) row)) )
+       (t (error "_query-eval-expr" "unknown expression op" op)) )))
+   (t (error "_query-eval-expr" "invalid expression" expr)) ) )
+
+
+;; Apply computed columns to a result DataTable.
+;; columns is a list that may contain strings and (as expr alias) forms.
+;; Returns a new DataTable with computed columns added, projected to
+;; the final column order.
+(de _query-apply-computed (dt columns)
+  (let ((nrows (==> dt num-rows))
+        (final-names ())
+        (computed ()) )
+    ;; Separate plain cols from computed cols
+    (each ((c columns))
+      (if (and (listp c) (= (car c) 'as))
+        (let ((expr (cadr c))
+              (alias (nth 2 c)) )
+          (setq final-names (nconc1 final-names alias))
+          (setq computed (nconc1 computed (list expr alias))) )
+        (setq final-names (nconc1 final-names c)) ) )
+    ;; Evaluate each computed column
+    (let ((result-dt dt))
+      (each ((comp computed))
+        (let ((expr (car comp))
+              (alias (cadr comp))
+              (vals (double-matrix (max 1 nrows))) )
+          (for (i 0 (1- nrows))
+            (vals i (to-double (_query-eval-expr result-dt expr i))) )
+          ;; Add as new column (use append to avoid mutating dt's internals)
+          (let* ((names (append (==> result-dt col-names) (list alias)))
+                 (types (append (==> result-dt col-types) (list 'real)))
+                 (cols ())
+                 (nc (==> result-dt num-cols)) )
+            ;; Gather existing columns
+            (for (ci 0 (1- nc))
+              (setq cols (nconc1 cols (==> result-dt get-column ci))) )
+            (setq cols (nconc1 cols vals))
+            (setq result-dt (datatable-from-columns names types cols nrows)) )))
+      ;; Project to final column order
+      (==> result-dt select-columns final-names) ) ) )
 
 
 ;; Return an empty DataTable with the same schema as dt.
@@ -322,11 +447,22 @@
         (narrow indices 0 n 0) ))))
 
 
+;; Check if columns spec contains computed (as ...) forms at runtime.
+(de _query-has-computed-rt (columns)
+  (if (= columns '*) ()
+    (let ((found ()))
+      (each ((c columns))
+        (when (and (listp c) (= (car c) 'as))
+          (setq found t) ) )
+      found ) ) )
+
+
 ;; Standard (non-GROUP BY) pipeline execution.
 (de _query-execute-standard (dt meta where-pred ob-args limit-n columns)
   (let ((nrows (==> dt num-rows))
         (indices ())     ;; () = all rows
-        (no-match ()) )  ;; t if WHERE produced zero results
+        (no-match ())    ;; t if WHERE produced zero results
+        (has-computed (_query-has-computed-rt columns)) )
 
     ;; WHERE (compiled idx1 pipeline with query planner)
     (when where-pred
@@ -340,7 +476,9 @@
       (let ((empty-dt (_query-empty-table dt)))
         (if (= columns '*)
           empty-dt
-          (==> empty-dt select-columns columns) ))
+          (if has-computed
+            (_query-apply-computed empty-dt columns)
+            (==> empty-dt select-columns columns) )))
 
       ;; Continue pipeline
       (progn
@@ -357,21 +495,25 @@
           (let ((empty-dt (_query-empty-table dt)))
             (if (= columns '*)
               empty-dt
-              (==> empty-dt select-columns columns) ))
+              (if has-computed
+                (_query-apply-computed empty-dt columns)
+                (==> empty-dt select-columns columns) )))
           ;; Materialize
           (let ((result-dt
                   (if indices
                     (==> dt select-rows-idx indices)
                     ;; No filtering/ordering: return copy via select-columns
                     dt )))
-            ;; Project
+            ;; Project (with computed columns if needed)
             (if (= columns '*)
               result-dt
-              (==> result-dt select-columns columns) )))))))
+              (if has-computed
+                (_query-apply-computed result-dt columns)
+                (==> result-dt select-columns columns) ))))))))
 
 
 ;; GROUP BY pipeline execution.
-(de _query-execute-groupby (dt meta where-pred gb-args ob-args limit-n columns)
+(de _query-execute-groupby (dt meta where-pred gb-args ob-args limit-n columns &optional having-pred)
   (let ((group-col (car gb-args))
         (agg-spec (cadr gb-args)) )
     (let ((op (car agg-spec))
@@ -388,6 +530,13 @@
 
         ;; Apply group-by
         (let ((result (columnardb-group-by filtered-dt group-col agg-col op)))
+
+          ;; HAVING: filter grouped result by aggregate values
+          (when having-pred
+            (let ((having-idx (_query-run-where-idx1 result () having-pred)))
+              (if having-idx
+                (setq result (==> result select-rows-idx having-idx))
+                (setq result (_query-empty-table result)) )))
 
           ;; ORDER BY
           (when ob-args
@@ -417,7 +566,9 @@
          (where-pred (cadr (assoc 'where parsed)))
          (ob-args (cdr (assoc 'order-by parsed)))
          (limit-n (cadr (assoc 'limit parsed)))
-         (gb-args (cdr (assoc 'group-by parsed))) )
+         (gb-args (cdr (assoc 'group-by parsed)))
+         (join-args (cdr (assoc 'join parsed)))
+         (having-pred (cadr (assoc 'having parsed))) )
 
     (when (not from-args)
       (error "db-select" "missing FROM clause" ()) )
@@ -426,8 +577,21 @@
            (dt (car from-result))
            (meta (cadr from-result)) )
 
+      ;; JOIN: apply immediately after resolving FROM
+      (when join-args
+        (let ((right-dt (car join-args))
+              (on-col (cadr join-args))
+              (join-type (if (cddr join-args) (nth 2 join-args) 'left)) )
+          (setq dt
+            (cond ((= join-type 'left) (datatable-left-join dt right-dt on-col))
+                  ((= join-type 'right) (datatable-right-join dt right-dt on-col))
+                  ((= join-type 'asof) (datatable-asof-join dt right-dt on-col))
+                  (t (error "db-select" "unknown join type" join-type)) ))
+          ;; After join, meta is invalid (new table schema)
+          (setq meta ()) ))
+
       (if gb-args
-        (_query-execute-groupby dt meta where-pred gb-args ob-args limit-n columns)
+        (_query-execute-groupby dt meta where-pred gb-args ob-args limit-n columns having-pred)
         (_query-execute-standard dt meta where-pred ob-args limit-n columns) ))))
 
 
@@ -458,17 +622,20 @@
 ;; SQL-like query macro for DataTable and Database.
 ;; Expands to pipeline of existing method calls.
 ;;
-;; <columns>: either {<b> *} for all columns, or a list of column
-;; name strings like {<b> ("price" "symbol")}.
+;; <columns>: either {<b> *} for all columns, a list of column
+;; name strings like {<b> ("price" "symbol")}, or a list that
+;; includes {<b> (as <expr> "alias")} computed column forms.
 ;;
 ;; Supported clauses:
 ;; {<ul>
 ;; {<li> {<b> (from <dt>)} -- query a DataTable directly}
 ;; {<li> {<b> (from <db> <name>)} -- query a named table in a Database}
+;; {<li> {<b> (join <dt2> <col> ['left|'right|'asof])} -- join tables}
 ;; {<li> {<b> (where <predicate>)} -- filter rows by condition}
+;; {<li> {<b> (group-by <col> (<op> <agg-col>))} -- grouped aggregation}
+;; {<li> {<b> (having <predicate>)} -- filter groups by aggregate value}
 ;; {<li> {<b> (order-by <col> ['desc])} -- sort results}
 ;; {<li> {<b> (limit <n>)} -- return at most N rows}
-;; {<li> {<b> (group-by <col> (<op> <agg-col>))} -- grouped aggregation}
 ;; }
 ;;
 ;; WHERE predicates:
@@ -477,10 +644,18 @@
 ;; {<li> {<b> (and pred1 pred2 ...)} -- all conditions must hold}
 ;; {<li> {<b> (or pred1 pred2 ...)} -- any condition suffices}
 ;; {<li> {<b> (between "col" lo hi)} -- range check}
+;; {<li> {<b> (in "col" (val1 val2 ...))} -- set membership}
+;; {<li> {<b> (not-in "col" (val1 val2 ...))} -- set exclusion}
+;; {<li> {<b> (like "col" "pattern")} -- SQL LIKE pattern (% and _)}
 ;; }
 ;;
 ;; GROUP BY aggregation ops: {<b> count}, {<b> sum}, {<b> mean},
 ;; {<b> min}, {<b> max}.
+;;
+;; Computed columns use {<b> (as <expr> "alias")} in the column
+;; list, where <expr> can be arithmetic ({<b> + - * /}), unary
+;; functions ({<b> abs sqrt log floor ceil}), column name strings,
+;; or numeric literals.
 ;;
 ;; Examples:
 ;; {<code>
@@ -491,23 +666,50 @@
 ;;     (order-by "price" 'desc)
 ;;     (limit 10))
 ;;
-;;   ;; All columns with compound filter
+;;   ;; Compound filter with IN and LIKE
 ;;   (db-select *
 ;;     (from dt)
-;;     (where (and (= "symbol" "AAPL") (> "price" 150))))
+;;     (where (and (in "symbol" ("AAPL" "GOOG"))
+;;                 (like "name" "%Inc%"))))
 ;;
-;;   ;; Grouped aggregation
+;;   ;; Join with another table
+;;   (db-select ("symbol" "price" "exchange")
+;;     (from trades)
+;;     (join exchanges "symbol")
+;;     (where (> "price" 100)))
+;;
+;;   ;; Group-by with HAVING
 ;;   (db-select *
-;;     (from db "trades")
-;;     (group-by "symbol" (sum "price")))
+;;     (from dt)
+;;     (group-by "symbol" (sum "price"))
+;;     (having (> "price_sum" 500)))
+;;
+;;   ;; Computed columns
+;;   (db-select ("symbol" (as (* "price" "qty") "total"))
+;;     (from dt))
 ;; </code>}
 ;; {<see> (db-count <clauses...>)}
 ;; {<see> (columnardb-where-multi <dt> <conditions> [<meta>])}
 ;; {<see> (columnardb-group-by <dt> <group-col> <agg-col> <op>)}
 (dmd db-select (columns . clauses)
-  (let ((col-expr (if (= columns '*)
-                    ''*
-                    `',columns ))
+  (let ((col-expr
+          (cond
+           ;; * -> all columns
+           ((= columns '*)  ''*)
+           ;; Check if column list has any (as ...) forms
+           ((_query-has-computed-cols columns)
+            ;; Transform: strings stay quoted, (as expr alias) become runtime forms
+            (let ((parts ()))
+              (each ((c columns))
+                (if (and (listp c) (= (car c) 'as))
+                  ;; (as expr "alias") -> (list 'as '(expr-tree) "alias")
+                  (setq parts (nconc1 parts
+                    `(list 'as ',(cadr c) ,(nth 2 c)) ))
+                  ;; plain string col
+                  (setq parts (nconc1 parts `',c)) ))
+              `(list ,@parts) ))
+           ;; Plain column list (all strings)
+           (t `',columns) ))
         (clause-forms ()) )
     (each ((c clauses))
       (setq clause-forms (nconc1 clause-forms

@@ -1399,4 +1399,5 @@
 (libload "columnardb/columnardb-multiindex")
 (libload "columnardb/columnardb-compress")
 (libload "columnardb/columnardb-database")
+(libload "datatable/datatable-join")
 (libload "columnardb/columnardb-query")

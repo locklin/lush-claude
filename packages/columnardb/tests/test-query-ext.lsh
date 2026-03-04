@@ -1,0 +1,326 @@
+;;; test-query-ext.lsh -- Tests for query language extensions
+;;;
+;;; Tests JOIN, HAVING, computed columns, IN/NOT IN/LIKE.
+;;; Loaded by run-all.lsh.  Assumes test framework and columnardb
+;;; are already loaded.
+
+(printf "\n=== Query Language Extension Tests ===\n")
+
+;; ============================================================
+;; Shared test data
+;; ============================================================
+
+(let ((trades (new DataTable))
+      (exchanges (new DataTable)) )
+
+  ;; Trades table
+  (==> trades add-column "symbol" 'string)
+  (==> trades add-column "price" 'real)
+  (==> trades add-column "qty" 'int)
+
+  (==> trades append-row (list "AAPL" 150.0 100))
+  (==> trades append-row (list "GOOG" 200.0 50))
+  (==> trades append-row (list "AAPL" 155.0 75))
+  (==> trades append-row (list "MSFT" 300.0 200))
+  (==> trades append-row (list "GOOG" 180.0 60))
+  (==> trades append-row (list "AAPL" 145.0 120))
+  (==> trades append-row (list "MSFT" 310.0 150))
+  (==> trades append-row (list "TSLA" 250.0 80))
+  (==> trades append-row (list "TSLA" 240.0 90))
+  (==> trades append-row (list "GOOG" 210.0 40))
+
+  ;; Exchanges table
+  (==> exchanges add-column "symbol" 'string)
+  (==> exchanges add-column "exchange" 'string)
+  (==> exchanges add-column "sector" 'string)
+
+  (==> exchanges append-row (list "AAPL" "NASDAQ" "Tech"))
+  (==> exchanges append-row (list "GOOG" "NASDAQ" "Tech"))
+  (==> exchanges append-row (list "MSFT" "NASDAQ" "Tech"))
+  (==> exchanges append-row (list "TSLA" "NASDAQ" "Auto"))
+  (==> exchanges append-row (list "JPM" "NYSE" "Finance"))
+
+
+;; ============================================================
+;; Test 1: IN predicate
+;; ============================================================
+
+(test-suite "Query Ext: IN"
+  ;; String IN with CSR
+  (let ((r (db-select * (from trades) (where (in "symbol" ("AAPL" "GOOG"))))))
+    (test-equal "string IN rows" (==> r num-rows) 6) )
+
+  ;; String IN single value
+  (let ((r (db-select * (from trades) (where (in "symbol" ("TSLA"))))))
+    (test-equal "string IN single" (==> r num-rows) 2) )
+
+  ;; Numeric IN (real)
+  (let ((r (db-select * (from trades) (where (in "price" (150.0 300.0 210.0))))))
+    (test-equal "numeric IN real" (==> r num-rows) 3) )
+
+  ;; Numeric IN (int)
+  (let ((r (db-select * (from trades) (where (in "qty" (100 50 200))))))
+    (test-equal "numeric IN int" (==> r num-rows) 3) )
+
+  ;; IN with empty set
+  (let ((r (db-select * (from trades) (where (in "symbol" ())))))
+    (test-equal "IN empty set" (==> r num-rows) 0) )
+
+  ;; IN combined with AND
+  (let ((r (db-select * (from trades) (where (and (in "symbol" ("AAPL" "GOOG")) (> "price" 160))))))
+    (test-equal "IN + AND" (==> r num-rows) 3) )
+
+  ;; IN with all values matching
+  (let ((r (db-select * (from trades) (where (in "symbol" ("AAPL" "GOOG" "MSFT" "TSLA"))))))
+    (test-equal "IN all values" (==> r num-rows) 10) )
+)
+
+
+;; ============================================================
+;; Test 2: NOT IN predicate
+;; ============================================================
+
+(test-suite "Query Ext: NOT IN"
+  ;; String NOT IN
+  (let ((r (db-select * (from trades) (where (not-in "symbol" ("AAPL" "GOOG"))))))
+    (test-equal "string NOT-IN rows" (==> r num-rows) 4) )
+
+  ;; Numeric NOT IN
+  (let ((r (db-select * (from trades) (where (not-in "qty" (100 50))))))
+    (test-equal "numeric NOT-IN" (==> r num-rows) 8) )
+
+  ;; NOT IN with empty set (all rows match)
+  (let ((r (db-select * (from trades) (where (not-in "symbol" ())))))
+    (test-equal "NOT-IN empty set" (==> r num-rows) 10) )
+
+  ;; NOT IN with all values (no rows match)
+  (let ((r (db-select * (from trades) (where (not-in "symbol" ("AAPL" "GOOG" "MSFT" "TSLA"))))))
+    (test-equal "NOT-IN all values" (==> r num-rows) 0) )
+
+  ;; NOT IN combined with AND
+  (let ((r (db-select * (from trades) (where (and (not-in "symbol" ("AAPL")) (> "price" 200))))))
+    (test-equal "NOT-IN + AND" (==> r num-rows) 5) )
+)
+
+
+;; ============================================================
+;; Test 3: LIKE predicate
+;; ============================================================
+
+(test-suite "Query Ext: LIKE"
+  ;; Prefix match
+  (let ((r (db-select * (from trades) (where (like "symbol" "A%")))))
+    (test-equal "LIKE prefix A%" (==> r num-rows) 3) )
+
+  ;; Suffix match
+  (let ((r (db-select * (from trades) (where (like "symbol" "%L")))))
+    (test-equal "LIKE suffix %L" (==> r num-rows) 3) )
+
+  ;; Contains match
+  (let ((r (db-select * (from trades) (where (like "symbol" "%OO%")))))
+    (test-equal "LIKE contains %OO%" (==> r num-rows) 3) )
+
+  ;; Single-char wildcard
+  (let ((r (db-select * (from trades) (where (like "symbol" "A_PL")))))
+    (test-equal "LIKE single _ A_PL" (==> r num-rows) 3) )
+
+  ;; Exact match (no wildcards)
+  (let ((r (db-select * (from trades) (where (like "symbol" "MSFT")))))
+    (test-equal "LIKE exact MSFT" (==> r num-rows) 2) )
+
+  ;; No matches
+  (let ((r (db-select * (from trades) (where (like "symbol" "X%")))))
+    (test-equal "LIKE no match" (==> r num-rows) 0) )
+
+  ;; Match all
+  (let ((r (db-select * (from trades) (where (like "symbol" "%")))))
+    (test-equal "LIKE match all" (==> r num-rows) 10) )
+
+  ;; LIKE combined with AND
+  (let ((r (db-select * (from trades) (where (and (like "symbol" "%S%") (> "price" 250))))))
+    (test-equal "LIKE + AND" (==> r num-rows) 2) )
+)
+
+
+;; ============================================================
+;; Test 4: JOIN clause
+;; ============================================================
+
+(test-suite "Query Ext: JOIN"
+  ;; Left join (default)
+  (let ((r (db-select * (from trades) (join exchanges "symbol"))))
+    (test-equal "left join rows" (==> r num-rows) 10)
+    ;; Should have trades cols + exchanges cols (minus join col)
+    ;; trades: symbol, price, qty + exchanges: exchange, sector
+    (test-equal "left join cols" (==> r num-cols) 5) )
+
+  ;; Left join with unmatched left rows
+  ;; Add a trade with symbol not in exchanges
+  (let ((dt (new DataTable)))
+    (==> dt add-column "symbol" 'string)
+    (==> dt add-column "price" 'real)
+    (==> dt append-row (list "AAPL" 150.0))
+    (==> dt append-row (list "XYZ" 50.0))
+    (let ((r (db-select * (from dt) (join exchanges "symbol"))))
+      (test-equal "left join unmatched" (==> r num-rows) 2) ) )
+
+  ;; Right join
+  (let ((r (db-select * (from trades) (join exchanges "symbol" 'right))))
+    ;; All 5 exchange rows; JPM has no trades so left cols null
+    (test-equal "right join rows" (==> r num-rows) 11) )
+
+  ;; Join + WHERE
+  (let ((r (db-select * (from trades) (join exchanges "symbol") (where (> "price" 200)))))
+    (test-equal "join + where rows" (==> r num-rows) 5) )
+
+  ;; Join + ORDER BY + LIMIT
+  (let ((r (db-select * (from trades) (join exchanges "symbol") (order-by "price" 'desc) (limit 3))))
+    (test-equal "join + order + limit rows" (==> r num-rows) 3)
+    ;; Highest prices: 310, 300, 250
+    (test-approx "join sorted first" (==> r get 0 "price") 310.0 0.001) )
+
+  ;; Join + project
+  (let ((r (db-select ("symbol" "price" "exchange") (from trades) (join exchanges "symbol"))))
+    (test-equal "join + project cols" (==> r num-cols) 3) )
+)
+
+
+;; ============================================================
+;; Test 5: As-of JOIN via db-select
+;; ============================================================
+
+(test-suite "Query Ext: ASOF JOIN"
+  (let ((ts1 (new DataTable))
+        (ts2 (new DataTable)) )
+    (==> ts1 add-column "time" 'real)
+    (==> ts1 add-column "value" 'real)
+    (==> ts1 append-row (list 1.0 10.0))
+    (==> ts1 append-row (list 3.0 30.0))
+    (==> ts1 append-row (list 5.0 50.0))
+
+    (==> ts2 add-column "time" 'real)
+    (==> ts2 add-column "ref" 'real)
+    (==> ts2 append-row (list 2.0 20.0))
+    (==> ts2 append-row (list 4.0 40.0))
+
+    (let ((r (db-select * (from ts1) (join ts2 "time" 'asof))))
+      (test-equal "asof join rows" (==> r num-rows) 3)
+      ;; time=1 has no right match (all right > 1), time=3 matches right time=2, time=5 matches right time=4
+      (test-approx "asof ref[1]" (==> r get 1 "ref") 20.0 0.001)
+      (test-approx "asof ref[2]" (==> r get 2 "ref") 40.0 0.001) ) )
+)
+
+
+;; ============================================================
+;; Test 6: HAVING clause
+;; ============================================================
+
+(test-suite "Query Ext: HAVING"
+  ;; HAVING on sum (AAPL=450, GOOG=590, MSFT=610, TSLA=490)
+  (let ((r (db-select * (from trades) (group-by "symbol" (sum "price")) (having (> "price_sum" 500)))))
+    (test-equal "having sum > 500" (==> r num-rows) 2) )
+
+  ;; HAVING on count (AAPL=3, GOOG=3, MSFT=2, TSLA=2)
+  (let ((r (db-select * (from trades) (group-by "symbol" (count)) (having (>= "count" 3)))))
+    (test-equal "having count >= 3" (==> r num-rows) 2) )
+
+  ;; HAVING with no matches
+  (let ((r (db-select * (from trades) (group-by "symbol" (sum "price")) (having (> "price_sum" 99999)))))
+    (test-equal "having no match" (==> r num-rows) 0) )
+
+  ;; HAVING + ORDER BY
+  (let ((r (db-select * (from trades) (group-by "symbol" (sum "price")) (having (> "price_sum" 500)) (order-by "price_sum" 'desc))))
+    (test-equal "having + order rows" (==> r num-rows) 2)
+    ;; MSFT=610 > GOOG=590
+    (test-approx "having + order first" (==> r get 0 "price_sum") 610.0 0.01) )
+
+  ;; HAVING + WHERE (WHERE filters before group-by)
+  (let ((r (db-select * (from trades) (where (> "price" 200)) (group-by "symbol" (count)) (having (>= "count" 2)))))
+    ;; After WHERE > 200: MSFT(300,310), TSLA(250,240), GOOG(210) => groups: MSFT:2, TSLA:2, GOOG:1
+    (test-equal "where + having" (==> r num-rows) 2) )
+)
+
+
+;; ============================================================
+;; Test 7: Computed columns
+;; ============================================================
+
+(test-suite "Query Ext: Computed Columns"
+  ;; Basic arithmetic: price * qty
+  (let ((r (db-select ("symbol" (as (* "price" "qty") "total")) (from trades))))
+    (test-equal "computed cols count" (==> r num-cols) 2)
+    (test-approx "computed total[0]" (==> r get 0 "total") 15000.0 0.01)
+    (test-approx "computed total[1]" (==> r get 1 "total") 10000.0 0.01) )
+
+  ;; Addition
+  (let ((r (db-select ((as (+ "price" 10) "adjusted")) (from trades))))
+    (test-equal "computed + cols" (==> r num-cols) 1)
+    (test-approx "computed +[0]" (==> r get 0 "adjusted") 160.0 0.01) )
+
+  ;; Subtraction
+  (let ((r (db-select ((as (- "price" 100) "diff")) (from trades))))
+    (test-approx "computed -[0]" (==> r get 0 "diff") 50.0 0.01) )
+
+  ;; Division
+  (let ((r (db-select ((as (/ "price" 2) "half")) (from trades))))
+    (test-approx "computed /[0]" (==> r get 0 "half") 75.0 0.01) )
+
+  ;; Multiple computed columns
+  (let ((r (db-select ("symbol" (as (* "price" "qty") "total") (as (+ "price" 10) "adj")) (from trades))))
+    (test-equal "multi computed cols" (==> r num-cols) 3)
+    (test-approx "multi total[0]" (==> r get 0 "total") 15000.0 0.01)
+    (test-approx "multi adj[0]" (==> r get 0 "adj") 160.0 0.01) )
+
+  ;; Unary function: abs
+  (let ((dt2 (new DataTable)))
+    (==> dt2 add-column "x" 'real)
+    (==> dt2 append-row (list -5.0))
+    (==> dt2 append-row (list 3.0))
+    (==> dt2 append-row (list -1.0))
+    (let ((r (db-select ((as (abs "x") "absx")) (from dt2))))
+      (test-approx "abs[0]" (==> r get 0 "absx") 5.0 0.01)
+      (test-approx "abs[1]" (==> r get 1 "absx") 3.0 0.01) ) )
+
+  ;; Computed + WHERE
+  (let ((r (db-select ("symbol" (as (* "price" "qty") "total")) (from trades) (where (> "price" 200)))))
+    (test-equal "computed + where rows" (==> r num-rows) 5) )
+
+  ;; Computed + ORDER BY + LIMIT
+  (let ((r (db-select ("symbol" (as (* "price" "qty") "total")) (from trades) (order-by "price" 'desc) (limit 3))))
+    (test-equal "computed + order + limit" (==> r num-rows) 3) )
+
+  ;; Nested expressions: (price * qty) + 10
+  (let ((r (db-select ((as (+ (* "price" "qty") 10) "adjusted_total")) (from trades))))
+    (test-approx "nested expr[0]" (==> r get 0 "adjusted_total") 15010.0 0.01) )
+
+  ;; Literal numbers in expressions
+  (let ((r (db-select ((as (* "price" 1.1) "with_tax")) (from trades))))
+    (test-approx "literal in expr[0]" (==> r get 0 "with_tax") 165.0 0.01) )
+)
+
+
+;; ============================================================
+;; Test 8: db-count with new predicates
+;; ============================================================
+
+(test-suite "Query Ext: db-count with IN/LIKE"
+  (test-equal "count IN" (db-count (from trades) (where (in "symbol" ("AAPL" "TSLA")))) 5)
+  (test-equal "count NOT-IN" (db-count (from trades) (where (not-in "symbol" ("AAPL" "TSLA")))) 5)
+  (test-equal "count LIKE" (db-count (from trades) (where (like "symbol" "G%"))) 3)
+)
+
+
+;; ============================================================
+;; Test 9: IN/LIKE with OR
+;; ============================================================
+
+(test-suite "Query Ext: IN/LIKE with OR"
+  (let ((r (db-select * (from trades) (where (or (in "symbol" ("AAPL")) (= "symbol" "TSLA"))))))
+    (test-equal "IN + OR" (==> r num-rows) 5) )
+
+  (let ((r (db-select * (from trades) (where (or (like "symbol" "A%") (like "symbol" "T%"))))))
+    (test-equal "LIKE + OR" (==> r num-rows) 5) )
+)
+
+
+) ;; close outer let

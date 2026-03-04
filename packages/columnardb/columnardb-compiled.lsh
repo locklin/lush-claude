@@ -8,14 +8,38 @@
 
 #? *** ColumnarDB Compiled Hot Paths
 ;; C-compiled inner loops for performance-critical ColumnarDB operations.
-;; Includes aggregation primitives (sum, min, max via permutation),
-;; CSR inverted index construction (code counting + fill),
-;; gather operations, sorted-array intersection for multi-index,
-;; sorted-check functions for column compression detection,
-;; vectorized filter functions (Phase 3), binary search for
-;; double/int columns, iota fill, and sorted union for OR queries.
-;;.SEE ColumnarDB Grouped Aggregation
-;;.SEE ColumnarDB Multi-Column Index
+;; All functions are compiled via {<b> dhc-make} with inline C.
+;;
+;; {<b> Aggregation} (used by group-by):
+;; {<ul>
+;; {<li> Sum, min, max via permutation for double, float, int, and stamp columns}
+;; {<li> NaN/null-skipping variants for nullable columns}
+;; }
+;;
+;; {<b> Index infrastructure}:
+;; {<ul>
+;; {<li> CSR inverted index construction (code counting + prefix sum + fill)}
+;; {<li> Sorted-array intersection and union for multi-condition queries}
+;; {<li> Gather operations for row materialization}
+;; }
+;;
+;; {<b> Vectorized filters} (Phase 3):
+;; {<ul>
+;; {<li> {<c> _cdb-d1filter}, {<c> _cdb-f1filter}, {<c> _cdb-i1filter}, {<c> _cdb-l1filter} -- comparison filters (op codes 0-5)}
+;; {<li> {<c> _cdb-d1range-filter}, {<c> _cdb-i1range-filter} -- range filters}
+;; {<li> Binary search (left/right) for double, float, int, and stamp columns}
+;; {<li> Iota fill and sorted union for OR queries}
+;; }
+;;
+;; {<b> LIKE and IN filters} (Phase 5):
+;; {<ul>
+;; {<li> {<c> _cdb-s1like} -- SQL LIKE pattern matcher (% and _ wildcards) via DP}
+;; {<li> {<c> _cdb-d1in-filter} -- double set-membership filter}
+;; {<li> {<c> _cdb-i1in-filter} -- int set-membership filter}
+;; }
+;; {<see> ColumnarDB Grouped Aggregation}
+;; {<see> ColumnarDB Multi-Column Index}
+;; {<see> ColumnarDB Query Language}
 
 
 ;; ============================================================
@@ -1329,6 +1353,109 @@
 
 
 ;; ============================================================
+;; SQL LIKE pattern matcher (for string columns)
+;; ============================================================
+
+;; Match a string against an SQL LIKE pattern.
+;; '%' matches any sequence of characters (including empty).
+;; '_' matches exactly one character.
+;; All other characters match literally (case-sensitive).
+;; Returns 1 if match, 0 if no match.
+(de _cdb-s1like (str slen pattern plen)
+  ((-idx1- (-ubyte-)) str pattern)
+  ((-int-) slen plen)
+  (let ((result 0))
+    ((-int-) result)
+    #{
+    {
+      unsigned char *s = IDX_PTR($str, unsigned char);
+      unsigned char *p = IDX_PTR($pattern, unsigned char);
+      int sl = $slen, pl = $plen;
+      /* DP matching: dp[j] = can match s[0..i-1] with p[0..j-1] */
+      /* Use two rows to save memory */
+      int j;
+      char prev[4096], curr[4096];
+      if (pl > 4095) { $result = 0; }
+      else {
+        /* Initialize: empty string matches only leading %'s */
+        prev[0] = 1;
+        for (j = 1; j <= pl; j++)
+          prev[j] = (prev[j-1] && p[j-1] == '%') ? 1 : 0;
+        int i;
+        for (i = 1; i <= sl; i++) {
+          curr[0] = 0;
+          for (j = 1; j <= pl; j++) {
+            if (p[j-1] == '%') {
+              curr[j] = (curr[j-1] || prev[j]) ? 1 : 0;
+            } else if (p[j-1] == '_') {
+              curr[j] = prev[j-1];
+            } else {
+              curr[j] = (prev[j-1] && s[i-1] == p[j-1]) ? 1 : 0;
+            }
+          }
+          /* Swap rows */
+          for (j = 0; j <= pl; j++) { prev[j] = curr[j]; }
+        }
+        $result = prev[pl] ? 1 : 0;
+      }
+    }
+    #}
+    result ) )
+
+
+;; ============================================================
+;; Numeric IN filter (set membership check)
+;; ============================================================
+
+;; Double IN filter: check data[i] against set of values
+;; Returns count of matches, writes matching indices to result.
+(de _cdb-d1in-filter (data n setvals nset result)
+  ((-idx1- (-double-)) data setvals)
+  ((-int-) n nset)
+  ((-idx1- (-int-)) result)
+  (let ((count 0))
+    ((-int-) count)
+    #{
+    {
+      double *d = IDX_PTR($data, double);
+      double *sv = IDX_PTR($setvals, double);
+      int *r = IDX_PTR($result, int);
+      int cnt = 0, i, j;
+      for (i = 0; i < $n; i++) {
+        for (j = 0; j < $nset; j++) {
+          if (d[i] == sv[j]) { r[cnt++] = i; break; }
+        }
+      }
+      $count = cnt;
+    }
+    #}
+    count ) )
+
+
+;; Int IN filter
+(de _cdb-i1in-filter (data n setvals nset result)
+  ((-idx1- (-int-)) data setvals result)
+  ((-int-) n nset)
+  (let ((count 0))
+    ((-int-) count)
+    #{
+    {
+      int *d = IDX_PTR($data, int);
+      int *sv = IDX_PTR($setvals, int);
+      int *r = IDX_PTR($result, int);
+      int cnt = 0, i, j;
+      for (i = 0; i < $n; i++) {
+        for (j = 0; j < $nset; j++) {
+          if (d[i] == sv[j]) { r[cnt++] = i; break; }
+        }
+      }
+      $count = cnt;
+    }
+    #}
+    count ) )
+
+
+;; ============================================================
 ;; Compile all functions
 ;; ============================================================
 
@@ -1363,4 +1490,6 @@
   _cdb-d1bsearch-left _cdb-d1bsearch-right
   _cdb-i1bsearch-left _cdb-i1bsearch-right _cdb-i1sortedp
   ;; Phase 3: iota fill + sorted union
-  _cdb-i1iota _cdb-i1union-sorted )
+  _cdb-i1iota _cdb-i1union-sorted
+  ;; Phase 5: LIKE pattern matcher + IN filters
+  _cdb-s1like _cdb-d1in-filter _cdb-i1in-filter )

@@ -310,6 +310,8 @@ and time/date utilities.
 
 #? ** << columnardb/columnardb-mutate.lsh
 
+#? ** << columnardb/columnardb-compiled.lsh
+
 #? ** << columnardb/columnardb-multiindex.lsh
 
 #? ** << columnardb/columnardb-query.lsh

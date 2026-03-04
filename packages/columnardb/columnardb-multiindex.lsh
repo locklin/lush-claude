@@ -22,14 +22,28 @@
 ;; {<li> {<b> columnardb-where-multi-idx1} -- returns a sorted idx1 array (faster, no list allocation)}
 ;; }
 ;;
+;; Supported condition operators:
+;; {<ul>
+;; {<li> Comparison: {<b> =}, {<b> <}, {<b> >}, {<b> <=}, {<b> >=}, {<b> <>}}
+;; {<li> Range: {<b> (range col lo hi)}}
+;; {<li> Set membership: {<b> (in col (val1 val2 ...))}, {<b> (not-in col (val1 ...))}}
+;; {<li> Pattern: {<b> (like col "pattern")} -- SQL LIKE with % and _ wildcards}
+;; }
+;;
+;; The {<b> in} operator uses CSR index union for strings and compiled
+;; C scan for numeric columns.  {<b> not-in} computes the complement of
+;; the IN result.  {<b> like} checks each string pool entry against the
+;; pattern via compiled C and gathers matching rows from the CSR index.
+;;
 ;; Example:
 ;; {<code>
 ;;   (columnardb-where-multi dt '((= "symbol" "AAPL") (> "price" 100.0)))
-;;   (columnardb-where-multi-idx1 dt '((= "symbol" "AAPL") (> "price" 100.0)))
+;;   (columnardb-where-multi-idx1 dt '((in "symbol" ("AAPL" "GOOG"))))
+;;   (columnardb-where-multi-idx1 dt '((like "symbol" "A%")))
 ;; </code>}
 ;; {<see> (columnardb-where-multi <dt> <conditions> [<meta>])}
 ;; {<see> (columnardb-where-multi-idx1 <dt> <conditions> [<meta>])}
-;; {<see> ColumnarDB Compiled Hot Paths
+;; {<see> ColumnarDB Compiled Hot Paths}
 
 
 ;; ============================================================
@@ -180,6 +194,18 @@
       (let ((rows (==> dt where op col-name val)))
         (if rows (_list-to-sorted-idx1 rows) ()) ) )
 
+     ;; IN: set membership check
+     ((= op 'in)
+      (_multi-index-in-compiled dt col-name val) )
+
+     ;; NOT IN: complement of IN
+     ((= op 'not-in)
+      (_multi-index-not-in-compiled dt col-name val) )
+
+     ;; LIKE: SQL pattern matching (string columns only)
+     ((= op 'like)
+      (_multi-index-like-compiled dt col-name val) )
+
      ;; IntCol: delegate to DataTable.where (uses its own index)
      ((= (==> dt col-type col-name) 'intcol)
       (let ((rows (==> dt where op col-name val)))
@@ -327,6 +353,156 @@
                  (result (int-matrix count)) )
             (_cdb-i1iota result lo count)
             result ) ) ) ) ) )
+
+
+;; ============================================================
+;; IN / NOT IN / LIKE helpers
+;; ============================================================
+
+;; IN filter: return idx1 of rows where column value is in the given set.
+;; vals is a Lush list of values.
+(de _multi-index-in-compiled (dt col-name vals)
+  (let ((type (==> dt col-type col-name))
+        (nrows (==> dt num-rows)) )
+    (if (= (length vals) 0)
+      ()  ;; empty set -> no matches
+      (cond
+       ;; String IN: use CSR index for each value, union results
+       ((= type 'string)
+        (let* ((col-idx (==> dt col-index col-name))
+               (sc (==> dt get-column col-idx))
+               (result ()) )
+          (when (not (==> sc has-index))
+            (==> sc build-index) )
+          (each ((v vals))
+            (let ((rows (==> sc where-eq v)))
+              (when rows
+                (let ((idx (_list-to-sorted-idx1 rows)))
+                  (if (not result)
+                    (setq result idx)
+                    (setq result (_multi-index-union result idx)) )))))
+          result ) )
+
+       ;; Numeric real: compiled IN filter
+       ((= type 'real)
+        (let* ((col-idx (==> dt col-index col-name))
+               (col (==> dt get-column col-idx))
+               (view (narrow col 0 nrows 0))
+               (nset (length vals))
+               (setvals (double-matrix nset))
+               (result (int-matrix nrows))
+               (i 0) )
+          (each ((v vals))
+            (setvals i (to-double v))
+            (setq i (1+ i)) )
+          (let ((count (_cdb-d1in-filter view nrows setvals nset result)))
+            (if (= count 0) ()
+              (let ((out (narrow result 0 count 0)))
+                ;; Result is already in ascending order (scan order)
+                out ) ) ) ) )
+
+       ;; Numeric int: compiled IN filter
+       ((= type 'int)
+        (let* ((col-idx (==> dt col-index col-name))
+               (col (==> dt get-column col-idx))
+               (view (narrow col 0 nrows 0))
+               (nset (length vals))
+               (setvals (int-matrix nset))
+               (result (int-matrix nrows))
+               (i 0) )
+          (each ((v vals))
+            (setvals i (to-int v))
+            (setq i (1+ i)) )
+          (let ((count (_cdb-i1in-filter view nrows setvals nset result)))
+            (if (= count 0) ()
+              (narrow result 0 count 0) ) ) ) )
+
+       ;; Fallback: interpreted scan for float/stamp/intcol
+       (t
+        (let* ((col-idx (==> dt col-index col-name))
+               (col (==> dt get-column col-idx))
+               (result ())
+               (val-set (htable (max 8 (* 2 (length vals))))) )
+          (each ((v vals))
+            (val-set (sprintf "%g" v) t) )
+          (for (i 0 (1- nrows))
+            (let ((cv (col i)))
+              (when (val-set (sprintf "%g" cv))
+                (setq result (nconc1 result i)) ) ) )
+          (if result (_list-to-sorted-idx1 result) ()) ) ) ) ) ) )
+
+
+;; NOT IN filter: complement of IN.
+(de _multi-index-not-in-compiled (dt col-name vals)
+  (let ((nrows (==> dt num-rows)))
+    (if (= (length vals) 0)
+      ;; Empty exclusion set -> all rows match
+      (let ((result (int-matrix nrows)))
+        (_cdb-i1iota result 0 nrows)
+        result )
+      ;; Get IN result and compute complement
+      (let ((in-idx (_multi-index-in-compiled dt col-name vals)))
+        (if (not in-idx)
+          ;; Nothing matched IN -> all rows match NOT IN
+          (let ((result (int-matrix nrows)))
+            (_cdb-i1iota result 0 nrows)
+            result )
+          ;; Complement: all rows minus IN rows
+          (let* ((n-in (idx-dim in-idx 0))
+                 (n-out (- nrows n-in))
+                 (result (int-matrix (max 1 n-out)))
+                 (ri 0)
+                 (ii 0) )
+            (if (= n-out 0)
+              ()
+              (progn
+                (for (i 0 (1- nrows))
+                  (if (and (< ii n-in) (= (in-idx ii) i))
+                    (setq ii (1+ ii))
+                    (progn
+                      (result ri i)
+                      (setq ri (1+ ri)) ) ) )
+                (narrow result 0 ri 0) ) ) ) ) ) ) ) )
+
+
+;; LIKE filter: SQL pattern matching on string columns.
+;; Uses CSR index to check pool entries against pattern, then
+;; gathers all row indices for matching entries.
+(de _multi-index-like-compiled (dt col-name pattern)
+  (let* ((col-idx (==> dt col-index col-name))
+         (type (==> dt col-type col-name))
+         (sc (==> dt get-column col-idx)) )
+    (when (<> type 'string)
+      (error "_multi-index-like-compiled" "LIKE requires string column" col-name) )
+    ;; Build CSR index if needed
+    (when (not (==> sc has-index))
+      (==> sc build-index) )
+    ;; Check each pool entry against the pattern
+    (let ((pool (==> sc get-pool))
+          (pat-bytes (_str-to-ubyte pattern))
+          (plen (len pattern))
+          (result ()) )
+      (each ((s pool))
+        (let ((s-bytes (_str-to-ubyte s))
+              (slen (len s)) )
+          (when (= 1 (_cdb-s1like s-bytes slen pat-bytes plen))
+            ;; This pool entry matches; gather all its rows
+            (let ((rows (==> sc where-eq s)))
+              (when rows
+                (let ((idx (_list-to-sorted-idx1 rows)))
+                  (if (not result)
+                    (setq result idx)
+                    (setq result (_multi-index-union result idx)) )))))))
+      result ) ) )
+
+
+;; Convert a Lush string to a ubyte idx1 for compiled LIKE.
+(de _str-to-ubyte (s)
+  (let* ((n (len s))
+         (arr (ubyte-matrix (max 1 n))) )
+    (for (i 0 (1- n))
+      (arr i (asc (mid s (1+ i) 1))) )
+    arr ) )
 
 
 ;; ============================================================
