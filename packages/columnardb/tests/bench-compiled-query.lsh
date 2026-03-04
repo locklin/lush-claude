@@ -1,0 +1,240 @@
+;;; bench-compiled-query.lsh -- Benchmark: compiled vs interpreted query paths
+;;;
+;;; Compares the old interpreted WHERE pipeline (Phase 1) with the new
+;;; compiled C filter pipeline (Phase 3) and query planner (Phase 4).
+;;;
+;;; Run with:
+;;;   lush packages/columnardb/tests/bench-compiled-query.lsh
+
+;; Add packages path
+(let ((tests-dir (dirname file-being-loaded)))
+  (let ((pkg-dir (dirname (dirname tests-dir))))
+    (addpath pkg-dir) ) )
+
+(libload "columnardb/columnardb")
+
+
+;; ============================================================
+;; Benchmark harness (defined inside a scope to avoid conflicts)
+;; ============================================================
+
+(de _bq-run (body n)
+  (let ((t0 (time)))
+    (for (i 1 n) (body))
+    (- (time) t0) ) )
+
+(de _bq-old (dt conditions meta)
+  (let ((rows (columnardb-where-multi dt conditions meta)))
+    (if rows (_list-to-sorted-idx1 rows) ()) ) )
+
+(de _bq-new (dt conditions meta)
+  (_query-run-where-idx1 dt meta conditions) )
+
+(de _bq-line (label old-t old-n new-t new-n)
+  (let* ((old-ms (* (/ old-t old-n) 1000.0))
+         (new-ms (* (/ new-t new-n) 1000.0))
+         (spd (if (< new-ms 0.0001) 999999.0 (/ old-ms new-ms))) )
+    (printf "  %-35s %9.2f %9.4f %9.0fx\n" label old-ms new-ms spd) ) )
+
+
+;; ============================================================
+;; Main benchmark
+;; ============================================================
+
+(let ((*N* 100000) (*O* 3) (*C* 100))
+
+  (printf "\n================================================================\n")
+  (printf "  Compiled Query Benchmark (%d rows)\n" *N*)
+  (printf "  Old = interpreted WHERE + list alloc + sort\n")
+  (printf "  New = compiled C filter + idx1 direct + query planner\n")
+  (printf "================================================================\n\n")
+
+  ;; Build table
+  (printf "Building %d-row table..." *N*)
+  (let ((dt (new DataTable)))
+    (==> dt add-column "symbol" 'string)
+    (==> dt add-column "price" 'real)
+    (==> dt add-column "qty" 'int)
+    (==> dt add-column "volume" 'real)
+    (let ((tickers '("AAPL" "GOOG" "MSFT" "TSLA" "AMZN"
+                      "META" "NVDA" "JPM" "BAC" "WFC")))
+      (for (i 0 (1- *N*))
+        (let ((sym (nth (mod i 10) tickers))
+              (p (+ 100.0 (* 0.01 i) (* 50.0 (sin (* 0.001 i)))))
+              (q (+ 10 (mod (* i 7) 500)))
+              (v (* 1000.0 (+ 1.0 (mod (* i 13) 100)))) )
+          (==> dt append-row (list sym p q v)) ) ) )
+    (printf " done\n\n")
+
+
+    ;; --- Section 1: WHERE filter benchmarks ---
+
+    (printf "%-37s %9s %9s %10s\n" "WHERE Filter" "Old (ms)" "New (ms)" "Speedup")
+    (printf "%-37s %9s %9s %10s\n"
+      "-------------------------------------" "---------" "---------" "---------")
+
+    ;; 1. > on double
+    (let ((c '((> "price" 200.0))))
+      (let ((t1 (_bq-run (lambda () (_bq-old dt c ())) *O*))
+            (t2 (_bq-run (lambda () (_bq-new dt c ())) *C*)) )
+        (_bq-line "> on double (price > 200)" t1 *O* t2 *C*) ) )
+
+    ;; 2. = on double
+    (let ((c '((= "price" 150.0))))
+      (let ((t1 (_bq-run (lambda () (_bq-old dt c ())) *O*))
+            (t2 (_bq-run (lambda () (_bq-new dt c ())) *C*)) )
+        (_bq-line "= on double (exact match)" t1 *O* t2 *C*) ) )
+
+    ;; 3. > on int
+    (let ((c '((> "qty" 250))))
+      (let ((t1 (_bq-run (lambda () (_bq-old dt c ())) *O*))
+            (t2 (_bq-run (lambda () (_bq-new dt c ())) *C*)) )
+        (_bq-line "> on int (qty > 250)" t1 *O* t2 *C*) ) )
+
+    ;; 4. String equality (CSR index)
+    (let ((c '((= "symbol" "AAPL"))))
+      (let ((t1 (_bq-run (lambda () (_bq-old dt c ())) *O*))
+            (t2 (_bq-run (lambda () (_bq-new dt c ())) *C*)) )
+        (_bq-line "= on string (CSR index)" t1 *O* t2 *C*) ) )
+
+    ;; 5. AND: string + numeric
+    (let ((c '((= "symbol" "AAPL") (> "price" 200.0))))
+      (let ((t1 (_bq-run (lambda () (_bq-old dt c ())) *O*))
+            (t2 (_bq-run (lambda () (_bq-new dt c ())) *C*)) )
+        (_bq-line "AND: string + numeric" t1 *O* t2 *C*) ) )
+
+    ;; 6. AND: two numeric
+    (let ((c '((> "price" 200.0) (< "qty" 100))))
+      (let ((t1 (_bq-run (lambda () (_bq-old dt c ())) *O*))
+            (t2 (_bq-run (lambda () (_bq-new dt c ())) *C*)) )
+        (_bq-line "AND: two numeric" t1 *O* t2 *C*) ) )
+
+    ;; 7. BETWEEN (range)
+    (let ((c '((range "price" 150.0 250.0))))
+      (let ((t1 (_bq-run (lambda () (_bq-old dt c ())) *O*))
+            (t2 (_bq-run (lambda () (_bq-new dt c ())) *C*)) )
+        (_bq-line "BETWEEN (range 150-250)" t1 *O* t2 *C*) ) )
+
+    ;; 8. Highly selective
+    (let ((c '((= "qty" 17))))
+      (let ((t1 (_bq-run (lambda () (_bq-old dt c ())) *O*))
+            (t2 (_bq-run (lambda () (_bq-new dt c ())) *C*)) )
+        (_bq-line "Highly selective (qty = 17)" t1 *O* t2 *C*) ) )
+
+    ;; 9. Unselective
+    (let ((c '((> "qty" 1))))
+      (let ((t1 (_bq-run (lambda () (_bq-old dt c ())) *O*))
+            (t2 (_bq-run (lambda () (_bq-new dt c ())) *C*)) )
+        (_bq-line "Unselective (qty > 1, ~all)" t1 *O* t2 *C*) ) )
+
+
+    ;; --- Section 2: Full pipeline benchmarks ---
+
+    (printf "\n%-37s %9s %9s %10s\n" "Full Pipeline" "Old (ms)" "New (ms)" "Speedup")
+    (printf "%-37s %9s %9s %10s\n"
+      "-------------------------------------" "---------" "---------" "---------")
+
+    ;; 10. WHERE + materialize
+    (let ((t1 (_bq-run
+                (lambda ()
+                  (let ((rows (columnardb-where-multi dt '((> "price" 200.0)) ())))
+                    (when rows
+                      (==> dt select-rows-idx (_list-to-sorted-idx1 rows)) ) ) )
+                *O* ))
+          (t2 (_bq-run
+                (lambda () (db-select * (from dt) (where (> "price" 200.0))))
+                *C* )) )
+      (_bq-line "where + materialize" t1 *O* t2 *C*) )
+
+    ;; 11. AND where + materialize
+    (let ((t1 (_bq-run
+                (lambda ()
+                  (let ((rows (columnardb-where-multi dt
+                                '((= "symbol" "AAPL") (> "price" 200.0)) ())))
+                    (when rows
+                      (==> dt select-rows-idx (_list-to-sorted-idx1 rows)) ) ) )
+                *O* ))
+          (t2 (_bq-run
+                (lambda ()
+                  (db-select * (from dt)
+                    (where (and (= "symbol" "AAPL") (> "price" 200.0)))))
+                *C* )) )
+      (_bq-line "AND where + materialize" t1 *O* t2 *C*) )
+
+    ;; 12. db-count
+    (let ((t1 (_bq-run
+                (lambda ()
+                  (let ((rows (columnardb-where-multi dt '((> "price" 200.0)) ())))
+                    (if rows (length rows) 0) ) )
+                *O* ))
+          (t2 (_bq-run
+                (lambda () (db-count (from dt) (where (> "price" 200.0))))
+                *C* )) )
+      (_bq-line "db-count (> price 200)" t1 *O* t2 *C*) )
+
+
+    ;; --- Section 3: Sorted column benchmarks ---
+
+    (printf "\n%-37s %9s %9s %10s\n" "Sorted Column (scan vs bsearch)" "Old (ms)" "New (ms)" "Speedup")
+    (printf "%-37s %9s %9s %10s\n"
+      "-------------------------------------" "---------" "---------" "---------")
+
+    (let ((sdt (new DataTable)))
+      (==> sdt add-column "time" 'real)
+      (==> sdt add-column "value" 'real)
+      (for (i 0 (1- *N*))
+        (==> sdt append-row (list (to-double i) (* 0.5 i))) )
+
+      (let ((tdir "/tmp/claude/bench-sorted-tbl")
+            (dbdir "/tmp/claude/bench-sorted-db") )
+        (sys "rm -rf /tmp/claude/bench-sorted-tbl /tmp/claude/bench-sorted-db")
+        (sys "mkdir -p /tmp/claude/bench-sorted-tbl /tmp/claude/bench-sorted-db")
+        (columnardb-save sdt tdir)
+        (let ((db (new Database dbdir)))
+          (==> db attach "data" tdir)
+          (let* ((sdt2 (==> db table "data"))
+                 (meta (==> db table-meta "data")) )
+
+            ;; 13. > on sorted (50% selective)
+            (let ((c '((> "time" 50000.0))))
+              (let ((t1 (_bq-run (lambda () (_bq-old sdt2 c ())) *O*))
+                    (t2 (_bq-run (lambda () (_bq-new sdt2 c meta)) *C*)) )
+                (_bq-line "> sorted (50% selective)" t1 *O* t2 *C*) ) )
+
+            ;; 14. > on sorted (top 1%)
+            (let ((c '((> "time" 99000.0))))
+              (let ((t1 (_bq-run (lambda () (_bq-old sdt2 c ())) *O*))
+                    (t2 (_bq-run (lambda () (_bq-new sdt2 c meta)) *C*)) )
+                (_bq-line "> sorted (top 1%)" t1 *O* t2 *C*) ) )
+
+            ;; 15. BETWEEN on sorted (50% range)
+            (let ((c '((range "time" 25000.0 75000.0))))
+              (let ((t1 (_bq-run (lambda () (_bq-old sdt2 c ())) *O*))
+                    (t2 (_bq-run (lambda () (_bq-new sdt2 c meta)) *C*)) )
+                (_bq-line "BETWEEN sorted (50% range)" t1 *O* t2 *C*) ) )
+
+            ;; 16. = on sorted (point lookup)
+            (let ((c '((= "time" 50000.0))))
+              (let ((t1 (_bq-run (lambda () (_bq-old sdt2 c ())) *O*))
+                    (t2 (_bq-run (lambda () (_bq-new sdt2 c meta)) *C*)) )
+                (_bq-line "= sorted (point lookup)" t1 *O* t2 *C*) ) )
+
+            ;; 17. db-count on sorted via Database
+            (let ((t1 (_bq-run
+                         (lambda ()
+                           (let ((rows (columnardb-where-multi sdt2
+                                         '((> "time" 90000.0)) ())))
+                             (if rows (length rows) 0) ) )
+                         *O* ))
+                  (t2 (_bq-run
+                         (lambda () (db-count (from db "data")
+                                     (where (> "time" 90000.0))))
+                         *C* )) )
+              (_bq-line "db-count sorted (top 10%)" t1 *O* t2 *C*) ) ) ) )
+
+      (sys "rm -rf /tmp/claude/bench-sorted-tbl /tmp/claude/bench-sorted-db") )
+
+    (printf "\n================================================================\n")
+    (printf "  Old: %d iters (interpreted, slow); New: %d iters (compiled)\n" *O* *C*)
+    (printf "  Times normalized to per-call milliseconds\n")
+    (printf "================================================================\n") ) )
