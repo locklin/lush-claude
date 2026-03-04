@@ -1,0 +1,950 @@
+;;; conformal.lsh -- Centralized Conformal Prediction Module
+;;;
+;;; Advanced conformal prediction methods:
+;;;   - Mondrian CP (class-conditional coverage)
+;;;   - Venn-ABERS prediction (calibrated probability intervals)
+;;;   - Conformal predictive distributions (full predictive CDF)
+;;;   - Split conformal regression intervals (lm, ridge)
+;;;   - Mondrian conformal regression (adaptive intervals)
+;;;   - AgACI (adaptive online conformal inference)
+;;;   - Conformal anomaly detection (kNN-based)
+;;;
+;;; Copyright (C) 2026 Scott Locklin, Lugos LLC
+;;; Distributed under the GNU General Public License v2+.
+
+(libload "mlcore/model-selection")
+(libload "mlcore/knn")
+
+
+;; ============================================================
+#? *** Conformal Prediction
+;; Centralized module for advanced conformal prediction methods.
+;; Provides generic functions that work with any model through
+;; callback functions, plus convenience wrappers for specific
+;; mlcore models (Random Forest, Naive Bayes, GLMnet, lm, ridge, k-NN).
+;;
+;; {<b> Methods:}
+;; {<ul>
+;; {<li> {<b> Mondrian CP}: Class-conditional conformal prediction
+;;   with per-class calibration for improved conditional coverage.}
+;; {<li> {<b> Venn-ABERS}: Calibrated probability intervals via
+;;   isotonic regression (PAVA), producing well-calibrated [p0, p1].}
+;; {<li> {<b> Conformal predictive distributions}: Full predictive
+;;   CDF for regression, with quantile and interval queries.}
+;; {<li> {<b> Split conformal regression}: Prediction intervals
+;;   for regression models (lm, ridge) using absolute residuals.}
+;; {<li> {<b> Mondrian conformal regression}: Adaptive prediction
+;;   intervals that vary by predicted value (binned calibration).}
+;; {<li> {<b> AgACI}: Adaptive online conformal inference that
+;;   adjusts coverage over a data stream.}
+;; {<li> {<b> Conformal anomaly detection}: kNN-based anomaly
+;;   scoring with conformal p-values.}
+;; }
+;;
+;; All methods follow the split conformal paradigm: calibrate on
+;; a held-out set, then produce prediction sets/intervals for new
+;; test points.  Existing per-model conformal methods in rf.lsh,
+;; knn.lsh, and regression.lsh remain unchanged.
+;;
+;; {<code>
+;;  (libload "mlcore/mlcore")
+;;  ;; Mondrian CP with Random Forest
+;;  (let* ((rf (new RandomForest 100 "classify"))
+;;         (sets (conformal-mondrian-rf rf cal-data cal-labels test-data 0.1)))
+;;    ;; sets is a list of prediction sets with class-conditional coverage
+;;    ...)
+;; </code>}
+;; {<see> (==> <rf> conformal-predict <cal-data> <cal-targets> <test-data> <alpha>)}
+
+
+;; ============================================================
+;; Section 1: Compiled C Helpers
+;; ============================================================
+
+#? * Compiled Helpers
+;; Internal C functions used by conformal methods.
+
+(de _cp-pava (x y w n out)
+  ((-idx1- (-double-)) x y w out)
+  ((-int-) n)
+  ;; Pool Adjacent Violators Algorithm (isotonic regression).
+  ;; Assumes x is sorted ascending.  Computes weighted isotonic
+  ;; regression of y on x with weights w.  Writes fitted values to out.
+  ;; O(n) single-pass algorithm.
+  #{
+  double *py = IDX_PTR($y, double);
+  int sy = ($y)->mod[0];
+  double *pw = IDX_PTR($w, double);
+  int sw = ($w)->mod[0];
+  double *po = IDX_PTR($out, double);
+  int so = ($out)->mod[0];
+
+  int nn = $n;
+
+  if (nn > 0) {
+  /* block_sum[i], block_weight[i], block_end[i] track merged blocks */
+  double *bsum  = (double *)malloc(nn * sizeof(double));
+  double *bwt   = (double *)malloc(nn * sizeof(double));
+  int    *bend  = (int *)malloc(nn * sizeof(int));
+  int nb = 0;  /* number of active blocks */
+
+  int i;
+  for (i = 0; i < nn; i++) {
+      double yi = py[i * sy];
+      double wi = pw[i * sw];
+      bsum[nb] = yi * wi;
+      bwt[nb]  = wi;
+      bend[nb] = i;
+      nb++;
+      /* Pool adjacent violators: merge while non-isotonic */
+      while (nb >= 2) {
+          double mean_prev = bsum[nb-2] / bwt[nb-2];
+          double mean_curr = bsum[nb-1] / bwt[nb-1];
+          if (mean_prev <= mean_curr) break;
+          /* Merge blocks nb-2 and nb-1 */
+          bsum[nb-2] += bsum[nb-1];
+          bwt[nb-2]  += bwt[nb-1];
+          bend[nb-2]  = bend[nb-1];
+          nb--;
+      }
+  }
+
+  /* Write fitted values: each block gets its weighted mean */
+  int start = 0;
+  int b;
+  for (b = 0; b < nb; b++) {
+      double val = bsum[b] / bwt[b];
+      int end = bend[b];
+      int j;
+      for (j = start; j <= end; j++) {
+          po[j * so] = val;
+      }
+      start = end + 1;
+  }
+
+  free(bsum);
+  free(bwt);
+  free(bend);
+  } /* end if nn > 0 */
+  #}
+  () )
+
+
+(de _cp-bsearch (arr n val out)
+  ((-idx1- (-double-)) arr)
+  ((-int-) n)
+  ((-double-) val)
+  ((-idx0- (-int-)) out)
+  ;; Binary search in sorted double array.
+  ;; Writes index of first element > val into out.
+  ;; If all elements <= val, writes n.
+  #{
+  double *pa = IDX_PTR($arr, double);
+  int sa = ($arr)->mod[0];
+  int nn = $n;
+  double v = $val;
+  int lo = 0, hi = nn;
+  while (lo < hi) {
+      int mid = lo + (hi - lo) / 2;
+      if (pa[mid * sa] <= v) lo = mid + 1;
+      else hi = mid;
+  }
+  *(IDX_PTR($out, int)) = lo;
+  #}
+  () )
+
+
+(de _cp-abs-residuals (y yhat n out)
+  ((-idx1- (-double-)) y yhat out)
+  ((-int-) n)
+  ;; Compute |y - yhat| into output vector.
+  #{
+  double *py  = IDX_PTR($y, double);
+  int sy = ($y)->mod[0];
+  double *pyh = IDX_PTR($yhat, double);
+  int syh = ($yhat)->mod[0];
+  double *po  = IDX_PTR($out, double);
+  int so = ($out)->mod[0];
+  int nn = $n;
+  int i;
+  for (i = 0; i < nn; i++) {
+      double diff = py[i * sy] - pyh[i * syh];
+      po[i * so] = (diff < 0) ? -diff : diff;
+  }
+  #}
+  () )
+
+
+;; ============================================================
+;; Section 2: Mondrian CP -- Classification
+;; ============================================================
+
+#? ** Mondrian Conformal Prediction (Classification)
+;; Class-conditional conformal prediction.  Unlike standard split
+;; conformal, Mondrian CP calibrates a separate quantile threshold
+;; per class, yielding approximate class-conditional coverage:
+;; P(Y in C(X) | Y = c) >= 1 - alpha for each class c.
+
+#? (conformal-mondrian-classify <proba-fn> <cal-data> <cal-labels> <test-data> <alpha>)
+;; Generic Mondrian conformal classification.
+;; <proba-fn>: a function (lambda (data) ...) returning an N x K probability matrix.
+;; <cal-data>: N_cal x D calibration feature matrix.
+;; <cal-labels>: N_cal int vector of 0-based class labels.
+;; <test-data>: N_test x D test feature matrix.
+;; <alpha>: significance level (e.g. 0.1 for 90% class-conditional coverage).
+;; Returns a list of N_test lists, each containing the class labels in the
+;; prediction set.
+;;
+;; {<code>
+;;  ;; Using with any model that provides probabilities:
+;;  (let ((sets (conformal-mondrian-classify
+;;                (lambda (x) (==> my-model predict-proba x))
+;;                cal-data cal-labels test-data 0.1)))
+;;    (each ((s sets)) (printf "Prediction set: %l\n" s)))
+;; </code>}
+;; {<see> (conformal-mondrian-rf <rf> <cal-data> <cal-labels> <test-data> <alpha>)}
+
+(de conformal-mondrian-classify (proba-fn cal-data cal-labels test-data alpha)
+  (let* ((n-cal (idx-dim cal-data 0))
+         (n-test (idx-dim test-data 0))
+         ;; Find number of classes
+         (max-label 0))
+    (for (i 0 (1- n-cal))
+      (when (> (cal-labels i) max-label)
+        (setq max-label (cal-labels i)) ) )
+    (let* ((n-classes (+ max-label 1))
+           ;; Get calibration probabilities
+           (cal-proba (proba-fn cal-data))
+           ;; Collect per-class nonconformity scores: 1 - P(true class)
+           (class-scores (list))
+           (class-thresholds (double-matrix n-classes)))
+      ;; Initialize per-class score lists
+      (for (c 0 (1- n-classes))
+        (setq class-scores (nconc1 class-scores (list))) )
+      ;; Gather scores per class
+      (for (i 0 (1- n-cal))
+        (let* ((c (cal-labels i))
+               (score (- 1.0 (cal-proba i c)))
+               (clist (nth c class-scores)))
+          (nconc1 clist score) ) )
+      ;; Compute per-class quantile thresholds
+      (for (c 0 (1- n-classes))
+        (let* ((scores-list (nth c class-scores))
+               (nc (length scores-list)))
+          (if (= nc 0)
+            (class-thresholds c 1.0)
+            (let ((sv (double-matrix nc))
+                  (si 0))
+              (each ((s scores-list))
+                (sv si s) (incr si) )
+              ;; Sort ascending
+              (idx-d1sortup sv)
+              ;; Quantile: ceil((nc+1)*(1-alpha)), clamped
+              (let ((q-idx (min (1- nc) (int (* (+ nc 1) (- 1 alpha))))))
+                (class-thresholds c (sv q-idx)) ) ) ) ) )
+      ;; Classify test points
+      (let ((test-proba (proba-fn test-data))
+            (result ()))
+        (for (i 0 (1- n-test))
+          (let ((pred-set ()))
+            (for (c 0 (1- n-classes))
+              ;; Include class c if 1 - P(c) <= class-specific threshold
+              (when (<= (- 1.0 (test-proba i c)) (class-thresholds c))
+                (setq pred-set (nconc1 pred-set c)) ) )
+            (setq result (nconc1 result pred-set)) ) )
+        result ) ) ) )
+
+
+#? (conformal-mondrian-rf <rf> <cal-data> <cal-labels> <test-data> <alpha>)
+;; Mondrian conformal prediction using a Random Forest classifier.
+;; Wraps {<c> conformal-mondrian-classify} using RF's {<c> predict-proba}.
+;; <rf>: a fitted RandomForest object (classification mode).
+;; {<see> (conformal-mondrian-classify <proba-fn> <cal-data> <cal-labels> <test-data> <alpha>)}
+(de conformal-mondrian-rf (rf cal-data cal-labels test-data alpha)
+  (conformal-mondrian-classify
+    (lambda (x) (==> rf predict-proba x))
+    cal-data cal-labels test-data alpha) )
+
+
+#? (conformal-mondrian-nb <nb> <cal-data> <cal-labels> <test-data> <alpha>)
+;; Mondrian conformal prediction using a Naive Bayes classifier.
+;; Works with GaussianNB or BernoulliNB (any class with {<c> predict-proba}).
+;; {<see> (conformal-mondrian-classify <proba-fn> <cal-data> <cal-labels> <test-data> <alpha>)}
+(de conformal-mondrian-nb (nb cal-data cal-labels test-data alpha)
+  (conformal-mondrian-classify
+    (lambda (x) (==> nb predict-proba x))
+    cal-data cal-labels test-data alpha) )
+
+
+#? (conformal-mondrian-glmnet <model> <cal-data> <cal-labels> <test-data> <lam> <alpha>)
+;; Mondrian conformal prediction using a GLMnet binomial model.
+;; Constructs an N x 2 probability matrix [1-p, p] from the
+;; single-output predict (which returns P(class=1)).
+;; <lam>: regularization parameter (lambda).
+;; {<see> (conformal-mondrian-classify <proba-fn> <cal-data> <cal-labels> <test-data> <alpha>)}
+(de conformal-mondrian-glmnet (model cal-data cal-labels test-data lam alpha)
+  (conformal-mondrian-classify
+    (lambda (x)
+      (let* ((p (==> model predict x lam))
+             (n (idx-dim p 0))
+             (proba (double-matrix n 2)))
+        (for (i 0 (1- n))
+          (proba i 1 (p i))
+          (proba i 0 (- 1.0 (p i))) )
+        proba) )
+    cal-data cal-labels test-data alpha) )
+
+
+#? (conformal-mondrian-knn <cal-data> <cal-labels> <test-data> <k> <alpha>)
+;; Mondrian conformal prediction using k-NN vote fractions as probabilities.
+;; For each point, computes the fraction of k nearest neighbors voting
+;; for each class, then applies Mondrian calibration.
+;; <k>: number of neighbors.
+;; {<see> (conformal-mondrian-classify <proba-fn> <cal-data> <cal-labels> <test-data> <alpha>)}
+(de conformal-mondrian-knn (cal-data cal-labels test-data k alpha)
+  ;; Find number of classes
+  (let ((max-label 0)
+        (n-cal (idx-dim cal-data 0)))
+    (for (i 0 (1- n-cal))
+      (when (> (cal-labels i) max-label)
+        (setq max-label (cal-labels i)) ) )
+    (let ((n-classes (+ max-label 1)))
+      ;; Build probability function using compiled knn-search.
+      ;; Strategy: stack [query; cal-data] and call knn-search on the
+      ;; combined matrix.  For query rows (indices 0..n_query-1), the
+      ;; k nearest neighbors among cal rows (indices n_query..end) give
+      ;; the vote fractions.  We request k+1 neighbors and skip any
+      ;; neighbor pointing to a query row (index < n_query).
+      (conformal-mondrian-classify
+        (lambda (x)
+          (let* ((n-query (idx-dim x 0))
+                 (d (idx-dim x 1))
+                 (n-total (+ n-query n-cal))
+                 (combined (double-matrix n-total d))
+                 (kk (min k (1- n-cal)))
+                 (proba (double-matrix n-query n-classes)))
+            ;; Build combined matrix: [query rows ; cal rows]
+            (for (i 0 (1- n-query))
+              (for (j 0 (1- d))
+                (combined i j (x i j)) ) )
+            (for (i 0 (1- n-cal))
+              (for (j 0 (1- d))
+                (combined (+ n-query i) j (cal-data i j)) ) )
+            ;; Use compiled brute kNN on combined matrix
+            ;; Request enough neighbors to get k cal-data neighbors
+            (let* ((search-k (min (+ kk n-query) (1- n-total)))
+                   (knn-result (knn-search combined search-k "brute"))
+                   (knn-idx (car knn-result)))
+              ;; For each query row, count votes from cal-data neighbors
+              (for (qi 0 (1- n-query))
+                (let ((votes-found 0))
+                  (for (ni 0 (1- search-k))
+                    (when (< votes-found kk)
+                      (let ((neighbor (knn-idx qi ni)))
+                        ;; Only count neighbors that are cal rows
+                        (when (>= neighbor n-query)
+                          (let ((c (cal-labels (- neighbor n-query))))
+                            (proba qi c (+ (proba qi c) 1.0)) )
+                          (incr votes-found) ) ) ) )
+                  ;; Normalize
+                  (let ((total (max 1 votes-found)))
+                    (for (c 0 (1- n-classes))
+                      (proba qi c (/ (proba qi c) total)) ) ) ) ) )
+            proba) )
+        cal-data cal-labels test-data alpha) ) ) )
+
+
+;; ============================================================
+;; Section 3: Venn-ABERS Prediction
+;; ============================================================
+
+#? ** Venn-ABERS Prediction
+;; Venn-ABERS produces calibrated probability intervals [p0, p1]
+;; for binary classification.  For each test point, it considers
+;; both possible labels (0 and 1), augments the calibration set,
+;; runs isotonic regression (PAVA), and returns calibrated
+;; probabilities.  The true probability lies in [p0, p1] with
+;; high confidence.
+
+#? (venn-abers-predict <scores> <cal-labels> <test-scores>)
+;; Generic Venn-ABERS for binary classification.
+;; <scores>: N_cal double vector of model scores for calibration points
+;;   (e.g. P(class=1) from any model).
+;; <cal-labels>: N_cal int vector of true binary labels (0 or 1).
+;; <test-scores>: N_test double vector of model scores for test points.
+;; Returns an N_test x 2 double matrix where column 0 is the calibrated
+;; probability when assuming y=0, and column 1 when assuming y=1.
+;;
+;; {<code>
+;;  ;; Using with generic scores:
+;;  (let ((result (venn-abers-predict cal-scores cal-labels test-scores)))
+;;    ;; result is N_test x 2: [p0, p1]
+;;    (printf "Point probability interval: [%g, %g]\n"
+;;            (result 0 0) (result 0 1)))
+;; </code>}
+;; {<see> (venn-abers-rf <rf> <cal-data> <cal-labels> <test-data>)}
+
+(de venn-abers-predict (scores cal-labels test-scores)
+  (let* ((n-cal (idx-dim scores 0))
+         (n-test (idx-dim test-scores 0))
+         (result (double-matrix n-test 2))
+         ;; Augmented arrays: n-cal + 1 elements
+         (n-aug (+ n-cal 1))
+         (aug-scores (double-matrix n-aug))
+         (aug-labels (double-matrix n-aug))
+         (aug-weights (double-matrix n-aug))
+         (aug-order (int-matrix n-aug))
+         (sorted-scores (double-matrix n-aug))
+         (sorted-labels (double-matrix n-aug))
+         (sorted-weights (double-matrix n-aug))
+         (pava-out (double-matrix n-aug)))
+    ;; Copy calibration data into augmented arrays
+    (for (i 0 (1- n-cal))
+      (aug-scores i (scores i))
+      (aug-labels i (to-double (cal-labels i)))
+      (aug-weights i 1.0) )
+    ;; For each test point
+    (for (ti 0 (1- n-test))
+      (let ((ts (test-scores ti)))
+        ;; Try each candidate label y in {0, 1}
+        (for (y 0 1)
+          ;; Set the augmented test point
+          (aug-scores n-cal ts)
+          (aug-labels n-cal (to-double y))
+          (aug-weights n-cal 1.0)
+          ;; Sort by scores (insertion sort on small arrays)
+          (for (i 0 (1- n-aug)) (aug-order i i))
+          (for (i 1 (1- n-aug))
+            (let ((vs (aug-scores (aug-order i)))
+                  (vi (aug-order i))
+                  (j (- i 1)))
+              (while (and (>= j 0) (> (aug-scores (aug-order j)) vs))
+                (aug-order (+ j 1) (aug-order j))
+                (setq j (- j 1)) )
+              (aug-order (+ j 1) vi) ) )
+          ;; Build sorted arrays
+          (for (i 0 (1- n-aug))
+            (let ((idx (aug-order i)))
+              (sorted-scores i (aug-scores idx))
+              (sorted-labels i (aug-labels idx))
+              (sorted-weights i (aug-weights idx)) ) )
+          ;; Run PAVA isotonic regression
+          (_cp-pava sorted-scores sorted-labels sorted-weights n-aug pava-out)
+          ;; Find where test point is in sorted order and read its fitted value
+          ;; The test point has score = ts; find its position
+          (let ((found-val 0))
+            (for (i 0 (1- n-aug))
+              (when (= (aug-order i) n-cal)
+                (setq found-val (pava-out i)) ) )
+            (result ti y found-val) ) ) ) )
+    result ) )
+
+
+#? (venn-abers-rf <rf> <cal-data> <cal-labels> <test-data>)
+;; Venn-ABERS prediction using a Random Forest classifier.
+;; Extracts P(class=1) from RF's predict-proba as the score.
+;; Only for binary classification (2 classes).
+;; Returns N_test x 2 matrix [p0, p1].
+;; {<see> (venn-abers-predict <scores> <cal-labels> <test-scores>)}
+(de venn-abers-rf (rf cal-data cal-labels test-data)
+  (let* ((cal-proba (==> rf predict-proba cal-data))
+         (test-proba (==> rf predict-proba test-data))
+         (n-cal (idx-dim cal-data 0))
+         (n-test (idx-dim test-data 0))
+         (cal-scores (double-matrix n-cal))
+         (test-scores (double-matrix n-test)))
+    (for (i 0 (1- n-cal))
+      (cal-scores i (cal-proba i 1)) )
+    (for (i 0 (1- n-test))
+      (test-scores i (test-proba i 1)) )
+    (venn-abers-predict cal-scores cal-labels test-scores) ) )
+
+
+#? (venn-abers-glmnet <model> <cal-data> <cal-labels> <test-data> <lam>)
+;; Venn-ABERS prediction using a GLMnet binomial model.
+;; Uses P(class=1) from glmnet predict as the score.
+;; <lam>: regularization parameter.
+;; Returns N_test x 2 matrix [p0, p1].
+;; {<see> (venn-abers-predict <scores> <cal-labels> <test-scores>)}
+(de venn-abers-glmnet (model cal-data cal-labels test-data lam)
+  (let ((cal-scores (==> model predict cal-data lam))
+        (test-scores (==> model predict test-data lam)))
+    (venn-abers-predict cal-scores cal-labels test-scores) ) )
+
+
+;; ============================================================
+;; Section 4: Conformal Predictive Distributions
+;; ============================================================
+
+#? ** Conformal Predictive Distributions
+;; A conformal predictive distribution provides a full predictive
+;; CDF for each test point, rather than just an interval.  Given
+;; a regression model's predictions and calibration residuals,
+;; the CDF at value y for test point x is:
+;;
+;;   F(y | x) = #{r_i : r_i <= y - f(x)} / (n_cal + 1)
+;;
+;; where r_i = y_cal_i - f(x_cal_i) are the calibration residuals.
+;; From this CDF, quantiles and prediction intervals can be derived.
+
+#? * ConformalPredDist
+;; A conformal predictive distribution for a single test point.
+;; Stores sorted calibration residuals and provides CDF, quantile,
+;; and interval queries.
+;; {<type> CLASS}
+
+(defclass ConformalPredDist object
+  residuals    ;; sorted double vector of calibration residuals
+  n            ;; number of calibration residuals
+)
+
+#? (new ConformalPredDist <residuals-vec>)
+;; Create a conformal predictive distribution from a sorted vector
+;; of calibration residuals.  The residuals should be r_i = y_i - f(x_i).
+;; <residuals-vec>: a double vector (will be sorted internally).
+(defmethod ConformalPredDist ConformalPredDist (resid-vec)
+  (setq n (idx-dim resid-vec 0))
+  (setq residuals (idx-copy resid-vec))
+  (idx-d1sortup residuals) )
+
+#? (==> <cpd> cdf <y-val> <pred-val>)
+;; Evaluate the conformal CDF at <y-val> given prediction <pred-val>.
+;; Returns F(y) = #{r_i <= y - pred} / (n + 1), a value in [0, 1].
+(defmethod ConformalPredDist cdf (y-val pred-val)
+  (let ((target (- y-val pred-val))
+        (out (int-matrix)))
+    (_cp-bsearch residuals n target out)
+    (/ (to-double (out)) (+ n 1)) ) )
+
+#? (==> <cpd> quantile <prob> <pred-val>)
+;; Return the quantile: the smallest y such that F(y) >= <prob>.
+;; Computed as pred + residuals[ceil(prob * (n+1)) - 1].
+;; <prob>: probability level in (0, 1).
+;; <pred-val>: the model's point prediction for this test point.
+(defmethod ConformalPredDist quantile (prob pred-val)
+  ;; ceil(x) = int(x) if x is integer, int(x)+1 otherwise
+  (let* ((raw (* prob (+ n 1)))
+         (iraw (int raw))
+         (craw (if (> raw iraw) (+ iraw 1) iraw))
+         (idx (max 0 (min (1- n) (1- craw))))  )
+    (+ pred-val (residuals idx)) ) )
+
+#? (==> <cpd> interval <alpha> <pred-val>)
+;; Return a prediction interval (lower . upper) at coverage 1 - <alpha>.
+;; Computed as (quantile(alpha/2), quantile(1 - alpha/2)).
+;; <alpha>: significance level (e.g. 0.1 for 90% coverage).
+;; <pred-val>: the model's point prediction.
+(defmethod ConformalPredDist interval (alpha pred-val)
+  (let ((lower (==> this quantile (/ alpha 2) pred-val))
+        (upper (==> this quantile (- 1 (/ alpha 2)) pred-val)))
+    (cons lower upper) ) )
+
+
+#? (conformal-pred-dist <predict-fn> <cal-x> <cal-y> <test-x>)
+;; Compute conformal predictive distributions for test points.
+;; <predict-fn>: function (lambda (x) ...) returning N-vector of predictions.
+;; <cal-x>: N_cal x D calibration feature matrix.
+;; <cal-y>: N_cal double vector of calibration responses.
+;; <test-x>: N_test x D test feature matrix.
+;; Returns a list of N_test ConformalPredDist objects.
+;;
+;; {<code>
+;;  (let* ((cpds (conformal-pred-dist
+;;                 (lambda (x) (==> lm predict x))
+;;                 cal-x cal-y test-x))
+;;         (cpd (car cpds)))
+;;    ;; 90% prediction interval for first test point
+;;    (let ((iv (==> cpd interval 0.1 (pred 0))))
+;;      (printf "Interval: [%g, %g]\n" (car iv) (cdr iv))))
+;; </code>}
+;; {<see> ConformalPredDist}
+(de conformal-pred-dist (predict-fn cal-x cal-y test-x)
+  (let* ((n-cal (idx-dim cal-x 0))
+         (cal-pred (predict-fn cal-x))
+         (resid (double-matrix n-cal)))
+    ;; Compute residuals r_i = y_i - f(x_i)
+    (for (i 0 (1- n-cal))
+      (resid i (- (cal-y i) (cal-pred i))) )
+    ;; Sort residuals once (shared by all test points)
+    (idx-d1sortup resid)
+    ;; Create a ConformalPredDist for each test point
+    ;; (all share the same sorted residuals)
+    (let ((n-test (idx-dim test-x 0))
+          (result ()))
+      (for (i 0 (1- n-test))
+        (setq result (nconc1 result (new ConformalPredDist resid))) )
+      result ) ) )
+
+
+#? (conformal-pred-dist-lm <lm> <cal-x> <cal-y> <test-x>)
+;; Conformal predictive distributions using an lm-model.
+;; {<see> (conformal-pred-dist <predict-fn> <cal-x> <cal-y> <test-x>)}
+(de conformal-pred-dist-lm (lm cal-x cal-y test-x)
+  (conformal-pred-dist
+    (lambda (x) (==> lm predict x))
+    cal-x cal-y test-x) )
+
+
+#? (conformal-pred-dist-glmnet <model> <cal-x> <cal-y> <test-x> <lam>)
+;; Conformal predictive distributions using a GLMnet gaussian model.
+;; <lam>: regularization parameter.
+;; {<see> (conformal-pred-dist <predict-fn> <cal-x> <cal-y> <test-x>)}
+(de conformal-pred-dist-glmnet (model cal-x cal-y test-x lam)
+  (conformal-pred-dist
+    (lambda (x) (==> model predict x lam))
+    cal-x cal-y test-x) )
+
+
+;; ============================================================
+;; Section 5: Split Conformal for lm-model and ridge
+;; ============================================================
+
+#? ** Split Conformal Regression Intervals
+;; Standard split conformal prediction intervals for regression.
+;; Uses absolute residuals as nonconformity scores.  The interval
+;; for each test point is [f(x) - q, f(x) + q] where q is the
+;; (1-alpha) quantile of calibration absolute residuals.
+
+#? (conformal-regression-interval <predict-fn> <cal-x> <cal-y> <test-x> <alpha>)
+;; Generic split conformal regression intervals.
+;; <predict-fn>: function mapping data matrix -> N-vector of predictions.
+;; <cal-x>: N_cal x D calibration feature matrix.
+;; <cal-y>: N_cal double vector of calibration responses.
+;; <test-x>: N_test x D test feature matrix.
+;; <alpha>: significance level (e.g. 0.1 for 90% coverage).
+;; Returns an N_test x 2 double matrix [lower, upper].
+;;
+;; {<code>
+;;  (let ((intervals (conformal-regression-interval
+;;                     (lambda (x) (==> lm predict x))
+;;                     cal-x cal-y test-x 0.1)))
+;;    (for (i 0 (1- (idx-dim intervals 0)))
+;;      (printf "Point %d: [%g, %g]\n" i (intervals i 0) (intervals i 1))))
+;; </code>}
+(de conformal-regression-interval (predict-fn cal-x cal-y test-x alpha)
+  (let* ((n-cal (idx-dim cal-x 0))
+         (n-test (idx-dim test-x 0))
+         (cal-pred (predict-fn cal-x))
+         (abs-resid (double-matrix n-cal)))
+    ;; Compute absolute residuals via compiled helper
+    (_cp-abs-residuals cal-y cal-pred n-cal abs-resid)
+    ;; Sort
+    (idx-d1sortup abs-resid)
+    ;; Quantile: ceil((n_cal+1)*(1-alpha)), clamped
+    (let* ((q-idx (min (1- n-cal) (int (* (+ n-cal 1) (- 1 alpha)))))
+           (q (abs-resid q-idx))
+           (test-pred (predict-fn test-x))
+           (intervals (double-matrix n-test 2)))
+      (for (i 0 (1- n-test))
+        (intervals i 0 (- (test-pred i) q))
+        (intervals i 1 (+ (test-pred i) q)) )
+      intervals ) ) )
+
+
+#? (conformal-lm <lm> <cal-x> <cal-y> <test-x> <alpha>)
+;; Split conformal regression intervals for an lm-model.
+;; <lm>: a fitted lm-model object.
+;; {<see> (conformal-regression-interval <predict-fn> <cal-x> <cal-y> <test-x> <alpha>)}
+(de conformal-lm (lm cal-x cal-y test-x alpha)
+  (conformal-regression-interval
+    (lambda (x) (==> lm predict x))
+    cal-x cal-y test-x alpha) )
+
+
+#? (conformal-ridge <coefs> <cal-x> <cal-y> <test-x> <alpha>)
+;; Split conformal regression intervals for ridge regression.
+;; <coefs>: coefficient vector from {<c> ridge} (with intercept).
+;; The first element is the intercept, rest are slope coefficients.
+;; Internally computes predictions as X_aug * coefs where X_aug
+;; has a column of 1s prepended.
+;; {<see> (conformal-regression-interval <predict-fn> <cal-x> <cal-y> <test-x> <alpha>)}
+(de conformal-ridge (coefs cal-x cal-y test-x alpha)
+  (conformal-regression-interval
+    (lambda (x)
+      (let* ((nn (idx-dim x 0))
+             (pp (idx-dim x 1))
+             (pred (double-matrix nn)))
+        ;; Predict: intercept + x * beta
+        (for (i 0 (1- nn))
+          (let ((v (coefs 0)))  ;; intercept
+            (for (j 0 (1- pp))
+              (incr v (* (x i j) (coefs (+ j 1)))) )
+            (pred i v) ) )
+        pred) )
+    cal-x cal-y test-x alpha) )
+
+
+;; ============================================================
+;; Section 6: Mondrian Conformal Regression
+;; ============================================================
+
+#? ** Mondrian Conformal Regression
+;; Mondrian conformal regression partitions calibration points
+;; into bins by predicted value and runs separate conformal
+;; calibration per bin.  This produces adaptive intervals that
+;; are wider in high-variance regions and tighter in low-variance
+;; regions, providing approximate conditional coverage.
+
+#? (conformal-mondrian-regression <predict-fn> <cal-x> <cal-y> <test-x> <alpha> <n-bins>)
+;; Mondrian conformal regression with adaptive intervals.
+;; <predict-fn>: function mapping data -> N-vector predictions.
+;; <cal-x>: N_cal x D calibration feature matrix.
+;; <cal-y>: N_cal double vector of calibration responses.
+;; <test-x>: N_test x D test feature matrix.
+;; <alpha>: significance level.
+;; <n-bins>: number of quantile bins (e.g. 3 or 5).
+;; Returns an N_test x 2 double matrix [lower, upper].
+;;
+;; {<code>
+;;  (let ((intervals (conformal-mondrian-regression
+;;                     (lambda (x) (==> lm predict x))
+;;                     cal-x cal-y test-x 0.1 5)))
+;;    ;; intervals adapt to local prediction variance
+;;    ...)
+;; </code>}
+(de conformal-mondrian-regression (predict-fn cal-x cal-y test-x alpha n-bins)
+  (let* ((n-cal (idx-dim cal-x 0))
+         (n-test (idx-dim test-x 0))
+         (cal-pred (predict-fn cal-x))
+         (test-pred (predict-fn test-x))
+         ;; Compute absolute residuals
+         (abs-resid (double-matrix n-cal)))
+    (_cp-abs-residuals cal-y cal-pred n-cal abs-resid)
+    ;; Compute bin boundaries from quantiles of calibration predictions
+    (let* ((sorted-pred (idx-copy cal-pred))
+           (bin-bounds (double-matrix (1- n-bins)))
+           (intervals (double-matrix n-test 2)))
+      (idx-d1sortup sorted-pred)
+      ;; Set bin boundaries at quantiles
+      (for (b 0 (- n-bins 2))
+        (let ((idx (int (* (/ (+ b 1.0) n-bins) n-cal))))
+          (setq idx (min idx (1- n-cal)))
+          (bin-bounds b (sorted-pred idx)) ) )
+      ;; For each bin, compute its own quantile threshold
+      (let ((bin-thresholds (double-matrix n-bins)))
+        ;; Assign calibration points to bins and gather per-bin residuals
+        (for (bin 0 (1- n-bins))
+          (let ((bin-resids ()))
+            (for (i 0 (1- n-cal))
+              ;; Determine bin for cal point i
+              (let ((my-bin 0)
+                    (pv (cal-pred i)))
+                (for (b 0 (- n-bins 2))
+                  (when (> pv (bin-bounds b))
+                    (setq my-bin (+ b 1)) ) )
+                (when (= my-bin bin)
+                  (setq bin-resids (nconc1 bin-resids (abs-resid i))) ) ) )
+            ;; Compute quantile for this bin
+            (let ((nb (length bin-resids)))
+              (if (= nb 0)
+                ;; Empty bin: use global quantile
+                (let ((global-sorted (idx-copy abs-resid)))
+                  (idx-d1sortup global-sorted)
+                  (let ((q-idx (min (1- n-cal) (int (* (+ n-cal 1) (- 1 alpha))))))
+                    (bin-thresholds bin (global-sorted q-idx)) ) )
+                (let ((bv (double-matrix nb))
+                      (bi 0))
+                  (each ((r bin-resids))
+                    (bv bi r) (incr bi) )
+                  (idx-d1sortup bv)
+                  (let ((q-idx (min (1- nb) (int (* (+ nb 1) (- 1 alpha))))))
+                    (bin-thresholds bin (bv q-idx)) ) ) ) ) ) )
+        ;; Build intervals for test points
+        (for (i 0 (1- n-test))
+          ;; Determine bin for test point i
+          (let ((my-bin 0)
+                (pv (test-pred i)))
+            (for (b 0 (- n-bins 2))
+              (when (> pv (bin-bounds b))
+                (setq my-bin (+ b 1)) ) )
+            (let ((q (bin-thresholds my-bin)))
+              (intervals i 0 (- (test-pred i) q))
+              (intervals i 1 (+ (test-pred i) q)) ) ) ) )
+      intervals ) ) )
+
+
+;; ============================================================
+;; Section 7: AgACI -- Adaptive Online Conformal
+;; ============================================================
+
+#? ** AgACI: Adaptive Online Conformal Inference
+;; AgACI (Aggregated Adaptive Conformal Inference) adaptively
+;; adjusts the significance level over a data stream to achieve
+;; long-run coverage.  The update rule is:
+;;
+;;   alpha_{t+1} = alpha_t + gamma * (alpha_target - err_t)
+;;
+;; where err_t = 1 if the true value was NOT covered, 0 otherwise.
+;; gamma controls the adaptation speed.
+
+#? * AgACI
+;; Adaptive online conformal inference object.
+;; Maintains a running state of scores, current alpha level,
+;; and time step for streaming conformal prediction.
+;; {<type> CLASS}
+
+(defclass AgACI object
+  alpha-target      ;; target miscoverage rate
+  alpha-current     ;; current adaptive alpha
+  gamma             ;; step size for adaptation
+  scores            ;; list of past nonconformity scores
+  errors            ;; running count of coverage errors
+  t                 ;; time step counter
+)
+
+#? (new AgACI <alpha> <gamma>)
+;; Create an AgACI instance.
+;; <alpha>: target significance level (e.g. 0.1 for 90% coverage).
+;; <gamma>: step size for alpha adaptation (e.g. 0.01).
+;;   gamma = 0 gives static conformal (no adaptation).
+(defmethod AgACI AgACI (alpha gam)
+  (setq alpha-target alpha)
+  (setq alpha-current alpha)
+  (setq gamma gam)
+  (setq scores ())
+  (setq errors 0)
+  (setq t 0) )
+
+#? (==> <aci> update <score> <covered-p>)
+;; Update the AgACI state with a new observation.
+;; <score>: the nonconformity score for the new point.
+;; <covered-p>: t if the prediction set/interval covered the true value,
+;;   () (nil) if not.
+;; Updates alpha-current, appends score, and increments time step.
+(defmethod AgACI update (score covered-p)
+  (setq scores (nconc1 scores score))
+  (incr t)
+  (let ((err-t (if covered-p 0 1)))
+    (incr errors err-t)
+    ;; alpha_{t+1} = alpha_t + gamma * (alpha_target - err_t)
+    ;; Clamp to [0.001, 0.999] for stability
+    (setq alpha-current
+          (max 0.001 (min 0.999
+            (+ alpha-current (* gamma (- alpha-target err-t))) ))) )
+  () )
+
+#? (==> <aci> get-alpha)
+;; Return the current adaptive alpha value.
+(defmethod AgACI get-alpha ()
+  alpha-current )
+
+#? (==> <aci> get-threshold)
+;; Compute the current quantile threshold from accumulated scores.
+;; Returns the ceil((n+1)*(1-alpha_current))-th sorted score.
+;; Returns 1e30 if no scores have been accumulated.
+(defmethod AgACI get-threshold ()
+  (if (= (length scores) 0)
+    1e30
+    (let* ((ns (length scores))
+           (sv (double-matrix ns))
+           (si 0))
+      (each ((s scores))
+        (sv si s) (incr si) )
+      (idx-d1sortup sv)
+      (let ((q-idx (min (1- ns) (int (* (+ ns 1) (- 1 alpha-current))))))
+        (sv q-idx) ) ) ) )
+
+#? (==> <aci> predict-interval <pred-val>)
+;; Return a prediction interval (lower . upper) using the current
+;; threshold as the half-width around <pred-val>.
+;; Assumes absolute residuals are used as nonconformity scores.
+(defmethod AgACI predict-interval (pred-val)
+  (let ((q (==> this get-threshold)))
+    (cons (- pred-val q) (+ pred-val q)) ) )
+
+#? (==> <aci> coverage-rate)
+;; Return the empirical coverage rate so far: (t - errors) / t.
+(defmethod AgACI coverage-rate ()
+  (if (= t 0) 1.0
+    (/ (to-double (- t errors)) t) ) )
+
+
+;; ============================================================
+;; Section 8: Conformal Anomaly Detection
+;; ============================================================
+
+#? ** Conformal Anomaly Detection
+;; k-NN based anomaly detection using conformal p-values.
+;; The nonconformity score is the distance to the k-th nearest
+;; neighbor.  Points with high scores (low p-values) are flagged
+;; as anomalies.
+
+#? (conformal-anomaly-detect <train-data> <test-data> <k> <alpha>)
+;; Detect anomalies using conformal k-NN scores.
+;; <train-data>: N_train x D reference (normal) data matrix.
+;; <test-data>: N_test x D test data matrix.
+;; <k>: number of neighbors for scoring.
+;; <alpha>: significance level (points with p-value < alpha are anomalies).
+;; Returns an N_test int vector (1 = anomaly, 0 = normal).
+;;
+;; {<b> Algorithm:}
+;; {<ul>
+;; {<li> For each training point, compute k-th nearest neighbor distance
+;;   among other training points (self-referential calibration using k+1
+;;   neighbors then taking the k-th).}
+;; {<li> Sort calibration scores to establish threshold.}
+;; {<li> For each test point, compute k-th NN distance to training data.
+;;   If the conformal p-value (fraction of calibration scores >= test score)
+;;   is below alpha, flag as anomaly.}
+;; }
+;;
+;; {<code>
+;;  (let ((flags (conformal-anomaly-detect train-data test-data 5 0.05)))
+;;    (for (i 0 (1- (idx-dim flags 0)))
+;;      (when (= (flags i) 1)
+;;        (printf "Point %d is an anomaly\n" i))))
+;; </code>}
+(de conformal-anomaly-detect (train-data test-data k alpha)
+  (let* ((n-train (idx-dim train-data 0))
+         (n-test (idx-dim test-data 0))
+         (d (idx-dim train-data 1))
+         ;; Calibration: k+1 nearest neighbors of each training point
+         ;; among all training points (includes self as nearest)
+         (kk1 (min (+ k 1) (1- n-train)))
+         (train-knn (knn-search train-data kk1 "brute"))
+         (train-dists (cadr train-knn))
+         ;; Calibration scores: k-th NN distance (index k-1 after excluding self)
+         ;; knn-search returns k+1 neighbors; index 0 is self (distance 0)
+         ;; so the k-th NN is at index k (or kk1-1 if clamped)
+         (cal-scores (double-matrix n-train))
+         (k-idx (min (1- kk1) k)))
+    ;; Extract k-th NN distances for calibration
+    (for (i 0 (1- n-train))
+      (cal-scores i (train-dists i k-idx)) )
+    ;; Sort calibration scores
+    (let ((sorted-cal (idx-copy cal-scores)))
+      (idx-d1sortup sorted-cal)
+      ;; For each test point, compute distance to k-th nearest training point
+      ;; using brute-force distance computation
+      (let ((flags (int-matrix n-test)))
+        (for (ti 0 (1- n-test))
+          ;; Compute distances from test point to all training points
+          (let ((dists (double-matrix n-train)))
+            (for (j 0 (1- n-train))
+              (let ((dist 0))
+                (for (dim 0 (1- d))
+                  (let ((diff (- (test-data ti dim) (train-data j dim))))
+                    (incr dist (* diff diff)) ) )
+                (dists j (sqrt dist)) ) )
+            ;; Find k-th smallest distance
+            (idx-d1sortup dists)
+            (let* ((test-score (dists (min (1- n-train) (1- k))))
+                   ;; Conformal p-value: (#{cal scores >= test score} + 1) / (n_train + 1)
+                   (n-geq 0))
+              (for (j 0 (1- n-train))
+                (when (>= (sorted-cal j) test-score)
+                  (incr n-geq) ) )
+              (let ((pval (/ (+ n-geq 1.0) (+ n-train 1))))
+                (when (< pval alpha)
+                  (flags ti 1) ) ) ) ) )
+        flags ) ) ) )
+
+
+;; ============================================================
+;; Compilation
+;; ============================================================
+
+(dhc-make ()
+  _cp-pava
+  _cp-bsearch
+  _cp-abs-residuals )

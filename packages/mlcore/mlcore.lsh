@@ -30,6 +30,7 @@
 ;; {<li> {<b> rf}: Random Forest classifier/regressor}
 ;; {<li> {<b> kmeans}: K-Means clustering with k-means++ init}
 ;; {<li> {<b> spectral}: Laplacian Eigenmaps, Diffusion Maps, Kernel PCA}
+;; {<li> {<b> conformal}: Mondrian CP, Venn-ABERS, predictive distributions, AgACI, anomaly detection}
 ;; }
 ;;
 ;; {<code>
@@ -49,3 +50,4 @@
 (libload "mlcore/rf")
 (libload "mlcore/spectral")
 (libload "mlcore/regression")
+(libload "mlcore/conformal")

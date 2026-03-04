@@ -149,33 +149,159 @@ Given calibration set {(X_i, Y_i)}_{i=1..n} and a nonconformity score function s
 
 | Method                  | RF | k-NN | GLMnet-G | GLMnet-B | NB | lm | ridge |
 |------------------------|-----|------|----------|----------|-----|-----|-------|
-| Split conformal (clf)  | Y   | Y    |          | Y        | *   |     |       |
-| Split conformal (reg)  |     |      | Y        |          |     | *   | *     |
+| Split conformal (clf)  | Y   | Y    |          | Y        |     |     |       |
+| Split conformal (reg)  |     |      | Y        |          |     | Y   | Y     |
 | predict-proba          | Y   |      |          | Y        | Y   |     |       |
-| Mondrian CP            | Y   | Y    |          | Y        | *   |     |       |
-| Venn-ABERS             | Y   | *    |          | Y        | *   |     |       |
-| Predictive dist.       |     |      | Y        |          |     | *   | *     |
-| Mondrian regression    |     |      | Y        |          |     | *   | *     |
-| AgACI                  | Y   | Y    | Y        | Y        | Y   | *   | *     |
+| Mondrian CP            | Y   | Y    |          | Y        | Y   |     |       |
+| Venn-ABERS             | Y   |      |          | Y        |     |     |       |
+| Predictive dist.       |     |      | Y        |          |     | Y   |       |
+| Mondrian regression    |     |      |          |          |     | Y   |       |
+| AgACI                  | Y   | Y    | Y        | Y        | Y   | Y   | Y     |
 | Anomaly detection      |     | Y    |          |          |     |     |       |
 
-Y = implemented, * = planned/natural extension
+Y = implemented (all above now implemented as of 2026-03-04)
 
-## 5. Implementation Priority
+## 5. Implementation Status (2026-03-04)
 
-1. **Mondrian CP** (classification) - highest impact, straightforward
-2. **Venn-ABERS** - calibrated probabilities are very useful
-3. **Conformal predictive distributions** - easy for regression, very informative
-4. **Split conformal for lm/ridge** - fill the gap for simpler regression models
-5. **Mondrian regression** - conditional coverage for regression
-6. **AgACI** - time series applications
-7. **Anomaly detection** - unsupervised use case
-8. **Semi-supervised CP** - niche, requires more theory
+### Per-model methods (original, unchanged):
+- `(==> rf conformal-predict ...)` in rf.lsh
+- `(knn-conformal-predict ...)` in knn.lsh
+- `(==> glmnet conformal-predict ...)` in regression.lsh
+
+### Centralized module (`conformal.lsh`) — all 7 roadmap items implemented:
+1. **Mondrian CP**: `conformal-mondrian-classify` + 4 wrappers (RF, NB, GLMnet, kNN)
+2. **Venn-ABERS**: `venn-abers-predict` + 2 wrappers (RF, GLMnet)
+3. **Conformal predictive distributions**: `ConformalPredDist` class + 2 wrappers (lm, GLMnet)
+4. **Split conformal for lm/ridge**: `conformal-regression-interval` + 2 wrappers
+5. **Mondrian regression**: `conformal-mondrian-regression` (quantile-binned)
+6. **AgACI**: `AgACI` class with update/get-threshold/predict-interval
+7. **Anomaly detection**: `conformal-anomaly-detect` (kNN-based)
+
+### Compiled C helpers:
+- `_cp-pava`: Pool Adjacent Violators (isotonic regression), O(n)
+- `_cp-bsearch`: binary search in sorted array
+- `_cp-abs-residuals`: |y - yhat| vectorized
+
+### Tests: 79 tests in `packages/mlcore/tests/test-conformal.lsh`
 
 ## 6. Design Principles
 
 - **Split conformal by default**: Simpler, faster, no retraining
-- **Consistent API**: `conformal-predict` method on model classes, standalone functions for non-class algorithms
+- **Generic + wrapper pattern**: Each method has a generic function taking a callback `predict-fn`
+  or `proba-fn`, plus thin convenience wrappers for specific models.  This makes it trivial to
+  add new models without touching conformal.lsh.
 - **Return types**: Classification = list of lists (prediction sets), Regression = Nx2 matrix (intervals)
-- **Pure interpreted calibration**: Calibration sets are small (100s-1000s), no need for compiled C
+- **Compiled C for hot paths**: PAVA, binary search, absolute residuals.  Calibration-phase loops
+  (score gathering, quantile computation) remain interpreted since they're O(n_cal) and n_cal is
+  typically small.
 - **No external dependencies**: Everything builds on existing mlcore/libnum
+
+## 7. Performance Analysis
+
+Benchmarked on this machine (Linux x86_64, single core) with n_cal=200, n_test=20
+unless noted.  Times are for the conformal method only (model training excluded).
+
+| Method                         | n_cal=200 | n_cal=500 | Bottleneck                     |
+|-------------------------------|----------|----------|--------------------------------|
+| Mondrian CP (RF, 50 trees)     | 0.108 s  | 0.261 s  | RF predict-proba (interpreted) |
+| Mondrian CP (NB)               | 0.002 s  | ~0.005 s | Compiled NB likelihood         |
+| Mondrian CP (kNN, k=5)         | 0.028 s  | 0.208 s  | Compiled brute kNN search      |
+| Venn-ABERS (RF)                | 0.116 s  | 0.265 s  | 2*n_test RF predict-proba      |
+| Split conformal (lm)           | <0.001 s | <0.001 s | Compiled residuals + sort      |
+| Mondrian regression (lm, 5bin) | 0.001 s  | ~0.002 s | Compiled residuals + sort      |
+| Conformal pred dist (lm)       | <0.001 s | <0.001 s | Sort only                      |
+| Anomaly detection (kNN, k=5)   | 0.004 s  | 0.006 s  | Compiled brute kNN             |
+
+### Scaling observations:
+- **RF-based methods** scale as O(n_cal * n_trees * depth) for predict-proba, which dominates.
+  The RF tree traversal is interpreted (Lush `each` over tree arrays); compiling it into C
+  would be the single biggest speedup for RF conformal methods.
+- **kNN Mondrian** was originally 13.4s at n_cal=500 due to O(n_cal^2) interpreted distance
+  loops.  Rewritten to use the compiled `_knn-brute-search` via a stacked-matrix strategy:
+  [query; cal] combined matrix -> compiled kNN -> filter to cal-row neighbors only.
+  Now 0.2s at n_cal=500 (67x speedup).
+- **Regression methods** are effectively instant because `_cp-abs-residuals` is compiled C
+  and `idx-d1sortup` is O(n log n) compiled sort.
+- **Venn-ABERS** is inherently O(n_test * n_cal * log(n_cal)) due to sorting augmented arrays
+  for each test point and candidate label.  The PAVA itself is O(n_cal).  For large calibration
+  sets, the insertion sort could be replaced with idx-d1sortup on contiguous copies, but the
+  RF predict-proba calls currently dominate.
+- **AgACI** accumulates scores in a list.  For very long streams (>10K steps), converting to
+  an idx-backed ring buffer would avoid O(n) list traversal in `get-threshold`.
+
+### Practical guidance:
+- Up to n_cal ~1000: all methods run in well under 1 second
+- n_cal ~5000: RF-based methods take a few seconds; regression methods still instant
+- n_cal ~50K: would need compiled RF traversal and/or the VP-tree kNN backend
+
+## 8. Future Work: Jackknife+
+
+### What it is
+Jackknife+ (Barber, Candès, Ramdas, Tibshirani 2021) is a conformal method that
+retrains the model on leave-one-out (LOO) subsets of the training data.  For n training
+points, it trains n separate models, computes the LOO residual for each, then builds
+prediction intervals using these more honest residuals.
+
+### Algorithm (regression):
+1. For i = 1..n: train model f_{-i} on all training data except point i
+2. Compute LOO residual: R_i = |Y_i - f_{-i}(X_i)|
+3. For test point X: interval = [q_{alpha/2}({f_{-i}(X) - R_i}),
+                                  q_{1-alpha/2}({f_{-i}(X) + R_i})]
+   where quantiles are taken over all i.
+
+Jackknife+ differs from naive Jackknife by using the leave-one-out PREDICTIONS on
+the test point (not the full-data prediction), giving valid finite-sample coverage.
+
+### Coverage guarantee
+P(Y_{n+1} in C(X_{n+1})) >= 1 - 2*alpha  (slightly weaker than split conformal's 1-alpha).
+The "CV+" variant (using K-fold instead of LOO) achieves 1 - 2*alpha with K-fold models.
+
+### Why it could be useful
+- **No calibration split needed**: Uses ALL data for both training and calibration,
+  unlike split conformal which burns half the data on calibration.  With small datasets
+  (n < 100), this is a major advantage.
+- **Tighter intervals**: LOO residuals are more honest than in-sample residuals, and
+  using all n models for test-time prediction averages out model variance.
+- **Important predictions**: When each prediction matters (medical, financial), the
+  computational cost is justified by better uncertainty quantification.
+
+### Computational cost
+- **Training**: n model fits for LOO, or K fits for CV+.  For a model that takes T
+  seconds to train on n points, LOO costs n*T total.
+  - lm-model: O(n * n*p^2) = O(n^2 * p^2).  With n=1000, p=10, this is ~1s.  Feasible.
+  - ridge: Same as lm (SVD-based), ~1s.
+  - RF (50 trees): O(n * n*p*log(n)*50) = very expensive.  n=500 -> ~500*0.02s = 10s.
+    Marginal.  n=5000 -> impractical without shortcuts.
+  - GLMnet: O(n * n*p*n_lambda) = expensive for large path.
+- **Prediction**: n forward passes per test point (one per LOO model).
+- **CV+ variant**: K-fold with K=10 reduces to 10 model fits.  Much more practical
+  and recommended for any model heavier than OLS.
+
+### Implementation sketch (not yet implemented)
+```
+(de jackknife-plus (model-fn predict-fn train-x train-y test-x alpha)
+  ;; model-fn: (lambda (x y) ...) returns a fitted model
+  ;; predict-fn: (lambda (model x) ...) returns predictions
+  ;; Returns: n_test x 2 interval matrix
+  ;;
+  ;; For each i: train model on train-x[-i], train-y[-i]
+  ;; Compute LOO residual and LOO prediction on test-x
+  ;; Build intervals from quantiles of {f_{-i}(test) +/- R_i}
+  ...)
+```
+
+Convenience wrappers: `jackknife-plus-lm`, `jackknife-plus-ridge`.
+RF and GLMnet would use `cv-plus` (K-fold) variant.
+
+### Recommendation
+Implement Jackknife+ for lm-model and ridge only (cheap LOO via the Sherman-Morrison
+formula or SVD rank-1 update).  For RF and GLMnet, implement CV+ with K=10 as the
+practical alternative.  The Sherman-Morrison LOO trick for OLS makes Jackknife+ cost
+only O(n * p^2) total — the SAME as a single OLS fit — so there is essentially no
+extra cost for lm-model.  This should be Priority 1 for future conformal work.
+
+### References
+- Barber, Candès, Ramdas, Tibshirani (2021). "Predictive Inference with the Jackknife+"
+  Annals of Statistics 49(1), 486-507.
+- Romano, Patterson, Candès (2019). "Conformalized Quantile Regression" NeurIPS.
+- Vovk (2015). "Cross-conformal predictors" Annals of Mathematics and AI 74, 9-28.

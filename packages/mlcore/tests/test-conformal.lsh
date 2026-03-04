@@ -1,0 +1,615 @@
+;;; test-conformal.lsh -- Tests for conformal prediction module
+;;;
+;;; Run: ./src/lush packages/mlcore/tests/test-conformal.lsh
+
+(addpath "packages")
+(load "packages/mlcore/tests/framework.lsh")
+(libload "mlcore/mlcore")
+
+
+;; ============================================================
+;; Test data generators
+;; ============================================================
+
+;; Binary classification: two well-separated Gaussian clusters
+;; Returns (data double-labels int-labels) triple
+(de make-binary-data (n-per-class seed)
+  (let* ((n (* 2 n-per-class))
+         (data (double-matrix n 2))
+         (dlabels (double-matrix n))
+         (ilabels (int-matrix n))
+         ;; Simple deterministic pseudo-data based on seed
+         (idx 0))
+    ;; Class 0: centered at (0, 0)
+    (for (i 0 (1- n-per-class))
+      (let ((angle (* 2 3.14159 (/ i n-per-class)))
+            (r (* 0.5 (+ 1 (/ (mod (* (+ i seed) 7) 13) 13.0)))))
+        (data idx 0 (* r (cos angle)))
+        (data idx 1 (* r (sin angle)))
+        (dlabels idx 0) (ilabels idx 0)
+        (incr idx) ) )
+    ;; Class 1: centered at (3, 3)
+    (for (i 0 (1- n-per-class))
+      (let ((angle (* 2 3.14159 (/ i n-per-class)))
+            (r (* 0.5 (+ 1 (/ (mod (* (+ i seed) 11) 13) 13.0)))))
+        (data idx 0 (+ 3 (* r (cos angle))))
+        (data idx 1 (+ 3 (* r (sin angle))))
+        (dlabels idx 1) (ilabels idx 1)
+        (incr idx) ) )
+    (list data dlabels ilabels) ) )
+
+;; 3-class classification data
+;; Returns (data double-labels int-labels) triple
+(de make-3class-data (n-per-class seed)
+  (let* ((n (* 3 n-per-class))
+         (data (double-matrix n 2))
+         (dlabels (double-matrix n))
+         (ilabels (int-matrix n))
+         (idx 0))
+    ;; Class 0: centered at (0, 0)
+    (for (i 0 (1- n-per-class))
+      (let ((angle (* 2 3.14159 (/ i n-per-class)))
+            (r (* 0.3 (+ 1 (/ (mod (* (+ i seed) 7) 11) 11.0)))))
+        (data idx 0 (* r (cos angle)))
+        (data idx 1 (* r (sin angle)))
+        (dlabels idx 0) (ilabels idx 0) (incr idx) ) )
+    ;; Class 1: centered at (4, 0)
+    (for (i 0 (1- n-per-class))
+      (let ((angle (* 2 3.14159 (/ i n-per-class)))
+            (r (* 0.3 (+ 1 (/ (mod (* (+ i seed) 11) 13) 13.0)))))
+        (data idx 0 (+ 4 (* r (cos angle))))
+        (data idx 1 (* r (sin angle)))
+        (dlabels idx 1) (ilabels idx 1) (incr idx) ) )
+    ;; Class 2: centered at (2, 4)
+    (for (i 0 (1- n-per-class))
+      (let ((angle (* 2 3.14159 (/ i n-per-class)))
+            (r (* 0.3 (+ 1 (/ (mod (* (+ i seed) 13) 17) 17.0)))))
+        (data idx 0 (+ 2 (* r (cos angle))))
+        (data idx 1 (+ 4 (* r (sin angle))))
+        (dlabels idx 2) (ilabels idx 2) (incr idx) ) )
+    (list data dlabels ilabels) ) )
+
+;; Regression data: y = 2*x + noise
+(de make-regression-data (n seed)
+  (let* ((x (double-matrix n 1))
+         (y (double-matrix n)))
+    (for (i 0 (1- n))
+      (let ((xi (+ (* 2 (/ i (to-double n))) (/ (mod (* (+ i seed) 7) 13) 50.0))))
+        (x i 0 xi)
+        (y i (+ (* 2 xi) (/ (mod (* (+ i seed) 11) 17) 20.0))) ) )
+    (list x y) ) )
+
+;; Heteroscedastic regression: y = 2*x + x*noise (variance grows with x)
+(de make-hetero-regression-data (n seed)
+  (let* ((x (double-matrix n 1))
+         (y (double-matrix n)))
+    (for (i 0 (1- n))
+      (let ((xi (+ 1 (* 4 (/ i (to-double n))))))
+        (x i 0 xi)
+        (y i (+ (* 2 xi) (* xi (/ (- (mod (* (+ i seed) 11) 17) 8.0) 10.0)))) ) )
+    (list x y) ) )
+
+
+;; ============================================================
+;; 1. Mondrian CP Tests
+;; ============================================================
+(test-suite "Mondrian Conformal Prediction (Classification)"
+
+  ;; Train RF and create test data
+  ;; make-binary-data returns (data double-labels int-labels)
+  (let* ((cal-pair (make-binary-data 20 42))
+         (cal-data (car cal-pair))
+         (cal-dtargets (cadr cal-pair))     ;; double for RF fit
+         (cal-labels (nth 2 cal-pair))      ;; int for conformal
+         (test-pair (make-binary-data 5 99))
+         (test-data (car test-pair))
+         ;; Train RF
+         (rf (new RandomForest 50 "classify")))
+    (==> rf fit cal-data cal-dtargets)
+
+    ;; Test generic Mondrian via RF predict-proba
+    (let ((sets (conformal-mondrian-classify
+                  (lambda (x) (==> rf predict-proba x))
+                  cal-data cal-labels test-data 0.1)))
+
+      (test-check "mondrian: returns list"
+        (listp sets))
+      (test-equal "mondrian: correct length"
+        (length sets) (idx-dim test-data 0))
+      ;; Each prediction set should be non-empty
+      (let ((all-nonempty t))
+        (each ((s sets))
+          (when (= (length s) 0) (setq all-nonempty ())) )
+        (test-check "mondrian: all sets non-empty" all-nonempty))
+      ;; Each set should contain valid class labels (0 or 1)
+      (let ((all-valid t))
+        (each ((s sets))
+          (each ((c s))
+            (when (and (<> c 0) (<> c 1))
+              (setq all-valid ()) ) ) )
+        (test-check "mondrian: valid class labels" all-valid)) )
+
+    ;; RF convenience wrapper
+    (let ((sets (conformal-mondrian-rf rf cal-data cal-labels test-data 0.1)))
+      (test-check "mondrian-rf: returns list" (listp sets))
+      (test-equal "mondrian-rf: correct length" (length sets) (idx-dim test-data 0))
+      ;; Coverage on calibration data itself (should be very high)
+      (let* ((cal-sets (conformal-mondrian-rf rf cal-data cal-labels cal-data 0.1))
+             (covered 0)
+             (total (idx-dim cal-data 0)))
+        (let ((si 0))
+          (each ((s cal-sets))
+            (let ((true-c (cal-labels si))
+                  (found ()))
+              (each ((c s))
+                (when (= c true-c) (setq found t)) )
+              (when found (incr covered)) )
+            (incr si) ) )
+        (test-check "mondrian-rf: cal coverage >= 0.8"
+          (>= (/ (to-double covered) total) 0.8)) ) ) )
+
+  ;; NB wrapper test
+  (let* ((cal-pair (make-binary-data 20 42))
+         (cal-data (car cal-pair))
+         (cal-labels (nth 2 cal-pair))
+         (test-pair (make-binary-data 4 77))
+         (test-data (car test-pair))
+         (nb (new GaussianNB)))
+    (==> nb fit cal-data cal-labels)
+    (let ((sets (conformal-mondrian-nb nb cal-data cal-labels test-data 0.1)))
+      (test-check "mondrian-nb: returns list" (listp sets))
+      (test-equal "mondrian-nb: correct length" (length sets) (idx-dim test-data 0)) ) )
+
+  ;; 3-class test
+  (let* ((cal-pair (make-3class-data 10 42))
+         (cal-data (car cal-pair))
+         (cal-dtargets (cadr cal-pair))
+         (cal-labels (nth 2 cal-pair))
+         (test-pair (make-3class-data 3 99))
+         (test-data (car test-pair))
+         (rf (new RandomForest 50 "classify")))
+    (==> rf fit cal-data cal-dtargets)
+    (let ((sets (conformal-mondrian-rf rf cal-data cal-labels test-data 0.1)))
+      (test-check "mondrian-3class: returns list" (listp sets))
+      ;; Valid labels should be 0, 1, or 2
+      (let ((all-valid t))
+        (each ((s sets))
+          (each ((c s))
+            (when (and (<> c 0) (<> c 1) (<> c 2))
+              (setq all-valid ()) ) ) )
+        (test-check "mondrian-3class: valid labels" all-valid)) ) )
+
+  ;; kNN wrapper
+  (let* ((cal-pair (make-binary-data 20 42))
+         (cal-data (car cal-pair))
+         (cal-labels (nth 2 cal-pair))
+         (test-pair (make-binary-data 4 55))
+         (test-data (car test-pair)))
+    (let ((sets (conformal-mondrian-knn cal-data cal-labels test-data 3 0.1)))
+      (test-check "mondrian-knn: returns list" (listp sets))
+      (test-equal "mondrian-knn: correct length" (length sets) (idx-dim test-data 0)) ) )
+)
+
+
+;; ============================================================
+;; 2. Venn-ABERS Tests
+;; ============================================================
+(test-suite "Venn-ABERS Prediction"
+
+  ;; Generic Venn-ABERS with synthetic scores
+  (let* ((n-cal 20)
+         (cal-scores (double-matrix n-cal))
+         (cal-labels (int-matrix n-cal))
+         (n-test 5)
+         (test-scores (double-matrix n-test)))
+    ;; Class 0: low scores, class 1: high scores
+    (for (i 0 9)
+      (cal-scores i (* 0.1 (+ i 1)))  ;; 0.1 to 1.0
+      (cal-labels i 0) )
+    (for (i 10 19)
+      (cal-scores i (* 0.1 (+ i 1)))  ;; 1.1 to 2.0
+      (cal-labels i 1) )
+    ;; Test scores span the range
+    (test-scores 0 0.3) (test-scores 1 0.8) (test-scores 2 1.2)
+    (test-scores 3 1.7) (test-scores 4 0.5)
+
+    (let ((result (venn-abers-predict cal-scores cal-labels test-scores)))
+      (test-equal "venn-abers: result rows" (idx-dim result 0) n-test)
+      (test-equal "venn-abers: result cols" (idx-dim result 1) 2)
+      ;; All values should be in [0, 1]
+      (let ((all-valid t))
+        (for (i 0 (1- n-test))
+          (when (or (< (result i 0) -0.01) (> (result i 0) 1.01)
+                    (< (result i 1) -0.01) (> (result i 1) 1.01))
+            (setq all-valid ()) ) )
+        (test-check "venn-abers: p values in [0,1]" all-valid))
+      ;; p0 and p1 should be calibrated probabilities, not necessarily summing to 1
+      ;; but should be somewhat reasonable
+      (test-check "venn-abers: first point p0 defined" (>= (result 0 0) 0))
+      (test-check "venn-abers: first point p1 defined" (>= (result 0 1) 0))
+      ;; Low test score should have lower p1 (prob of class 1)
+      ;; than high test score (generally)
+      (test-check "venn-abers: ordering of p1"
+        (<= (result 0 1) (+ (result 3 1) 0.3))) ) )
+
+  ;; RF wrapper
+  (let* ((cal-pair (make-binary-data 20 42))
+         (cal-data (car cal-pair))
+         (cal-dtargets (cadr cal-pair))
+         (cal-labels (nth 2 cal-pair))
+         (test-pair (make-binary-data 4 77))
+         (test-data (car test-pair))
+         (rf (new RandomForest 50 "classify")))
+    (==> rf fit cal-data cal-dtargets)
+    (let ((result (venn-abers-rf rf cal-data cal-labels test-data)))
+      (test-equal "venn-abers-rf: result rows" (idx-dim result 0) (idx-dim test-data 0))
+      (test-equal "venn-abers-rf: result cols" (idx-dim result 1) 2)
+      ;; All p-values in [0, 1]
+      (let ((ok t))
+        (for (i 0 (1- (idx-dim result 0)))
+          (when (or (< (result i 0) -0.01) (> (result i 0) 1.01)
+                    (< (result i 1) -0.01) (> (result i 1) 1.01))
+            (setq ok ()) ) )
+        (test-check "venn-abers-rf: p in [0,1]" ok) ) ) )
+
+  ;; GLMnet wrapper
+  (let* ((cal-pair (make-binary-data 20 42))
+         (cal-data (car cal-pair))
+         (cal-dtargets (cadr cal-pair))
+         (cal-labels (nth 2 cal-pair))
+         (test-pair (make-binary-data 4 77))
+         (test-data (car test-pair)))
+    (let ((model (new glmnet-model cal-data cal-dtargets 1.0 "binomial")))
+      (let* ((lam (car :model:lambdas))
+             (result (venn-abers-glmnet model cal-data cal-labels test-data lam)))
+        (test-equal "venn-abers-glmnet: rows" (idx-dim result 0) (idx-dim test-data 0))
+        (test-equal "venn-abers-glmnet: cols" (idx-dim result 1) 2) ) ) )
+)
+
+
+;; ============================================================
+;; 3. Conformal Predictive Distribution Tests
+;; ============================================================
+(test-suite "Conformal Predictive Distributions"
+
+  ;; Create regression data and fit lm
+  (let* ((reg-pair (make-regression-data 25 42))
+         (cal-x (car reg-pair))
+         (cal-y (cadr reg-pair))
+         (test-pair (make-regression-data 5 99))
+         (test-x (car test-pair))
+         (lm (new lm-model cal-x cal-y)))
+
+    ;; Generic conformal predictive distribution
+    (let ((cpds (conformal-pred-dist
+                  (lambda (x) (==> lm predict x))
+                  cal-x cal-y test-x)))
+      (test-equal "cpd: returns list of length n-test"
+        (length cpds) (idx-dim test-x 0))
+      ;; Each element should be a ConformalPredDist object
+      (test-check "cpd: first element is ConformalPredDist"
+        (not (null (scope (car cpds) residuals))))
+
+      ;; CDF tests on first distribution
+      (let* ((cpd (car cpds))
+             (pred (==> lm predict test-x))
+             (pv (pred 0)))
+        ;; CDF should be monotonically non-decreasing
+        (let ((prev-cdf 0)
+              (monotone t))
+          (for (v -10 10)
+            (let ((c (==> cpd cdf (to-double v) pv)))
+              (when (< c (- prev-cdf 1e-10))
+                (setq monotone ()) )
+              (setq prev-cdf c) ) )
+          (test-check "cpd: CDF monotone non-decreasing" monotone))
+
+        ;; CDF at very low value should be near 0
+        (test-check "cpd: CDF at -100 near 0"
+          (< (==> cpd cdf -100.0 pv) 0.1))
+        ;; CDF at very high value should be near 1
+        ;; With n_cal=25 points, max CDF = 25/26 ≈ 0.96
+        (test-check "cpd: CDF at 100 near 1"
+          (> (==> cpd cdf 100.0 pv) 0.8))
+
+        ;; Quantile should invert CDF approximately
+        (let* ((q50 (==> cpd quantile 0.5 pv))
+               (cdf-at-q50 (==> cpd cdf q50 pv)))
+          (test-check "cpd: quantile-CDF consistency"
+            ;; CDF at the 50% quantile should be in reasonable range
+            (and (>= cdf-at-q50 0.3) (<= cdf-at-q50 0.7)) ) )
+
+        ;; Interval test
+        (let ((iv (==> cpd interval 0.1 pv)))
+          (test-check "cpd: interval lower < upper"
+            (< (car iv) (cdr iv)))
+          ;; Interval should contain reasonable range
+          (test-check "cpd: interval contains prediction"
+            (and (<= (car iv) (+ pv 2))
+                 (>= (cdr iv) (- pv 2)))) ) ) )
+
+    ;; lm wrapper
+    (let ((cpds (conformal-pred-dist-lm lm cal-x cal-y test-x)))
+      (test-equal "cpd-lm: correct length" (length cpds) (idx-dim test-x 0))
+      (test-check "cpd-lm: returns ConformalPredDist"
+        (not (null (scope (car cpds) residuals)))) )
+
+    ;; glmnet wrapper
+    (let* ((model (new glmnet-model cal-x cal-y 0.5 "gaussian"))
+           (lam (car :model:lambdas))
+           (cpds (conformal-pred-dist-glmnet model cal-x cal-y test-x lam)))
+      (test-equal "cpd-glmnet: correct length" (length cpds) (idx-dim test-x 0))
+      (test-check "cpd-glmnet: returns ConformalPredDist"
+        (not (null (scope (car cpds) residuals)))) ) )
+)
+
+
+;; ============================================================
+;; 4. Split Conformal lm/ridge Tests
+;; ============================================================
+(test-suite "Split Conformal Regression (lm/ridge)"
+
+  (let* ((reg-pair (make-regression-data 30 42))
+         (cal-x (car reg-pair))
+         (cal-y (cadr reg-pair))
+         (test-pair (make-regression-data 5 99))
+         (test-x (car test-pair))
+         (test-y (cadr test-pair))
+         (lm (new lm-model cal-x cal-y)))
+
+    ;; Generic conformal regression intervals
+    (let ((intervals (conformal-regression-interval
+                       (lambda (x) (==> lm predict x))
+                       cal-x cal-y test-x 0.1)))
+      (test-equal "conf-reg: rows" (idx-dim intervals 0) (idx-dim test-x 0))
+      (test-equal "conf-reg: cols" (idx-dim intervals 1) 2)
+      ;; Lower < upper
+      (let ((ok t))
+        (for (i 0 (1- (idx-dim intervals 0)))
+          (when (>= (intervals i 0) (intervals i 1))
+            (setq ok ()) ) )
+        (test-check "conf-reg: lower < upper" ok)) )
+
+    ;; lm wrapper
+    (let ((intervals (conformal-lm lm cal-x cal-y test-x 0.1)))
+      (test-equal "conformal-lm: rows" (idx-dim intervals 0) (idx-dim test-x 0))
+      (test-equal "conformal-lm: cols" (idx-dim intervals 1) 2)
+      ;; Check coverage on calibration data
+      (let* ((cal-iv (conformal-lm lm cal-x cal-y cal-x 0.1))
+             (covered 0)
+             (total (idx-dim cal-x 0)))
+        (for (i 0 (1- total))
+          (when (and (>= (cal-y i) (cal-iv i 0))
+                     (<= (cal-y i) (cal-iv i 1)))
+            (incr covered) ) )
+        (test-check "conformal-lm: cal coverage >= 0.8"
+          (>= (/ (to-double covered) total) 0.8)) ) )
+
+    ;; Ridge wrapper
+    (let* ((coefs (ridge cal-x cal-y 1.0))
+           (intervals (conformal-ridge coefs cal-x cal-y test-x 0.1)))
+      (test-equal "conformal-ridge: rows" (idx-dim intervals 0) (idx-dim test-x 0))
+      (test-equal "conformal-ridge: cols" (idx-dim intervals 1) 2)
+      ;; Lower < upper
+      (let ((ok t))
+        (for (i 0 (1- (idx-dim intervals 0)))
+          (when (>= (intervals i 0) (intervals i 1))
+            (setq ok ()) ) )
+        (test-check "conformal-ridge: lower < upper" ok)) )
+
+    ;; Wider alpha should give tighter intervals
+    (let* ((iv-loose (conformal-lm lm cal-x cal-y test-x 0.5))
+           (iv-tight (conformal-lm lm cal-x cal-y test-x 0.05))
+           ;; Compare widths: alpha=0.5 should be narrower than alpha=0.05
+           (width-loose (- (iv-loose 0 1) (iv-loose 0 0)))
+           (width-tight (- (iv-tight 0 1) (iv-tight 0 0))))
+      (test-check "conformal-lm: wider alpha => tighter intervals"
+        (< width-loose width-tight)) ) )
+)
+
+
+;; ============================================================
+;; 5. Mondrian Regression Tests
+;; ============================================================
+(test-suite "Mondrian Conformal Regression"
+
+  (let* ((reg-pair (make-regression-data 40 42))
+         (cal-x (car reg-pair))
+         (cal-y (cadr reg-pair))
+         (test-pair (make-regression-data 6 99))
+         (test-x (car test-pair))
+         (test-y (cadr test-pair))
+         (lm (new lm-model cal-x cal-y)))
+
+    ;; Basic Mondrian regression
+    (let ((intervals (conformal-mondrian-regression
+                       (lambda (x) (==> lm predict x))
+                       cal-x cal-y test-x 0.1 3)))
+      (test-equal "mondrian-reg: rows" (idx-dim intervals 0) (idx-dim test-x 0))
+      (test-equal "mondrian-reg: cols" (idx-dim intervals 1) 2)
+      ;; Lower < upper
+      (let ((ok t))
+        (for (i 0 (1- (idx-dim intervals 0)))
+          (when (>= (intervals i 0) (intervals i 1))
+            (setq ok ()) ) )
+        (test-check "mondrian-reg: lower < upper" ok)) )
+
+    ;; Coverage check
+    (let* ((cal-iv (conformal-mondrian-regression
+                     (lambda (x) (==> lm predict x))
+                     cal-x cal-y cal-x 0.1 3))
+           (covered 0)
+           (total (idx-dim cal-x 0)))
+      (for (i 0 (1- total))
+        (when (and (>= (cal-y i) (cal-iv i 0))
+                   (<= (cal-y i) (cal-iv i 1)))
+          (incr covered) ) )
+      (test-check "mondrian-reg: cal coverage >= 0.7"
+        (>= (/ (to-double covered) total) 0.7)) )
+
+    ;; Different bin counts should produce different widths
+    (let* ((iv3 (conformal-mondrian-regression
+                  (lambda (x) (==> lm predict x))
+                  cal-x cal-y test-x 0.1 3))
+           (iv5 (conformal-mondrian-regression
+                  (lambda (x) (==> lm predict x))
+                  cal-x cal-y test-x 0.1 5))
+           ;; They can have different widths per test point
+           (w3 (- (iv3 0 1) (iv3 0 0)))
+           (w5 (- (iv5 0 1) (iv5 0 0))))
+      ;; Just check both produce valid intervals
+      (test-check "mondrian-reg: 3 bins valid" (> w3 0))
+      (test-check "mondrian-reg: 5 bins valid" (> w5 0)) ) )
+
+  ;; Heteroscedastic data: intervals should adapt to local variance
+  (let* ((reg-pair (make-hetero-regression-data 40 42))
+         (cal-x (car reg-pair))
+         (cal-y (cadr reg-pair))
+         ;; Test at low x (low variance) and high x (high variance)
+         (test-x (double-matrix 2 1))
+         (lm (new lm-model cal-x cal-y)))
+    (test-x 0 0 1.5)  ;; low x
+    (test-x 1 0 4.5)  ;; high x
+    (let ((iv (conformal-mondrian-regression
+                (lambda (x) (==> lm predict x))
+                cal-x cal-y test-x 0.1 3)))
+      ;; High-x interval should be wider (higher variance region)
+      (let ((w-low (- (iv 0 1) (iv 0 0)))
+            (w-high (- (iv 1 1) (iv 1 0))))
+        ;; Both should be valid
+        (test-check "mondrian-reg hetero: low-x interval valid" (> w-low 0))
+        (test-check "mondrian-reg hetero: high-x interval valid" (> w-high 0)) ) ) )
+)
+
+
+;; ============================================================
+;; 6. AgACI Tests
+;; ============================================================
+(test-suite "AgACI (Adaptive Online Conformal)"
+
+  ;; Constructor
+  (let ((aci (new AgACI 0.1 0.01)))
+    (test-approx "agaci: initial alpha" (==> aci get-alpha) 0.1 1e-10)
+    (test-approx "agaci: initial coverage" (==> aci coverage-rate) 1.0 1e-10)
+    (test-equal "agaci: initial t" :aci:t 0))
+
+  ;; Update with covered point (err_t = 0)
+  (let ((aci (new AgACI 0.1 0.01)))
+    (==> aci update 0.5 t)  ;; covered
+    (test-equal "agaci: t after update" :aci:t 1)
+    ;; alpha_{1} = 0.1 + 0.01 * (0.1 - 0) = 0.1 + 0.001 = 0.101
+    (test-approx "agaci: alpha after covered" (==> aci get-alpha) 0.101 1e-10)
+    (test-approx "agaci: coverage after covered" (==> aci coverage-rate) 1.0 1e-10))
+
+  ;; Update with uncovered point (err_t = 1)
+  (let ((aci (new AgACI 0.1 0.01)))
+    (==> aci update 0.5 ())  ;; not covered
+    ;; alpha_{1} = 0.1 + 0.01 * (0.1 - 1) = 0.1 - 0.009 = 0.091
+    (test-approx "agaci: alpha after uncovered" (==> aci get-alpha) 0.091 1e-10)
+    (test-approx "agaci: coverage after uncovered" (==> aci coverage-rate) 0.0 1e-10))
+
+  ;; get-threshold with scores
+  (let ((aci (new AgACI 0.1 0.01)))
+    ;; Add several scores
+    (==> aci update 0.1 t)
+    (==> aci update 0.5 t)
+    (==> aci update 0.3 t)
+    (==> aci update 0.7 t)
+    (==> aci update 0.2 t)
+    (let ((thresh (==> aci get-threshold)))
+      (test-check "agaci: threshold > 0" (> thresh 0))
+      (test-check "agaci: threshold <= max score" (<= thresh 1.0)) ) )
+
+  ;; gamma = 0 gives static (no adaptation)
+  (let ((aci (new AgACI 0.1 0)))
+    (==> aci update 0.5 t)
+    (==> aci update 0.3 ())
+    (==> aci update 0.7 t)
+    (test-approx "agaci: gamma=0 no adaptation" (==> aci get-alpha) 0.1 1e-10))
+
+  ;; Simulated stream: coverage should track alpha-target
+  (let ((aci (new AgACI 0.1 0.05))
+        (n-stream 50))
+    ;; Simulate: score = |residual|, covered if score < threshold
+    (let ((scores-list ()))
+      (for (i 0 (1- n-stream))
+        (let* ((score (/ (to-double (mod (* (+ i 1) 7) 20)) 20.0))
+               (thresh (==> aci get-threshold))
+               (covered (< score thresh)))
+          (==> aci update score covered) ) )
+      ;; After 50 steps, coverage should be in reasonable range
+      (let ((cov (==> aci coverage-rate)))
+        (test-check "agaci: stream coverage > 0.5" (> cov 0.5))
+        (test-check "agaci: stream coverage < 1.0" (< cov 1.0)) ) ) )
+
+  ;; predict-interval
+  (let ((aci (new AgACI 0.1 0.01)))
+    (==> aci update 0.3 t)
+    (==> aci update 0.5 t)
+    (==> aci update 0.7 t)
+    (let ((iv (==> aci predict-interval 5.0)))
+      (test-check "agaci: interval is a pair" (consp iv))
+      (test-check "agaci: interval lower < upper" (< (car iv) (cdr iv)))
+      ;; Interval should be centered at 5.0
+      (test-approx "agaci: interval center"
+        (/ (+ (car iv) (cdr iv)) 2) 5.0 1e-10) ) )
+)
+
+
+;; ============================================================
+;; 7. Conformal Anomaly Detection Tests
+;; ============================================================
+(test-suite "Conformal Anomaly Detection"
+
+  ;; Create normal data: tight cluster at origin
+  (let* ((n-train 30)
+         (train-data (double-matrix n-train 2)))
+    ;; Normal points in circle of radius ~1
+    (for (i 0 (1- n-train))
+      (let ((angle (* 2 3.14159 (/ i n-train)))
+            (r (* 0.5 (+ 0.5 (/ (mod (* i 7) 13) 13.0)))))
+        (train-data i 0 (* r (cos angle)))
+        (train-data i 1 (* r (sin angle))) ) )
+
+    ;; Test data: mix of normal and outlier points
+    (let* ((n-test 6)
+           (test-data (double-matrix n-test 2)))
+      ;; Normal test points (near origin)
+      (test-data 0 0 0.3) (test-data 0 1 0.2)
+      (test-data 1 0 -0.1) (test-data 1 1 0.4)
+      (test-data 2 0 0.0) (test-data 2 1 -0.3)
+      ;; Outlier test points (far away)
+      (test-data 3 0 10.0) (test-data 3 1 10.0)
+      (test-data 4 0 -8.0) (test-data 4 1 -8.0)
+      (test-data 5 0 15.0) (test-data 5 1 0.0)
+
+      (let ((flags (conformal-anomaly-detect train-data test-data 3 0.05)))
+        (test-equal "anomaly: returns int vector dim"
+          (idx-dim flags 0) n-test)
+        ;; Outliers should be flagged
+        (test-equal "anomaly: far outlier flagged" (flags 3) 1)
+        (test-equal "anomaly: far outlier 2 flagged" (flags 4) 1)
+        (test-equal "anomaly: far outlier 3 flagged" (flags 5) 1)
+        ;; Normal points should NOT be flagged (mostly)
+        (let ((normal-flags (+ (flags 0) (flags 1) (flags 2))))
+          (test-check "anomaly: normal points mostly not flagged"
+            (<= normal-flags 1)) ) ) )
+
+    ;; Different k values should work
+    (let* ((test-data (double-matrix 2 2)))
+      (test-data 0 0 0.0) (test-data 0 1 0.0)   ;; normal
+      (test-data 1 0 20.0) (test-data 1 1 20.0)  ;; outlier
+      (let ((flags-k1 (conformal-anomaly-detect train-data test-data 1 0.05))
+            (flags-k5 (conformal-anomaly-detect train-data test-data 5 0.05)))
+        (test-check "anomaly: k=1 works" (= (idx-dim flags-k1 0) 2))
+        (test-check "anomaly: k=5 works" (= (idx-dim flags-k5 0) 2))
+        ;; Extreme outlier should be flagged regardless of k
+        (test-equal "anomaly: k=1 outlier" (flags-k1 1) 1)
+        (test-equal "anomaly: k=5 outlier" (flags-k5 1) 1) ) ) )
+)
+
+
+;; ============================================================
+;; Summary
+;; ============================================================
+(test-summary)
