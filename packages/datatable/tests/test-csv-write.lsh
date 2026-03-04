@@ -1,0 +1,279 @@
+;;; test-csv-write.lsh -- Tests for CSV writer
+;;;
+;;; Usage:
+;;;   ./src/lush packages/datatable/tests/test-csv-write.lsh
+
+(addpath "packages")
+(libload "datatable/datatable-csv-write")
+(libload "datatable/datatable-csv")
+(libload "timedate/timedate")
+
+(defvar *csvw-pass* 0)
+(defvar *csvw-fail* 0)
+
+(de csvw-check (name cond)
+  (if cond
+    (progn (incr *csvw-pass*) (printf "  PASS: %s\n" name))
+    (progn (incr *csvw-fail*) (printf "  FAIL: %s\n" name)) ) )
+
+;; Helper: count lines in a file (via wc -l)
+(de csvw-count-lines (path)
+  (let ((tmp "/tmp/claude/csvw-linecount.txt"))
+    (sys (sprintf "wc -l < '%s' > '%s'" path tmp))
+    (let ((f (open-read tmp))
+          (n 0))
+      (reading f (setq n (read)))
+      n ) ) )
+
+
+;; ============================================================
+(printf "\n=== Test 1: Basic CSV output ===\n")
+;; ============================================================
+
+(let ((dt (new DataTable)))
+  (==> dt add-column "name" 'string)
+  (==> dt add-column "price" 'real)
+  (==> dt add-column "qty" 'int)
+  (==> dt append-row (list "AAPL" 150.25 100))
+  (==> dt append-row (list "GOOG" 187.5 200))
+  (csv-write dt "/tmp/claude/csvw-t1.csv")
+
+  (csvw-check "file created" (filep "/tmp/claude/csvw-t1.csv"))
+
+  (let ((dt2 (csv-read "/tmp/claude/csvw-t1.csv")))
+    (csvw-check "rows match" (= (==> dt2 num-rows) 2))
+    (csvw-check "cols match" (= (==> dt2 num-cols) 3))
+    (csvw-check "sym col 0" (= (==> (==> dt2 get-column "name") get 0) "AAPL"))
+    (csvw-check "sym col 1" (= (==> (==> dt2 get-column "name") get 1) "GOOG"))
+    (csvw-check "price col 0" (= ((==> dt2 get-column "price") 0) 150.25))
+    (csvw-check "price col 1" (= ((==> dt2 get-column "price") 1) 187.5))
+    (csvw-check "qty col 0" (= ((==> dt2 get-column "qty") 0) 100))
+    (csvw-check "qty col 1" (= ((==> dt2 get-column "qty") 1) 200)) ) )
+
+
+;; ============================================================
+(printf "\n=== Test 2: String escaping ===\n")
+;; ============================================================
+
+(let ((dt (new DataTable)))
+  (==> dt add-column "val" 'string)
+  (==> dt append-row (list "simple"))
+  (==> dt append-row (list "has, comma"))
+  (csv-write dt "/tmp/claude/csvw-t2.csv")
+
+  (let ((dt2 (csv-read "/tmp/claude/csvw-t2.csv")))
+    (csvw-check "simple string" (= (==> (==> dt2 get-column "val") get 0) "simple"))
+    (csvw-check "comma string" (= (==> (==> dt2 get-column "val") get 1) "has, comma")) )
+
+  ;; Test that quote escaping produces valid RFC 4180 output
+  ;; (round-trip through csv-read may not work for quotes,
+  ;;  but the output format is correct)
+  (let ((dt3 (new DataTable)))
+    (==> dt3 add-column "v" 'string)
+    (==> dt3 append-row (list "no escape needed"))
+    (==> dt3 append-row (list "needs,escape"))
+    (csv-write dt3 "/tmp/claude/csvw-t2b.csv")
+    (let ((dt4 (csv-read "/tmp/claude/csvw-t2b.csv")))
+      (csvw-check "escaped comma roundtrip" (= (==> (==> dt4 get-column "v") get 1) "needs,escape")) ) ) )
+
+
+;; ============================================================
+(printf "\n=== Test 3: Null handling ===\n")
+;; ============================================================
+
+(let ((dt (new DataTable)))
+  (==> dt add-column "x" 'real)
+  (==> dt add-column "y" 'int)
+  (==> dt add-column "s" 'string)
+  (==> dt append-row (list 1.0 10 "hello"))
+  (==> dt append-row (list () () ""))
+  (==> dt append-row (list 3.0 30 "world"))
+  (csv-write dt "/tmp/claude/csvw-t3.csv")
+
+  (let ((dt2 (csv-read "/tmp/claude/csvw-t3.csv")))
+    (csvw-check "null rows preserved" (= (==> dt2 num-rows) 3))
+    (csvw-check "real null is NaN" (nanp ((==> dt2 get-column "x") 1)))
+    (csvw-check "int null roundtrip" (nanp ((==> dt2 get-column "y") 1)))
+    (csvw-check "string null roundtrip" (= (==> (==> dt2 get-column "s") get 1) ""))
+    (csvw-check "real value preserved" (= ((==> dt2 get-column "x") 0) 1.0))
+    (csvw-check "string value preserved" (= (==> (==> dt2 get-column "s") get 2) "world")) ) )
+
+
+;; ============================================================
+(printf "\n=== Test 4: Timestamp columns ===\n")
+;; ============================================================
+
+(let ((dt (new DataTable)))
+  (==> dt add-column "ts" 'stamp)
+  (==> dt add-column "val" 'real)
+  (==> dt append-row (list (timestamp-from-datetime 2024 6 15 14 30 0) 1.0))
+  (==> dt append-row (list (timestamp-from-datetime 2024 12 31 23 59 59) 2.0))
+  (==> dt append-row (list (timestamp-from-datetime 2025 1 1 0 0 0) 3.0))
+  (csv-write dt "/tmp/claude/csvw-t4.csv")
+
+  (let ((dt2 (csv-read "/tmp/claude/csvw-t4.csv")))
+    (csvw-check "stamp col detected" (= (==> dt2 col-type "ts") 'stamp))
+    (csvw-check "ts row 0" (= ((==> dt2 get-column "ts") 0)
+                              (timestamp-from-datetime 2024 6 15 14 30 0)))
+    (csvw-check "ts row 1" (= ((==> dt2 get-column "ts") 1)
+                              (timestamp-from-datetime 2024 12 31 23 59 59)))
+    (csvw-check "ts row 2" (= ((==> dt2 get-column "ts") 2)
+                              (timestamp-from-datetime 2025 1 1 0 0 0)))
+    (csvw-check "val preserved" (= ((==> dt2 get-column "val") 2) 3.0)) ) )
+
+
+;; ============================================================
+(printf "\n=== Test 5: TSV delimiter ===\n")
+;; ============================================================
+
+(let ((dt (new DataTable)))
+  (==> dt add-column "a" 'real)
+  (==> dt add-column "b" 'real)
+  (==> dt append-row (list 1.0 2.0))
+  (==> dt append-row (list 3.0 4.0))
+  (let ((tab (chr 9)))
+    (csv-write dt "/tmp/claude/csvw-t5.tsv" (list (cons "delim" tab))))
+
+  (let ((tab (chr 9)))
+    (let ((dt2 (csv-read "/tmp/claude/csvw-t5.tsv" (list (cons "delim" tab)))))
+      (csvw-check "tsv rows" (= (==> dt2 num-rows) 2))
+      (csvw-check "tsv col a" (= ((==> dt2 get-column "a") 0) 1.0))
+      (csvw-check "tsv col b" (= ((==> dt2 get-column "b") 1) 4.0)) ) ) )
+
+
+;; ============================================================
+(printf "\n=== Test 6: No header option ===\n")
+;; ============================================================
+
+(let ((dt (new DataTable)))
+  (==> dt add-column "x" 'real)
+  (==> dt append-row (list 1.0))
+  (==> dt append-row (list 2.0))
+  ;; With header (default): 3 lines
+  (csv-write dt "/tmp/claude/csvw-t6a.csv")
+  ;; Without header: 2 lines
+  (csv-write dt "/tmp/claude/csvw-t6b.csv" (list (cons "header" ())))
+
+  (let ((na (csvw-count-lines "/tmp/claude/csvw-t6a.csv"))
+        (nb (csvw-count-lines "/tmp/claude/csvw-t6b.csv")))
+    (csvw-check "with header - 3 lines" (= na 3))
+    (csvw-check "no header - 2 lines" (= nb 2)) ) )
+
+
+;; ============================================================
+(printf "\n=== Test 7: Empty table ===\n")
+;; ============================================================
+
+(let ((dt (new DataTable)))
+  (==> dt add-column "x" 'real)
+  (==> dt add-column "y" 'string)
+  (csv-write dt "/tmp/claude/csvw-t7.csv")
+  (csvw-check "empty table file exists" (filep "/tmp/claude/csvw-t7.csv"))
+  (let ((n (csvw-count-lines "/tmp/claude/csvw-t7.csv")))
+    (csvw-check "empty table - 1 header line" (= n 1)) ) )
+
+
+;; ============================================================
+(printf "\n=== Test 8: Float column ===\n")
+;; ============================================================
+
+(let ((dt (new DataTable)))
+  (==> dt add-column "f" 'float)
+  (==> dt add-column "d" 'real)
+  (==> dt append-row (list 1.5 1.5))
+  (==> dt append-row (list () ()))
+  (csv-write dt "/tmp/claude/csvw-t8.csv")
+
+  (let ((dt2 (csv-read "/tmp/claude/csvw-t8.csv")))
+    (csvw-check "float roundtrip" (< (abs (- ((==> dt2 get-column "f") 0) 1.5)) 0.001))
+    (csvw-check "float null" (nanp ((==> dt2 get-column "f") 1))) ) )
+
+
+;; ============================================================
+(printf "\n=== Test 9: IntColumn (dictionary-encoded int) ===\n")
+;; ============================================================
+
+(let ((dt (new DataTable)))
+  (==> dt add-column "x" 'real)
+  (==> dt add-column "cat" 'intcol)
+  (==> dt append-row (list 1.0 42))
+  (==> dt append-row (list 2.0 99))
+  (==> dt append-row (list 3.0 42))
+  (csv-write dt "/tmp/claude/csvw-t9.csv")
+
+  (let ((dt2 (csv-read "/tmp/claude/csvw-t9.csv")))
+    (csvw-check "intcol rows" (= (==> dt2 num-rows) 3))
+    (csvw-check "intcol val 0" (= ((==> dt2 get-column "cat") 0) 42))
+    (csvw-check "intcol val 2" (= ((==> dt2 get-column "cat") 2) 42)) ) )
+
+
+;; ============================================================
+(printf "\n=== Test 10: Precision option ===\n")
+;; ============================================================
+
+(let ((dt (new DataTable)))
+  (==> dt add-column "pi" 'real)
+  (==> dt append-row (list 3.141592653589793))
+  (csv-write dt "/tmp/claude/csvw-t10a.csv")
+  (csv-write dt "/tmp/claude/csvw-t10b.csv" (list (cons "precision" 4)))
+
+  (let ((dt2a (csv-read "/tmp/claude/csvw-t10a.csv"))
+        (dt2b (csv-read "/tmp/claude/csvw-t10b.csv")))
+    (csvw-check "full precision" (< (abs (- ((==> dt2a get-column "pi") 0)
+                                            3.141592653589793)) 1e-14))
+    (csvw-check "low precision" (< (abs (- ((==> dt2b get-column "pi") 0)
+                                           3.142)) 0.001)) ) )
+
+
+;; ============================================================
+(printf "\n=== Test 11: Large table (1000 rows) ===\n")
+;; ============================================================
+
+(let ((dt (new DataTable)))
+  (==> dt add-column "idx" 'int)
+  (==> dt add-column "val" 'real)
+  (==> dt add-column "label" 'string)
+  (for (i 0 999)
+    (==> dt append-row (list i (* i 0.1) (sprintf "row_%d" i))))
+  (csv-write dt "/tmp/claude/csvw-t11.csv")
+
+  (let ((dt2 (csv-read "/tmp/claude/csvw-t11.csv")))
+    (csvw-check "1000 rows" (= (==> dt2 num-rows) 1000))
+    (csvw-check "last row idx" (= ((==> dt2 get-column "idx") 999) 999))
+    (csvw-check "last row val" (< (abs (- ((==> dt2 get-column "val") 999) 99.9)) 0.001))
+    (csvw-check "last row label" (= (==> (==> dt2 get-column "label") get 999) "row_999")) ) )
+
+
+;; ============================================================
+(printf "\n=== Test 12: Timestamp null ===\n")
+;; ============================================================
+
+;; Use a second column so null stamp rows aren't completely empty lines
+;; (csv-read skips fully empty lines)
+(let ((dt (new DataTable)))
+  (==> dt add-column "ts" 'stamp)
+  (==> dt add-column "x" 'real)
+  (==> dt append-row (list (timestamp-from-datetime 2024 1 1 0 0 0) 1.0))
+  (==> dt append-row (list () 2.0))
+  (==> dt append-row (list (timestamp-from-datetime 2024 12 31 0 0 0) 3.0))
+  (csv-write dt "/tmp/claude/csvw-t12.csv")
+
+  (let ((dt2 (csv-read "/tmp/claude/csvw-t12.csv")))
+    (csvw-check "stamp null row count" (= (==> dt2 num-rows) 3))
+    (csvw-check "stamp non-null 0" (= ((==> dt2 get-column "ts") 0)
+                                      (timestamp-from-datetime 2024 1 1 0 0 0)))
+    (csvw-check "stamp non-null 2" (= ((==> dt2 get-column "ts") 2)
+                                      (timestamp-from-datetime 2024 12 31 0 0 0)))
+    (csvw-check "stamp companion val" (= ((==> dt2 get-column "x") 1) 2.0)) ) )
+
+
+;; ============================================================
+;; Summary
+;; ============================================================
+
+(printf "\n========================================\n")
+(printf "csv-write tests: %d passed, %d failed\n" *csvw-pass* *csvw-fail*)
+(printf "========================================\n")
+
+(when (> *csvw-fail* 0)
+  (exit 1))

@@ -1,0 +1,319 @@
+;;; datatable-csv-write.lsh -- CSV/TSV writer for DataTable
+;;;
+;;; Writes a DataTable to CSV format with streaming output (no full buffer).
+;;; Uses compiled C for the row loop: fast ISO 8601 timestamps via integer
+;;; arithmetic, CSV field escaping, null sentinel detection.
+;;;
+;;; Usage:
+;;;   (libload "datatable/datatable-csv-write")
+;;;   (csv-write dt "/tmp/output.csv")
+;;;   (csv-write dt "/tmp/output.tsv" '(("delim" . "\t")))
+
+(libload "datatable/datatable")
+(libload "datatable/datatable-null")
+
+#? *** CSV/TSV Writer
+;; C-accelerated CSV/TSV writer for DataTable.
+;; Streams rows directly to a file via compiled C -- never buffers the
+;; entire output in memory.
+;;
+;; Features:
+;; {<ul>
+;; {<li> Fast ISO 8601 timestamp formatting (integer arithmetic, no strftime).}
+;; {<li> CSV field escaping (quotes fields containing delimiter, quotes, or newlines).}
+;; {<li> Null sentinel detection for all column types.}
+;; {<li> Configurable delimiter, null string, and numeric precision.}
+;; }
+;; {<see> (csv-write <dt> <path> [<options>])}
+;; {<see> (csv-read <filename> [<options>])}
+
+
+;; ============================================================
+;; Compiled C bridge (dhc-make)
+;; ============================================================
+
+;; We store FILE* as a long long in a 1-element long-matrix.
+;; Access via IDX_PTR to get the pointer, then cast.
+
+;; Open a file for writing, store FILE* in fp-arr[0]
+(de _csvw-fopen (fp-arr path)
+  ((-idx1- (-long-)) fp-arr)
+  ((-str-) path)
+  #{{
+    long long *fpp = IDX_PTR($fp_arr, long long);
+    FILE *fp = fopen($path->data, "w");
+    if (!fp) {
+      fpp[0] = 0;
+    } else {
+      setvbuf(fp, NULL, _IOFBF, 65536);
+      fpp[0] = (long long)(void *)fp;
+    }
+  }#}
+  () )
+
+;; Close the file
+(de _csvw-fclose (fp-arr)
+  ((-idx1- (-long-)) fp-arr)
+  #{{
+    long long *fpp = IDX_PTR($fp_arr, long long);
+    FILE *fp = (FILE *)(void *)fpp[0];
+    if (fp) fclose(fp);
+    fpp[0] = 0;
+  }#}
+  () )
+
+;; Write a double field (or null for NaN)
+(de _csvw-write-double-field (fp-arr val precision null-str delim is-last)
+  ((-idx1- (-long-)) fp-arr)
+  ((-double-) val)
+  ((-int-) precision delim is-last)
+  ((-str-) null-str)
+  #{{
+    long long *fpp = IDX_PTR($fp_arr, long long);
+    FILE *fp = (FILE *)(void *)fpp[0];
+    if ($val != $val) {
+      fputs($null_str->data, fp);
+    } else {
+      fprintf(fp, "%.*g", (int)$precision, $val);
+    }
+    if ($is_last) fputc('\n', fp);
+    else fputc((char)$delim, fp);
+  }#}
+  () )
+
+;; Write a float field (or null for NaN)
+(de _csvw-write-float-field (fp-arr val precision null-str delim is-last)
+  ((-idx1- (-long-)) fp-arr)
+  ((-float-) val)
+  ((-int-) precision delim is-last)
+  ((-str-) null-str)
+  #{{
+    long long *fpp = IDX_PTR($fp_arr, long long);
+    FILE *fp = (FILE *)(void *)fpp[0];
+    float fv = $val;
+    if (fv != fv) {
+      fputs($null_str->data, fp);
+    } else {
+      fprintf(fp, "%.*g", (int)$precision, (double)fv);
+    }
+    if ($is_last) fputc('\n', fp);
+    else fputc((char)$delim, fp);
+  }#}
+  () )
+
+;; Write an int field (or null for INT_MIN)
+(de _csvw-write-int-field (fp-arr val null-str delim is-last)
+  ((-idx1- (-long-)) fp-arr)
+  ((-int-) val delim is-last)
+  ((-str-) null-str)
+  #{{
+    long long *fpp = IDX_PTR($fp_arr, long long);
+    FILE *fp = (FILE *)(void *)fpp[0];
+    if ($val == (-2147483647L - 1)) {
+      fputs($null_str->data, fp);
+    } else {
+      fprintf(fp, "%ld", $val);
+    }
+    if ($is_last) fputc('\n', fp);
+    else fputc((char)$delim, fp);
+  }#}
+  () )
+
+;; Write a stamp field: fast ISO 8601 via integer arithmetic
+(de _csvw-write-stamp-field (fp-arr val null-str delim is-last)
+  ((-idx1- (-long-)) fp-arr)
+  ((-long-) val)
+  ((-int-) delim is-last)
+  ((-str-) null-str)
+  #{{
+    long long *fpp = IDX_PTR($fp_arr, long long);
+    FILE *fp = (FILE *)(void *)fpp[0];
+    long long lv = $val;
+    if (lv == (-9223372036854775807LL - 1)) {
+      fputs($null_str->data, fp);
+    } else {
+      long long secs = lv / 1000000;
+      long long usecs = lv % 1000000;
+      if (usecs < 0) { secs--; usecs += 1000000; }
+      long long days = secs / 86400;
+      int rem = (int)(secs % 86400);
+      if (rem < 0) { days--; rem += 86400; }
+      int h = rem / 3600;
+      int m = (rem % 3600) / 60;
+      int s = rem % 60;
+      /* Civil date from day count (Howard Hinnant algorithm) */
+      long long z = days + 719468;
+      long long era = (z >= 0 ? z : z - 146096) / 146097;
+      int doe = (int)(z - era * 146097);
+      int yoe = (doe - doe/1460 + doe/36524 - doe/146096) / 365;
+      int y = (int)(yoe + era * 400);
+      int doy = doe - (365*yoe + yoe/4 - yoe/100);
+      int mp = (5*doy + 2) / 153;
+      int d = doy - (153*mp + 2) / 5 + 1;
+      int mo = mp + (mp < 10 ? 3 : -9);
+      if (mo <= 2) y++;
+      if (usecs != 0) {
+        fprintf(fp, "%04d-%02d-%02d %02d:%02d:%02d.%06lld",
+                y, mo, d, h, m, s, usecs);
+      } else {
+        fprintf(fp, "%04d-%02d-%02d %02d:%02d:%02d",
+                y, mo, d, h, m, s);
+      }
+    }
+    if ($is_last) fputc('\n', fp);
+    else fputc((char)$delim, fp);
+  }#}
+  () )
+
+;; Write a string field with CSV escaping
+(de _csvw-write-str-field (fp-arr str-val null-str delim is-last)
+  ((-idx1- (-long-)) fp-arr)
+  ((-str-) str-val null-str)
+  ((-int-) delim is-last)
+  #{{
+    long long *fpp = IDX_PTR($fp_arr, long long);
+    FILE *fp = (FILE *)(void *)fpp[0];
+    const char *sv = $str_val->data;
+    int slen = strlen(sv);
+    if (slen == 0) {
+      fputs($null_str->data, fp);
+    } else {
+      int needs_quote = 0;
+      char dc = (char)$delim;
+      for (int i = 0; i < slen; i++) {
+        if (sv[i] == dc || sv[i] == '"' || sv[i] == '\n' || sv[i] == '\r') {
+          needs_quote = 1;
+          break;
+        }
+      }
+      if (needs_quote) {
+        fputc('"', fp);
+        for (int i = 0; i < slen; i++) {
+          if (sv[i] == '"') fputc('"', fp);
+          fputc(sv[i], fp);
+        }
+        fputc('"', fp);
+      } else {
+        fputs(sv, fp);
+      }
+    }
+    if ($is_last) fputc('\n', fp);
+    else fputc((char)$delim, fp);
+  }#}
+  () )
+
+;; Compile all bridge functions
+(dhc-make ()
+  _csvw-fopen
+  _csvw-fclose
+  _csvw-write-double-field
+  _csvw-write-float-field
+  _csvw-write-int-field
+  _csvw-write-stamp-field
+  _csvw-write-str-field )
+
+
+;; ============================================================
+;; Public API
+;; ============================================================
+
+#? (csv-write <dt> <path> [<options>])
+;; Write DataTable <dt> to a CSV file at <path>.
+;;
+;; <options> is an optional alist of string-keyed settings:
+;; {<ul>
+;; {<li> {<b> "delim"} -- delimiter string, default "," (use "\t" for TSV).}
+;; {<li> {<b> "header"} -- write header row, default {<b> t}. Set to () to skip.}
+;; {<li> {<b> "null"} -- null representation, default "" (empty field).}
+;; {<li> {<b> "precision"} -- decimal digits for real columns (default 15).}
+;; {<li> {<b> "float-precision"} -- decimal digits for float columns (default 7).}
+;; }
+;;
+;; All six column types are supported: real, float, int, stamp, string, intcol.
+;; Timestamps are formatted as ISO 8601 ({<b> YYYY-MM-DD HH:MM:SS}) using fast
+;; integer arithmetic (no strftime).  Sub-second precision is included when
+;; the microsecond component is nonzero.
+;;
+;; Null sentinels (NaN, INT_MIN, INT64_MIN, empty string) are written as
+;; the null string (default: empty field, matching R's {<b> write.csv}).
+;;
+;; String fields containing the delimiter, double quotes, or newlines are
+;; automatically quoted and escaped per RFC 4180.
+;;
+;; Example:
+;; {<code>
+;;  (csv-write dt "/tmp/output.csv")
+;;  (csv-write dt "/tmp/output.tsv" '(("delim" . "\t")))
+;;  (csv-write dt "/tmp/out.csv" '(("null" . "NA") ("precision" . 6)))
+;; </code>}
+;; {<see> (csv-read <filename> [<options>])}
+(de csv-write (dt path . rest)
+  (let ((options (if rest (car rest) ())))
+    ;; Parse options
+    (let ((opt-delim     (cdr (assoc "delim" options)))
+          (opt-header    (let ((h (assoc "header" options)))
+                           (if h (cdr h) t)))
+          (opt-null      (let ((n (assoc "null" options)))
+                           (if n (cdr n) "")))
+          (opt-precision (let ((p (assoc "precision" options)))
+                           (if p (cdr p) 15)))
+          (opt-fprecision (let ((p (assoc "float-precision" options)))
+                            (if p (cdr p) 7))) )
+      (let ((delim-char (if opt-delim (asc (mid opt-delim 1 1)) (asc ",")))
+            (nrows (==> dt num-rows))
+            (ncols (==> dt num-cols))
+            (col-names (==> dt col-names))
+            (col-types (==> dt col-types)) )
+
+        ;; Open file
+        (let ((fp-arr (long-matrix 1)))
+          (_csvw-fopen fp-arr path)
+          (when (= (fp-arr 0) 0)
+            (error "csv-write" "cannot open file for writing" path) )
+
+          ;; Write header
+          (when opt-header
+            (let ((ci 0))
+              (each ((name col-names))
+                (_csvw-write-str-field fp-arr name ""
+                                       delim-char (if (= ci (1- ncols)) 1 0))
+                (setq ci (1+ ci)) ) ) )
+
+          ;; Pre-extract column objects
+          (let ((columns ()))
+            (for (ci 0 (1- ncols))
+              (setq columns (nconc1 columns (==> dt get-column ci))) )
+
+            ;; Write rows
+            (for (r 0 (1- nrows))
+              (let ((ci 0))
+                (each ((col columns) (type col-types))
+                  (let ((is-last (if (= ci (1- ncols)) 1 0)))
+                    (cond
+                     ((= type 'real)
+                      (_csvw-write-double-field fp-arr (col r) opt-precision
+                                                 opt-null delim-char is-last) )
+                     ((= type 'float)
+                      (_csvw-write-float-field fp-arr (col r) opt-fprecision
+                                                opt-null delim-char is-last) )
+                     ((= type 'int)
+                      (_csvw-write-int-field fp-arr (col r)
+                                              opt-null delim-char is-last) )
+                     ((= type 'stamp)
+                      (_csvw-write-stamp-field fp-arr (col r)
+                                                opt-null delim-char is-last) )
+                     ((= type 'string)
+                      (let ((sv (==> col get r)))
+                        (_csvw-write-str-field fp-arr (if sv sv "")
+                                                opt-null delim-char is-last) ) )
+                     ((= type 'intcol)
+                      (let ((v (==> col get r)))
+                        (if (= v *dt-null-int*)
+                          (_csvw-write-str-field fp-arr "" opt-null delim-char is-last)
+                          (let ((sv (sprintf "%d" v)))
+                            (_csvw-write-str-field fp-arr sv opt-null delim-char is-last) ) ) ) ) ) )
+                  (setq ci (1+ ci)) ) ) ) )
+
+          ;; Close file
+          (_csvw-fclose fp-arr)
+          (printf "csv-write: %s <- %d rows x %d cols\n" path nrows ncols) ) ) ) ) )

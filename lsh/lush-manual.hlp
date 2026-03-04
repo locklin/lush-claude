@@ -292,6 +292,8 @@ and time/date utilities.
 
 #? ** << datatable/datatable-csv.lsh
 
+#? ** << datatable/datatable-csv-write.lsh
+
 #? ** << datatable/datatable-join.lsh
 
 #? ** << datatable/datatable-null.lsh
