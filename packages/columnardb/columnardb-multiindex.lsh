@@ -13,15 +13,23 @@
 ;; Multi-condition filtering by intersecting per-condition row-index
 ;; arrays.  Each condition is resolved independently using the best
 ;; available method (CSR index for string equality, binary search
-;; for sorted ranges, linear scan otherwise), then results are
-;; intersected via compiled C sorted-merge.
-;;.PP
+;; for sorted ranges, compiled C vectorized scan otherwise), then
+;; results are intersected via compiled C sorted-merge.
+;;
+;; Two API variants:
+;; {<ul>
+;; {<li> {<b> columnardb-where-multi} -- returns a Lush list of row indices}
+;; {<li> {<b> columnardb-where-multi-idx1} -- returns a sorted idx1 array (faster, no list allocation)}
+;; }
+;;
 ;; Example:
-;;.CODE
+;; {<code>
 ;;   (columnardb-where-multi dt '((= "symbol" "AAPL") (> "price" 100.0)))
-;;.END
-;;.SEE (columnardb-where-multi <dt> <conditions> [<meta>])
-;;.SEE ColumnarDB Compiled Hot Paths
+;;   (columnardb-where-multi-idx1 dt '((= "symbol" "AAPL") (> "price" 100.0)))
+;; </code>}
+;; {<see> (columnardb-where-multi <dt> <conditions> [<meta>])}
+;; {<see> (columnardb-where-multi-idx1 <dt> <conditions> [<meta>])}
+;; {<see> ColumnarDB Compiled Hot Paths
 
 
 ;; ============================================================
@@ -98,6 +106,230 @@
 
 
 ;; ============================================================
+;; Compiled filter pipeline (Phase 3)
+;; ============================================================
+
+;; Map operator symbol to op code: 0=eq, 1=lt, 2=gt, 3=le, 4=ge, 5=ne
+(de _filter-op-code (op)
+  (cond ((= op '=) 0)
+        ((= op '<) 1)
+        ((= op '>) 2)
+        ((= op '<=) 3)
+        ((= op '>=) 4)
+        ((= op '<>) 5)
+        (t -1) ) )
+
+
+;; Process one condition to a sorted idx1 of matching row indices,
+;; using compiled C filters where possible.
+;; Returns () for no matches, otherwise sorted idx1.
+(de _multi-index-condition-compiled (dt cond meta)
+  (let ((op (car cond))
+        (col-name (cadr cond))
+        (val (caddr cond)) )
+    (cond
+     ;; Special form: (range col lo hi)
+     ((= op 'range)
+      (let ((lo val)
+            (hi (nth 3 cond)) )
+        ;; Check if column is sorted (use binary search)
+        (let* ((col-idx (==> dt col-index col-name))
+               (type (==> dt col-type col-name))
+               (nrows (==> dt num-rows))
+               (col (==> dt get-column col-idx))
+               (sorted-cols (if meta (cadr (assoc 'sorted meta)) ()))
+               (is-sorted (member col-idx sorted-cols)) )
+          (if is-sorted
+            ;; Sorted path: binary search → iota
+            (_sorted-range-idx1 col type nrows lo hi)
+            ;; Unsorted path: compiled range filter
+            (cond
+             ((= type 'real)
+              (let ((view (narrow col 0 nrows 0))
+                    (result (int-matrix nrows)) )
+                (let ((count (_cdb-d1range-filter view nrows
+                               (to-double lo) (to-double hi) result)))
+                  (if (= count 0) ()
+                    (narrow result 0 count 0) ) ) ) )
+             ((or (= type 'int) (= type 'intcol))
+              (let ((view (narrow col 0 nrows 0))
+                    (result (int-matrix nrows)) )
+                (let ((count (_cdb-i1range-filter view nrows
+                               (to-int lo) (to-int hi) result)))
+                  (if (= count 0) ()
+                    (narrow result 0 count 0) ) ) ) )
+             ;; Float/stamp/other: fall back to interpreted
+             (t (let ((indices (columnardb-range dt col-name lo hi meta)))
+                  (_list-to-sorted-idx1 indices) ))) ))))
+
+     ;; String equality: use CSR index
+     ((and (= op '=)
+           (= (==> dt col-type col-name) 'string))
+      (let* ((col-idx (==> dt col-index col-name))
+             (sc (==> dt get-column col-idx)) )
+        (when (not (==> sc has-index))
+          (==> sc build-index) )
+        (let ((rows (==> sc where-eq val)))
+          (if rows
+            (_list-to-sorted-idx1 rows)
+            () ) ) ) )
+
+     ;; String not-equal: use CSR index, invert
+     ((and (= op '<>)
+           (= (==> dt col-type col-name) 'string))
+      (let ((rows (==> dt where op col-name val)))
+        (if rows (_list-to-sorted-idx1 rows) ()) ) )
+
+     ;; IntCol: delegate to DataTable.where (uses its own index)
+     ((= (==> dt col-type col-name) 'intcol)
+      (let ((rows (==> dt where op col-name val)))
+        (if rows (_list-to-sorted-idx1 rows) ()) ) )
+
+     ;; Numeric comparison: compiled C filter
+     (t
+      (let* ((col-idx (==> dt col-index col-name))
+             (type (==> dt col-type col-name))
+             (nrows (==> dt num-rows))
+             (col (==> dt get-column col-idx))
+             (opcode (_filter-op-code op)) )
+        (if (< opcode 0)
+          ;; Unknown op: fall back to interpreted
+          (let ((rows (==> dt where op col-name val)))
+            (if rows (_list-to-sorted-idx1 rows) ()) )
+          ;; Dispatch by type
+          (cond
+           ((= type 'real)
+            (let ((view (narrow col 0 nrows 0))
+                  (result (int-matrix nrows)) )
+              (let ((count (_cdb-d1filter view nrows opcode (to-double val) result)))
+                (if (= count 0) ()
+                  (narrow result 0 count 0) ) ) ) )
+           ((= type 'float)
+            (let ((view (narrow col 0 nrows 0))
+                  (result (int-matrix nrows)) )
+              (let ((count (_cdb-f1filter view nrows opcode (to-float val) result)))
+                (if (= count 0) ()
+                  (narrow result 0 count 0) ) ) ) )
+           ((= type 'int)
+            (let ((view (narrow col 0 nrows 0))
+                  (result (int-matrix nrows)) )
+              (let ((count (_cdb-i1filter view nrows opcode (to-int val) result)))
+                (if (= count 0) ()
+                  (narrow result 0 count 0) ) ) ) )
+           ((= type 'stamp)
+            (let ((view (narrow col 0 nrows 0))
+                  (result (int-matrix nrows)) )
+              (let ((count (_cdb-l1filter view nrows opcode val result)))
+                (if (= count 0) ()
+                  (narrow result 0 count 0) ) ) ) )
+           ;; Fallback
+           (t (let ((rows (==> dt where op col-name val)))
+                (if rows (_list-to-sorted-idx1 rows) ()) )) )))))))
+
+
+;; Binary search on sorted column for range queries → idx1 via iota
+(de _sorted-range-idx1 (col type nrows lo hi)
+  (cond
+   ((= type 'real)
+    (let* ((view (narrow col 0 nrows 0))
+           (left (_cdb-d1bsearch-left view nrows (to-double lo)))
+           (right (_cdb-d1bsearch-right view nrows (to-double hi))) )
+      (if (> left right) ()
+        (let* ((count (1+ (- right left)))
+               (result (int-matrix count)) )
+          (_cdb-i1iota result left count)
+          result ) ) ) )
+   ((= type 'float)
+    (let* ((view (narrow col 0 nrows 0))
+           (left (_cdb-f1bsearch-left view nrows (to-float lo)))
+           (right (_cdb-f1bsearch-right view nrows (to-float hi))) )
+      (if (> left right) ()
+        (let* ((count (1+ (- right left)))
+               (result (int-matrix count)) )
+          (_cdb-i1iota result left count)
+          result ) ) ) )
+   ((= type 'int)
+    (let* ((view (narrow col 0 nrows 0))
+           (left (_cdb-i1bsearch-left view nrows (to-int lo)))
+           (right (_cdb-i1bsearch-right view nrows (to-int hi))) )
+      (if (> left right) ()
+        (let* ((count (1+ (- right left)))
+               (result (int-matrix count)) )
+          (_cdb-i1iota result left count)
+          result ) ) ) )
+   ((= type 'stamp)
+    (let* ((view (narrow col 0 nrows 0))
+           (left (_cdb-l1bsearch-left view nrows lo))
+           (right (_cdb-l1bsearch-right view nrows hi)) )
+      (if (> left right) ()
+        (let* ((count (1+ (- right left)))
+               (result (int-matrix count)) )
+          (_cdb-i1iota result left count)
+          result ) ) ) )
+   (t (error "_sorted-range-idx1" "unsupported column type" type)) ) )
+
+
+;; Binary search on sorted column for comparison ops → idx1 via iota
+;; Maps (= col val) to [bsearch-left(val), bsearch-right(val)]
+;; Maps (< col val) to [0, bsearch-left(val) - 1]
+;; Maps (> col val) to [bsearch-right(val) + 1, n - 1]
+;; Maps (<= col val) to [0, bsearch-right(val)]
+;; Maps (>= col val) to [bsearch-left(val), n - 1]
+(de _sorted-filter-idx1 (col type nrows op val)
+  (let ((left 0) (right 0))
+    ;; Compute bsearch bounds based on type
+    (cond
+     ((= type 'real)
+      (let ((view (narrow col 0 nrows 0))
+            (dval (to-double val)) )
+        (setq left (_cdb-d1bsearch-left view nrows dval))
+        (setq right (_cdb-d1bsearch-right view nrows dval)) ) )
+     ((= type 'float)
+      (let ((view (narrow col 0 nrows 0))
+            (fval (to-float val)) )
+        (setq left (_cdb-f1bsearch-left view nrows fval))
+        (setq right (_cdb-f1bsearch-right view nrows fval)) ) )
+     ((= type 'int)
+      (let ((view (narrow col 0 nrows 0))
+            (ival (to-int val)) )
+        (setq left (_cdb-i1bsearch-left view nrows ival))
+        (setq right (_cdb-i1bsearch-right view nrows ival)) ) )
+     ((= type 'stamp)
+      (let ((view (narrow col 0 nrows 0)))
+        (setq left (_cdb-l1bsearch-left view nrows val))
+        (setq right (_cdb-l1bsearch-right view nrows val)) ) )
+     (t (error "_sorted-filter-idx1" "unsupported type" type)) )
+
+    ;; Handle <> specially (non-contiguous result)
+    (if (= op '<>)
+      ;; Not-equal on sorted: union of [0, left-1] and [right+1, n-1]
+      (let ((n1 (max 0 left))
+            (n2 (max 0 (- (1- nrows) right))) )
+        (if (= (+ n1 n2) 0) ()
+          (let ((result (int-matrix (+ n1 n2))))
+            (when (> n1 0) (_cdb-i1iota result 0 n1))
+            (when (> n2 0)
+              (_cdb-i1iota (narrow result 0 n2 n1) (1+ right) n2))
+            result ) ) )
+
+      ;; All other ops: map to contiguous index range [lo, hi]
+      (let ((lo 0) (hi 0))
+        (cond
+         ((= op '=)  (setq lo left) (setq hi right))
+         ((= op '<)  (setq lo 0) (setq hi (1- left)))
+         ((= op '>)  (setq lo (1+ right)) (setq hi (1- nrows)))
+         ((= op '<=) (setq lo 0) (setq hi right))
+         ((= op '>=) (setq lo left) (setq hi (1- nrows)))
+         (t (error "_sorted-filter-idx1" "unsupported op" op)) )
+        ;; Contiguous range → iota
+        (if (> lo hi) ()
+          (let* ((count (1+ (- hi lo)))
+                 (result (int-matrix count)) )
+            (_cdb-i1iota result lo count)
+            result ) ) ) ) ) )
+
+
+;; ============================================================
 ;; Public API
 ;; ============================================================
 
@@ -138,6 +370,63 @@
               (for (i 0 (1- n))
                 (setq lst (nconc1 lst (result i))) )
               lst ) ) ) ) ) ) )
+
+
+#? (columnardb-where-multi-idx1 <dt> <conditions> [<meta>])
+;; Return a sorted idx1 of row indices satisfying ALL conditions,
+;; using compiled C filter functions.
+;; Like {<b> columnardb-where-multi} but returns an idx1 array
+;; instead of a list, avoiding list allocation overhead.
+;; Returns {<c> ()} for no matches, otherwise a sorted idx1.
+;;
+;; Uses the fastest available method for each condition:
+;; {<ul>
+;; {<li> CSR index for string equality (O(1) lookup)}
+;; {<li> Binary search for sorted numeric columns (O(log n))}
+;; {<li> Compiled C vectorized scan for unsorted columns (O(n))}
+;; }
+;;
+;; Example:
+;; {<code>
+;;   (columnardb-where-multi-idx1 dt
+;;     '((= "symbol" "AAPL") (> "price" 100.0))
+;;     meta)
+;; </code>}
+;; {<see> (columnardb-where-multi <dt> <conditions> [<meta>])}
+(de columnardb-where-multi-idx1 (dt conditions &optional meta)
+  (when (not meta) (setq meta ()))
+  (when (not conditions)
+    (error "columnardb-where-multi-idx1" "no conditions provided" ()) )
+
+  ;; Process all conditions to sorted idx1 arrays
+  (let ((idx-arrays ()))
+    (each ((cond conditions))
+      (setq idx-arrays (nconc1 idx-arrays
+        (_multi-index-condition-compiled dt cond meta) )) )
+
+    ;; Early exit: if any condition returned (), result is empty
+    (let ((has-empty ()))
+      (each ((arr idx-arrays))
+        (when (not arr) (setq has-empty t)) )
+      (if has-empty
+        ()
+        ;; Pairwise intersect all idx1 arrays
+        (let ((result (car idx-arrays)))
+          (each ((arr (cdr idx-arrays)))
+            (setq result (_multi-index-intersect result arr)) )
+          result ) ) ) ) )
+
+
+;; Union two sorted idx1 arrays (for OR queries)
+(de _multi-index-union (a b)
+  (if (not a) b
+    (if (not b) a
+      (let ((na (idx-dim a 0))
+            (nb (idx-dim b 0)) )
+        (let ((dest (int-matrix (+ na nb))))
+          (let ((count (_cdb-i1union-sorted a na b nb dest)))
+            (if (= count 0) ()
+              (narrow dest 0 count 0) ) ) ) ) ) ) )
 
 
 #? (columnardb-where-multi-rows <dt> <conditions> [<meta>])

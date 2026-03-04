@@ -11,7 +11,9 @@
 ;; Includes aggregation primitives (sum, min, max via permutation),
 ;; CSR inverted index construction (code counting + fill),
 ;; gather operations, sorted-array intersection for multi-index,
-;; and sorted-check functions for column compression detection.
+;; sorted-check functions for column compression detection,
+;; vectorized filter functions (Phase 3), binary search for
+;; double/int columns, iota fill, and sorted union for OR queries.
 ;;.SEE ColumnarDB Grouped Aggregation
 ;;.SEE ColumnarDB Multi-Column Index
 
@@ -1014,6 +1016,319 @@
 
 
 ;; ============================================================
+;; Vectorized filter functions (Phase 3)
+;; Op codes: 0=eq, 1=lt, 2=gt, 3=le, 4=ge, 5=ne
+;; ============================================================
+
+;; Double filter: scan data[0..n-1], write matching indices to result[]
+;; Returns count of matches.
+(de _cdb-d1filter (data n op val result)
+  ((-idx1- (-double-)) data)
+  ((-int-) n op)
+  ((-double-) val)
+  ((-idx1- (-int-)) result)
+  (let ((count 0))
+    ((-int-) count)
+    #{
+    {
+      double *d = IDX_PTR($data, double);
+      int *r = IDX_PTR($result, int);
+      int cnt = 0, i;
+      double v = $val;
+      switch ($op) {
+        case 0: for (i=0;i<$n;i++) if (d[i]==v) r[cnt++]=i; break;
+        case 1: for (i=0;i<$n;i++) if (d[i]<v)  r[cnt++]=i; break;
+        case 2: for (i=0;i<$n;i++) if (d[i]>v)  r[cnt++]=i; break;
+        case 3: for (i=0;i<$n;i++) if (d[i]<=v) r[cnt++]=i; break;
+        case 4: for (i=0;i<$n;i++) if (d[i]>=v) r[cnt++]=i; break;
+        case 5: for (i=0;i<$n;i++) if (d[i]!=v) r[cnt++]=i; break;
+      }
+      $count = cnt;
+    }
+    #}
+    count ) )
+
+
+;; Float filter
+(de _cdb-f1filter (data n op fval result)
+  ((-idx1- (-float-)) data)
+  ((-int-) n op)
+  ((-float-) fval)
+  ((-idx1- (-int-)) result)
+  (let ((count 0))
+    ((-int-) count)
+    #{
+    {
+      float *d = IDX_PTR($data, float);
+      int *r = IDX_PTR($result, int);
+      int cnt = 0, i;
+      float v = $fval;
+      switch ($op) {
+        case 0: for (i=0;i<$n;i++) if (d[i]==v) r[cnt++]=i; break;
+        case 1: for (i=0;i<$n;i++) if (d[i]<v)  r[cnt++]=i; break;
+        case 2: for (i=0;i<$n;i++) if (d[i]>v)  r[cnt++]=i; break;
+        case 3: for (i=0;i<$n;i++) if (d[i]<=v) r[cnt++]=i; break;
+        case 4: for (i=0;i<$n;i++) if (d[i]>=v) r[cnt++]=i; break;
+        case 5: for (i=0;i<$n;i++) if (d[i]!=v) r[cnt++]=i; break;
+      }
+      $count = cnt;
+    }
+    #}
+    count ) )
+
+
+;; Int filter
+(de _cdb-i1filter (data n op ival result)
+  ((-idx1- (-int-)) data)
+  ((-int-) n op ival)
+  ((-idx1- (-int-)) result)
+  (let ((count 0))
+    ((-int-) count)
+    #{
+    {
+      int *d = IDX_PTR($data, int);
+      int *r = IDX_PTR($result, int);
+      int cnt = 0, i;
+      int v = $ival;
+      switch ($op) {
+        case 0: for (i=0;i<$n;i++) if (d[i]==v) r[cnt++]=i; break;
+        case 1: for (i=0;i<$n;i++) if (d[i]<v)  r[cnt++]=i; break;
+        case 2: for (i=0;i<$n;i++) if (d[i]>v)  r[cnt++]=i; break;
+        case 3: for (i=0;i<$n;i++) if (d[i]<=v) r[cnt++]=i; break;
+        case 4: for (i=0;i<$n;i++) if (d[i]>=v) r[cnt++]=i; break;
+        case 5: for (i=0;i<$n;i++) if (d[i]!=v) r[cnt++]=i; break;
+      }
+      $count = cnt;
+    }
+    #}
+    count ) )
+
+
+;; Long (stamp) filter
+(de _cdb-l1filter (data n op lval result)
+  ((-idx1- (-long-)) data)
+  ((-int-) n op)
+  ((-long-) lval)
+  ((-idx1- (-int-)) result)
+  (let ((count 0))
+    ((-int-) count)
+    #{
+    {
+      long long *d = IDX_PTR($data, long long);
+      int *r = IDX_PTR($result, int);
+      int cnt = 0, i;
+      long long v = $lval;
+      switch ($op) {
+        case 0: for (i=0;i<$n;i++) if (d[i]==v) r[cnt++]=i; break;
+        case 1: for (i=0;i<$n;i++) if (d[i]<v)  r[cnt++]=i; break;
+        case 2: for (i=0;i<$n;i++) if (d[i]>v)  r[cnt++]=i; break;
+        case 3: for (i=0;i<$n;i++) if (d[i]<=v) r[cnt++]=i; break;
+        case 4: for (i=0;i<$n;i++) if (d[i]>=v) r[cnt++]=i; break;
+        case 5: for (i=0;i<$n;i++) if (d[i]!=v) r[cnt++]=i; break;
+      }
+      $count = cnt;
+    }
+    #}
+    count ) )
+
+
+;; ============================================================
+;; Range filter functions (single-pass lo <= data[i] <= hi)
+;; ============================================================
+
+;; Double range filter
+(de _cdb-d1range-filter (data n lo hi result)
+  ((-idx1- (-double-)) data)
+  ((-int-) n)
+  ((-double-) lo hi)
+  ((-idx1- (-int-)) result)
+  (let ((count 0))
+    ((-int-) count)
+    #{
+    {
+      double *d = IDX_PTR($data, double);
+      int *r = IDX_PTR($result, int);
+      int cnt = 0, i;
+      for (i = 0; i < $n; i++) {
+        if (d[i] >= $lo && d[i] <= $hi) r[cnt++] = i;
+      }
+      $count = cnt;
+    }
+    #}
+    count ) )
+
+
+;; Int range filter
+(de _cdb-i1range-filter (data n lo hi result)
+  ((-idx1- (-int-)) data)
+  ((-int-) n lo hi)
+  ((-idx1- (-int-)) result)
+  (let ((count 0))
+    ((-int-) count)
+    #{
+    {
+      int *d = IDX_PTR($data, int);
+      int *r = IDX_PTR($result, int);
+      int cnt = 0, i;
+      for (i = 0; i < $n; i++) {
+        if (d[i] >= $lo && d[i] <= $hi) r[cnt++] = i;
+      }
+      $count = cnt;
+    }
+    #}
+    count ) )
+
+
+;; ============================================================
+;; Binary search for double and int columns
+;; ============================================================
+
+;; Leftmost index where data[i] >= val (double)
+(de _cdb-d1bsearch-left (data n val)
+  ((-idx1- (-double-)) data)
+  ((-int-) n)
+  ((-double-) val)
+  (let ((lo 0))
+    ((-int-) lo)
+    #{
+    {
+      double *d = IDX_PTR($data, double);
+      int hi = $n;
+      while ($lo < hi) {
+        int mid = $lo + (hi - $lo) / 2;
+        if (d[mid] < $val) $lo = mid + 1; else hi = mid;
+      }
+    }
+    #}
+    lo ) )
+
+
+;; Rightmost index where data[i] <= val (double)
+(de _cdb-d1bsearch-right (data n val)
+  ((-idx1- (-double-)) data)
+  ((-int-) n)
+  ((-double-) val)
+  (let ((lo 0))
+    ((-int-) lo)
+    #{
+    {
+      double *d = IDX_PTR($data, double);
+      int hi = $n;
+      while ($lo < hi) {
+        int mid = $lo + (hi - $lo) / 2;
+        if (d[mid] <= $val) $lo = mid + 1; else hi = mid;
+      }
+    }
+    #}
+    (1- lo) ) )
+
+
+;; Leftmost index where data[i] >= val (int)
+(de _cdb-i1bsearch-left (data n val)
+  ((-idx1- (-int-)) data)
+  ((-int-) n val)
+  (let ((lo 0))
+    ((-int-) lo)
+    #{
+    {
+      int *d = IDX_PTR($data, int);
+      int hi = $n;
+      while ($lo < hi) {
+        int mid = $lo + (hi - $lo) / 2;
+        if (d[mid] < $val) $lo = mid + 1; else hi = mid;
+      }
+    }
+    #}
+    lo ) )
+
+
+;; Rightmost index where data[i] <= val (int)
+(de _cdb-i1bsearch-right (data n val)
+  ((-idx1- (-int-)) data)
+  ((-int-) n val)
+  (let ((lo 0))
+    ((-int-) lo)
+    #{
+    {
+      int *d = IDX_PTR($data, int);
+      int hi = $n;
+      while ($lo < hi) {
+        int mid = $lo + (hi - $lo) / 2;
+        if (d[mid] <= $val) $lo = mid + 1; else hi = mid;
+      }
+    }
+    #}
+    (1- lo) ) )
+
+
+;; Check if int array is sorted ascending (non-strict)
+(de _cdb-i1sortedp (data n)
+  ((-idx1- (-int-)) data)
+  ((-int-) n)
+  (let ((result 1))
+    ((-int-) result)
+    #{
+    {
+      int *d = IDX_PTR($data, int);
+      int i;
+      for (i = 1; i < $n; i++) {
+        if (d[i] < d[i-1]) { $result = 0; break; }
+      }
+    }
+    #}
+    result ) )
+
+
+;; ============================================================
+;; Iota fill (result[i] = start + i for i in [0, count))
+;; ============================================================
+
+(de _cdb-i1iota (result start count)
+  ((-idx1- (-int-)) result)
+  ((-int-) start count)
+  #{
+  {
+    int *r = IDX_PTR($result, int);
+    int i;
+    for (i = 0; i < $count; i++) {
+      r[i] = $start + i;
+    }
+  }
+  #}
+  () )
+
+
+;; ============================================================
+;; Sorted union of two sorted int arrays (for OR queries)
+;; ============================================================
+
+;; Merge-union two sorted int arrays, write result to dest.
+;; Returns count of elements in union (deduped).
+(de _cdb-i1union-sorted (a na b nb dest)
+  ((-idx1- (-int-)) a b dest)
+  ((-int-) na nb)
+  (let ((result 0))
+    ((-int-) result)
+    #{
+    {
+      int *aa = IDX_PTR($a, int);
+      int *bb = IDX_PTR($b, int);
+      int *dd = IDX_PTR($dest, int);
+      int ia = 0, ib = 0, cnt = 0;
+      while (ia < $na && ib < $nb) {
+        if (aa[ia] < bb[ib]) { dd[cnt++] = aa[ia++]; }
+        else if (aa[ia] > bb[ib]) { dd[cnt++] = bb[ib++]; }
+        else { dd[cnt++] = aa[ia]; ia++; ib++; }
+      }
+      while (ia < $na) dd[cnt++] = aa[ia++];
+      while (ib < $nb) dd[cnt++] = bb[ib++];
+      $result = cnt;
+    }
+    #}
+    result ) )
+
+
+;; ============================================================
 ;; Compile all functions
 ;; ============================================================
 
@@ -1040,4 +1355,12 @@
   _cdb-d1sortedp-safe
   _cdb-i1count-codes _cdb-i1prefix-sum _cdb-i1csr-fill
   _cdb-i1count-eq _cdb-i1where-eq
-  _cdb-i1intersect-sorted )
+  _cdb-i1intersect-sorted
+  ;; Phase 3: vectorized filters
+  _cdb-d1filter _cdb-f1filter _cdb-i1filter _cdb-l1filter
+  _cdb-d1range-filter _cdb-i1range-filter
+  ;; Phase 3: double/int binary search + sorted check
+  _cdb-d1bsearch-left _cdb-d1bsearch-right
+  _cdb-i1bsearch-left _cdb-i1bsearch-right _cdb-i1sortedp
+  ;; Phase 3: iota fill + sorted union
+  _cdb-i1iota _cdb-i1union-sorted )

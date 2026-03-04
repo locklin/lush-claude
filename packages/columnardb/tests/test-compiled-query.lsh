@@ -1,0 +1,460 @@
+;;; test-compiled-query.lsh -- Tests for compiled query execution
+;;;
+;;; Tests Phase 3 (compiled C filters) and Phase 4 (query planner).
+;;; Loaded by run-all.lsh.  Assumes the test framework and columnardb
+;;; are already loaded.
+
+(printf "\n=== Compiled Query Execution Tests ===\n")
+
+;; ============================================================
+;; Test data setup
+;; ============================================================
+
+(let ((dt (new DataTable)))
+  (==> dt add-column "symbol" 'string)
+  (==> dt add-column "price" 'real)
+  (==> dt add-column "qty" 'int)
+
+  (==> dt append-row (list "AAPL" 150.0 100))
+  (==> dt append-row (list "GOOG" 200.0 50))
+  (==> dt append-row (list "AAPL" 155.0 75))
+  (==> dt append-row (list "MSFT" 300.0 200))
+  (==> dt append-row (list "GOOG" 180.0 60))
+  (==> dt append-row (list "AAPL" 145.0 120))
+  (==> dt append-row (list "MSFT" 310.0 150))
+  (==> dt append-row (list "TSLA" 250.0 80))
+  (==> dt append-row (list "TSLA" 240.0 90))
+  (==> dt append-row (list "GOOG" 210.0 40))
+
+
+;; ============================================================
+;; Test 1: Compiled double filter correctness
+;; ============================================================
+
+(test-suite "Compiled: double filter ops"
+  ;; eq
+  (let ((result (db-select * (from dt) (where (= "price" 200.0)))))
+    (test-equal "d1filter eq" (==> result num-rows) 1)
+    (test-approx "d1filter eq val" (==> result get 0 "price") 200.0 0.001) )
+
+  ;; lt
+  (let ((result (db-select * (from dt) (where (< "price" 155.0)))))
+    (test-equal "d1filter lt" (==> result num-rows) 2) )
+
+  ;; gt
+  (let ((result (db-select * (from dt) (where (> "price" 250.0)))))
+    (test-equal "d1filter gt" (==> result num-rows) 2) )
+
+  ;; le
+  (let ((result (db-select * (from dt) (where (<= "price" 155.0)))))
+    (test-equal "d1filter le" (==> result num-rows) 3) )
+
+  ;; ge
+  (let ((result (db-select * (from dt) (where (>= "price" 250.0)))))
+    (test-equal "d1filter ge" (==> result num-rows) 3) )
+
+  ;; ne
+  (let ((result (db-select * (from dt) (where (<> "price" 200.0)))))
+    (test-equal "d1filter ne" (==> result num-rows) 9) ) )
+
+
+;; ============================================================
+;; Test 2: Compiled int filter correctness
+;; ============================================================
+
+(test-suite "Compiled: int filter ops"
+  ;; eq
+  (let ((result (db-select * (from dt) (where (= "qty" 100)))))
+    (test-equal "i1filter eq" (==> result num-rows) 1) )
+
+  ;; lt
+  (let ((result (db-select * (from dt) (where (< "qty" 60)))))
+    (test-equal "i1filter lt" (==> result num-rows) 2) )
+
+  ;; gt
+  (let ((result (db-select * (from dt) (where (> "qty" 100)))))
+    (test-equal "i1filter gt" (==> result num-rows) 3) )
+
+  ;; le
+  (let ((result (db-select * (from dt) (where (<= "qty" 60)))))
+    (test-equal "i1filter le" (==> result num-rows) 3) )
+
+  ;; ge
+  (let ((result (db-select * (from dt) (where (>= "qty" 100)))))
+    (test-equal "i1filter ge" (==> result num-rows) 4) )
+
+  ;; ne
+  (let ((result (db-select * (from dt) (where (<> "qty" 100)))))
+    (test-equal "i1filter ne" (==> result num-rows) 9) ) )
+
+
+;; ============================================================
+;; Test 3: Range filter
+;; ============================================================
+
+(test-suite "Compiled: range filter"
+  ;; Double range (unsorted column)
+  (let ((result (db-select * (from dt) (where (between "price" 180.0 250.0)))))
+    (test-equal "d1range count" (==> result num-rows) 5) )
+
+  ;; Int range
+  (let ((result (db-select * (from dt) (where (between "qty" 50 90)))))
+    (test-equal "i1range count" (==> result num-rows) 5) )
+
+  ;; Empty range
+  (let ((result (db-select * (from dt) (where (between "price" 500.0 600.0)))))
+    (test-equal "range empty" (==> result num-rows) 0) )
+
+  ;; All-match range
+  (let ((result (db-select * (from dt) (where (between "price" 0.0 999.0)))))
+    (test-equal "range all" (==> result num-rows) 10) ) )
+
+
+;; ============================================================
+;; Test 4: Binary search (double)
+;; ============================================================
+
+(test-suite "Compiled: double binary search"
+  ;; Create a sorted double column
+  (let ((sorted-data (double-matrix 10)))
+    (for (i 0 9) (sorted-data i (* (+ i 1) 10.0)))
+    ;; data: 10 20 30 40 50 60 70 80 90 100
+
+    ;; bsearch-left: first >= val
+    (test-equal "d1bsearch-left exact" (_cdb-d1bsearch-left sorted-data 10 50.0) 4)
+    (test-equal "d1bsearch-left between" (_cdb-d1bsearch-left sorted-data 10 55.0) 5)
+    (test-equal "d1bsearch-left below" (_cdb-d1bsearch-left sorted-data 10 5.0) 0)
+    (test-equal "d1bsearch-left above" (_cdb-d1bsearch-left sorted-data 10 105.0) 10)
+
+    ;; bsearch-right: last <= val
+    (test-equal "d1bsearch-right exact" (_cdb-d1bsearch-right sorted-data 10 50.0) 4)
+    (test-equal "d1bsearch-right between" (_cdb-d1bsearch-right sorted-data 10 55.0) 4)
+    (test-equal "d1bsearch-right below" (_cdb-d1bsearch-right sorted-data 10 5.0) -1)
+    (test-equal "d1bsearch-right above" (_cdb-d1bsearch-right sorted-data 10 105.0) 9) ) )
+
+
+;; ============================================================
+;; Test 5: Binary search (int)
+;; ============================================================
+
+(test-suite "Compiled: int binary search"
+  (let ((sorted-data (int-matrix 8)))
+    (for (i 0 7) (sorted-data i (* (+ i 1) 5)))
+    ;; data: 5 10 15 20 25 30 35 40
+
+    ;; bsearch-left
+    (test-equal "i1bsearch-left exact" (_cdb-i1bsearch-left sorted-data 8 20) 3)
+    (test-equal "i1bsearch-left between" (_cdb-i1bsearch-left sorted-data 8 22) 4)
+    (test-equal "i1bsearch-left first" (_cdb-i1bsearch-left sorted-data 8 5) 0)
+    (test-equal "i1bsearch-left past-end" (_cdb-i1bsearch-left sorted-data 8 50) 8)
+
+    ;; bsearch-right
+    (test-equal "i1bsearch-right exact" (_cdb-i1bsearch-right sorted-data 8 20) 3)
+    (test-equal "i1bsearch-right between" (_cdb-i1bsearch-right sorted-data 8 22) 3)
+    (test-equal "i1bsearch-right last" (_cdb-i1bsearch-right sorted-data 8 40) 7)
+    (test-equal "i1bsearch-right before" (_cdb-i1bsearch-right sorted-data 8 3) -1)
+
+    ;; Sorted check
+    (test-equal "i1sortedp yes" (_cdb-i1sortedp sorted-data 8) 1)
+    (sorted-data 3 1)  ;; break sort order
+    (test-equal "i1sortedp no" (_cdb-i1sortedp sorted-data 8) 0) ) )
+
+
+;; ============================================================
+;; Test 6: Iota fill
+;; ============================================================
+
+(test-suite "Compiled: iota fill"
+  ;; Basic iota
+  (let ((result (int-matrix 5)))
+    (_cdb-i1iota result 10 5)
+    (test-equal "iota[0]" (result 0) 10)
+    (test-equal "iota[1]" (result 1) 11)
+    (test-equal "iota[4]" (result 4) 14) )
+
+  ;; Zero-length iota (should not crash)
+  (let ((result (int-matrix 1)))
+    (result 0 99)
+    (_cdb-i1iota result 0 0)
+    (test-equal "iota zero-len" (result 0) 99) ) )
+
+
+;; ============================================================
+;; Test 7: Sorted union
+;; ============================================================
+
+(test-suite "Compiled: sorted union"
+  ;; Basic union
+  (let ((a (int-matrix 3)) (b (int-matrix 3)) (dest (int-matrix 6)))
+    (a 0 1) (a 1 3) (a 2 5)
+    (b 0 2) (b 1 3) (b 2 4)
+    (let ((n (_cdb-i1union-sorted a 3 b 3 dest)))
+      (test-equal "union count" n 5)
+      (test-equal "union[0]" (dest 0) 1)
+      (test-equal "union[1]" (dest 1) 2)
+      (test-equal "union[2]" (dest 2) 3)
+      (test-equal "union[3]" (dest 3) 4)
+      (test-equal "union[4]" (dest 4) 5) ) ) )
+
+
+;; ============================================================
+;; Test 8: idx1 pipeline end-to-end
+;; ============================================================
+
+(test-suite "Compiled: idx1 pipeline"
+  ;; Single condition — compare with list-based
+  (let ((idx1 (columnardb-where-multi-idx1 dt '((> "price" 200.0))))
+        (lst  (columnardb-where-multi dt '((> "price" 200.0)))) )
+    (test-equal "idx1 single count" (idx-dim idx1 0) (length lst))
+    ;; Verify same values
+    (let ((ok t) (i 0))
+      (each ((v lst))
+        (when (<> v (idx1 i)) (setq ok ()))
+        (setq i (1+ i)) )
+      (test-check "idx1 single match" ok) ) )
+
+  ;; Multi condition — AND
+  (let ((idx1 (columnardb-where-multi-idx1 dt
+                '((= "symbol" "AAPL") (> "price" 148.0))))
+        (lst  (columnardb-where-multi dt
+                '((= "symbol" "AAPL") (> "price" 148.0)))) )
+    (test-equal "idx1 AND count" (idx-dim idx1 0) (length lst)) )
+
+  ;; Empty result
+  (let ((idx1 (columnardb-where-multi-idx1 dt '((> "price" 999.0)))))
+    (test-check "idx1 empty" (not idx1)) ) )
+
+
+;; ============================================================
+;; Test 9: Sorted-column filter via binary search
+;; ============================================================
+
+(test-suite "Compiled: sorted-column bsearch filter"
+  ;; Create a table with a sorted column
+  (let ((sdt (new DataTable)))
+    (==> sdt add-column "x" 'real)
+    (==> sdt add-column "label" 'string)
+    ;; Insert in sorted order for column "x"
+    (==> sdt append-row (list 10.0 "a"))
+    (==> sdt append-row (list 20.0 "b"))
+    (==> sdt append-row (list 30.0 "c"))
+    (==> sdt append-row (list 40.0 "d"))
+    (==> sdt append-row (list 50.0 "e"))
+
+    ;; Save to disk first, then attach path to Database (gets sorted meta)
+    (let ((tdir (concat *test-dir* "/sorted-filter-tbl"))
+          (dbdir (concat *test-dir* "/sorted-filter-db")) )
+      (sys (concat "rm -rf " tdir))
+      (sys (concat "rm -rf " dbdir))
+      (sys (concat "mkdir -p " tdir))
+      (sys (concat "mkdir -p " dbdir))
+      (columnardb-save sdt tdir)
+      (let ((db (new Database dbdir)))
+        (==> db attach "data" tdir)
+        (let ((meta (==> db table-meta "data")))
+
+          ;; Verify "x" is detected as sorted
+          (test-check "x is sorted" (member 0 (cadr (assoc 'sorted meta))))
+
+          ;; = via binary search (using Database FROM to get meta)
+          (let ((result (db-select * (from db "data") (where (= "x" 30.0)))))
+            (test-equal "bsearch =" (==> result num-rows) 1)
+            (test-approx "bsearch = val" (==> result get 0 "x") 30.0 0.001) )
+
+          ;; < via binary search
+          (let ((result (db-select * (from db "data") (where (< "x" 30.0)))))
+            (test-equal "bsearch <" (==> result num-rows) 2) )
+
+          ;; > via binary search
+          (let ((result (db-select * (from db "data") (where (> "x" 30.0)))))
+            (test-equal "bsearch >" (==> result num-rows) 2) )
+
+          ;; <= via binary search
+          (let ((result (db-select * (from db "data") (where (<= "x" 30.0)))))
+            (test-equal "bsearch <=" (==> result num-rows) 3) )
+
+          ;; >= via binary search
+          (let ((result (db-select * (from db "data") (where (>= "x" 30.0)))))
+            (test-equal "bsearch >=" (==> result num-rows) 3) )
+
+          ;; BETWEEN via binary search on sorted column
+          (let ((result (db-select * (from db "data") (where (between "x" 20.0 40.0)))))
+            (test-equal "bsearch between" (==> result num-rows) 3) )
+
+          ;; Empty result via binary search
+          (let ((result (db-select * (from db "data") (where (> "x" 100.0)))))
+            (test-equal "bsearch empty" (==> result num-rows) 0) ) ) ) )
+
+    ;; cleanup
+    (sys (concat "rm -rf " *test-dir* "/sorted-filter-tbl"))
+    (sys (concat "rm -rf " *test-dir* "/sorted-filter-db")) ) )
+
+
+;; ============================================================
+;; Test 10: Condition reordering (query planner)
+;; ============================================================
+
+(test-suite "Compiled: condition reordering"
+  ;; Create table with sorted column + string column
+  (let ((pdt (new DataTable)))
+    (==> pdt add-column "time" 'real)
+    (==> pdt add-column "sym" 'string)
+    (==> pdt add-column "val" 'int)
+    ;; Sorted by time, but NOT by val (val is unsorted)
+    (==> pdt append-row (list 1.0 "A" 50))
+    (==> pdt append-row (list 2.0 "B" 20))
+    (==> pdt append-row (list 3.0 "A" 30))
+    (==> pdt append-row (list 4.0 "B" 10))
+    (==> pdt append-row (list 5.0 "A" 40))
+
+    ;; Save to disk, then attach path to Database (gets sorted meta)
+    (let ((tdir (concat *test-dir* "/planner-tbl"))
+          (dbdir (concat *test-dir* "/planner-db")) )
+      (sys (concat "rm -rf " tdir))
+      (sys (concat "rm -rf " dbdir))
+      (sys (concat "mkdir -p " tdir))
+      (sys (concat "mkdir -p " dbdir))
+      (columnardb-save pdt tdir)
+      (let ((db (new Database dbdir)))
+        (==> db attach "data" tdir)
+        (let* ((pdt2 (==> db table "data"))
+               (meta (==> db table-meta "data")) )
+
+          ;; Classify conditions
+          (test-check "classify csr"
+            (= 'csr (_query-classify-condition pdt2
+                      '(= "sym" "A") meta)) )
+          (test-check "classify bsearch"
+            (= 'bsearch (_query-classify-condition pdt2
+                          '(> "time" 2.0) meta)) )
+          (test-check "classify scan"
+            (= 'scan (_query-classify-condition pdt2
+                       '(> "val" 20) meta)) )
+
+          ;; Order: csr before bsearch before scan
+          (let ((ordered (_query-order-conditions pdt2
+                           '((> "val" 20) (> "time" 2.0) (= "sym" "A"))
+                           meta )))
+            ;; First should be string eq (csr), second sorted (bsearch), third scan
+            (test-check "order csr first" (= (cadr (car ordered)) "sym"))
+            (test-check "order bsearch second" (= (cadr (cadr ordered)) "time"))
+            (test-check "order scan third" (= (cadr (caddr ordered)) "val")) )
+
+          ;; Full query with mixed condition types (via Database to get meta)
+          (let ((result (db-select *
+                          (from db "data")
+                          (where (and (= "sym" "A") (> "time" 2.0) (> "val" 20))))))
+            ;; sym=A: rows 0,2,4; time>2: rows 2,3,4; val>20: rows 0,2,4 (50,30,40)
+            ;; Intersection: rows 2,4
+            (test-equal "planner mixed" (==> result num-rows) 2) ) ) ) )
+
+    ;; cleanup
+    (sys (concat "rm -rf " *test-dir* "/planner-tbl"))
+    (sys (concat "rm -rf " *test-dir* "/planner-db")) ) )
+
+
+;; ============================================================
+;; Test 11: OR queries with idx1 union
+;; ============================================================
+
+(test-suite "Compiled: OR queries"
+  ;; OR with string conditions
+  (let ((result (db-select *
+                  (from dt)
+                  (where (or (= "symbol" "TSLA") (= "symbol" "MSFT"))))))
+    (test-equal "OR string" (==> result num-rows) 4) )
+
+  ;; OR with numeric conditions
+  (let ((result (db-select *
+                  (from dt)
+                  (where (or (< "price" 150.0) (> "price" 300.0))))))
+    (test-equal "OR numeric" (==> result num-rows) 2) )
+
+  ;; OR with overlapping results (dedup)
+  (let ((result (db-select *
+                  (from dt)
+                  (where (or (> "price" 200.0) (> "qty" 100))))))
+    ;; price>200: rows 3,6,7,8,9 (300,310,250,240,210)
+    ;; qty>100: rows 5,3,6 (120,200,150)
+    ;; Union: 3,5,6,7,8,9 = 6 rows
+    (test-equal "OR overlap" (==> result num-rows) 6) ) )
+
+
+;; ============================================================
+;; Test 12: Full query roundtrip (compiled pipeline)
+;; ============================================================
+
+(test-suite "Compiled: full pipeline roundtrip"
+  ;; select + where + order + limit + project (same as test-query.lsh)
+  (let ((result (db-select ("symbol" "price")
+                  (from dt)
+                  (where (>= "price" 200))
+                  (order-by "price")
+                  (limit 3))))
+    (test-equal "full pipeline rows" (==> result num-rows) 3)
+    (test-equal "full pipeline cols" (==> result num-cols) 2)
+    (test-approx "full pipeline first" (==> result get 0 "price") 200.0 0.001)
+    (test-approx "full pipeline second" (==> result get 1 "price") 210.0 0.001)
+    (test-approx "full pipeline third" (==> result get 2 "price") 240.0 0.001) )
+
+  ;; db-count with compiled pipeline
+  (let ((count (db-count (from dt) (where (and (= "symbol" "GOOG") (> "price" 190))))))
+    (test-equal "count compiled" count 2) )
+
+  ;; Group by with compiled WHERE pre-filter
+  (let ((result (db-select *
+                  (from dt)
+                  (where (> "price" 160))
+                  (group-by "symbol" (count)))))
+    (test-equal "groupby+compiled-where" (==> result num-rows) 3) ) )
+
+
+;; ============================================================
+;; Test 13: Float column filter
+;; ============================================================
+
+(test-suite "Compiled: float column filter"
+  (let ((fdt (new DataTable)))
+    (==> fdt add-column "val" 'float)
+    (==> fdt append-row (list 1.5))
+    (==> fdt append-row (list 2.5))
+    (==> fdt append-row (list 3.5))
+    (==> fdt append-row (list 4.5))
+    (==> fdt append-row (list 5.5))
+
+    (let ((result (db-select * (from fdt) (where (> "val" 3.0)))))
+      (test-equal "f1filter gt" (==> result num-rows) 3) )
+
+    (let ((result (db-select * (from fdt) (where (<= "val" 2.5)))))
+      (test-equal "f1filter le" (==> result num-rows) 2) )
+
+    (let ((result (db-select * (from fdt) (where (between "val" 2.0 4.0)))))
+      (test-equal "f1range" (==> result num-rows) 2) ) ) )
+
+
+;; ============================================================
+;; Test 14: Stamp (long) column filter
+;; ============================================================
+
+(test-suite "Compiled: stamp column filter"
+  (let ((sdt (new DataTable)))
+    (==> sdt add-column "ts" 'stamp)
+    (==> sdt add-column "v" 'int)
+    ;; Timestamps as plain longs for simplicity
+    (==> sdt append-row (list 1000000 1))
+    (==> sdt append-row (list 2000000 2))
+    (==> sdt append-row (list 3000000 3))
+    (==> sdt append-row (list 4000000 4))
+    (==> sdt append-row (list 5000000 5))
+
+    (let ((result (db-select * (from sdt) (where (> "ts" 3000000)))))
+      (test-equal "l1filter gt" (==> result num-rows) 2) )
+
+    (let ((result (db-select * (from sdt) (where (= "ts" 3000000)))))
+      (test-equal "l1filter eq" (==> result num-rows) 1) )
+
+    (let ((result (db-select * (from sdt) (where (<= "ts" 2000000)))))
+      (test-equal "l1filter le" (==> result num-rows) 2) ) ) )
+
+
+) ;; end let dt

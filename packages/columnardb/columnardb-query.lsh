@@ -1,8 +1,9 @@
 ;;; columnardb-query.lsh -- SQL-like query language for ColumnarDB
 ;;;
 ;;; Provides db-select and db-count macros that expand to existing
-;;; DataTable and ColumnarDB method calls, providing syntactic
-;;; convenience with no optimizer or query planner (Phase 1).
+;;; DataTable and ColumnarDB method calls.  Includes an index-aware
+;;; query planner (Phase 4) that reorders conditions by cost and
+;;; compiled C filter functions (Phase 3) for the WHERE pipeline.
 ;;;
 ;;; Usage:
 ;;;   (db-select ("price" "symbol")
@@ -31,6 +32,14 @@
 ;; Only the final step materializes a DataTable via {<b> select-rows-idx}
 ;; and {<b> select-columns}.
 ;;
+;; The WHERE stage uses compiled C filter functions and an index-aware
+;; query planner that reorders conditions by cost:
+;; {<ul>
+;; {<li> {<b> CSR index} (O(1)) -- string equality via inverted index}
+;; {<li> {<b> Binary search} (O(log n)) -- comparisons on sorted columns}
+;; {<li> {<b> Compiled scan} (O(n)) -- vectorized C filter on unsorted columns}
+;; }
+;;
 ;; Supported clauses:
 ;; {<ul>
 ;; {<li> {<b> from} -- source DataTable or Database table}
@@ -51,6 +60,7 @@
 ;; {<see> (db-select <columns> <clauses...>)}
 ;; {<see> (db-count <clauses...>)}
 ;; {<see> (columnardb-where-multi <dt> <conditions> [<meta>])}
+;; {<see> (columnardb-where-multi-idx1 <dt> <conditions> [<meta>])}
 ;; {<see> (columnardb-group-by <dt> <group-col> <agg-col> <op>)}
 
 
@@ -183,6 +193,74 @@
     result ) )
 
 
+;; ============================================================
+;; Phase 4: Index-aware query planner
+;; ============================================================
+
+;; Classify a condition for the query planner.
+;; Returns 'bsearch, 'csr, or 'scan.
+(de _query-classify-condition (dt cond meta)
+  (let ((op (car cond))
+        (col-name (cadr cond)) )
+    (let ((type (==> dt col-type col-name))
+          (sorted-cols (if meta (cadr (assoc 'sorted meta)) ())) )
+      (cond
+       ;; String equality → CSR index
+       ((and (= op '=) (= type 'string))
+        'csr)
+       ;; Range on sorted column → binary search
+       ((and (= op 'range)
+             (member (==> dt col-index col-name) sorted-cols))
+        'bsearch)
+       ;; Comparison on sorted column → binary search
+       ((and (member op '(= < > <= >=))
+             (<> type 'string)
+             (<> type 'intcol)
+             (member (==> dt col-index col-name) sorted-cols))
+        'bsearch)
+       ;; Everything else → linear scan
+       (t 'scan) ) ) ) )
+
+
+;; Order conditions: csr first (O(1)), then bsearch (O(log n)), then scan (O(n))
+(de _query-order-conditions (dt conditions meta)
+  (let ((csr-conds ())
+        (bs-conds ())
+        (scan-conds ()) )
+    (each ((cond conditions))
+      (let ((class (_query-classify-condition dt cond meta)))
+        (cond
+         ((= class 'csr) (setq csr-conds (nconc1 csr-conds cond)))
+         ((= class 'bsearch) (setq bs-conds (nconc1 bs-conds cond)))
+         (t (setq scan-conds (nconc1 scan-conds cond))) ) ) )
+    (nconc csr-conds bs-conds scan-conds) ) )
+
+
+;; Run WHERE filter returning idx1 directly (no list conversion).
+;; Handles AND (with condition reordering) and OR (with idx1 union).
+;; Returns idx1 or () for no matches.
+(de _query-run-where-idx1 (dt meta where-pred)
+  (if (and (listp where-pred) (= (car where-pred) 'or-clause))
+    ;; OR: union branches via sorted idx1 merge
+    (_query-where-or-idx1 dt meta (cadr where-pred))
+    ;; AND: reorder conditions, then compiled idx1 pipeline
+    (let ((ordered (_query-order-conditions dt where-pred meta)))
+      (columnardb-where-multi-idx1 dt ordered meta) ) ) )
+
+
+;; OR clause: run each branch, union sorted idx1 arrays.
+(de _query-where-or-idx1 (dt meta branches)
+  (let ((result ()))
+    (each ((branch branches))
+      (let ((ordered (_query-order-conditions dt branch meta)))
+        (let ((branch-idx (columnardb-where-multi-idx1 dt ordered meta)))
+          (if (not result)
+            (setq result branch-idx)
+            (when branch-idx
+              (setq result (_multi-index-union result branch-idx)) )))))
+    result ) )
+
+
 ;; Return an empty DataTable with the same schema as dt.
 (de _query-empty-table (dt)
   (let ((result (new DataTable)))
@@ -250,11 +328,11 @@
         (indices ())     ;; () = all rows
         (no-match ()) )  ;; t if WHERE produced zero results
 
-    ;; WHERE
+    ;; WHERE (compiled idx1 pipeline with query planner)
     (when where-pred
-      (let ((rows (_query-run-where dt meta where-pred)))
-        (if rows
-          (setq indices (_list-to-sorted-idx1 rows))
+      (let ((idx1 (_query-run-where-idx1 dt meta where-pred)))
+        (if idx1
+          (setq indices idx1)
           (setq no-match t) )))
 
     (if no-match
@@ -299,12 +377,12 @@
     (let ((op (car agg-spec))
           (agg-col (if (cdr agg-spec) (cadr agg-spec) ())) )
 
-      ;; Optional WHERE filter first
+      ;; Optional WHERE filter first (using compiled idx1 pipeline)
       (let ((filtered-dt
               (if where-pred
-                (let ((rows (_query-run-where dt meta where-pred)))
-                  (if rows
-                    (==> dt select-rows rows)
+                (let ((idx1 (_query-run-where-idx1 dt meta where-pred)))
+                  (if idx1
+                    (==> dt select-rows-idx idx1)
                     (_query-empty-table dt) ))
                 dt )))
 
@@ -367,8 +445,8 @@
            (meta (cadr from-result)) )
 
       (if where-pred
-        (let ((rows (_query-run-where dt meta where-pred)))
-          (if rows (length rows) 0) )
+        (let ((idx1 (_query-run-where-idx1 dt meta where-pred)))
+          (if idx1 (idx-dim idx1 0) 0) )
         (==> dt num-rows) ))))
 
 
