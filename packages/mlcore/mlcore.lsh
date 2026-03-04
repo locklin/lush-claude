@@ -7,7 +7,6 @@
 ;;;   - Classification: k-NN, Naive Bayes, Random Forest
 ;;;   - Clustering: K-Means
 ;;;   - Dimensionality reduction: spectral methods (Laplacian, Diffusion, Kernel PCA)
-;;;   - Sparse matrices: CSR/CSC format
 ;;;   - Conformal prediction: RF, k-NN, GLMnet
 ;;;
 ;;; Copyright (C) 2026 Scott Locklin, Lugos LLC
@@ -31,7 +30,6 @@
 ;; {<li> {<b> rf}: Random Forest classifier/regressor}
 ;; {<li> {<b> kmeans}: K-Means clustering with k-means++ init}
 ;; {<li> {<b> spectral}: Laplacian Eigenmaps, Diffusion Maps, Kernel PCA}
-;; {<li> {<b> sparse}: CSR/CSC sparse matrices}
 ;; }
 ;;
 ;; {<code>
@@ -42,7 +40,6 @@
 ;;    (==> rf predict test-data))
 ;; </code>}
 
-(libload "mlcore/sparse")
 (libload "mlcore/model-selection")
 (libload "mlcore/feature-scaling")
 (libload "mlcore/optimizers")

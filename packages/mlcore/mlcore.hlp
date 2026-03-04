@@ -3,8 +3,6 @@ Machine learning algorithms built on top of Lush's numerical
 infrastructure (libnum).  Provides supervised and unsupervised
 learning, model selection, and conformal prediction.
 
-#? *** << mlcore/sparse.lsh
-
 #? *** << mlcore/model-selection.lsh
 
 #? *** << mlcore/feature-scaling.lsh

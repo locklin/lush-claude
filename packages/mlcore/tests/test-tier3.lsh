@@ -45,7 +45,7 @@
 
 
 ;; Load all modules
-(libload "mlcore/sparse")
+(libload "sparse/sparse")
 (libload "mlcore/knn")
 (libload "mlcore/naive-bayes")
 (libload "mlcore/rf")

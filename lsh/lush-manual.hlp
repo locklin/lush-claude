@@ -190,6 +190,8 @@ numerical packages.
 
 #? ** << libnum/libnum.hlp
 
+#? ** << sparse/sparse.lsh
+
 #? ** << fftw/fftw.lsh
 
 #? ** << lap/lap.lsh

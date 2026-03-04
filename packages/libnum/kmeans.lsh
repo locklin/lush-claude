@@ -1,2 +1,0 @@
-;;; Backward compatibility shim — module moved to mlcore
-(libload "mlcore/kmeans")
