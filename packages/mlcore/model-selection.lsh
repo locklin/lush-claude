@@ -1,0 +1,951 @@
+;;; model-selection.lsh -- Train/Test Split and Cross-Validation
+;;;
+;;; Provides utilities for splitting data into training and test sets,
+;;; k-fold cross-validation, and stratified variants.  Includes a
+;;; compiled Fisher-Yates shuffle (the built-in random-permute is
+;;; broken) and compiled row-selection helpers.
+;;;
+;;; Copyright (C) 2026 Scott Locklin, Lugos LLC
+;;; Distributed under the GNU General Public License v2+.
+
+(libload "libidx/idx-double")
+(libload "libidx/idx-sort")
+
+
+#? *** Model Selection: Train/Test Split and Cross-Validation
+;; Utilities for splitting data into training and test sets, generating
+;; cross-validation folds, and running cross-validation loops.
+;;
+;; Data is represented as an {<b> N x P} double matrix (N observations,
+;; P features).  Labels are an {<b> N}-element idx1 of int.  Indices
+;; are int vectors referencing rows of the data matrix.
+;;
+;; The splitting functions return {<b> index vectors} rather than
+;; copying data, which is memory-efficient for large datasets.  Use
+;; {<b> select-rows-d2} and {<b> select-rows-d1} to extract the
+;; actual sub-matrices when needed.
+;;
+;; Example -- 80/20 train/test split:
+;; {<code>
+;;  (libload "libnum/model-selection")
+;;  (let* ((x (double-matrix 100 5))  ; 100 observations, 5 features
+;;         (y (int-matrix 100))        ; labels
+;;         (split (train-test-split 100 0.2))
+;;         (x-train (select-rows-d2 x (car split)))
+;;         (x-test  (select-rows-d2 x (cadr split))))
+;;    (printf "train: %d  test: %d\n"
+;;            (idx-dim x-train 0) (idx-dim x-test 0)))
+;; </code>}
+;;
+;; Example -- 5-fold cross-validation:
+;; {<code>
+;;  (let ((folds (kfold-indices 100 5)))
+;;    (each ((fold folds))
+;;      (let ((train-idx (car fold))
+;;            (test-idx  (cadr fold)))
+;;        (printf "train=%d test=%d\n"
+;;                (idx-dim train-idx 0) (idx-dim test-idx 0)))))
+;; </code>}
+
+
+;; ============================================================
+;; Compiled C helpers
+;; ============================================================
+
+;; Fisher-Yates in-place shuffle of an int vector.
+;; Uses Frand() (Lush C-level uniform [0,1) RNG, seeded by (seed n)).
+(de _ms-shuffle (v)
+  ((-idx1- (-int-)) v)
+  (let ((n (idx-dim v 0)))
+    ((-int-) n)
+    #{
+    int *pv = IDX_PTR($v, int);
+    int sv = ($v)->mod[0];
+    int i, j, tmp;
+    for (i = $n - 1; i > 0; i--) {
+        j = (int)(Frand() * (i + 1));
+        if (j > i) j = i;  /* clamp just in case */
+        tmp = pv[i * sv];
+        pv[i * sv] = pv[j * sv];
+        pv[j * sv] = tmp;
+    }
+    #}
+    () ))
+
+;; Select rows from a 2D double matrix by index vector.
+;; x: N x P source, idx: K index vector, out: K x P output.
+(de _ms-select-rows-d2 (x idx out)
+  ((-idx2- (-double-)) x out)
+  ((-idx1- (-int-)) idx)
+  (let ((k (idx-dim idx 0))
+        (p (idx-dim x 1)))
+    ((-int-) k p)
+    #{
+    double *px = IDX_PTR($x, double);
+    double *po = IDX_PTR($out, double);
+    int *pi = IDX_PTR($idx, int);
+    int sx0 = ($x)->mod[0];
+    int sx1 = ($x)->mod[1];
+    int so0 = ($out)->mod[0];
+    int so1 = ($out)->mod[1];
+    int si  = ($idx)->mod[0];
+    int i, j, r;
+    for (i = 0; i < $k; i++) {
+        r = pi[i * si];
+        for (j = 0; j < $p; j++)
+            po[i * so0 + j * so1] = px[r * sx0 + j * sx1];
+    }
+    #}
+    () ))
+
+;; Select elements from a 1D int vector by index vector.
+;; v: N source, idx: K index vector, out: K output.
+(de _ms-select-rows-i1 (v idx out)
+  ((-idx1- (-int-)) v idx out)
+  (let ((k (idx-dim idx 0)))
+    ((-int-) k)
+    #{
+    int *pv = IDX_PTR($v, int);
+    int *pi = IDX_PTR($idx, int);
+    int *po = IDX_PTR($out, int);
+    int sv = ($v)->mod[0];
+    int si = ($idx)->mod[0];
+    int so = ($out)->mod[0];
+    int i;
+    for (i = 0; i < $k; i++)
+        po[i * so] = pv[pi[i * si] * sv];
+    #}
+    () ))
+
+;; Select elements from a 1D double vector by index vector.
+;; v: N source, idx: K index vector, out: K output.
+(de _ms-select-rows-d1 (v idx out)
+  ((-idx1- (-double-)) v out)
+  ((-idx1- (-int-)) idx)
+  (let ((k (idx-dim idx 0)))
+    ((-int-) k)
+    #{
+    double *pv = IDX_PTR($v, double);
+    int *pi = IDX_PTR($idx, int);
+    double *po = IDX_PTR($out, double);
+    int sv = ($v)->mod[0];
+    int si = ($idx)->mod[0];
+    int so = ($out)->mod[0];
+    int i;
+    for (i = 0; i < $k; i++)
+        po[i * so] = pv[pi[i * si] * sv];
+    #}
+    () ))
+
+;; Count occurrences of each class label in a label vector.
+;; labels: N int vector, counts: C int vector (C = number of classes).
+;; min-label: smallest label value (subtracted to index into counts).
+(de _ms-count-labels (labels counts min-label)
+  ((-idx1- (-int-)) labels counts)
+  ((-int-) min-label)
+  (let ((n (idx-dim labels 0))
+        (c (idx-dim counts 0)))
+    ((-int-) n c)
+    #{
+    int *pl = IDX_PTR($labels, int);
+    int *pc = IDX_PTR($counts, int);
+    int sl = ($labels)->mod[0];
+    int sc = ($counts)->mod[0];
+    int i, idx;
+    /* zero counts */
+    for (i = 0; i < $c; i++) pc[i * sc] = 0;
+    /* count */
+    for (i = 0; i < $n; i++) {
+        idx = pl[i * sl] - $min_label;
+        if (idx >= 0 && idx < $c)
+            pc[idx * sc]++;
+    }
+    #}
+    () ))
+
+
+;; ============================================================
+#? ** Row Selection
+;; Functions for extracting subsets of rows from data matrices
+;; and label vectors using integer index vectors.
+
+#? (select-rows-d2 <X> <idx>)
+;; Select rows from the N x P double matrix {<b> X} specified by
+;; the integer index vector {<b> idx}.  Returns a new K x P matrix
+;; where K is the length of {<b> idx}.
+;;
+;; Indices are 0-based and must be valid row numbers of {<b> X}.
+;; {<see> (select-rows-i1 <v> <idx>), (select-rows-d1 <v> <idx>)}
+(de select-rows-d2 (x idx)
+  (let* ((k (idx-dim idx 0))
+         (p (idx-dim x 1))
+         (out (double-matrix k p)))
+    (_ms-select-rows-d2 x idx out)
+    out))
+
+#? (select-rows-i1 <v> <idx>)
+;; Select elements from the int vector {<b> v} at positions given
+;; by the integer index vector {<b> idx}.  Returns a new int vector
+;; of length K.
+;; {<see> (select-rows-d2 <X> <idx>)}
+(de select-rows-i1 (v idx)
+  (let* ((k (idx-dim idx 0))
+         (out (int-matrix k)))
+    (_ms-select-rows-i1 v idx out)
+    out))
+
+#? (select-rows-d1 <v> <idx>)
+;; Select elements from the double vector {<b> v} at positions given
+;; by the integer index vector {<b> idx}.  Returns a new double vector
+;; of length K.
+;; {<see> (select-rows-d2 <X> <idx>)}
+(de select-rows-d1 (v idx)
+  (let* ((k (idx-dim idx 0))
+         (out (double-matrix k)))
+    (_ms-select-rows-d1 v idx out)
+    out))
+
+
+;; ============================================================
+#? ** Shuffling
+
+#? (shuffle-idx <n>)
+;; Return a randomly shuffled index vector of integers 0..N-1.
+;; Uses the Fisher-Yates algorithm with Lush's built-in RNG
+;; (seeded by {<b> seed}).
+;;
+;; Example:
+;; {<code>
+;;  (seed 42)
+;;  (let ((perm (shuffle-idx 10)))
+;;    (printf "%d elements, first=%d\n" (idx-dim perm 0) (perm 0)))
+;; </code>}
+(de shuffle-idx (n)
+  (let ((v (int-matrix n)))
+    (for (i 0 (- n 1)) (v i i))
+    (_ms-shuffle v)
+    v))
+
+
+;; ============================================================
+#? ** Train/Test Split
+
+#? (train-test-split <n> <test-fraction>)
+;; Split N observations into training and test sets by random
+;; shuffling.  Returns a list {<b> (train-idx test-idx)} where
+;; each element is an int vector of row indices.
+;;
+;; {<b> test-fraction} is the fraction of data reserved for testing
+;; (e.g. 0.2 for an 80/20 split).  The test set size is
+;; {<b> round(N * test-fraction)}, with at least 1 and at most N-1
+;; observations.
+;;
+;; Use {<b> seed} to set the random seed for reproducibility.
+;;
+;; Example:
+;; {<code>
+;;  (seed 42)
+;;  (let* ((split (train-test-split 100 0.2))
+;;         (train-idx (car split))
+;;         (test-idx  (cadr split)))
+;;    (printf "train=%d test=%d\n"
+;;            (idx-dim train-idx 0) (idx-dim test-idx 0)))
+;;  ;; => train=80 test=20
+;; </code>}
+;; {<see> (stratified-train-test-split <labels> <test-fraction>)}
+(de train-test-split (n test-fraction)
+  (let* ((ntest (max 1 (min (- n 1) (int (+ 0.5 (* n test-fraction))))))
+         (ntrain (- n ntest))
+         (perm (shuffle-idx n))
+         (train-idx (int-matrix ntrain))
+         (test-idx (int-matrix ntest)))
+    (idx-copy (narrow perm 0 ntrain 0) train-idx)
+    (idx-copy (narrow perm 0 ntest ntrain) test-idx)
+    (list train-idx test-idx)))
+
+
+;; ============================================================
+#? ** K-Fold Cross-Validation Indices
+
+#? (kfold-indices <n> <k>)
+;; Generate index splits for K-fold cross-validation on N
+;; observations.  Returns a list of K elements, each of the form
+;; {<b> (train-idx test-idx)}.
+;;
+;; The N observations are randomly shuffled, then partitioned into
+;; K roughly equal folds.  Each fold takes a turn as the test set,
+;; with the remaining K-1 folds as training.  Fold sizes differ by
+;; at most 1 (the first {<b> N mod K} folds get one extra observation).
+;;
+;; Example:
+;; {<code>
+;;  (seed 42)
+;;  (let ((folds (kfold-indices 100 5)))
+;;    (each ((fold folds))
+;;      (printf "train=%d test=%d\n"
+;;              (idx-dim (car fold) 0) (idx-dim (cadr fold) 0))))
+;;  ;; => train=80 test=20  (x5)
+;; </code>}
+;; {<see> (stratified-kfold-indices <labels> <k>)}
+(de kfold-indices (n k)
+  (when (< k 2) (error "k must be at least 2"))
+  (when (> k n) (error "k cannot exceed n"))
+  (let* ((perm (shuffle-idx n))
+         (base-size (div n k))
+         (remainder (mod n k))
+         (folds ())
+         (offset 0))
+    (for (i 0 (- k 1))
+      (let* ((fold-size (+ base-size (if (< i remainder) 1 0)))
+             (test-idx (int-matrix fold-size))
+             (ntrain (- n fold-size))
+             (train-idx (int-matrix ntrain)))
+        ;; test indices: perm[offset .. offset+fold-size-1]
+        (idx-copy (narrow perm 0 fold-size offset) test-idx)
+        ;; train indices: everything else
+        (let ((tpos 0))
+          (when (> offset 0)
+            (idx-copy (narrow perm 0 offset 0)
+                      (narrow train-idx 0 offset 0))
+            (setq tpos offset))
+          (let ((after (- n offset fold-size)))
+            (when (> after 0)
+              (idx-copy (narrow perm 0 after (+ offset fold-size))
+                        (narrow train-idx 0 after tpos)))))
+        (setq folds (nconc1 folds (list test-idx train-idx)))
+        (setq offset (+ offset fold-size))))
+    ;; fix order: return (train-idx test-idx) per fold
+    (let ((result ()))
+      (each ((fold folds))
+        (setq result (nconc1 result (list (cadr fold) (car fold)))))
+      result)))
+
+
+;; ============================================================
+#? ** Stratified Splitting
+;; Stratified variants maintain the class proportions from the
+;; original labels in both training and test sets.
+
+#? (stratified-train-test-split <labels> <test-fraction>)
+;; Split observations into training and test sets while preserving
+;; class proportions.  {<b> labels} is an int vector of class labels.
+;; Returns {<b> (train-idx test-idx)}.
+;;
+;; Each class contributes {<b> round(count * test-fraction)}
+;; observations to the test set, with at least 1 per class when
+;; the class has 2+ observations.
+;;
+;; Example:
+;; {<code>
+;;  (seed 42)
+;;  (let* ((y (int-matrix 100))
+;;         (split (stratified-train-test-split y 0.2))
+;;         (train-idx (car split))
+;;         (test-idx  (cadr split)))
+;;    (printf "train=%d test=%d\n"
+;;            (idx-dim train-idx 0) (idx-dim test-idx 0)))
+;; </code>}
+;; {<see> (train-test-split <n> <test-fraction>)}
+(de stratified-train-test-split (labels test-fraction)
+  (let* ((n (idx-dim labels 0))
+         ;; find unique classes
+         (sorted-labels (int-matrix n))
+         (classes ())
+         (class-indices (htable)))
+    (idx-copy labels sorted-labels)
+    (idx-i1sortup sorted-labels)
+    ;; collect unique classes
+    (let ((prev -999999999))
+      (for (i 0 (- n 1))
+        (let ((v (sorted-labels i)))
+          (when (<> v prev)
+            (setq classes (nconc1 classes v))
+            (setq prev v)))))
+    ;; build index lists per class
+    (each ((c classes))
+      (class-indices c ()))
+    (for (i 0 (- n 1))
+      (let ((c (labels i)))
+        (class-indices c (nconc1 (class-indices c) i))))
+    ;; split each class
+    (let ((train-list ())
+          (test-list ()))
+      (each ((c classes))
+        (let* ((idxs (class-indices c))
+               (nc (length idxs))
+               ;; shuffle within class
+               (perm (shuffle-idx nc))
+               (ntest (max (if (>= nc 2) 1 0)
+                           (min (- nc 1)
+                                (int (+ 0.5 (* nc test-fraction)))))))
+          ;; map permutation to original indices (for loop — each doesn't work on idx)
+          (for (pi 0 (- nc 1))
+            (let ((orig-idx (nth (perm pi) idxs)))
+              (if (< pi ntest)
+                  (setq test-list (nconc1 test-list orig-idx))
+                (setq train-list (nconc1 train-list orig-idx)))))))
+      ;; convert lists to idx
+      (let* ((ntrain (length train-list))
+             (ntest (length test-list))
+             (train-idx (int-matrix ntrain))
+             (test-idx (int-matrix ntest))
+             (i 0))
+        (each ((v train-list))
+          (train-idx i v)
+          (incr i))
+        (setq i 0)
+        (each ((v test-list))
+          (test-idx i v)
+          (incr i))
+        (list train-idx test-idx)))))
+
+#? (stratified-kfold-indices <labels> <k>)
+;; Generate K-fold cross-validation splits preserving class
+;; proportions in each fold.  {<b> labels} is an int vector.
+;; Returns a list of K elements, each {<b> (train-idx test-idx)}.
+;;
+;; Each class is independently shuffled and distributed across
+;; folds in round-robin fashion, ensuring each fold has
+;; approximately the same class distribution as the full dataset.
+;; {<see> (kfold-indices <n> <k>)}
+(de stratified-kfold-indices (labels k)
+  (when (< k 2) (error "k must be at least 2"))
+  (let* ((n (idx-dim labels 0))
+         ;; find unique classes
+         (sorted-labels (int-matrix n))
+         (classes ())
+         (class-indices (htable)))
+    (idx-copy labels sorted-labels)
+    (idx-i1sortup sorted-labels)
+    (let ((prev -999999999))
+      (for (i 0 (- n 1))
+        (let ((v (sorted-labels i)))
+          (when (<> v prev)
+            (setq classes (nconc1 classes v))
+            (setq prev v)))))
+    ;; build index lists per class
+    (each ((c classes))
+      (class-indices c ()))
+    (for (i 0 (- n 1))
+      (let ((c (labels i)))
+        (class-indices c (nconc1 (class-indices c) i))))
+    ;; assign each class to folds in round-robin
+    (let ((fold-lists (list)))
+      ;; initialize k empty lists
+      (for (i 0 (- k 1))
+        (setq fold-lists (nconc1 fold-lists (list))))
+      ;; distribute each class
+      (each ((c classes))
+        (let* ((idxs (class-indices c))
+               (nc (length idxs))
+               (perm (shuffle-idx nc)))
+          ;; for loop — each doesn't work on idx
+          (for (pi 0 (- nc 1))
+            (let* ((fold-num (mod pi k))
+                   (orig-idx (nth (perm pi) idxs)))
+              ;; append to the appropriate fold list
+              (rplaca (nthcdr fold-num fold-lists)
+                      (nconc1 (nth fold-num fold-lists) orig-idx))))))
+      ;; build train/test pairs
+      (let ((result ()))
+        (for (fi 0 (- k 1))
+          (let* ((test-list (nth fi fold-lists))
+                 (ntest (length test-list))
+                 (ntrain (- n ntest))
+                 (test-idx (int-matrix ntest))
+                 (train-idx (int-matrix ntrain))
+                 (ti 0) (tri 0))
+            ;; fill test-idx
+            (each ((v test-list))
+              (test-idx ti v) (incr ti))
+            ;; fill train-idx from all other folds
+            (for (fj 0 (- k 1))
+              (when (<> fj fi)
+                (each ((v (nth fj fold-lists)))
+                  (train-idx tri v) (incr tri))))
+            (setq result (nconc1 result (list train-idx test-idx)))))
+        result))))
+
+
+;; ============================================================
+#? ** Cross-Validation Runner
+
+#? (cross-validate-indices <n> <k> <score-fn>)
+;; Run K-fold cross-validation using only index vectors.
+;; {<b> score-fn} is a function of two arguments
+;; {<b> (train-idx test-idx)} that returns a numeric score
+;; (e.g. accuracy or negative error).
+;;
+;; Returns a list {<b> (mean-score scores)} where {<b> scores}
+;; is a list of K individual fold scores.
+;;
+;; This is the most flexible interface: the score function
+;; receives raw indices and is responsible for building the
+;; model and computing the metric.
+;;
+;; Example:
+;; {<code>
+;;  ;; dummy scorer that returns test set size as "score"
+;;  (de dummy-score (train-idx test-idx)
+;;    (to-double (idx-dim test-idx 0)))
+;;  (cross-validate-indices 100 5 dummy-score)
+;;  ;; => (20.0 (20.0 20.0 20.0 20.0 20.0))
+;; </code>}
+;; {<see> (cross-validate <X> <y> <k> <score-fn>)}
+(de cross-validate-indices (n k score-fn)
+  (let* ((folds (kfold-indices n k))
+         (scores ())
+         (total 0))
+    ((-double-) total)
+    (each ((fold folds))
+      (let* ((train-idx (car fold))
+             (test-idx (cadr fold))
+             (s (score-fn train-idx test-idx)))
+        (setq total (+ total s))
+        (setq scores (nconc1 scores s))))
+    (list (/ total (to-double k)) scores)))
+
+#? (cross-validate <X> <y> <k> <score-fn>)
+;; Run K-fold cross-validation, passing extracted data subsets to
+;; the score function.  {<b> X} is an N x P double data matrix,
+;; {<b> y} is an N-element int label vector, and {<b> score-fn}
+;; takes four arguments {<b> (X-train y-train X-test y-test)}
+;; and returns a numeric score.
+;;
+;; Returns {<b> (mean-score scores)} where {<b> scores} is a list
+;; of K individual fold scores.
+;;
+;; Example:
+;; {<code>
+;;  ;; accuracy scorer (always predicts majority class)
+;;  (de majority-acc (xtrain ytrain xtest ytest)
+;;    (let* ((n (idx-dim ytrain 0))
+;;           (s 0))
+;;      (for (i 0 (- n 1)) (incr s (ytrain i)))
+;;      (let ((pred (if (> s (/ n 2)) 1 0))
+;;            (correct 0)
+;;            (ntest (idx-dim ytest 0)))
+;;        (for (i 0 (- ntest 1))
+;;          (when (= (ytest i) pred) (incr correct)))
+;;        (/ (to-double correct) (to-double ntest)))))
+;;  (let ((x (double-matrix 100 3))
+;;        (y (int-matrix 100)))
+;;    (cross-validate x y 5 majority-acc))
+;; </code>}
+;; {<see> (cross-validate-indices <n> <k> <score-fn>)}
+(de cross-validate (x y k score-fn)
+  (let* ((folds (kfold-indices (idx-dim x 0) k))
+         (scores ())
+         (total 0))
+    ((-double-) total)
+    (each ((fold folds))
+      (let* ((train-idx (car fold))
+             (test-idx (cadr fold))
+             (x-train (select-rows-d2 x train-idx))
+             (y-train (select-rows-i1 y train-idx))
+             (x-test (select-rows-d2 x test-idx))
+             (y-test (select-rows-i1 y test-idx))
+             (s (score-fn x-train y-train x-test y-test)))
+        (setq total (+ total s))
+        (setq scores (nconc1 scores s))))
+    (list (/ total (to-double k)) scores)))
+
+#? (stratified-cross-validate <X> <y> <k> <score-fn>)
+;; Like {<b> cross-validate} but uses stratified K-fold splitting
+;; to maintain class proportions in each fold.  Arguments and return
+;; value are the same as {<b> cross-validate}.
+;; {<see> (cross-validate <X> <y> <k> <score-fn>)}
+(de stratified-cross-validate (x y k score-fn)
+  (let* ((folds (stratified-kfold-indices y k))
+         (scores ())
+         (total 0))
+    ((-double-) total)
+    (each ((fold folds))
+      (let* ((train-idx (car fold))
+             (test-idx (cadr fold))
+             (x-train (select-rows-d2 x train-idx))
+             (y-train (select-rows-i1 y train-idx))
+             (x-test (select-rows-d2 x test-idx))
+             (y-test (select-rows-i1 y test-idx))
+             (s (score-fn x-train y-train x-test y-test)))
+        (setq total (+ total s))
+        (setq scores (nconc1 scores s))))
+    (list (/ total (to-double k)) scores)))
+
+
+;; ============================================================
+#? ** Evaluation Metrics
+
+#? (accuracy <y-true> <y-pred>)
+;; Classification accuracy: fraction of correct predictions.
+;; Both arguments are int vectors of the same length.
+;; Returns a double in [0, 1].
+(de accuracy (y-true y-pred)
+  ((-idx1- (-int-)) y-true y-pred)
+  (let ((n (idx-dim y-true 0))
+        (correct 0))
+    ((-int-) n correct)
+    #{
+    int *pt = IDX_PTR($y_true, int);
+    int *pp = IDX_PTR($y_pred, int);
+    int st = ($y_true)->mod[0];
+    int sp = ($y_pred)->mod[0];
+    int i;
+    for (i = 0; i < $n; i++)
+        if (pt[i * st] == pp[i * sp]) $correct++;
+    #}
+    (/ (to-double correct) (to-double n))))
+
+#? (mse <y-true> <y-pred>)
+;; Mean squared error between two double vectors.
+;; Returns a non-negative double.
+(de mse (y-true y-pred)
+  ((-idx1- (-double-)) y-true y-pred)
+  (let ((n (idx-dim y-true 0))
+        (s 0))
+    ((-int-) n)
+    ((-double-) s)
+    #{
+    double *pt = IDX_PTR($y_true, double);
+    double *pp = IDX_PTR($y_pred, double);
+    int st = ($y_true)->mod[0];
+    int sp = ($y_pred)->mod[0];
+    int i;
+    double d;
+    for (i = 0; i < $n; i++) {
+        d = pt[i * st] - pp[i * sp];
+        $s += d * d;
+    }
+    #}
+    (/ s (to-double n))))
+
+#? (rmse <y-true> <y-pred>)
+;; Root mean squared error.  Square root of {<b> mse}.
+;; {<see> (mse <y-true> <y-pred>)}
+(de rmse (y-true y-pred)
+  (sqrt (mse y-true y-pred)))
+
+#? (mae <y-true> <y-pred>)
+;; Mean absolute error between two double vectors.
+(de mae (y-true y-pred)
+  ((-idx1- (-double-)) y-true y-pred)
+  (let ((n (idx-dim y-true 0))
+        (s 0))
+    ((-int-) n)
+    ((-double-) s)
+    #{
+    double *pt = IDX_PTR($y_true, double);
+    double *pp = IDX_PTR($y_pred, double);
+    int st = ($y_true)->mod[0];
+    int sp = ($y_pred)->mod[0];
+    int i;
+    for (i = 0; i < $n; i++) {
+        double d = pt[i * st] - pp[i * sp];
+        $s += (d < 0) ? -d : d;
+    }
+    #}
+    (/ s (to-double n))))
+
+#? (r-squared <y-true> <y-pred>)
+;; Coefficient of determination (R-squared).
+;; {<b> R^2 = 1 - SS_res / SS_tot} where SS_res is the residual
+;; sum of squares and SS_tot is the total sum of squares around
+;; the mean of {<b> y-true}.  Can be negative if the model is
+;; worse than predicting the mean.
+;; {<see> (mse <y-true> <y-pred>)}
+(de r-squared (y-true y-pred)
+  ((-idx1- (-double-)) y-true y-pred)
+  (let ((n (idx-dim y-true 0))
+        (ss-res 0) (ss-tot 0) (mean-y 0))
+    ((-int-) n)
+    ((-double-) ss-res ss-tot mean-y)
+    #{
+    double *pt = IDX_PTR($y_true, double);
+    double *pp = IDX_PTR($y_pred, double);
+    int st = ($y_true)->mod[0];
+    int sp = ($y_pred)->mod[0];
+    int i;
+    double d;
+    /* compute mean of y-true */
+    for (i = 0; i < $n; i++)
+        $mean_y += pt[i * st];
+    $mean_y /= (double)$n;
+    /* compute SS_res and SS_tot */
+    for (i = 0; i < $n; i++) {
+        d = pt[i * st] - pp[i * sp];
+        $ss_res += d * d;
+        d = pt[i * st] - $mean_y;
+        $ss_tot += d * d;
+    }
+    #}
+    (if (> ss-tot 0) (- 1.0 (/ ss-res ss-tot)) 0)))
+
+
+;; ============================================================
+#? ** Classification Metrics
+
+;; Build a confusion matrix from true and predicted int labels.
+;; cm: C x C output matrix (int), min-label: smallest class label.
+;; cm[i][j] = number of samples with true class (i+min-label)
+;; predicted as class (j+min-label).
+(de _ms-confusion-matrix (y-true y-pred cm min-label)
+  ((-idx1- (-int-)) y-true y-pred)
+  ((-idx2- (-int-)) cm)
+  ((-int-) min-label)
+  (let ((n (idx-dim y-true 0))
+        (c (idx-dim cm 0)))
+    ((-int-) n c)
+    #{
+    int *pt = IDX_PTR($y_true, int);
+    int *pp = IDX_PTR($y_pred, int);
+    int *pc = IDX_PTR($cm, int);
+    int st = ($y_true)->mod[0];
+    int sp = ($y_pred)->mod[0];
+    int sc0 = ($cm)->mod[0];
+    int sc1 = ($cm)->mod[1];
+    int i, ti, pi2;
+    /* zero the matrix */
+    for (i = 0; i < $c * $c; i++) pc[i] = 0;
+    /* fill */
+    for (i = 0; i < $n; i++) {
+        ti = pt[i * st] - $min_label;
+        pi2 = pp[i * sp] - $min_label;
+        if (ti >= 0 && ti < $c && pi2 >= 0 && pi2 < $c)
+            pc[ti * sc0 + pi2 * sc1]++;
+    }
+    #}
+    () ))
+
+#? (confusion-matrix <y-true> <y-pred>)
+;; Compute the confusion matrix for integer class labels.
+;; Returns a list {<b> (cm classes)} where {<b> cm} is a C x C
+;; int matrix and {<b> classes} is a sorted list of unique class
+;; labels.  Entry {<b> cm[i][j]} is the count of samples whose
+;; true class is {<b> classes[i]} and predicted class is
+;; {<b> classes[j]}.
+;;
+;; Example:
+;; {<code>
+;;  (let* ((yt [i 0 0 0 1 1 1 2 2])
+;;         (yp [i 0 0 1 1 1 2 2 2])
+;;         (result (confusion-matrix yt yp))
+;;         (cm (car result)))
+;;    (pretty cm))
+;;  ;; = [i[2 1 0]   ; class 0: 2 correct, 1 predicted as 1
+;;  ;;    [0 2 1]     ; class 1: 2 correct, 1 predicted as 2
+;;  ;;    [0 0 2]]    ; class 2: 2 correct
+;; </code>}
+;; {<see> (precision <y-true> <y-pred>), (recall <y-true> <y-pred>)}
+(de confusion-matrix (y-true y-pred)
+  ;; find unique classes from both vectors
+  (let* ((n (idx-dim y-true 0))
+         (all-labels (int-matrix (* 2 n)))
+         (classes ()))
+    (for (i 0 (- n 1))
+      (all-labels i (y-true i))
+      (all-labels (+ n i) (y-pred i)))
+    (idx-i1sortup all-labels)
+    (let ((prev -999999999))
+      (for (i 0 (- (* 2 n) 1))
+        (let ((v (all-labels i)))
+          (when (<> v prev)
+            (setq classes (nconc1 classes v))
+            (setq prev v)))))
+    (let* ((nc (length classes))
+           (min-label (car classes))
+           (max-label (nth (- nc 1) classes))
+           (range (+ 1 (- max-label min-label)))
+           (cm (int-matrix range range)))
+      (_ms-confusion-matrix y-true y-pred cm min-label)
+      ;; extract only the rows/cols for actual classes
+      (if (= range nc)
+          (list cm classes)
+        ;; sparse labels: extract sub-matrix
+        (let ((cm2 (int-matrix nc nc)))
+          (let ((ri 0))
+            (each ((ci classes))
+              (let ((cj 0))
+                (each ((cjv classes))
+                  (cm2 ri cj (cm (- ci min-label) (- cjv min-label)))
+                  (incr cj)))
+              (incr ri)))
+          (list cm2 classes))))))
+
+#? (precision <y-true> <y-pred>)
+;; Per-class precision: TP / (TP + FP) for each class.
+;; Returns a list {<b> (precisions classes)} where {<b> precisions}
+;; is a list of doubles (one per class) and {<b> classes} is the
+;; sorted list of unique class labels.
+;;
+;; Precision for a class with no predicted positives is 0.0.
+;; {<see> (recall <y-true> <y-pred>), (f1-score <y-true> <y-pred>)}
+(de precision (y-true y-pred)
+  (let* ((result (confusion-matrix y-true y-pred))
+         (cm (car result))
+         (classes (cadr result))
+         (nc (length classes))
+         (precs ()))
+    (for (j 0 (- nc 1))
+      (let ((tp (cm j j))
+            (col-sum 0))
+        (for (i 0 (- nc 1)) (incr col-sum (cm i j)))
+        (setq precs (nconc1 precs (if (> col-sum 0)
+                                      (/ (to-double tp) (to-double col-sum))
+                                    0.0)))))
+    (list precs classes)))
+
+#? (recall <y-true> <y-pred>)
+;; Per-class recall (sensitivity): TP / (TP + FN) for each class.
+;; Returns a list {<b> (recalls classes)} like {<b> precision}.
+;;
+;; Recall for a class with no true positives is 0.0.
+;; {<see> (precision <y-true> <y-pred>), (f1-score <y-true> <y-pred>)}
+(de recall (y-true y-pred)
+  (let* ((result (confusion-matrix y-true y-pred))
+         (cm (car result))
+         (classes (cadr result))
+         (nc (length classes))
+         (recs ()))
+    (for (i 0 (- nc 1))
+      (let ((tp (cm i i))
+            (row-sum 0))
+        (for (j 0 (- nc 1)) (incr row-sum (cm i j)))
+        (setq recs (nconc1 recs (if (> row-sum 0)
+                                    (/ (to-double tp) (to-double row-sum))
+                                  0.0)))))
+    (list recs classes)))
+
+#? (f1-score <y-true> <y-pred>)
+;; Per-class F1 score: 2 * precision * recall / (precision + recall).
+;; Returns a list {<b> (f1s classes)}.
+;;
+;; F1 is 0.0 when both precision and recall are 0.
+;; {<see> (precision <y-true> <y-pred>), (recall <y-true> <y-pred>)}
+(de f1-score (y-true y-pred)
+  (let* ((p-result (precision y-true y-pred))
+         (r-result (recall y-true y-pred))
+         (precs (car p-result))
+         (recs (car r-result))
+         (classes (cadr p-result))
+         (f1s ()))
+    (each ((p precs) (r recs))
+      (setq f1s (nconc1 f1s (if (> (+ p r) 0)
+                                (/ (* 2.0 p r) (+ p r))
+                              0.0))))
+    (list f1s classes)))
+
+#? (classification-report <y-true> <y-pred>)
+;; Print a classification report showing per-class precision, recall,
+;; F1 score, and support (number of true instances), plus macro and
+;; weighted averages.
+;;
+;; Example output:
+;; {<code>
+;;               precision  recall  f1-score  support
+;;   class 0       0.8000  1.0000    0.8889        4
+;;   class 1       1.0000  0.6667    0.8000        3
+;;   macro avg     0.9000  0.8333    0.8444        7
+;;   weighted avg  0.8857  0.8571    0.8508        7
+;; </code>}
+;; {<see> (confusion-matrix <y-true> <y-pred>)}
+(de classification-report (y-true y-pred)
+  (let* ((cm-result (confusion-matrix y-true y-pred))
+         (cm (car cm-result))
+         (classes (cadr cm-result))
+         (nc (length classes))
+         ;; compute per-class metrics
+         (precs ()) (recs ()) (f1s ()) (supports ()))
+    ;; precision, recall, f1
+    (for (ci 0 (- nc 1))
+      (let ((tp (cm ci ci))
+            (col-sum 0) (row-sum 0))
+        (for (j 0 (- nc 1)) (incr col-sum (cm j ci)))
+        (for (j 0 (- nc 1)) (incr row-sum (cm ci j)))
+        (let* ((p (if (> col-sum 0) (/ (to-double tp) (to-double col-sum)) 0.0))
+               (r (if (> row-sum 0) (/ (to-double tp) (to-double row-sum)) 0.0))
+               (f (if (> (+ p r) 0) (/ (* 2.0 p r) (+ p r)) 0.0)))
+          (setq precs (nconc1 precs p))
+          (setq recs (nconc1 recs r))
+          (setq f1s (nconc1 f1s f))
+          (setq supports (nconc1 supports row-sum)))))
+    ;; header
+    (printf "              precision  recall  f1-score  support\n")
+    ;; per-class rows
+    (let ((ci 0))
+      (each ((c classes) (p precs) (r recs) (f f1s) (s supports))
+        (printf "  class %-5d  %6.4f  %6.4f    %6.4f    %5d\n" c p r f s)
+        (incr ci)))
+    ;; macro average
+    (let ((n (idx-dim y-true 0))
+          (mp 0) (mr 0) (mf 0) (wp 0) (wr 0) (wf 0))
+      (each ((p precs) (r recs) (f f1s) (s supports))
+        (setq mp (+ mp p))
+        (setq mr (+ mr r))
+        (setq mf (+ mf f))
+        (setq wp (+ wp (* p s)))
+        (setq wr (+ wr (* r s)))
+        (setq wf (+ wf (* f s))))
+      (printf "  macro avg    %6.4f  %6.4f    %6.4f    %5d\n"
+              (/ mp nc) (/ mr nc) (/ mf nc) n)
+      (printf "  weighted avg %6.4f  %6.4f    %6.4f    %5d\n"
+              (/ wp n) (/ wr n) (/ wf n) n))
+    t))
+
+
+;; ============================================================
+#? ** Log-Loss
+
+#? (log-loss <y-true> <y-proba>)
+;; Multi-class logarithmic loss (cross-entropy).
+;; <y-true>: N-element int vector of true class labels (0-based).
+;; <y-proba>: N x K double matrix of predicted probabilities
+;; (rows sum to 1, one column per class).
+;; Returns the mean cross-entropy loss.  Probabilities are clamped
+;; to [1e-15, 1-1e-15] to avoid log(0).
+;;
+;; For perfect predictions, log-loss approaches 0.
+;; For uniform K-class predictions, log-loss approaches log(K).
+;; {<see> (accuracy <y-true> <y-pred>)}
+(de log-loss (y-true y-proba)
+  ((-idx1- (-int-)) y-true)
+  ((-idx2- (-double-)) y-proba)
+  (let ((n (idx-dim y-true 0))
+        (k (idx-dim y-proba 1))
+        (total 0))
+    ((-int-) n k)
+    ((-double-) total)
+    #{
+    int *pt = IDX_PTR($y_true, int);
+    int st = ($y_true)->mod[0];
+    double *pp = IDX_PTR($y_proba, double);
+    int sp0 = ($y_proba)->mod[0];
+    int sp1 = ($y_proba)->mod[1];
+    int i;
+    double eps = 1e-15;
+    for (i = 0; i < $n; i++) {
+        int c = pt[i * st];
+        double p = pp[i * sp0 + c * sp1];
+        if (p < eps) p = eps;
+        if (p > 1.0 - eps) p = 1.0 - eps;
+        $total -= log(p);
+    }
+    #}
+    (/ total (to-double n))))
+
+
+;; ============================================================
+;; Compile performance-critical C functions
+;; ============================================================
+
+(dhc-make ()
+  _ms-shuffle
+  _ms-select-rows-d2
+  _ms-select-rows-i1
+  _ms-select-rows-d1
+  _ms-count-labels
+  _ms-confusion-matrix
+  accuracy
+  mse
+  mae
+  r-squared
+  log-loss)

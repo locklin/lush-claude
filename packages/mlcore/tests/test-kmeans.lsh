@@ -1,0 +1,106 @@
+;;; test-kmeans.lsh -- Tests for K-Means clustering
+;;;
+;;; Run: ./src/lush packages/libnum/tests/test-kmeans.lsh
+
+(addpath "packages")
+(load "packages/mlcore/tests/framework.lsh")
+(libload "mlcore/kmeans")
+
+
+;; ============================================================
+(test-suite "K-Means basic"
+
+  ;; two well-separated clusters
+  (let* ((x [[0.0 0.0][0.1 0.1][-0.1 0.1][0.0 -0.1]
+             [10.0 10.0][10.1 10.1][9.9 10.0][10.0 9.9]])
+         (result (kmeans x 2 100 5))
+         (centers (car result))
+         (labels (cadr result))
+         (inertia (caddr result)))
+    ;; should have 2 clusters
+    (test-equal "km K" (idx-dim centers 0) 2)
+    (test-equal "km P" (idx-dim centers 1) 2)
+    ;; inertia should be small (points are tight)
+    (test-check "km low inertia" (< inertia 1.0))
+    ;; all points in same cluster as their group
+    ;; first 4 should have same label
+    (test-equal "km group1" (labels 0) (labels 1))
+    (test-equal "km group1b" (labels 0) (labels 2))
+    (test-equal "km group1c" (labels 0) (labels 3))
+    ;; last 4 should have same label
+    (test-equal "km group2" (labels 4) (labels 5))
+    (test-equal "km group2b" (labels 4) (labels 6))
+    (test-equal "km group2c" (labels 4) (labels 7))
+    ;; two groups should have different labels
+    (test-check "km diff groups" (<> (labels 0) (labels 4))))
+)
+
+
+;; ============================================================
+(test-suite "K-Means edge cases"
+
+  ;; k = 1: everything in one cluster
+  (let* ((x [[1.0 2.0][3.0 4.0][5.0 6.0]])
+         (result (kmeans x 1 100 1))
+         (centers (car result))
+         (labels (cadr result)))
+    (test-equal "km k=1 labels" (labels 0) 0)
+    (test-equal "km k=1 labels" (labels 1) 0)
+    ;; center should be mean
+    (test-approx "km k=1 center0" (centers 0 0) 3.0 1e-10)
+    (test-approx "km k=1 center1" (centers 0 1) 4.0 1e-10))
+
+  ;; k = N: each point its own cluster (inertia = 0)
+  (let* ((x [[1.0][2.0][3.0]])
+         (result (kmeans x 3 100 1))
+         (inertia (caddr result)))
+    (test-approx "km k=N inertia" inertia 0.0 1e-10))
+)
+
+
+;; ============================================================
+(test-suite "K-Means++ initialization"
+
+  ;; init should return k centers with correct dimensions
+  (let* ((x [[1.0 2.0][3.0 4.0][5.0 6.0][7.0 8.0][9.0 10.0]])
+         (centers (kmeans-pp-init x 3)))
+    (test-equal "kpp rows" (idx-dim centers 0) 3)
+    (test-equal "kpp cols" (idx-dim centers 1) 2)
+    ;; each center should be one of the data points
+    (for (c 0 2)
+      (let ((found ()))
+        (for (i 0 4)
+          (when (and (< (abs (- (centers c 0) (x i 0))) 1e-10)
+                     (< (abs (- (centers c 1) (x i 1))) 1e-10))
+            (setq found t)))
+        (test-check (sprintf "kpp center%d is data point" c) found))))
+)
+
+
+;; ============================================================
+(test-suite "K-Means 3 clusters"
+
+  ;; three clusters at (0,0), (10,0), (0,10)
+  (let* ((x [[0.0 0.0][0.1 0.0][0.0 0.1]
+             [10.0 0.0][10.1 0.0][10.0 0.1]
+             [0.0 10.0][0.1 10.0][0.0 10.1]])
+         (result (kmeans x 3 100 10))
+         (labels (cadr result)))
+    ;; points 0-2 should be same cluster
+    (test-equal "km3 cl1" (labels 0) (labels 1))
+    (test-equal "km3 cl1b" (labels 0) (labels 2))
+    ;; points 3-5 should be same cluster
+    (test-equal "km3 cl2" (labels 3) (labels 4))
+    (test-equal "km3 cl2b" (labels 3) (labels 5))
+    ;; points 6-8 should be same cluster
+    (test-equal "km3 cl3" (labels 6) (labels 7))
+    (test-equal "km3 cl3b" (labels 6) (labels 8))
+    ;; all three clusters different
+    (test-check "km3 diff12" (<> (labels 0) (labels 3)))
+    (test-check "km3 diff13" (<> (labels 0) (labels 6)))
+    (test-check "km3 diff23" (<> (labels 3) (labels 6))))
+)
+
+
+;; ============================================================
+(test-summary)

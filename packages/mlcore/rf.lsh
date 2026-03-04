@@ -1,0 +1,721 @@
+;;; rf.lsh -- Random Forest
+;;;
+;;; Array-based decision trees with Gini/MSE splitting,
+;;; random subspace selection, OOB error, variable importance,
+;;; proximity matrix, and conformal prediction.
+;;;
+;;; Copyright (C) 2026 Scott Locklin, Lugos LLC
+;;; Distributed under the GNU General Public License v2+.
+
+(libload "libidx/idx-double")
+(libload "libidx/idx-int")
+
+#? *** Random Forest
+;; Random forest classifier and regressor with:
+;; {<ul>
+;; {<li> Array-based tree representation (cache-friendly, no pointers).}
+;; {<li> Gini impurity (classification) and MSE (regression) splitting.}
+;; {<li> Random subspace: sqrt(p) features per split for classification,
+;;   p/3 for regression.}
+;; {<li> Out-of-bag (OOB) error estimation.}
+;; {<li> Variable importance (mean decrease in impurity).}
+;; {<li> Proximity matrix for Mapper integration.}
+;; {<li> Conformal prediction for uncertainty quantification.}
+;; }
+;;
+;; {<code>
+;;  (libload "libnum/rf")
+;;  (let ((rf (new RandomForest 100 "classify")))
+;;    (==> rf fit train-data train-labels)
+;;    (let ((preds (==> rf predict test-data)))
+;;      ...))
+;; </code>}
+
+;; ============================================================
+;; Compiled C helpers
+;; ============================================================
+
+;; Find best split for a single node.
+;; data: N x D, labels: N int (class labels or regression targets encoded as ints)
+;; sample-idx: indices of samples in this node
+;; feature-subset: features to consider
+;; Returns: (best-feature best-threshold best-impurity-decrease)
+;; For classification, uses Gini impurity.
+;; For regression, uses MSE reduction.
+(de _rf-find-best-split (data targets sample-idx n-samples
+                          feature-subset n-features-try
+                          n-classes is-classifier)
+  ((-idx2- (-double-)) data)
+  ((-idx1- (-double-)) targets)
+  ((-idx1- (-int-)) sample-idx feature-subset)
+  ((-int-) n-samples n-features-try n-classes is-classifier)
+  ;; Returns a list: (feature-idx threshold impurity-decrease)
+  (let ((best-feat -1)
+        (best-thresh 0.0)
+        (best-imp 0.0))
+    ((-int-) best-feat)
+    ((-double-) best-thresh best-imp)
+    #{
+    int *psamp = IDX_PTR($sample_idx, int);
+    int ss = ($sample_idx)->mod[0];
+    int *pfeat = IDX_PTR($feature_subset, int);
+    int sf = ($feature_subset)->mod[0];
+    double *pdata = IDX_PTR($data, double);
+    int sd0 = ($data)->mod[0], sd1 = ($data)->mod[1];
+    double *ptarg = IDX_PTR($targets, double);
+    int st = ($targets)->mod[0];
+    int fi, si, i;
+    int NS = $n_samples, NC = $n_classes;
+
+    /* Temp arrays for sorting */
+    double *vals = (double *)malloc(NS * sizeof(double));
+    int *sorted_idx = (int *)malloc(NS * sizeof(int));
+    double *class_counts_left = (double *)calloc(NC > 1 ? NC : 2, sizeof(double));
+    double *class_counts_right = (double *)calloc(NC > 1 ? NC : 2, sizeof(double));
+
+    /* Parent impurity */
+    double parent_impurity;
+    if ($is_classifier) {
+        double *cc = (double *)calloc(NC, sizeof(double));
+        for (si = 0; si < NS; si++)
+            cc[(int)ptarg[psamp[si*ss]*st]] += 1.0;
+        parent_impurity = 1.0;
+        for (i = 0; i < NC; i++) {
+            double p = cc[i] / NS;
+            parent_impurity -= p * p;
+        }
+        free(cc);
+    } else {
+        double mean = 0, mse = 0;
+        for (si = 0; si < NS; si++) mean += ptarg[psamp[si*ss]*st];
+        mean /= NS;
+        for (si = 0; si < NS; si++) {
+            double d = ptarg[psamp[si*ss]*st] - mean;
+            mse += d * d;
+        }
+        parent_impurity = mse / NS;
+    }
+
+    for (fi = 0; fi < $n_features_try; fi++) {
+        int feat = pfeat[fi * sf];
+
+        /* Collect feature values for samples in this node */
+        for (si = 0; si < NS; si++) {
+            int idx = psamp[si * ss];
+            vals[si] = pdata[idx*sd0 + feat*sd1];
+            sorted_idx[si] = idx;
+        }
+
+        /* Sort by feature value (insertion sort, fine for moderate N) */
+        for (i = 1; i < NS; i++) {
+            double vv = vals[i]; int ii = sorted_idx[i];
+            int j = i - 1;
+            while (j >= 0 && vals[j] > vv) {
+                vals[j+1] = vals[j]; sorted_idx[j+1] = sorted_idx[j];
+                j--;
+            }
+            vals[j+1] = vv; sorted_idx[j+1] = ii;
+        }
+
+        /* Try each split point between consecutive distinct values */
+        if ($is_classifier) {
+            for (i = 0; i < NC; i++) { class_counts_left[i] = 0; class_counts_right[i] = 0; }
+            /* Initialize right = all */
+            for (si = 0; si < NS; si++)
+                class_counts_right[(int)ptarg[sorted_idx[si]*st]] += 1.0;
+
+            for (si = 0; si < NS - 1; si++) {
+                int cl = (int)ptarg[sorted_idx[si]*st];
+                class_counts_left[cl] += 1.0;
+                class_counts_right[cl] -= 1.0;
+
+                if (vals[si] == vals[si+1]) continue;  /* skip ties */
+
+                double nl = (double)(si + 1), nr = (double)(NS - si - 1);
+                double gini_l = 1.0, gini_r = 1.0;
+                for (i = 0; i < NC; i++) {
+                    double pl = class_counts_left[i] / nl;
+                    double pr = class_counts_right[i] / nr;
+                    gini_l -= pl * pl;
+                    gini_r -= pr * pr;
+                }
+                double weighted = (nl * gini_l + nr * gini_r) / NS;
+                double decrease = parent_impurity - weighted;
+                if (decrease > $best_imp) {
+                    $best_imp = decrease;
+                    $best_feat = feat;
+                    $best_thresh = (vals[si] + vals[si+1]) / 2.0;
+                }
+            }
+        } else {
+            /* Regression: MSE reduction */
+            double sum_left = 0, sum_right = 0, sq_left = 0, sq_right = 0;
+            for (si = 0; si < NS; si++) {
+                double v = ptarg[sorted_idx[si]*st];
+                sum_right += v; sq_right += v * v;
+            }
+            for (si = 0; si < NS - 1; si++) {
+                double v = ptarg[sorted_idx[si]*st];
+                sum_left += v; sq_left += v * v;
+                sum_right -= v; sq_right -= v * v;
+                if (vals[si] == vals[si+1]) continue;
+                double nl = (double)(si + 1), nr = (double)(NS - si - 1);
+                double mse_l = sq_left / nl - (sum_left / nl) * (sum_left / nl);
+                double mse_r = sq_right / nr - (sum_right / nr) * (sum_right / nr);
+                double weighted = (nl * mse_l + nr * mse_r) / NS;
+                double decrease = parent_impurity - weighted;
+                if (decrease > $best_imp) {
+                    $best_imp = decrease;
+                    $best_feat = feat;
+                    $best_thresh = (vals[si] + vals[si+1]) / 2.0;
+                }
+            }
+        }
+    }
+
+    free(vals); free(sorted_idx);
+    free(class_counts_left); free(class_counts_right);
+    #}
+    (list best-feat best-thresh best-imp) ))
+
+
+;; Predict leaf index for a single sample traversing one tree.
+;; tree-feat, tree-thresh, tree-left, tree-right: parallel arrays
+;; tree-value: node predictions
+;; Returns leaf node index.
+(de _rf-traverse-tree (x tree-feat tree-thresh tree-left tree-right)
+  ((-idx1- (-double-)) x tree-thresh)
+  ((-idx1- (-int-)) tree-feat tree-left tree-right)
+  (let ((node 0))
+    ((-int-) node)
+    #{
+    double *px = IDX_PTR($x, double);
+    int sx = ($x)->mod[0];
+    int *pf = IDX_PTR($tree_feat, int);
+    int sfe = ($tree_feat)->mod[0];
+    double *pth = IDX_PTR($tree_thresh, double);
+    int sth = ($tree_thresh)->mod[0];
+    int *pl = IDX_PTR($tree_left, int);
+    int sle = ($tree_left)->mod[0];
+    int *pr = IDX_PTR($tree_right, int);
+    int sri = ($tree_right)->mod[0];
+
+    while (pl[$node * sle] >= 0) {
+        int feat = pf[$node * sfe];
+        double thresh = pth[$node * sth];
+        if (px[feat * sx] <= thresh)
+            $node = pl[$node * sle];
+        else
+            $node = pr[$node * sri];
+    }
+    #}
+    node ))
+
+
+;; ============================================================
+;; Random Forest class
+;; ============================================================
+
+#? * RandomForest
+;; Random Forest classifier or regressor.
+;; {<type> CLASS}
+
+(defclass RandomForest object
+  n-trees         ;; number of trees
+  mode            ;; "classify" or "regress"
+  max-depth       ;; maximum tree depth (default 20)
+  min-samples     ;; minimum samples per leaf (default 2)
+  n-classes       ;; number of classes (classification only)
+  n-features      ;; number of features in training data
+  ;; Per-tree storage (lists of idx arrays)
+  tree-feats      ;; list of int vectors (split feature per node)
+  tree-thresholds ;; list of double vectors (split threshold)
+  tree-lefts      ;; list of int vectors (left child index, -1 = leaf)
+  tree-rights     ;; list of int vectors (right child index)
+  tree-values     ;; list of double vectors (prediction at leaf)
+  tree-oob-idx    ;; list of lists (OOB sample indices per tree)
+  ;; Importance
+  feat-importance  ;; double vector of accumulated impurity decrease
+)
+
+#? (new RandomForest <n-trees> [<mode> [<max-depth> [<min-samples>]]])
+;; Create a random forest.
+;; <n-trees>: number of trees.
+;; <mode>: "classify" (default) or "regress".
+;; <max-depth>: max tree depth (default 20).
+;; <min-samples>: min samples per leaf (default 2).
+(defmethod RandomForest RandomForest (nt &optional md mx ms)
+  (setq n-trees nt)
+  (setq mode (if md md "classify"))
+  (setq max-depth (if mx mx 20))
+  (setq min-samples (if ms ms 2))
+  (setq tree-feats ())
+  (setq tree-thresholds ())
+  (setq tree-lefts ())
+  (setq tree-rights ())
+  (setq tree-values ())
+  (setq tree-oob-idx ()) )
+
+
+;; Internal: build a single tree with bootstrap sample
+(defmethod RandomForest -build-tree (data targets seed)
+  (let* ((n (idx-dim data 0))
+         (d (idx-dim data 1))
+         (is-clf (if (= mode "classify") 1 0))
+         ;; mtry: features to try per split
+         (mtry (if (= mode "classify")
+                 (max 1 (int (sqrt d)))
+                 (max 1 (int (/ d 3)))))
+         ;; Bootstrap sample
+         (boot-idx (int-matrix n))
+         (in-bag (int-matrix n))
+         ;; Tree arrays (pre-allocate max size)
+         (max-nodes (min (* 2 n) (int (** 2 (+ max-depth 1)))))
+         (t-feat (int-matrix max-nodes))
+         (t-thresh (double-matrix max-nodes))
+         (t-left (int-matrix max-nodes))
+         (t-right (int-matrix max-nodes))
+         (t-value (double-matrix max-nodes))
+         (node-count 0)
+         ;; Build stack: (node-id, sample-start, sample-count, depth)
+         ;; We'll use the boot-idx array and partition in place
+         (rng seed) )
+
+    ;; Simple LCG RNG
+    (let ((rng-next (lambda ()
+                      (setq rng (mod (+ (* rng 1103515245) 12345) 2147483648))
+                      rng )))
+      ;; Bootstrap: sample n with replacement
+      (for (i 0 (1- n))
+        (boot-idx i (mod (rng-next) n))
+        (in-bag (boot-idx i) 1) )
+
+      ;; OOB indices
+      (let ((oob ()))
+        (for (i 0 (1- n))
+          (when (= (in-bag i) 0)
+            (setq oob (nconc1 oob i)) ) )
+
+        ;; Build tree iteratively using a stack
+        ;; Stack elements: (node-id sample-indices depth)
+        (let* ((boot-copy (int-matrix n))
+                 (dummy (for (bi 0 (1- n)) (boot-copy bi (boot-idx bi))))
+                 (stack (list (list 0 boot-copy 0))))
+          (setq node-count 1)
+          (t-left 0 -1) (t-right 0 -1) (t-feat 0 -1)
+
+          (while stack
+            (let* ((top (car stack))
+                   (nid (car top))
+                   (samp (cadr top))
+                   (depth (caddr top))
+                   (ns (idx-dim samp 0)))
+              (setq stack (cdr stack))
+
+              ;; Leaf conditions
+              (let ((make-leaf ()))
+                (when (< ns min-samples) (setq make-leaf t))
+                (when (>= depth max-depth) (setq make-leaf t))
+                ;; Check if all same target
+                (when (not make-leaf)
+                  (let ((same t)
+                        (t0 (targets (samp 0))))
+                    (for (si 1 (1- ns))
+                      (when (<> (targets (samp si)) t0) (setq same ())) )
+                    (when same (setq make-leaf t)) ) )
+
+                (if make-leaf
+                  ;; Make leaf: store prediction
+                  (progn
+                    (t-left nid -1) (t-right nid -1) (t-feat nid -1)
+                    (if (= is-clf 1)
+                      ;; Classification: majority vote
+                      (let ((votes (double-matrix n-classes)))
+                        (for (si 0 (1- ns))
+                          (let ((c (int (targets (samp si)))))
+                            (votes c (+ (votes c) 1)) ) )
+                        (let ((best-c 0) (best-v 0))
+                          (for (c 0 (1- n-classes))
+                            (when (> (votes c) best-v)
+                              (setq best-v (votes c))
+                              (setq best-c c) ) )
+                          (t-value nid (to-double best-c)) ) )
+                      ;; Regression: mean
+                      (let ((s 0))
+                        (for (si 0 (1- ns))
+                          (incr s (targets (samp si))) )
+                        (t-value nid (/ s ns)) ) ) )
+
+                  ;; Find best split
+                  (let ((fsub (int-matrix mtry)))
+                    ;; Random feature subset
+                    (let ((perm (int-matrix d)))
+                      (for (j 0 (1- d)) (perm j j))
+                      ;; Fisher-Yates shuffle (first mtry positions)
+                      (for (j 0 (1- mtry))
+                        (let ((k (+ j (mod (rng-next) (- d j)))))
+                          (let ((tmp (perm j)))
+                            (perm j (perm k))
+                            (perm k tmp) ) ) )
+                      (for (j 0 (1- mtry))
+                        (fsub j (perm j)) ) )
+
+                    (let ((split (_rf-find-best-split data targets samp ns
+                                                       fsub mtry n-classes is-clf)))
+                      (let ((bf (car split))
+                            (bt (cadr split))
+                            (bi (caddr split)))
+                        (if (= bf -1)
+                          ;; No valid split found -> leaf
+                          (progn
+                            (t-left nid -1) (t-right nid -1) (t-feat nid -1)
+                            (if (= is-clf 1)
+                              (let ((votes (double-matrix n-classes)))
+                                (for (si 0 (1- ns))
+                                  (votes (int (targets (samp si)))
+                                         (+ (votes (int (targets (samp si)))) 1)) )
+                                (let ((best-c 0) (best-v 0))
+                                  (for (c 0 (1- n-classes))
+                                    (when (> (votes c) best-v)
+                                      (setq best-v (votes c)) (setq best-c c)) )
+                                  (t-value nid (to-double best-c)) ) )
+                              (let ((s 0))
+                                (for (si 0 (1- ns)) (incr s (targets (samp si))))
+                                (t-value nid (/ s ns)) ) ) )
+
+                          ;; Split the node
+                          (progn
+                            (t-feat nid bf)
+                            (t-thresh nid bt)
+                            ;; Accumulate importance
+                            (feat-importance bf (+ (feat-importance bf)
+                                                    (* bi ns)))
+                            ;; Partition samples
+                            (let ((left-samp ())
+                                  (right-samp ()))
+                              (for (si 0 (1- ns))
+                                (if (<= (data (samp si) bf) bt)
+                                  (setq left-samp (nconc1 left-samp (samp si)))
+                                  (setq right-samp (nconc1 right-samp (samp si))) ) )
+                              ;; Create child nodes
+                              (let ((lid node-count)
+                                    (rid (+ node-count 1)))
+                                (setq node-count (+ node-count 2))
+                                (t-left nid lid)
+                                (t-right nid rid)
+                                (t-left lid -1) (t-right lid -1)
+                                (t-left rid -1) (t-right rid -1)
+                                ;; Convert lists to idx
+                                (let ((lsamp (int-matrix (length left-samp)))
+                                      (rsamp (int-matrix (length right-samp)))
+                                      (li 0) (ri 0))
+                                  (each ((v left-samp))
+                                    (lsamp li v) (incr li) )
+                                  (each ((v right-samp))
+                                    (rsamp ri v) (incr ri) )
+                                  ;; Push children
+                                  (setq stack (cons (list rid rsamp (+ depth 1)) stack))
+                                  (setq stack (cons (list lid lsamp (+ depth 1)) stack))
+                                  ) ;; let lsamp rsamp
+                                ) ;; let lid rid
+                              ) ;; let left-samp right-samp
+                            ) ;; progn (split the node)
+                          ) ;; if bf == -1
+                        ) ;; let bf bt bi
+                      ) ;; let split
+                    ) ;; let fsub
+                  ) ;; if make-leaf
+                ) ;; let make-leaf
+              ) ;; let* top nid samp depth ns
+            ) ;; while stack
+          ) ;; let stack
+
+        ;; Trim arrays to actual size
+        (list (narrow t-feat 0 node-count 0)
+              (narrow t-thresh 0 node-count 0)
+              (narrow t-left 0 node-count 0)
+              (narrow t-right 0 node-count 0)
+              (narrow t-value 0 node-count 0)
+              oob)
+        ) ;; let oob
+      ) ;; let rng-next
+    ) ;; let* ... boot-idx
+  ) ;; defmethod
+
+
+#? (==> <rf> fit <data> <targets>)
+;; Fit the random forest.
+;; <data>: N x D double matrix.
+;; <targets>: N double vector.  For classification, integer class labels
+;;   stored as doubles (0.0, 1.0, 2.0, ...).
+(defmethod RandomForest fit (data targets)
+  (let ((n (idx-dim data 0))
+        (d (idx-dim data 1)))
+    (setq n-features d)
+    ;; Determine n-classes for classification
+    (if (= mode "classify")
+      (let ((kmax 0))
+        (for (i 0 (1- n))
+          (when (> (int (targets i)) kmax)
+            (setq kmax (int (targets i))) ) )
+        (setq n-classes (+ kmax 1)) )
+      (setq n-classes 1) )
+    (setq feat-importance (double-matrix d))
+
+    ;; Build trees
+    (setq tree-feats ())
+    (setq tree-thresholds ())
+    (setq tree-lefts ())
+    (setq tree-rights ())
+    (setq tree-values ())
+    (setq tree-oob-idx ())
+
+    (for (t 0 (1- n-trees))
+      (let ((result (==> this -build-tree data targets (+ (* t 7919) 42))))
+        (setq tree-feats (nconc1 tree-feats (car result)))
+        (setq tree-thresholds (nconc1 tree-thresholds (nth 1 result)))
+        (setq tree-lefts (nconc1 tree-lefts (nth 2 result)))
+        (setq tree-rights (nconc1 tree-rights (nth 3 result)))
+        (setq tree-values (nconc1 tree-values (nth 4 result)))
+        (setq tree-oob-idx (nconc1 tree-oob-idx (nth 5 result))) ) )
+
+    ;; Normalize importance
+    (let ((total 0))
+      (for (j 0 (1- d))
+        (incr total (feat-importance j)) )
+      (when (> total 0)
+        (for (j 0 (1- d))
+          (feat-importance j (/ (feat-importance j) total)) ) ) ) )
+  () )
+
+
+#? (==> <rf> predict <data>)
+;; Predict targets for new data.
+;; Classification: returns int vector of class labels.
+;; Regression: returns double vector of predictions.
+(defmethod RandomForest predict (data)
+  (let* ((n (idx-dim data 0))
+         (is-clf (= mode "classify")))
+    (if is-clf
+      ;; Classification: majority vote
+      (let ((preds (int-matrix n)))
+        (for (i 0 (1- n))
+          (let ((votes (int-matrix n-classes))
+                (xi (select data 0 i))
+                (ti 0))
+            (each ((tf tree-feats) (tt tree-thresholds)
+                   (tl tree-lefts) (tr tree-rights) (tv tree-values))
+              (let ((leaf (_rf-traverse-tree xi tf tt tl tr)))
+                (let ((c (int (tv leaf))))
+                  (votes c (+ (votes c) 1)) ) ) )
+            ;; Argmax
+            (let ((best-c 0) (best-v 0))
+              (for (c 0 (1- n-classes))
+                (when (> (votes c) best-v)
+                  (setq best-v (votes c))
+                  (setq best-c c) ) )
+              (preds i best-c) ) ) )
+        preds )
+      ;; Regression: mean
+      (let ((preds (double-matrix n)))
+        (for (i 0 (1- n))
+          (let ((sum-v 0)
+                (xi (select data 0 i)))
+            (each ((tf tree-feats) (tt tree-thresholds)
+                   (tl tree-lefts) (tr tree-rights) (tv tree-values))
+              (let ((leaf (_rf-traverse-tree xi tf tt tl tr)))
+                (incr sum-v (tv leaf)) ) )
+            (preds i (/ sum-v n-trees)) ) )
+        preds ) ) ) )
+
+
+#? (==> <rf> predict-proba <data>)
+;; Predict class probability matrix for new data.
+;; Returns an N x K double matrix where K is the number of classes.
+;; Each row sums to 1.0 and entry [i,c] is the fraction of trees
+;; that voted for class c on sample i.
+;; Only valid for classification mode.
+;; {<see> (==> <rf> predict <data>), (==> <rf> conformal-predict <cal-data> <cal-targets> <test-data> <alpha>)}
+(defmethod RandomForest predict-proba (data)
+  (when (<> mode "classify")
+    (error "predict-proba only for classification") )
+  (let* ((n (idx-dim data 0))
+         (proba (double-matrix n n-classes)))
+    (for (i 0 (1- n))
+      (let ((votes (double-matrix n-classes))
+            (xi (select data 0 i)))
+        (each ((tf tree-feats) (tt tree-thresholds)
+               (tl tree-lefts) (tr tree-rights) (tv tree-values))
+          (let ((leaf (_rf-traverse-tree xi tf tt tl tr)))
+            (let ((c (int (tv leaf))))
+              (votes c (+ (votes c) 1)) ) ) )
+        ;; Normalize votes to probabilities
+        (for (c 0 (1- n-classes))
+          (proba i c (/ (votes c) n-trees)) ) ) )
+    proba ))
+
+
+#? (==> <rf> oob-error <data> <targets>)
+;; Compute out-of-bag error using the training data.
+;; Classification: misclassification rate.
+;; Regression: mean squared error.
+(defmethod RandomForest oob-error (data targets)
+  (let* ((n (idx-dim data 0))
+         (is-clf (= mode "classify"))
+         (oob-preds (if is-clf
+                      (let ((v (int-matrix n n-classes)))  v)
+                      (double-matrix n)))
+         (oob-counts (int-matrix n)) )
+    ;; Accumulate OOB predictions per tree
+    (let ((ti 0))
+      (each ((tf tree-feats) (tt tree-thresholds)
+             (tl tree-lefts) (tr tree-rights) (tv tree-values)
+             (toob tree-oob-idx))
+        (each ((oi toob))
+          (let* ((xi (select data 0 oi))
+                 (leaf (_rf-traverse-tree xi tf tt tl tr)))
+            (oob-counts oi (+ (oob-counts oi) 1))
+            (if is-clf
+              (let ((c (int (tv leaf))))
+                (oob-preds oi c (+ (oob-preds oi c) 1)) )
+              (oob-preds oi (+ (oob-preds oi) (tv leaf))) ) ) )
+        (incr ti) ) )
+    ;; Compute error
+    (if is-clf
+      (let ((errors 0) (total 0))
+        (for (i 0 (1- n))
+          (when (> (oob-counts i) 0)
+            (incr total)
+            ;; Majority vote
+            (let ((best-c 0) (best-v 0))
+              (for (c 0 (1- n-classes))
+                (when (> (oob-preds i c) best-v)
+                  (setq best-v (oob-preds i c))
+                  (setq best-c c) ) )
+              (when (<> best-c (int (targets i)))
+                (incr errors) ) ) ) )
+        (if (> total 0) (/ (to-double errors) total) 1.0) )
+      ;; Regression MSE
+      (let ((mse 0) (total 0))
+        (for (i 0 (1- n))
+          (when (> (oob-counts i) 0)
+            (incr total)
+            (let ((pred (/ (oob-preds i) (oob-counts i)))
+                  (actual (targets i)))
+              (incr mse (* (- pred actual) (- pred actual))) ) ) )
+        (if (> total 0) (/ mse total) 0) ) ) ) )
+
+
+#? (==> <rf> proximity <data>)
+;; Compute the N x N proximity matrix.
+;; proximity(i,j) = fraction of trees where i and j land in the same leaf.
+;; Returns a double matrix.
+(defmethod RandomForest proximity (data)
+  (let* ((n (idx-dim data 0))
+         (prox (double-matrix n n))
+         (leaves (int-matrix n)) )
+    ;; For each tree, compute leaf assignments
+    (each ((tf tree-feats) (tt tree-thresholds)
+           (tl tree-lefts) (tr tree-rights) (tv tree-values))
+      ;; Get leaf for each point
+      (for (i 0 (1- n))
+        (leaves i (_rf-traverse-tree (select data 0 i) tf tt tl tr)) )
+      ;; Increment proximity for pairs sharing a leaf
+      (for (i 0 (1- n))
+        (for (j i (1- n))
+          (when (= (leaves i) (leaves j))
+            (prox i j (+ (prox i j) 1))
+            (when (<> i j)
+              (prox j i (+ (prox j i) 1)) ) ) ) ) )
+    ;; Normalize
+    (for (i 0 (1- n))
+      (for (j 0 (1- n))
+        (prox i j (/ (prox i j) n-trees)) ) )
+    prox ))
+
+
+#? (==> <rf> importance)
+;; Return the feature importance vector (mean decrease in impurity,
+;; normalized to sum to 1).
+(defmethod RandomForest importance ()
+  feat-importance )
+
+
+#? (==> <rf> conformal-predict <cal-data> <cal-targets> <test-data> <alpha>)
+;; Conformal prediction: return prediction sets with coverage >= 1-alpha.
+;; Uses the random forest's predicted class probabilities as nonconformity scores.
+;; <cal-data>/<cal-targets>: calibration set (not used in training).
+;; <test-data>: new points to make prediction sets for.
+;; <alpha>: significance level (e.g. 0.1 for 90% coverage).
+;; Returns a list of lists, where each inner list contains the
+;; class labels in the prediction set.
+(defmethod RandomForest conformal-predict (cal-data cal-targets test-data alpha)
+  (when (<> mode "classify")
+    (error "conformal-predict only for classification") )
+  (let* ((n-cal (idx-dim cal-data 0))
+         (n-test (idx-dim test-data 0))
+         ;; Compute nonconformity scores for calibration set
+         ;; Score = 1 - P(true class)
+         (cal-scores (double-matrix n-cal)) )
+    ;; Get class vote fractions for calibration data
+    (for (i 0 (1- n-cal))
+      (let ((votes (double-matrix n-classes))
+            (xi (select cal-data 0 i)))
+        (each ((tf tree-feats) (tt tree-thresholds)
+               (tl tree-lefts) (tr tree-rights) (tv tree-values))
+          (let ((leaf (_rf-traverse-tree xi tf tt tl tr)))
+            (let ((c (int (tv leaf))))
+              (votes c (+ (votes c) 1)) ) ) )
+        ;; Normalize votes to probabilities
+        (for (c 0 (1- n-classes))
+          (votes c (/ (votes c) n-trees)) )
+        (let ((true-class (int (cal-targets i))))
+          (cal-scores i (- 1.0 (votes true-class))) ) ) )
+
+    ;; Sort calibration scores to find quantile
+    ;; Simple selection of the (1-alpha) quantile
+    (let ((sorted-scores (double-matrix n-cal)))
+      (for (i 0 (1- n-cal))
+        (sorted-scores i (cal-scores i)) )
+      ;; Insertion sort
+      (for (i 1 (1- n-cal))
+        (let ((v (sorted-scores i))
+              (j (- i 1)))
+          (while (and (>= j 0) (> (sorted-scores j) v))
+            (sorted-scores (+ j 1) (sorted-scores j))
+            (setq j (- j 1)) )
+          (sorted-scores (+ j 1) v) ) )
+      ;; Quantile index: ceil((n-cal + 1) * (1 - alpha)) / n-cal
+      (let ((q-idx (min (1- n-cal)
+                        (int (* (+ n-cal 1) (- 1 alpha)))))
+            (threshold 0))
+        (setq threshold (sorted-scores q-idx))
+
+        ;; For each test point, include classes with score <= threshold
+        (let ((result ()))
+          (for (i 0 (1- n-test))
+            (let ((votes (double-matrix n-classes))
+                  (xi (select test-data 0 i))
+                  (pred-set ()))
+              (each ((tf tree-feats) (tt tree-thresholds)
+                     (tl tree-lefts) (tr tree-rights) (tv tree-values))
+                (let ((leaf (_rf-traverse-tree xi tf tt tl tr)))
+                  (let ((c (int (tv leaf))))
+                    (votes c (+ (votes c) 1)) ) ) )
+              (for (c 0 (1- n-classes))
+                (votes c (/ (votes c) n-trees)) )
+              ;; Include class c if 1-P(c) <= threshold
+              (for (c 0 (1- n-classes))
+                (when (<= (- 1 (votes c)) threshold)
+                  (setq pred-set (nconc1 pred-set c)) ) )
+              (setq result (nconc1 result pred-set)) ) )
+          result ) ) ) ) )
+
+
+;; ============================================================
+;; Compilation
+;; ============================================================
+
+(dhc-make ()
+  _rf-find-best-split
+  _rf-traverse-tree )

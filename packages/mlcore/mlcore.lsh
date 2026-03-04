@@ -1,0 +1,54 @@
+;;; mlcore.lsh -- Machine Learning Core Library
+;;;
+;;; Provides supervised and unsupervised learning algorithms:
+;;;   - Model selection: train/test split, cross-validation, metrics
+;;;   - Feature scaling: StandardScaler, MinMaxScaler, RobustScaler
+;;;   - Regression: OLS, Ridge, Logistic, GLMnet (elastic net)
+;;;   - Classification: k-NN, Naive Bayes, Random Forest
+;;;   - Clustering: K-Means
+;;;   - Dimensionality reduction: spectral methods (Laplacian, Diffusion, Kernel PCA)
+;;;   - Sparse matrices: CSR/CSC format
+;;;   - Conformal prediction: RF, k-NN, GLMnet
+;;;
+;;; Copyright (C) 2026 Scott Locklin, Lugos LLC
+;;; Distributed under the GNU General Public License v2+.
+
+#? **** mlcore: Machine Learning Core Library
+;; Machine learning algorithms built on Lush's numerical
+;; infrastructure ({<b> libnum}).  Includes supervised learning
+;; (regression, classification), unsupervised learning (clustering,
+;; dimensionality reduction), model selection utilities, and
+;; conformal prediction for uncertainty quantification.
+;;
+;; {<b> Modules:}
+;; {<ul>
+;; {<li> {<b> model-selection}: train/test split, k-fold CV, evaluation metrics}
+;; {<li> {<b> feature-scaling}: StandardScaler, MinMaxScaler, RobustScaler}
+;; {<li> {<b> optimizers}: coordinate descent, soft thresholding}
+;; {<li> {<b> regression}: OLS, ridge, logistic, GLMnet (elastic net)}
+;; {<li> {<b> knn}: k-nearest neighbor search (brute, VP-tree, KD-tree, HNSW)}
+;; {<li> {<b> naive-bayes}: Gaussian, Multinomial, Bernoulli NB}
+;; {<li> {<b> rf}: Random Forest classifier/regressor}
+;; {<li> {<b> kmeans}: K-Means clustering with k-means++ init}
+;; {<li> {<b> spectral}: Laplacian Eigenmaps, Diffusion Maps, Kernel PCA}
+;; {<li> {<b> sparse}: CSR/CSC sparse matrices}
+;; }
+;;
+;; {<code>
+;;  (libload "mlcore/mlcore")
+;;  ;; All modules now available
+;;  (let ((rf (new RandomForest 100 "classify")))
+;;    (==> rf fit train-data train-labels)
+;;    (==> rf predict test-data))
+;; </code>}
+
+(libload "mlcore/sparse")
+(libload "mlcore/model-selection")
+(libload "mlcore/feature-scaling")
+(libload "mlcore/optimizers")
+(libload "mlcore/kmeans")
+(libload "mlcore/knn")
+(libload "mlcore/naive-bayes")
+(libload "mlcore/rf")
+(libload "mlcore/spectral")
+(libload "mlcore/regression")

@@ -3,8 +3,8 @@
 ;;; Run: ./src/lush packages/libnum/tests/test-model-selection.lsh
 
 (addpath "packages")
-(load "packages/libnum/tests/framework.lsh")
-(libload "libnum/model-selection")
+(load "packages/mlcore/tests/framework.lsh")
+(libload "mlcore/model-selection")
 
 
 ;; ============================================================

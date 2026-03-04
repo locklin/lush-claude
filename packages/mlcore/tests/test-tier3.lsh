@@ -45,11 +45,11 @@
 
 
 ;; Load all modules
-(libload "sparse/sparse")
-(libload "libnum/knn")
-(libload "libnum/naive-bayes")
-(libload "libnum/rf")
-(libload "libnum/spectral")
+(libload "mlcore/sparse")
+(libload "mlcore/knn")
+(libload "mlcore/naive-bayes")
+(libload "mlcore/rf")
+(libload "mlcore/spectral")
 (libload "mapper/lens")
 
 

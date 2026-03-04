@@ -346,7 +346,7 @@
 ;; {<see> (mapper-lens-kmeans-dist <data> [<k>])}
 
 (de mapper-lens-kmeans (data . rest)
-  (libload "libnum/kmeans")
+  (libload "mlcore/kmeans")
   (let* ((k (if rest (car rest) 10))
          (n (idx-dim data 0))
          (result (kmeans data k))
@@ -366,7 +366,7 @@
 ;; {<see> (mapper-lens-kmeans <data> [<k>])}
 
 (de mapper-lens-kmeans-dist (data . rest)
-  (libload "libnum/kmeans")
+  (libload "mlcore/kmeans")
   (let* ((k (if rest (car rest) 10))
          (n (idx-dim data 0))
          (d (idx-dim data 1))
@@ -399,7 +399,7 @@
 ;; {<see> (knn-search <data> <k>)}
 
 (de mapper-lens-density (data . rest)
-  (libload "libnum/knn")
+  (libload "mlcore/knn")
   (let* ((k (if rest (car rest) 15))
          (n (idx-dim data 0))
          (kk (min k (- n 1)))
@@ -465,7 +465,7 @@
 ;; {<see> (laplacian-eigenmaps <data> <out-dim> [<n-neighbors> [<sigma>]])}
 
 (de mapper-lens-laplacian (data . rest)
-  (libload "libnum/spectral")
+  (libload "mlcore/spectral")
   (let ((k (if rest (car rest) 15)))
     (laplacian-eigenmaps data 1 k) ))
 
@@ -475,7 +475,7 @@
 ;; Returns an Nx2 double matrix.
 
 (de mapper-lens-laplacian2d (data . rest)
-  (libload "libnum/spectral")
+  (libload "mlcore/spectral")
   (let ((k (if rest (car rest) 15)))
     (laplacian-eigenmaps data 2 k) ))
 
@@ -487,7 +487,7 @@
 ;; {<see> (diffusion-maps <data> <out-dim> [<n-neighbors> [<sigma> [<t>]]])}
 
 (de mapper-lens-diffusion (data . rest)
-  (libload "libnum/spectral")
+  (libload "mlcore/spectral")
   (let ((k (if rest (car rest) 15)))
     (diffusion-maps data 1 k) ))
 
@@ -497,7 +497,7 @@
 ;; Returns an Nx2 double matrix.
 
 (de mapper-lens-diffusion2d (data . rest)
-  (libload "libnum/spectral")
+  (libload "mlcore/spectral")
   (let ((k (if rest (car rest) 15)))
     (diffusion-maps data 2 k) ))
 
@@ -509,7 +509,7 @@
 ;; {<see> (kernel-pca <data> <out-dim> [<kernel> [<gamma> [<degree> [<coef0>]]]])}
 
 (de mapper-lens-kpca (data . rest)
-  (libload "libnum/spectral")
+  (libload "mlcore/spectral")
   (let ((gamma (if rest (car rest) (/ 1.0 (idx-dim data 1)))))
     (kernel-pca data 1 "rbf" gamma) ))
 
@@ -519,6 +519,6 @@
 ;; Returns an Nx2 double matrix.
 
 (de mapper-lens-kpca2d (data . rest)
-  (libload "libnum/spectral")
+  (libload "mlcore/spectral")
   (let ((gamma (if rest (car rest) (/ 1.0 (idx-dim data 1)))))
     (kernel-pca data 2 "rbf" gamma) ))

@@ -356,9 +356,9 @@
       (printf "(libload \"mapper/mapper\")\n")
       (printf "(libload \"mapper/lens\")\n")
       (printf "(libload \"mapper/umap\")\n")
-      (printf "(libload \"libnum/spectral\")\n")
-      (printf "(libload \"libnum/kmeans\")\n")
-      (printf "(libload \"libnum/knn\")\n")
+      (printf "(libload \"mlcore/spectral\")\n")
+      (printf "(libload \"mlcore/kmeans\")\n")
+      (printf "(libload \"mlcore/knn\")\n")
       (printf "\n")
 
       ;; --- JSON field extraction helpers (minimal, no full parser) ---
