@@ -179,6 +179,600 @@
 
 
 ;; ============================================================
+(test-suite "Sub (element-wise)"
+
+  (let* ((a [[10.0 20.0 30.0]
+             [40.0 50.0 60.0]])
+         (b [[1.0 2.0 3.0]
+             [4.0 5.0 6.0]])
+         (ta (torch9-from-idx a))
+         (tb (torch9-from-idx b))
+         (tc (torch9-sub ta tb))
+         (c  (torch9-to-idx tc)))
+    (test-approx "sub [0,0]" (c 0 0) 9.0 1e-14)
+    (test-approx "sub [0,2]" (c 0 2) 27.0 1e-14)
+    (test-approx "sub [1,1]" (c 1 1) 45.0 1e-14)
+    (test-approx "sub [1,2]" (c 1 2) 54.0 1e-14)
+    (torch9-free ta) (torch9-free tb) (torch9-free tc))
+
+  ;; 1D sub
+  (let* ((a [5.0 10.0 15.0])
+         (b [1.0 2.0 3.0])
+         (ta (torch9-from-idx a))
+         (tb (torch9-from-idx b))
+         (tc (torch9-sub ta tb))
+         (c  (torch9-to-idx tc)))
+    (test-approx "sub 1D [0]" (c 0) 4.0 1e-14)
+    (test-approx "sub 1D [2]" (c 2) 12.0 1e-14)
+    (torch9-free ta) (torch9-free tb) (torch9-free tc))
+)
+
+
+;; ============================================================
+(test-suite "Mul (element-wise)"
+
+  (let* ((a [[2.0 3.0 4.0]
+             [5.0 6.0 7.0]])
+         (b [[10.0 20.0 30.0]
+             [40.0 50.0 60.0]])
+         (ta (torch9-from-idx a))
+         (tb (torch9-from-idx b))
+         (tc (torch9-mul ta tb))
+         (c  (torch9-to-idx tc)))
+    (test-approx "mul [0,0]" (c 0 0) 20.0 1e-14)
+    (test-approx "mul [0,1]" (c 0 1) 60.0 1e-14)
+    (test-approx "mul [1,2]" (c 1 2) 420.0 1e-14)
+    (torch9-free ta) (torch9-free tb) (torch9-free tc))
+
+  ;; Verify element-wise values
+  (let* ((a [[2.0 3.0] [4.0 5.0]])
+         (b [[6.0 7.0] [8.0 9.0]])
+         (ta (torch9-from-idx a))
+         (tb (torch9-from-idx b))
+         (tc (torch9-mul ta tb))
+         (c  (torch9-to-idx tc)))
+    ;; 2*6=12, 3*7=21, 4*8=32, 5*9=45
+    (test-approx "mul verify [0,0]" (c 0 0) 12.0 1e-14)
+    (test-approx "mul verify [0,1]" (c 0 1) 21.0 1e-14)
+    (test-approx "mul verify [1,0]" (c 1 0) 32.0 1e-14)
+    (test-approx "mul verify [1,1]" (c 1 1) 45.0 1e-14)
+    (torch9-free ta) (torch9-free tb) (torch9-free tc))
+)
+
+
+;; ============================================================
+(test-suite "Div (element-wise)"
+
+  (let* ((a [[10.0 20.0 30.0]])
+         (b [[2.0 4.0 5.0]])
+         (ta (torch9-from-idx a))
+         (tb (torch9-from-idx b))
+         (tc (torch9-div ta tb))
+         (c  (torch9-to-idx tc)))
+    (test-approx "div [0,0]" (c 0 0) 5.0 1e-14)
+    (test-approx "div [0,1]" (c 0 1) 5.0 1e-14)
+    (test-approx "div [0,2]" (c 0 2) 6.0 1e-14)
+    (torch9-free ta) (torch9-free tb) (torch9-free tc))
+
+  ;; Non-integer division
+  (let* ((a [1.0 1.0 1.0])
+         (b [3.0 7.0 11.0])
+         (ta (torch9-from-idx a))
+         (tb (torch9-from-idx b))
+         (tc (torch9-div ta tb))
+         (c  (torch9-to-idx tc)))
+    (test-approx "div non-integer [0]" (c 0) (/ 1.0 3.0) 1e-14)
+    (test-approx "div non-integer [1]" (c 1) (/ 1.0 7.0) 1e-14)
+    (test-approx "div non-integer [2]" (c 2) (/ 1.0 11.0) 1e-14)
+    (torch9-free ta) (torch9-free tb) (torch9-free tc))
+)
+
+
+;; ============================================================
+(test-suite "ReLU"
+
+  (let* ((v [-3.0 -1.0 0.0 1.0 3.0])
+         (tv (torch9-from-idx v))
+         (tr (torch9-relu tv))
+         (r  (torch9-to-idx tr)))
+    (test-approx "relu [-3]" (r 0) 0.0 1e-14)
+    (test-approx "relu [-1]" (r 1) 0.0 1e-14)
+    (test-approx "relu [0]"  (r 2) 0.0 1e-14)
+    (test-approx "relu [1]"  (r 3) 1.0 1e-14)
+    (test-approx "relu [3]"  (r 4) 3.0 1e-14)
+    (torch9-free tv) (torch9-free tr))
+
+  ;; 2D ReLU
+  (let* ((m [[-2.0 3.0] [4.0 -5.0]])
+         (tm (torch9-from-idx m))
+         (tr (torch9-relu tm))
+         (r  (torch9-to-idx tr)))
+    (test-approx "relu 2D [0,0]" (r 0 0) 0.0 1e-14)
+    (test-approx "relu 2D [0,1]" (r 0 1) 3.0 1e-14)
+    (test-approx "relu 2D [1,0]" (r 1 0) 4.0 1e-14)
+    (test-approx "relu 2D [1,1]" (r 1 1) 0.0 1e-14)
+    (torch9-free tm) (torch9-free tr))
+)
+
+
+;; ============================================================
+(test-suite "Sigmoid"
+
+  (let* ((v [0.0 -100.0 100.0])
+         (tv (torch9-from-idx v))
+         (ts (torch9-sigmoid tv))
+         (s  (torch9-to-idx ts)))
+    (test-approx "sigmoid(0)" (s 0) 0.5 1e-14)
+    (test-approx "sigmoid(-100) ~ 0" (s 1) 0.0 1e-10)
+    (test-approx "sigmoid(100) ~ 1" (s 2) 1.0 1e-10)
+    (torch9-free tv) (torch9-free ts))
+
+  ;; Sigmoid range check
+  (let* ((v [-2.0 -1.0 0.0 1.0 2.0])
+         (tv (torch9-from-idx v))
+         (ts (torch9-sigmoid tv))
+         (s  (torch9-to-idx ts)))
+    (test-check "sigmoid all in (0,1)"
+      (and (> (s 0) 0) (< (s 0) 1)
+           (> (s 1) 0) (< (s 1) 1)
+           (> (s 3) 0) (< (s 3) 1)
+           (> (s 4) 0) (< (s 4) 1)))
+    ;; Symmetry: sigmoid(-x) = 1 - sigmoid(x)
+    (test-approx "sigmoid symmetry" (+ (s 0) (s 4)) 1.0 1e-14)
+    (test-approx "sigmoid symmetry2" (+ (s 1) (s 3)) 1.0 1e-14)
+    (torch9-free tv) (torch9-free ts))
+)
+
+
+;; ============================================================
+(test-suite "Tanh"
+
+  (let* ((v [0.0 -100.0 100.0 1.0])
+         (tv (torch9-from-idx v))
+         (tt (torch9-tanh tv))
+         (r  (torch9-to-idx tt)))
+    (test-approx "tanh(0)" (r 0) 0.0 1e-14)
+    (test-approx "tanh(-100) ~ -1" (r 1) -1.0 1e-10)
+    (test-approx "tanh(100) ~ 1" (r 2) 1.0 1e-10)
+    ;; tanh(1) = (e-1/e)/(e+1/e)
+    (let ((expected (/ (- (exp 1) (exp -1)) (+ (exp 1) (exp -1)))))
+      (test-approx "tanh(1)" (r 3) expected 1e-14))
+    (torch9-free tv) (torch9-free tt))
+)
+
+
+;; ============================================================
+(test-suite "Softmax"
+
+  ;; 1D softmax along dim 0
+  (let* ((v [1.0 2.0 3.0])
+         (tv (torch9-from-idx v))
+         (ts (torch9-softmax tv 0))
+         (s  (torch9-to-idx ts)))
+    ;; Sum should be 1.0
+    (test-approx "softmax sum=1" (+ (s 0) (s 1) (s 2)) 1.0 1e-14)
+    ;; All positive
+    (test-check "softmax all positive" (and (> (s 0) 0) (> (s 1) 0) (> (s 2) 0)))
+    ;; Ordering preserved
+    (test-check "softmax ordering" (and (< (s 0) (s 1)) (< (s 1) (s 2))))
+    (torch9-free tv) (torch9-free ts))
+
+  ;; 2D softmax along dim 1 (per-row)
+  (let* ((m [[1.0 2.0 3.0]
+             [10.0 20.0 30.0]])
+         (tm (torch9-from-idx m))
+         (ts (torch9-softmax tm 1))
+         (s  (torch9-to-idx ts)))
+    ;; Each row sums to 1.0
+    (test-approx "softmax row0 sum" (+ (s 0 0) (s 0 1) (s 0 2)) 1.0 1e-14)
+    (test-approx "softmax row1 sum" (+ (s 1 0) (s 1 1) (s 1 2)) 1.0 1e-14)
+    (torch9-free tm) (torch9-free ts))
+
+  ;; Uniform input -> uniform output
+  (let* ((v [5.0 5.0 5.0 5.0])
+         (tv (torch9-from-idx v))
+         (ts (torch9-softmax tv 0))
+         (s  (torch9-to-idx ts)))
+    (test-approx "softmax uniform [0]" (s 0) 0.25 1e-14)
+    (test-approx "softmax uniform [1]" (s 1) 0.25 1e-14)
+    (test-approx "softmax uniform [2]" (s 2) 0.25 1e-14)
+    (test-approx "softmax uniform [3]" (s 3) 0.25 1e-14)
+    (torch9-free tv) (torch9-free ts))
+)
+
+
+;; ============================================================
+(test-suite "Log-softmax"
+
+  ;; log-softmax = log(softmax)
+  (let* ((v [1.0 2.0 3.0])
+         (tv (torch9-from-idx v))
+         (ts (torch9-softmax tv 0))
+         (tls (torch9-log-softmax tv 0))
+         (s   (torch9-to-idx ts))
+         (ls  (torch9-to-idx tls)))
+    (test-approx "log-softmax [0]" (ls 0) (log (s 0)) 1e-12)
+    (test-approx "log-softmax [1]" (ls 1) (log (s 1)) 1e-12)
+    (test-approx "log-softmax [2]" (ls 2) (log (s 2)) 1e-12)
+    ;; All values should be negative (log of number < 1)
+    (test-check "log-softmax all negative"
+      (and (< (ls 0) 0) (< (ls 1) 0) (< (ls 2) 0)))
+    (torch9-free tv) (torch9-free ts) (torch9-free tls))
+)
+
+
+;; ============================================================
+(test-suite "Rank 3 round-trip (double)"
+
+  ;; 2x3x4 double tensor
+  (let* ((m (double-matrix 2 3 4))
+         (dummy (progn
+                  (for (i 0 1)
+                    (for (j 0 2)
+                      (for (k 0 3)
+                        (m i j k (+ (* i 100) (* j 10) k)))))))
+         (tm (torch9-from-idx m)))
+    (test-equal "3D double ndim" (torch9-ndim tm) 3)
+    (test-equal "3D double dtype" (torch9-dtype tm) 3)
+    (test-equal "3D double numel" (torch9-numel tm) 24)
+    (let ((sz (torch9-sizes tm)))
+      (test-equal "3D double size[0]" (sz 0) 2)
+      (test-equal "3D double size[1]" (sz 1) 3)
+      (test-equal "3D double size[2]" (sz 2) 4))
+    (let ((m2 (torch9-to-idx tm)))
+      (test-equal "3D double roundtrip ndim" (idx-ndim m2) 3)
+      (test-approx "3D double [0,0,0]" (m2 0 0 0) 0.0 1e-14)
+      (test-approx "3D double [0,1,2]" (m2 0 1 2) 12.0 1e-14)
+      (test-approx "3D double [1,2,3]" (m2 1 2 3) 123.0 1e-14)
+      (test-approx "3D double [1,0,0]" (m2 1 0 0) 100.0 1e-14))
+    (torch9-free tm))
+)
+
+
+;; ============================================================
+(test-suite "Rank 4 round-trip (double)"
+
+  ;; 2x3x2x2 double tensor
+  (let* ((m (double-matrix 2 3 2 2))
+         (dummy (progn
+                  (for (i 0 1)
+                    (for (j 0 2)
+                      (for (k 0 1)
+                        (for (l 0 1)
+                          (m i j k l (+ (* i 1000) (* j 100)
+                                        (* k 10) l))))))))
+         (tm (torch9-from-idx m)))
+    (test-equal "4D double ndim" (torch9-ndim tm) 4)
+    (test-equal "4D double numel" (torch9-numel tm) 24)
+    (let ((sz (torch9-sizes tm)))
+      (test-equal "4D double size[0]" (sz 0) 2)
+      (test-equal "4D double size[1]" (sz 1) 3)
+      (test-equal "4D double size[2]" (sz 2) 2)
+      (test-equal "4D double size[3]" (sz 3) 2))
+    (let ((m2 (torch9-to-idx tm)))
+      (test-equal "4D double roundtrip ndim" (idx-ndim m2) 4)
+      (test-approx "4D double [0,0,0,0]" (m2 0 0 0 0) 0.0 1e-14)
+      (test-approx "4D double [1,2,1,1]" (m2 1 2 1 1) 1211.0 1e-14)
+      (test-approx "4D double [1,0,0,0]" (m2 1 0 0 0) 1000.0 1e-14))
+    (torch9-free tm))
+)
+
+
+;; ============================================================
+(test-suite "Rank 3 round-trip (float)"
+
+  (let* ((m (float-matrix 2 2 3))
+         (dummy (progn
+                  (for (i 0 1)
+                    (for (j 0 1)
+                      (for (k 0 2)
+                        (m i j k (+ (* i 10) (* j 5) k)))))))
+         (tm (torch9-from-idx m)))
+    (test-equal "3D float ndim" (torch9-ndim tm) 3)
+    (test-equal "3D float dtype" (torch9-dtype tm) 2)
+    (let ((m2 (torch9-to-idx tm)))
+      (test-equal "3D float roundtrip ndim" (idx-ndim m2) 3)
+      (test-approx "3D float [0,0,0]" (m2 0 0 0) 0.0 1e-5)
+      (test-approx "3D float [1,1,2]" (m2 1 1 2) 17.0 1e-5))
+    (torch9-free tm))
+)
+
+
+;; ============================================================
+(test-suite "Rank 4 round-trip (float)"
+
+  (let* ((m (float-matrix 2 2 2 2))
+         (dummy (progn
+                  (for (i 0 1)
+                    (for (j 0 1)
+                      (for (k 0 1)
+                        (for (l 0 1)
+                          (m i j k l (+ (* i 8) (* j 4) (* k 2) l))))))))
+         (tm (torch9-from-idx m)))
+    (test-equal "4D float ndim" (torch9-ndim tm) 4)
+    (let ((m2 (torch9-to-idx tm)))
+      (test-equal "4D float roundtrip ndim" (idx-ndim m2) 4)
+      (test-approx "4D float [0,0,0,0]" (m2 0 0 0 0) 0.0 1e-5)
+      (test-approx "4D float [1,1,1,1]" (m2 1 1 1 1) 15.0 1e-5))
+    (torch9-free tm))
+)
+
+
+;; ============================================================
+(test-suite "Rank 3-4 int from-idx"
+
+  ;; 3D int
+  (let* ((m (int-matrix 2 3 4))
+         (dummy (m 1 2 3 42))
+         (tm (torch9-from-idx m)))
+    (test-equal "3D int ndim" (torch9-ndim tm) 3)
+    (test-equal "3D int dtype" (torch9-dtype tm) 4)
+    (test-equal "3D int numel" (torch9-numel tm) 24)
+    (torch9-free tm))
+
+  ;; 4D int
+  (let* ((m (int-matrix 2 2 2 2))
+         (dummy (m 1 1 1 1 99))
+         (tm (torch9-from-idx m)))
+    (test-equal "4D int ndim" (torch9-ndim tm) 4)
+    (test-equal "4D int dtype" (torch9-dtype tm) 4)
+    (test-equal "4D int numel" (torch9-numel tm) 16)
+    (torch9-free tm))
+)
+
+
+;; ============================================================
+(test-suite "Reshape"
+
+  ;; Reshape 2x3 -> 3x2
+  (let* ((m [[1.0 2.0 3.0]
+             [4.0 5.0 6.0]])
+         (tm (torch9-from-idx m))
+         (tr (torch9-reshape tm 3 2))
+         (r  (torch9-to-idx tr)))
+    (test-equal "reshape ndim" (idx-ndim r) 2)
+    (test-equal "reshape dim0" (idx-dim r 0) 3)
+    (test-equal "reshape dim1" (idx-dim r 1) 2)
+    ;; Row-major: [1,2,3,4,5,6] -> [[1,2],[3,4],[5,6]]
+    (test-approx "reshape [0,0]" (r 0 0) 1.0 1e-14)
+    (test-approx "reshape [0,1]" (r 0 1) 2.0 1e-14)
+    (test-approx "reshape [1,0]" (r 1 0) 3.0 1e-14)
+    (test-approx "reshape [2,1]" (r 2 1) 6.0 1e-14)
+    (torch9-free tm) (torch9-free tr))
+
+  ;; Reshape 6 -> 2x3
+  (let* ((v [1.0 2.0 3.0 4.0 5.0 6.0])
+         (tv (torch9-from-idx v))
+         (tr (torch9-reshape tv 2 3))
+         (r  (torch9-to-idx tr)))
+    (test-equal "reshape 1D->2D ndim" (idx-ndim r) 2)
+    (test-equal "reshape 1D->2D dim0" (idx-dim r 0) 2)
+    (test-equal "reshape 1D->2D dim1" (idx-dim r 1) 3)
+    (test-approx "reshape 1D->2D [1,2]" (r 1 2) 6.0 1e-14)
+    (torch9-free tv) (torch9-free tr))
+
+  ;; Reshape with int-matrix shape
+  (let* ((v [1.0 2.0 3.0 4.0 5.0 6.0])
+         (tv (torch9-from-idx v))
+         (shape (int-matrix 3))
+         (dummy (progn (shape 0 2) (shape 1 3) (shape 2 1)))
+         (tr (torch9-reshape tv shape))
+         (r  (torch9-to-idx tr)))
+    (test-equal "reshape int-matrix ndim" (idx-ndim r) 3)
+    (test-equal "reshape int-matrix dim0" (idx-dim r 0) 2)
+    (test-equal "reshape int-matrix dim1" (idx-dim r 1) 3)
+    (test-equal "reshape int-matrix dim2" (idx-dim r 2) 1)
+    (torch9-free tv) (torch9-free tr))
+)
+
+
+;; ============================================================
+(test-suite "Transpose"
+
+  ;; Transpose 2x3 -> 3x2
+  (let* ((m [[1.0 2.0 3.0]
+             [4.0 5.0 6.0]])
+         (tm (torch9-from-idx m))
+         (tt (torch9-transpose tm 0 1))
+         (r  (torch9-to-idx tt)))
+    (test-equal "transpose ndim" (idx-ndim r) 2)
+    (test-equal "transpose dim0" (idx-dim r 0) 3)
+    (test-equal "transpose dim1" (idx-dim r 1) 2)
+    ;; Transposed: [[1,4],[2,5],[3,6]]
+    (test-approx "transpose [0,0]" (r 0 0) 1.0 1e-14)
+    (test-approx "transpose [0,1]" (r 0 1) 4.0 1e-14)
+    (test-approx "transpose [1,0]" (r 1 0) 2.0 1e-14)
+    (test-approx "transpose [2,1]" (r 2 1) 6.0 1e-14)
+    (torch9-free tm) (torch9-free tt))
+
+  ;; Double transpose = identity
+  (let* ((m [[1.0 2.0] [3.0 4.0] [5.0 6.0]])
+         (tm (torch9-from-idx m))
+         (t1 (torch9-transpose tm 0 1))
+         (t2 (torch9-transpose t1 0 1))
+         (r  (torch9-to-idx t2)))
+    (test-approx "double transpose [0,0]" (r 0 0) 1.0 1e-14)
+    (test-approx "double transpose [2,1]" (r 2 1) 6.0 1e-14)
+    (torch9-free tm) (torch9-free t1) (torch9-free t2))
+)
+
+
+;; ============================================================
+(test-suite "Permute"
+
+  ;; 3D permute: swap dims 0 and 2
+  (let* ((m (double-matrix 2 3 4))
+         (dummy (for (i 0 1)
+                  (for (j 0 2)
+                    (for (k 0 3)
+                      (m i j k (+ (* i 100) (* j 10) k))))))
+         (tm (torch9-from-idx m))
+         (tp (torch9-permute tm 2 1 0))
+         (r  (torch9-to-idx tp)))
+    (test-equal "permute ndim" (idx-ndim r) 3)
+    (test-equal "permute dim0" (idx-dim r 0) 4)
+    (test-equal "permute dim1" (idx-dim r 1) 3)
+    (test-equal "permute dim2" (idx-dim r 2) 2)
+    ;; r[k,j,i] = m[i,j,k]
+    (test-approx "permute [0,0,0]" (r 0 0 0) 0.0 1e-14)
+    (test-approx "permute [3,2,1]" (r 3 2 1) 123.0 1e-14)
+    (test-approx "permute [1,0,0]" (r 1 0 0) 1.0 1e-14)
+    (torch9-free tm) (torch9-free tp))
+
+  ;; 2D permute = transpose
+  (let* ((m [[1.0 2.0 3.0]
+             [4.0 5.0 6.0]])
+         (tm (torch9-from-idx m))
+         (tp (torch9-permute tm 1 0))
+         (r  (torch9-to-idx tp)))
+    (test-approx "permute 2D [0,0]" (r 0 0) 1.0 1e-14)
+    (test-approx "permute 2D [0,1]" (r 0 1) 4.0 1e-14)
+    (test-approx "permute 2D [2,1]" (r 2 1) 6.0 1e-14)
+    (torch9-free tm) (torch9-free tp))
+)
+
+
+;; ============================================================
+(test-suite "Squeeze"
+
+  ;; Squeeze a size-1 dimension
+  (let* ((m (double-matrix 3 1 4))
+         (dummy (for (i 0 2)
+                  (for (k 0 3)
+                    (m i 0 k (+ (* i 10) k)))))
+         (tm (torch9-from-idx m))
+         (ts (torch9-squeeze tm 1))
+         (r  (torch9-to-idx ts)))
+    (test-equal "squeeze ndim" (idx-ndim r) 2)
+    (test-equal "squeeze dim0" (idx-dim r 0) 3)
+    (test-equal "squeeze dim1" (idx-dim r 1) 4)
+    (test-approx "squeeze [0,0]" (r 0 0) 0.0 1e-14)
+    (test-approx "squeeze [2,3]" (r 2 3) 23.0 1e-14)
+    (torch9-free tm) (torch9-free ts))
+)
+
+
+;; ============================================================
+(test-suite "Unsqueeze"
+
+  ;; Unsqueeze to add dimension at position 1
+  (let* ((m [[1.0 2.0 3.0]
+             [4.0 5.0 6.0]])
+         (tm (torch9-from-idx m))
+         (tu (torch9-unsqueeze tm 1))
+         (r  (torch9-to-idx tu)))
+    (test-equal "unsqueeze ndim" (idx-ndim r) 3)
+    (test-equal "unsqueeze dim0" (idx-dim r 0) 2)
+    (test-equal "unsqueeze dim1" (idx-dim r 1) 1)
+    (test-equal "unsqueeze dim2" (idx-dim r 2) 3)
+    (test-approx "unsqueeze [0,0,0]" (r 0 0 0) 1.0 1e-14)
+    (test-approx "unsqueeze [1,0,2]" (r 1 0 2) 6.0 1e-14)
+    (torch9-free tm) (torch9-free tu))
+
+  ;; Unsqueeze at dim 0
+  (let* ((v [10.0 20.0 30.0])
+         (tv (torch9-from-idx v))
+         (tu (torch9-unsqueeze tv 0)))
+    (test-equal "unsqueeze dim0 ndim" (torch9-ndim tu) 2)
+    (let ((sz (torch9-sizes tu)))
+      (test-equal "unsqueeze dim0 size[0]" (sz 0) 1)
+      (test-equal "unsqueeze dim0 size[1]" (sz 1) 3))
+    (torch9-free tv) (torch9-free tu))
+
+  ;; Squeeze undo unsqueeze
+  (let* ((v [1.0 2.0 3.0])
+         (tv (torch9-from-idx v))
+         (tu (torch9-unsqueeze tv 0))
+         (ts (torch9-squeeze tu 0))
+         (r  (torch9-to-idx ts)))
+    (test-equal "squeeze(unsqueeze) ndim" (idx-ndim r) 1)
+    (test-approx "squeeze(unsqueeze) [0]" (r 0) 1.0 1e-14)
+    (test-approx "squeeze(unsqueeze) [2]" (r 2) 3.0 1e-14)
+    (torch9-free tv) (torch9-free tu) (torch9-free ts))
+)
+
+
+;; ============================================================
+(test-suite "Cat"
+
+  ;; Cat 2 tensors along dim 0
+  (let* ((a [[1.0 2.0]
+             [3.0 4.0]])
+         (b [[5.0 6.0]
+             [7.0 8.0]])
+         (ta (torch9-from-idx a))
+         (tb (torch9-from-idx b))
+         (tc (torch9-cat (list ta tb) 0))
+         (c  (torch9-to-idx tc)))
+    (test-equal "cat2 dim0 ndim" (idx-ndim c) 2)
+    (test-equal "cat2 dim0 rows" (idx-dim c 0) 4)
+    (test-equal "cat2 dim0 cols" (idx-dim c 1) 2)
+    (test-approx "cat2 dim0 [0,0]" (c 0 0) 1.0 1e-14)
+    (test-approx "cat2 dim0 [1,1]" (c 1 1) 4.0 1e-14)
+    (test-approx "cat2 dim0 [2,0]" (c 2 0) 5.0 1e-14)
+    (test-approx "cat2 dim0 [3,1]" (c 3 1) 8.0 1e-14)
+    (torch9-free ta) (torch9-free tb) (torch9-free tc))
+
+  ;; Cat along dim 1
+  (let* ((a [[1.0 2.0]
+             [3.0 4.0]])
+         (b [[5.0]
+             [6.0]])
+         (ta (torch9-from-idx a))
+         (tb (torch9-from-idx b))
+         (tc (torch9-cat (list ta tb) 1))
+         (c  (torch9-to-idx tc)))
+    (test-equal "cat2 dim1 cols" (idx-dim c 1) 3)
+    (test-approx "cat2 dim1 [0,2]" (c 0 2) 5.0 1e-14)
+    (test-approx "cat2 dim1 [1,2]" (c 1 2) 6.0 1e-14)
+    (torch9-free ta) (torch9-free tb) (torch9-free tc))
+
+  ;; Cat 3 tensors
+  (let* ((a [1.0 2.0])
+         (b [3.0 4.0])
+         (c [5.0 6.0])
+         (ta (torch9-from-idx a))
+         (tb (torch9-from-idx b))
+         (tc (torch9-from-idx c))
+         (tr (torch9-cat (list ta tb tc) 0))
+         (r  (torch9-to-idx tr)))
+    (test-equal "cat3 numel" (idx-dim r 0) 6)
+    (test-approx "cat3 [0]" (r 0) 1.0 1e-14)
+    (test-approx "cat3 [2]" (r 2) 3.0 1e-14)
+    (test-approx "cat3 [5]" (r 5) 6.0 1e-14)
+    (torch9-free ta) (torch9-free tb) (torch9-free tc) (torch9-free tr))
+
+  ;; Cat 4 tensors
+  (let* ((a [1.0])
+         (b [2.0])
+         (c [3.0])
+         (d [4.0])
+         (ta (torch9-from-idx a))
+         (tb (torch9-from-idx b))
+         (tc (torch9-from-idx c))
+         (td (torch9-from-idx d))
+         (tr (torch9-cat (list ta tb tc td) 0))
+         (r  (torch9-to-idx tr)))
+    (test-equal "cat4 numel" (idx-dim r 0) 4)
+    (test-approx "cat4 [0]" (r 0) 1.0 1e-14)
+    (test-approx "cat4 [3]" (r 3) 4.0 1e-14)
+    (torch9-free ta) (torch9-free tb) (torch9-free tc) (torch9-free td)
+    (torch9-free tr))
+
+  ;; Cat >4 tensors (chaining)
+  (let* ((vecs (list [1.0] [2.0] [3.0] [4.0] [5.0]))
+         (tvecs (mapcar torch9-from-idx vecs))
+         (tr (torch9-cat tvecs 0))
+         (r  (torch9-to-idx tr)))
+    (test-equal "cat5 numel" (idx-dim r 0) 5)
+    (test-approx "cat5 [0]" (r 0) 1.0 1e-14)
+    (test-approx "cat5 [4]" (r 4) 5.0 1e-14)
+    (mapc torch9-free tvecs)
+    (torch9-free tr))
+)
+
+
+;; ============================================================
 (test-suite "Clone"
 
   (let* ((v [10.0 20.0 30.0])
@@ -248,6 +842,109 @@
     (test-equal "strides dim0" (st 0) 3)
     (test-equal "strides dim1" (st 1) 1)
     (torch9-free tm))
+)
+
+
+;; ============================================================
+(test-suite "Device type (CPU)"
+
+  (let* ((v [1.0 2.0 3.0])
+         (tv (torch9-from-idx v)))
+    (test-equal "CPU tensor device" (torch9-device-type tv) 0)
+    (torch9-free tv))
+)
+
+
+;; ============================================================
+;; GPU tests -- only run when CUDA is available
+(when torch9-has-cuda
+  (test-suite "GPU transfer"
+
+    ;; Basic roundtrip: CPU -> GPU -> CPU
+    (let* ((v [1.0 2.0 3.0 4.0 5.0])
+           (tv (torch9-from-idx v))
+           (tg (torch9-to-cuda tv))
+           (tc (torch9-to-cpu tg))
+           (r  (torch9-to-idx tc)))
+      (test-equal "GPU device type" (torch9-device-type tg) 1)
+      (test-equal "CPU after roundtrip" (torch9-device-type tc) 0)
+      (test-approx "GPU roundtrip [0]" (r 0) 1.0 1e-14)
+      (test-approx "GPU roundtrip [4]" (r 4) 5.0 1e-14)
+      (torch9-free tv) (torch9-free tg) (torch9-free tc))
+
+    ;; torch9-to-idx auto-copies GPU tensor
+    (let* ((m [[1.0 2.0] [3.0 4.0]])
+           (tm (torch9-from-idx m))
+           (tg (torch9-to-cuda tm))
+           (r  (torch9-to-idx tg)))  ;; should auto-copy to CPU
+      (test-equal "to-idx auto-CPU ndim" (idx-ndim r) 2)
+      (test-approx "to-idx auto-CPU [0,0]" (r 0 0) 1.0 1e-14)
+      (test-approx "to-idx auto-CPU [1,1]" (r 1 1) 4.0 1e-14)
+      (torch9-free tm) (torch9-free tg))
+
+    ;; Matmul on GPU
+    (let* ((a [[1.0 2.0] [3.0 4.0]])
+           (b [[5.0 6.0] [7.0 8.0]])
+           (ta (torch9-from-idx a))
+           (tb (torch9-from-idx b))
+           (ga (torch9-to-cuda ta))
+           (gb (torch9-to-cuda tb))
+           (gc (torch9-matmul ga gb))
+           (r  (torch9-to-idx gc)))
+      (test-equal "GPU matmul device" (torch9-device-type gc) 1)
+      ;; [[1*5+2*7, 1*6+2*8], [3*5+4*7, 3*6+4*8]] = [[19,22],[43,50]]
+      (test-approx "GPU matmul [0,0]" (r 0 0) 19.0 1e-10)
+      (test-approx "GPU matmul [0,1]" (r 0 1) 22.0 1e-10)
+      (test-approx "GPU matmul [1,0]" (r 1 0) 43.0 1e-10)
+      (test-approx "GPU matmul [1,1]" (r 1 1) 50.0 1e-10)
+      (torch9-free ta) (torch9-free tb)
+      (torch9-free ga) (torch9-free gb) (torch9-free gc))
+  ))
+
+(when (not torch9-has-cuda)
+  (printf "\n--- GPU transfer ---\n")
+  (printf "  SKIP: CUDA not available, GPU tests skipped\n"))
+
+
+;; ============================================================
+;; Combined operations test
+(test-suite "Combined operations"
+
+  ;; softmax(relu(matmul(A,B)))
+  (let* ((a [[1.0 -2.0] [-3.0 4.0]])
+         (b [[5.0 6.0] [7.0 8.0]])
+         (ta (torch9-from-idx a))
+         (tb (torch9-from-idx b))
+         (tc (torch9-matmul ta tb))
+         (tr (torch9-relu tc))
+         (ts (torch9-softmax tr 1))
+         (s  (torch9-to-idx ts)))
+    ;; matmul: [[1*5-2*7, 1*6-2*8], [-3*5+4*7, -3*6+4*8]]
+    ;;       = [[-9, -10], [13, 14]]
+    ;; relu:  [[0, 0], [13, 14]]
+    ;; softmax row0: [0.5, 0.5] (both 0, equal)
+    ;; softmax row1: softmax([13,14])
+    (test-approx "combined row0 sum" (+ (s 0 0) (s 0 1)) 1.0 1e-14)
+    (test-approx "combined row1 sum" (+ (s 1 0) (s 1 1)) 1.0 1e-14)
+    (test-approx "combined row0 equal" (s 0 0) 0.5 1e-14)
+    (test-check "combined row1 ordering" (< (s 1 0) (s 1 1)))
+    (torch9-free ta) (torch9-free tb) (torch9-free tc)
+    (torch9-free tr) (torch9-free ts))
+
+  ;; reshape + transpose roundtrip
+  (let* ((v [1.0 2.0 3.0 4.0 5.0 6.0])
+         (tv (torch9-from-idx v))
+         (t1 (torch9-reshape tv 2 3))
+         (t2 (torch9-transpose t1 0 1))
+         (r  (torch9-to-idx t2)))
+    (test-equal "reshape+transpose dim0" (idx-dim r 0) 3)
+    (test-equal "reshape+transpose dim1" (idx-dim r 1) 2)
+    ;; reshape: [[1,2,3],[4,5,6]], transpose: [[1,4],[2,5],[3,6]]
+    (test-approx "reshape+transpose [0,0]" (r 0 0) 1.0 1e-14)
+    (test-approx "reshape+transpose [0,1]" (r 0 1) 4.0 1e-14)
+    (test-approx "reshape+transpose [2,0]" (r 2 0) 3.0 1e-14)
+    (test-approx "reshape+transpose [2,1]" (r 2 1) 6.0 1e-14)
+    (torch9-free tv) (torch9-free t1) (torch9-free t2))
 )
 
 

@@ -694,16 +694,20 @@ Stage 1: torch9 package skeleton + bridge + matmul demo  ✅ IMPLEMENTED 2026-03
   - packages/torch9/torch9-config.lsh (detect backend, download libtorch, compile bridge)
   - lush_torch9_bridge.h/.cpp (extern "C" API: from_blob, matmul, add, clone, free, print)
   - torch9.lsh (DHC wrappers + interpreted API: torch9-from-idx, torch9-matmul, torch9-to-idx)
-  - tests/test-torch9.lsh (~50 tests: roundtrip, matmul, add, clone, dtype preservation)
+  - tests/test-torch9.lsh (59 tests: roundtrip, matmul, add, clone, dtype preservation)
   - Zero-copy idx→tensor via from_blob, tensor→idx via data_ptr copy
   - Supports double/float/int, rank 1-2
   ↓
-Stage 2: More operations + GPU support
-  - Add sub/mul/div, relu/sigmoid/tanh, softmax to bridge
-  - GPU: to_cuda, to_cpu
-  - Higher-rank tensor support (rank 3-4)
+Stage 2: More operations + GPU + higher ranks  ✅ IMPLEMENTED 2026-03-05
+  - Element-wise ops: sub, mul, div
+  - Activations: relu, sigmoid, tanh, softmax, log-softmax
+  - Higher-rank tensors: rank 3-4 for double/float/int (from-idx + to-idx)
+  - Shape manipulation: reshape, transpose, permute, squeeze, unsqueeze, cat
+  - GPU transfer: to-cuda, to-cpu, device-type (auto CPU copy in to-idx)
+  - 33 C bridge functions, 50 DHC wrappers, ~31 high-level API functions
+  - tests/test-torch9.lsh (228 tests, all passing)
   ↓
-  Milestone: GPU matrix multiply from Lush REPL
+  Milestone: GPU matrix multiply from Lush REPL (ready when CUDA hardware available)
   ↓
 Stage 3: Model loading + inference
   - TorchScript load + forward

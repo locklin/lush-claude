@@ -126,6 +126,149 @@ lt9_tensor lt9_add(lt9_tensor a, lt9_tensor b) {
     return static_cast<lt9_tensor>(new torch::Tensor(torch::add(*ta, *tb)));
 }
 
+lt9_tensor lt9_sub(lt9_tensor a, lt9_tensor b) {
+    if (!a || !b) return nullptr;
+    auto *ta = static_cast<torch::Tensor*>(a);
+    auto *tb = static_cast<torch::Tensor*>(b);
+    return static_cast<lt9_tensor>(new torch::Tensor(torch::sub(*ta, *tb)));
+}
+
+lt9_tensor lt9_mul(lt9_tensor a, lt9_tensor b) {
+    if (!a || !b) return nullptr;
+    auto *ta = static_cast<torch::Tensor*>(a);
+    auto *tb = static_cast<torch::Tensor*>(b);
+    return static_cast<lt9_tensor>(new torch::Tensor(torch::mul(*ta, *tb)));
+}
+
+lt9_tensor lt9_div(lt9_tensor a, lt9_tensor b) {
+    if (!a || !b) return nullptr;
+    auto *ta = static_cast<torch::Tensor*>(a);
+    auto *tb = static_cast<torch::Tensor*>(b);
+    return static_cast<lt9_tensor>(new torch::Tensor(torch::div(*ta, *tb)));
+}
+
+/* ---- Activations ---- */
+
+lt9_tensor lt9_relu(lt9_tensor tens) {
+    if (!tens) return nullptr;
+    auto *tp = static_cast<torch::Tensor*>(tens);
+    return static_cast<lt9_tensor>(new torch::Tensor(torch::relu(*tp)));
+}
+
+lt9_tensor lt9_sigmoid(lt9_tensor tens) {
+    if (!tens) return nullptr;
+    auto *tp = static_cast<torch::Tensor*>(tens);
+    return static_cast<lt9_tensor>(new torch::Tensor(torch::sigmoid(*tp)));
+}
+
+lt9_tensor lt9_tanh(lt9_tensor tens) {
+    if (!tens) return nullptr;
+    auto *tp = static_cast<torch::Tensor*>(tens);
+    return static_cast<lt9_tensor>(new torch::Tensor(torch::tanh(*tp)));
+}
+
+lt9_tensor lt9_softmax(lt9_tensor tens, int dim) {
+    if (!tens) return nullptr;
+    auto *tp = static_cast<torch::Tensor*>(tens);
+    return static_cast<lt9_tensor>(
+        new torch::Tensor(torch::softmax(*tp, dim)));
+}
+
+lt9_tensor lt9_log_softmax(lt9_tensor tens, int dim) {
+    if (!tens) return nullptr;
+    auto *tp = static_cast<torch::Tensor*>(tens);
+    return static_cast<lt9_tensor>(
+        new torch::Tensor(torch::log_softmax(*tp, dim)));
+}
+
+/* ---- Shape manipulation ---- */
+
+lt9_tensor lt9_reshape(lt9_tensor tens, int64_t *shape, int ndim) {
+    if (!tens || !shape || ndim < 1) return nullptr;
+    auto *tp = static_cast<torch::Tensor*>(tens);
+    auto result = tp->reshape(c10::IntArrayRef(shape, static_cast<size_t>(ndim)));
+    return static_cast<lt9_tensor>(new torch::Tensor(result.contiguous()));
+}
+
+lt9_tensor lt9_transpose(lt9_tensor tens, int dim0, int dim1) {
+    if (!tens) return nullptr;
+    auto *tp = static_cast<torch::Tensor*>(tens);
+    auto result = tp->transpose(dim0, dim1);
+    return static_cast<lt9_tensor>(new torch::Tensor(result.contiguous()));
+}
+
+lt9_tensor lt9_permute(lt9_tensor tens, int64_t *dims, int ndim) {
+    if (!tens || !dims || ndim < 1) return nullptr;
+    auto *tp = static_cast<torch::Tensor*>(tens);
+    auto result = tp->permute(c10::IntArrayRef(dims, static_cast<size_t>(ndim)));
+    return static_cast<lt9_tensor>(new torch::Tensor(result.contiguous()));
+}
+
+lt9_tensor lt9_squeeze(lt9_tensor tens, int dim) {
+    if (!tens) return nullptr;
+    auto *tp = static_cast<torch::Tensor*>(tens);
+    auto result = tp->squeeze(dim);
+    return static_cast<lt9_tensor>(new torch::Tensor(result.contiguous()));
+}
+
+lt9_tensor lt9_unsqueeze(lt9_tensor tens, int dim) {
+    if (!tens) return nullptr;
+    auto *tp = static_cast<torch::Tensor*>(tens);
+    auto result = tp->unsqueeze(dim);
+    return static_cast<lt9_tensor>(new torch::Tensor(result.contiguous()));
+}
+
+lt9_tensor lt9_cat2(lt9_tensor a, lt9_tensor b, int dim) {
+    if (!a || !b) return nullptr;
+    auto *ta = static_cast<torch::Tensor*>(a);
+    auto *tb = static_cast<torch::Tensor*>(b);
+    std::vector<torch::Tensor> tensors = {*ta, *tb};
+    return static_cast<lt9_tensor>(new torch::Tensor(torch::cat(tensors, dim)));
+}
+
+lt9_tensor lt9_cat3(lt9_tensor a, lt9_tensor b, lt9_tensor c, int dim) {
+    if (!a || !b || !c) return nullptr;
+    auto *ta = static_cast<torch::Tensor*>(a);
+    auto *tb = static_cast<torch::Tensor*>(b);
+    auto *tc = static_cast<torch::Tensor*>(c);
+    std::vector<torch::Tensor> tensors = {*ta, *tb, *tc};
+    return static_cast<lt9_tensor>(new torch::Tensor(torch::cat(tensors, dim)));
+}
+
+lt9_tensor lt9_cat4(lt9_tensor a, lt9_tensor b, lt9_tensor c,
+                    lt9_tensor d, int dim) {
+    if (!a || !b || !c || !d) return nullptr;
+    auto *ta = static_cast<torch::Tensor*>(a);
+    auto *tb = static_cast<torch::Tensor*>(b);
+    auto *tc = static_cast<torch::Tensor*>(c);
+    auto *td = static_cast<torch::Tensor*>(d);
+    std::vector<torch::Tensor> tensors = {*ta, *tb, *tc, *td};
+    return static_cast<lt9_tensor>(new torch::Tensor(torch::cat(tensors, dim)));
+}
+
+/* ---- GPU transfer ---- */
+
+lt9_tensor lt9_to_cuda(lt9_tensor tens, int device) {
+    if (!tens) return nullptr;
+    auto *tp = static_cast<torch::Tensor*>(tens);
+    if (!torch::cuda::is_available()) return nullptr;
+    auto result = tp->to(torch::Device(torch::kCUDA, device));
+    return static_cast<lt9_tensor>(new torch::Tensor(result));
+}
+
+lt9_tensor lt9_to_cpu(lt9_tensor tens) {
+    if (!tens) return nullptr;
+    auto *tp = static_cast<torch::Tensor*>(tens);
+    auto result = tp->to(torch::kCPU);
+    return static_cast<lt9_tensor>(new torch::Tensor(result));
+}
+
+int lt9_device_type(lt9_tensor tens) {
+    if (!tens) return 0;
+    auto *tp = static_cast<torch::Tensor*>(tens);
+    return tp->device().is_cuda() ? 1 : 0;
+}
+
 /* ---- Lifecycle ---- */
 
 lt9_tensor lt9_clone(lt9_tensor t) {

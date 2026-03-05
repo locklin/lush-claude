@@ -56,6 +56,35 @@ int64_t     lt9_numel(lt9_tensor t);
 
 lt9_tensor  lt9_matmul(lt9_tensor a, lt9_tensor b);
 lt9_tensor  lt9_add(lt9_tensor a, lt9_tensor b);
+lt9_tensor  lt9_sub(lt9_tensor a, lt9_tensor b);
+lt9_tensor  lt9_mul(lt9_tensor a, lt9_tensor b);
+lt9_tensor  lt9_div(lt9_tensor a, lt9_tensor b);
+
+/* ---- Activations ---- */
+
+lt9_tensor  lt9_relu(lt9_tensor tens);
+lt9_tensor  lt9_sigmoid(lt9_tensor tens);
+lt9_tensor  lt9_tanh(lt9_tensor tens);
+lt9_tensor  lt9_softmax(lt9_tensor tens, int dim);
+lt9_tensor  lt9_log_softmax(lt9_tensor tens, int dim);
+
+/* ---- Shape manipulation ---- */
+
+lt9_tensor  lt9_reshape(lt9_tensor tens, int64_t *shape, int ndim);
+lt9_tensor  lt9_transpose(lt9_tensor tens, int dim0, int dim1);
+lt9_tensor  lt9_permute(lt9_tensor tens, int64_t *dims, int ndim);
+lt9_tensor  lt9_squeeze(lt9_tensor tens, int dim);
+lt9_tensor  lt9_unsqueeze(lt9_tensor tens, int dim);
+lt9_tensor  lt9_cat2(lt9_tensor a, lt9_tensor b, int dim);
+lt9_tensor  lt9_cat3(lt9_tensor a, lt9_tensor b, lt9_tensor c, int dim);
+lt9_tensor  lt9_cat4(lt9_tensor a, lt9_tensor b, lt9_tensor c,
+                      lt9_tensor d, int dim);
+
+/* ---- GPU transfer ---- */
+
+lt9_tensor  lt9_to_cuda(lt9_tensor tens, int device);
+lt9_tensor  lt9_to_cpu(lt9_tensor tens);
+int         lt9_device_type(lt9_tensor tens);  /* 0=CPU, 1=CUDA */
 
 /* ---- Lifecycle ---- */
 
