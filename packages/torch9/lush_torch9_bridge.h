@@ -238,6 +238,91 @@ void   lt9_optimizer_free(lt9_optimizer opt);
 int         lt9_tensor_save(lt9_tensor t, const char *path);
 lt9_tensor  lt9_tensor_load(const char *path);
 
+
+/* ============================================================
+ * Stage 5: Training Toolkit
+ * ============================================================ */
+
+/* ---- Element-wise math ---- */
+
+lt9_tensor  lt9_exp(lt9_tensor t);
+lt9_tensor  lt9_log(lt9_tensor t);
+lt9_tensor  lt9_sqrt(lt9_tensor t);
+lt9_tensor  lt9_abs(lt9_tensor t);
+lt9_tensor  lt9_pow(lt9_tensor t, double exponent);
+lt9_tensor  lt9_clamp(lt9_tensor t, double min_val, double max_val);
+
+/* ---- Scalar-tensor ops ---- */
+
+lt9_tensor  lt9_add_scalar(lt9_tensor t, double scalar);
+lt9_tensor  lt9_mul_scalar(lt9_tensor t, double scalar);
+
+/* ---- Type casting ---- */
+
+lt9_tensor  lt9_to_dtype(lt9_tensor t, int dtype);
+
+/* ---- Index generation ---- */
+
+lt9_tensor  lt9_arange(double start, double end, double step, int dtype);
+
+/* ---- Comparisons (return uint8 tensors) ---- */
+
+lt9_tensor  lt9_eq(lt9_tensor a, lt9_tensor b);
+lt9_tensor  lt9_gt(lt9_tensor a, lt9_tensor b);
+
+/* ---- Reductions with dimension ---- */
+
+lt9_tensor  lt9_argmax(lt9_tensor t, int dim);
+lt9_tensor  lt9_sum_dim(lt9_tensor t, int dim, int keepdim);
+lt9_tensor  lt9_mean_dim(lt9_tensor t, int dim, int keepdim);
+lt9_tensor  lt9_max_dim(lt9_tensor t, int dim);
+
+/* ---- Indexing ---- */
+
+lt9_tensor  lt9_narrow(lt9_tensor t, int dim, int64_t start, int64_t length);
+lt9_tensor  lt9_index_select(lt9_tensor t, int dim, lt9_tensor index);
+lt9_tensor  lt9_select(lt9_tensor t, int dim, int64_t index);
+
+/* ---- Flatten ---- */
+
+lt9_tensor  lt9_flatten(lt9_tensor t, int start_dim, int end_dim);
+
+/* ---- In-place operations ---- */
+
+void  lt9_add_inplace(lt9_tensor t, lt9_tensor other);
+void  lt9_mul_inplace(lt9_tensor t, lt9_tensor other);
+void  lt9_sub_inplace(lt9_tensor t, lt9_tensor other);
+void  lt9_zero_inplace(lt9_tensor t);
+void  lt9_fill_inplace(lt9_tensor t, double value);
+void  lt9_copy_inplace(lt9_tensor dst, lt9_tensor src);
+
+/* ---- Parameter initialization (in-place) ---- */
+
+void  lt9_normal_init(lt9_tensor t, double mean, double std);
+void  lt9_uniform_init(lt9_tensor t, double low, double high);
+void  lt9_kaiming_normal_init(lt9_tensor t, double a, int mode,
+                               int nonlinearity);
+void  lt9_xavier_normal_init(lt9_tensor t, double gain);
+
+/* ---- Gradient clipping ---- */
+
+double lt9_clip_grad_norm(lt9_param_group pg, double max_norm);
+
+/* ---- Extra activations ---- */
+
+lt9_tensor  lt9_gelu(lt9_tensor t);
+lt9_tensor  lt9_silu(lt9_tensor t);
+lt9_tensor  lt9_elu(lt9_tensor t, double alpha);
+
+/* ---- Extra loss functions (reduction: 0=None, 1=Mean, 2=Sum) ---- */
+
+lt9_tensor  lt9_nll_loss(lt9_tensor input, lt9_tensor target, int reduction);
+lt9_tensor  lt9_bce_with_logits_loss(lt9_tensor input, lt9_tensor target,
+                                      int reduction);
+lt9_tensor  lt9_l1_loss(lt9_tensor input, lt9_tensor target, int reduction);
+lt9_tensor  lt9_smooth_l1_loss(lt9_tensor input, lt9_tensor target,
+                                int reduction, double beta);
+
 #ifdef __cplusplus
 }
 #endif

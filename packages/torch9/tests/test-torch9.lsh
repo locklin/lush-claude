@@ -2395,5 +2395,784 @@
 
 
 ;; ============================================================
+;; Stage 5: Training Toolkit Tests
+;; ============================================================
+
+;; ============================================================
+(test-suite "Element-wise math: exp, log"
+
+  ;; exp(0) = 1
+  (let* ((m (double-matrix 3))
+         (dummy (progn (m 0 0.0) (m 1 1.0) (m 2 2.0)))
+         (t (torch9-from-idx m))
+         (r (torch9-exp t))
+         (out (torch9-to-idx r)))
+    (test-approx "exp(0) = 1" (out 0) 1.0 1e-6)
+    (test-approx "exp(1) ~ 2.718" (out 1) 2.718281828 1e-5)
+    (test-approx "exp(2) ~ 7.389" (out 2) 7.389056099 1e-5)
+    (torch9-free t) (torch9-free r))
+
+  ;; log(1) = 0, log(e) = 1
+  (let* ((m (double-matrix 3))
+         (dummy (progn (m 0 1.0) (m 1 2.718281828) (m 2 7.389056099)))
+         (t (torch9-from-idx m))
+         (r (torch9-log t))
+         (out (torch9-to-idx r)))
+    (test-approx "log(1) = 0" (out 0) 0.0 1e-6)
+    (test-approx "log(e) ~ 1" (out 1) 1.0 1e-5)
+    (test-approx "log(e^2) ~ 2" (out 2) 2.0 1e-5)
+    (torch9-free t) (torch9-free r))
+
+  ;; exp and log are inverse
+  (let* ((m (double-matrix 4))
+         (dummy (progn (m 0 0.5) (m 1 1.0) (m 2 2.0) (m 3 3.0)))
+         (t (torch9-from-idx m))
+         (e (torch9-exp t))
+         (r (torch9-log e))
+         (out (torch9-to-idx r)))
+    (test-approx "log(exp(0.5)) = 0.5" (out 0) 0.5 1e-10)
+    (test-approx "log(exp(1.0)) = 1.0" (out 1) 1.0 1e-10)
+    (test-approx "log(exp(2.0)) = 2.0" (out 2) 2.0 1e-10)
+    (test-approx "log(exp(3.0)) = 3.0" (out 3) 3.0 1e-10)
+    (torch9-free t) (torch9-free e) (torch9-free r))
+)
+
+;; ============================================================
+(test-suite "Element-wise math: sqrt, abs, pow"
+
+  ;; sqrt
+  (let* ((m (double-matrix 3))
+         (dummy (progn (m 0 4.0) (m 1 9.0) (m 2 16.0)))
+         (t (torch9-from-idx m))
+         (r (torch9-sqrt t))
+         (out (torch9-to-idx r)))
+    (test-approx "sqrt(4) = 2" (out 0) 2.0 1e-10)
+    (test-approx "sqrt(9) = 3" (out 1) 3.0 1e-10)
+    (test-approx "sqrt(16) = 4" (out 2) 4.0 1e-10)
+    (torch9-free t) (torch9-free r))
+
+  ;; abs
+  (let* ((m (double-matrix 4))
+         (dummy (progn (m 0 -3.0) (m 1 -1.5) (m 2 0.0) (m 3 2.5)))
+         (t (torch9-from-idx m))
+         (r (torch9-abs t))
+         (out (torch9-to-idx r)))
+    (test-approx "abs(-3) = 3" (out 0) 3.0 1e-10)
+    (test-approx "abs(-1.5) = 1.5" (out 1) 1.5 1e-10)
+    (test-approx "abs(0) = 0" (out 2) 0.0 1e-10)
+    (test-approx "abs(2.5) = 2.5" (out 3) 2.5 1e-10)
+    (torch9-free t) (torch9-free r))
+
+  ;; pow
+  (let* ((m (double-matrix 3))
+         (dummy (progn (m 0 2.0) (m 1 3.0) (m 2 4.0)))
+         (t (torch9-from-idx m))
+         (r (torch9-pow t 2))
+         (out (torch9-to-idx r)))
+    (test-approx "2^2 = 4" (out 0) 4.0 1e-10)
+    (test-approx "3^2 = 9" (out 1) 9.0 1e-10)
+    (test-approx "4^2 = 16" (out 2) 16.0 1e-10)
+    (torch9-free t) (torch9-free r))
+
+  ;; pow(x, 0.5) = sqrt(x)
+  (let* ((m (double-matrix 2))
+         (dummy (progn (m 0 4.0) (m 1 9.0)))
+         (t (torch9-from-idx m))
+         (r (torch9-pow t 0.5))
+         (out (torch9-to-idx r)))
+    (test-approx "4^0.5 = 2" (out 0) 2.0 1e-10)
+    (test-approx "9^0.5 = 3" (out 1) 3.0 1e-10)
+    (torch9-free t) (torch9-free r))
+)
+
+;; ============================================================
+(test-suite "Element-wise math: clamp"
+
+  (let* ((m (double-matrix 5))
+         (dummy (progn (m 0 -2.0) (m 1 0.5) (m 2 1.0) (m 3 1.5) (m 4 3.0)))
+         (t (torch9-from-idx m))
+         (r (torch9-clamp t 0.0 2.0))
+         (out (torch9-to-idx r)))
+    (test-approx "clamp(-2, 0, 2) = 0" (out 0) 0.0 1e-10)
+    (test-approx "clamp(0.5, 0, 2) = 0.5" (out 1) 0.5 1e-10)
+    (test-approx "clamp(1, 0, 2) = 1" (out 2) 1.0 1e-10)
+    (test-approx "clamp(1.5, 0, 2) = 1.5" (out 3) 1.5 1e-10)
+    (test-approx "clamp(3, 0, 2) = 2" (out 4) 2.0 1e-10)
+    (torch9-free t) (torch9-free r))
+)
+
+;; ============================================================
+(test-suite "Scalar-tensor ops: add_scalar, mul_scalar"
+
+  (let* ((m (double-matrix 3))
+         (dummy (progn (m 0 1.0) (m 1 2.0) (m 2 3.0)))
+         (t (torch9-from-idx m))
+         (r (torch9-add-scalar t 10.0))
+         (out (torch9-to-idx r)))
+    (test-approx "1+10 = 11" (out 0) 11.0 1e-10)
+    (test-approx "2+10 = 12" (out 1) 12.0 1e-10)
+    (test-approx "3+10 = 13" (out 2) 13.0 1e-10)
+    (torch9-free t) (torch9-free r))
+
+  (let* ((m (double-matrix 3))
+         (dummy (progn (m 0 1.0) (m 1 2.0) (m 2 3.0)))
+         (t (torch9-from-idx m))
+         (r (torch9-mul-scalar t 5.0))
+         (out (torch9-to-idx r)))
+    (test-approx "1*5 = 5" (out 0) 5.0 1e-10)
+    (test-approx "2*5 = 10" (out 1) 10.0 1e-10)
+    (test-approx "3*5 = 15" (out 2) 15.0 1e-10)
+    (torch9-free t) (torch9-free r))
+)
+
+;; ============================================================
+(test-suite "Type casting: to_dtype"
+
+  ;; double -> float
+  (let* ((m (double-matrix 2))
+         (dummy (progn (m 0 1.5) (m 1 2.5)))
+         (t (torch9-from-idx m))
+         (tf (torch9-to-dtype t 2)))   ;; 2 = ST_F (float)
+    (test-equal "double->float dtype" (torch9-dtype tf) 2)
+    (let ((out (torch9-to-idx tf)))
+      (test-approx "double->float value[0]" (out 0) 1.5 1e-6))
+    (torch9-free t) (torch9-free tf))
+
+  ;; float -> double
+  (let* ((m (float-matrix 2))
+         (dummy (progn (m 0 3.5) (m 1 4.5)))
+         (t (torch9-from-idx m))
+         (td (torch9-to-dtype t 3)))   ;; 3 = ST_D (double)
+    (test-equal "float->double dtype" (torch9-dtype td) 3)
+    (torch9-free t) (torch9-free td))
+
+  ;; int -> double
+  (let* ((m (int-matrix 2))
+         (dummy (progn (m 0 5) (m 1 10)))
+         (t (torch9-from-idx m))
+         (td (torch9-to-dtype t 3)))   ;; 3 = ST_D (double)
+    (test-equal "int->double dtype" (torch9-dtype td) 3)
+    (let ((out (torch9-to-idx td)))
+      (test-approx "int->double value[0]" (out 0) 5.0 1e-10))
+    (torch9-free t) (torch9-free td))
+)
+
+;; ============================================================
+(test-suite "Index generation: arange"
+
+  (let* ((t (torch9-arange 0 5))
+         (out (torch9-to-idx t)))
+    (test-equal "arange ndim" (idx-ndim out) 1)
+    (test-equal "arange length" (idx-dim out 0) 5)
+    (test-approx "arange[0] = 0" (out 0) 0.0 1e-10)
+    (test-approx "arange[1] = 1" (out 1) 1.0 1e-10)
+    (test-approx "arange[4] = 4" (out 4) 4.0 1e-10)
+    (torch9-free t))
+
+  ;; With step
+  (let* ((t (torch9-arange 0 1 0.25))
+         (out (torch9-to-idx t)))
+    (test-equal "arange step length" (idx-dim out 0) 4)
+    (test-approx "arange step [0]" (out 0) 0.0 1e-10)
+    (test-approx "arange step [1]" (out 1) 0.25 1e-10)
+    (test-approx "arange step [3]" (out 3) 0.75 1e-10)
+    (torch9-free t))
+)
+
+;; ============================================================
+(test-suite "Comparisons: eq, gt"
+
+  ;; eq
+  (let* ((m1 (double-matrix 4))
+         (m2 (double-matrix 4))
+         (dummy (progn (m1 0 1.0) (m1 1 2.0) (m1 2 3.0) (m1 3 4.0)
+                       (m2 0 1.0) (m2 1 5.0) (m2 2 3.0) (m2 3 6.0)))
+         (t1 (torch9-from-idx m1))
+         (t2 (torch9-from-idx m2))
+         (r (torch9-eq t1 t2))
+         ;; eq returns uint8; cast to double to read
+         (rd (torch9-to-dtype r 3))
+         (out (torch9-to-idx rd)))
+    (test-approx "eq: 1==1 -> 1" (out 0) 1.0 1e-10)
+    (test-approx "eq: 2==5 -> 0" (out 1) 0.0 1e-10)
+    (test-approx "eq: 3==3 -> 1" (out 2) 1.0 1e-10)
+    (test-approx "eq: 4==6 -> 0" (out 3) 0.0 1e-10)
+    (torch9-free t1) (torch9-free t2) (torch9-free r) (torch9-free rd))
+
+  ;; gt
+  (let* ((m1 (double-matrix 4))
+         (m2 (double-matrix 4))
+         (dummy (progn (m1 0 5.0) (m1 1 2.0) (m1 2 3.0) (m1 3 1.0)
+                       (m2 0 3.0) (m2 1 2.0) (m2 2 5.0) (m2 3 1.0)))
+         (t1 (torch9-from-idx m1))
+         (t2 (torch9-from-idx m2))
+         (r (torch9-gt t1 t2))
+         (rd (torch9-to-dtype r 3))
+         (out (torch9-to-idx rd)))
+    (test-approx "gt: 5>3 -> 1" (out 0) 1.0 1e-10)
+    (test-approx "gt: 2>2 -> 0" (out 1) 0.0 1e-10)
+    (test-approx "gt: 3>5 -> 0" (out 2) 0.0 1e-10)
+    (test-approx "gt: 1>1 -> 0" (out 3) 0.0 1e-10)
+    (torch9-free t1) (torch9-free t2) (torch9-free r) (torch9-free rd))
+)
+
+;; ============================================================
+(test-suite "Dimensional reductions: argmax"
+
+  ;; argmax along dim 1 (columns)
+  (let* ((m (double-matrix 3 4))
+         (dummy (progn
+                  (m 0 0 0.1) (m 0 1 0.9) (m 0 2 0.3) (m 0 3 0.2)   ;; max at col 1
+                  (m 1 0 0.8) (m 1 1 0.1) (m 1 2 0.05) (m 1 3 0.05)  ;; max at col 0
+                  (m 2 0 0.1) (m 2 1 0.2) (m 2 2 0.1) (m 2 3 0.6)))  ;; max at col 3
+         (t (torch9-from-idx m))
+         (r (torch9-argmax t 1))
+         ;; argmax returns int64; cast to double
+         (rd (torch9-to-dtype r 3))
+         (out (torch9-to-idx rd)))
+    (test-approx "argmax row 0 -> col 1" (out 0) 1.0 1e-10)
+    (test-approx "argmax row 1 -> col 0" (out 1) 0.0 1e-10)
+    (test-approx "argmax row 2 -> col 3" (out 2) 3.0 1e-10)
+    (torch9-free t) (torch9-free r) (torch9-free rd))
+)
+
+;; ============================================================
+(test-suite "Dimensional reductions: sum_dim, mean_dim"
+
+  ;; sum along dim 1
+  (let* ((m (double-matrix 2 3))
+         (dummy (progn (m 0 0 1.0) (m 0 1 2.0) (m 0 2 3.0)
+                       (m 1 0 4.0) (m 1 1 5.0) (m 1 2 6.0)))
+         (t (torch9-from-idx m))
+         (r (torch9-sum-dim t 1))
+         (out (torch9-to-idx r)))
+    (test-approx "sum_dim row 0: 1+2+3=6" (out 0) 6.0 1e-10)
+    (test-approx "sum_dim row 1: 4+5+6=15" (out 1) 15.0 1e-10)
+    (torch9-free t) (torch9-free r))
+
+  ;; sum along dim 0
+  (let* ((m (double-matrix 2 3))
+         (dummy (progn (m 0 0 1.0) (m 0 1 2.0) (m 0 2 3.0)
+                       (m 1 0 4.0) (m 1 1 5.0) (m 1 2 6.0)))
+         (t (torch9-from-idx m))
+         (r (torch9-sum-dim t 0))
+         (out (torch9-to-idx r)))
+    (test-approx "sum_dim col 0: 1+4=5" (out 0) 5.0 1e-10)
+    (test-approx "sum_dim col 1: 2+5=7" (out 1) 7.0 1e-10)
+    (test-approx "sum_dim col 2: 3+6=9" (out 2) 9.0 1e-10)
+    (torch9-free t) (torch9-free r))
+
+  ;; sum_dim with keepdim
+  (let* ((m (double-matrix 2 3))
+         (dummy (progn (m 0 0 1.0) (m 0 1 2.0) (m 0 2 3.0)
+                       (m 1 0 4.0) (m 1 1 5.0) (m 1 2 6.0)))
+         (t (torch9-from-idx m))
+         (r (torch9-sum-dim t 1 t)))   ;; keepdim=true
+    (test-equal "sum_dim keepdim ndim" (torch9-ndim r) 2)
+    (let ((sz (torch9-sizes r)))
+      (test-equal "sum_dim keepdim dim0" (sz 0) 2)
+      (test-equal "sum_dim keepdim dim1" (sz 1) 1))
+    (torch9-free t) (torch9-free r))
+
+  ;; mean along dim 1
+  (let* ((m (double-matrix 2 3))
+         (dummy (progn (m 0 0 1.0) (m 0 1 2.0) (m 0 2 3.0)
+                       (m 1 0 4.0) (m 1 1 5.0) (m 1 2 6.0)))
+         (t (torch9-from-idx m))
+         (r (torch9-mean-dim t 1))
+         (out (torch9-to-idx r)))
+    (test-approx "mean_dim row 0: (1+2+3)/3=2" (out 0) 2.0 1e-10)
+    (test-approx "mean_dim row 1: (4+5+6)/3=5" (out 1) 5.0 1e-10)
+    (torch9-free t) (torch9-free r))
+)
+
+;; ============================================================
+(test-suite "Dimensional reductions: max_dim"
+
+  (let* ((m (double-matrix 2 3))
+         (dummy (progn (m 0 0 1.0) (m 0 1 5.0) (m 0 2 3.0)
+                       (m 1 0 7.0) (m 1 1 2.0) (m 1 2 4.0)))
+         (t (torch9-from-idx m))
+         (r (torch9-max-dim t 1))
+         (out (torch9-to-idx r)))
+    (test-approx "max_dim row 0 = 5" (out 0) 5.0 1e-10)
+    (test-approx "max_dim row 1 = 7" (out 1) 7.0 1e-10)
+    (torch9-free t) (torch9-free r))
+)
+
+;; ============================================================
+(test-suite "Indexing: narrow"
+
+  (let* ((m (double-matrix 5 3))
+         (dummy (let ((i 0))
+                  (while (< i 5)
+                    (let ((j 0))
+                      (while (< j 3)
+                        (m i j (to-double (+ (* i 3) j)))
+                        (setq j (+ j 1))))
+                    (setq i (+ i 1)))))
+         (t (torch9-from-idx m))
+         (r (torch9-narrow t 0 1 2))  ;; rows 1-2
+         (out (torch9-to-idx r)))
+    (test-equal "narrow ndim" (idx-ndim out) 2)
+    (test-equal "narrow dim0" (idx-dim out 0) 2)
+    (test-equal "narrow dim1" (idx-dim out 1) 3)
+    (test-approx "narrow [0,0] = m[1,0] = 3" (out 0 0) 3.0 1e-10)
+    (test-approx "narrow [1,2] = m[2,2] = 8" (out 1 2) 8.0 1e-10)
+    (torch9-free t) (torch9-free r))
+)
+
+;; ============================================================
+(test-suite "Indexing: index_select"
+
+  (let* ((m (double-matrix 4 3))
+         (dummy (progn
+                  (m 0 0 10.0) (m 0 1 11.0) (m 0 2 12.0)
+                  (m 1 0 20.0) (m 1 1 21.0) (m 1 2 22.0)
+                  (m 2 0 30.0) (m 2 1 31.0) (m 2 2 32.0)
+                  (m 3 0 40.0) (m 3 1 41.0) (m 3 2 42.0)))
+         (t (torch9-from-idx m))
+         ;; Select rows 0 and 3
+         (idx-data (double-matrix 2))
+         (dummy2 (progn (idx-data 0 0.0) (idx-data 1 3.0)))
+         (idx-t (torch9-from-idx idx-data))
+         ;; Must cast to int64 for index_select
+         (idx-i64 (torch9-to-dtype idx-t 9))
+         (r (torch9-index-select t 0 idx-i64))
+         (out (torch9-to-idx r)))
+    (test-equal "index_select dim0" (idx-dim out 0) 2)
+    (test-equal "index_select dim1" (idx-dim out 1) 3)
+    (test-approx "index_select [0,0] = 10" (out 0 0) 10.0 1e-10)
+    (test-approx "index_select [0,2] = 12" (out 0 2) 12.0 1e-10)
+    (test-approx "index_select [1,0] = 40" (out 1 0) 40.0 1e-10)
+    (test-approx "index_select [1,2] = 42" (out 1 2) 42.0 1e-10)
+    (torch9-free t) (torch9-free idx-t) (torch9-free idx-i64) (torch9-free r))
+)
+
+;; ============================================================
+(test-suite "Indexing: select"
+
+  (let* ((m (double-matrix 3 4))
+         (dummy (progn
+                  (m 0 0 1.0) (m 0 1 2.0) (m 0 2 3.0) (m 0 3 4.0)
+                  (m 1 0 5.0) (m 1 1 6.0) (m 1 2 7.0) (m 1 3 8.0)
+                  (m 2 0 9.0) (m 2 1 10.0) (m 2 2 11.0) (m 2 3 12.0)))
+         (t (torch9-from-idx m))
+         (r (torch9-select t 0 1))  ;; select row 1
+         (out (torch9-to-idx r)))
+    (test-equal "select ndim" (idx-ndim out) 1)
+    (test-equal "select dim0" (idx-dim out 0) 4)
+    (test-approx "select [0] = 5" (out 0) 5.0 1e-10)
+    (test-approx "select [3] = 8" (out 3) 8.0 1e-10)
+    (torch9-free t) (torch9-free r))
+)
+
+;; ============================================================
+(test-suite "Flatten"
+
+  ;; Flatten 3D to 1D
+  (let* ((t (torch9-randn 2 3 4))
+         (f (torch9-flatten t)))
+    (test-equal "flatten all ndim" (torch9-ndim f) 1)
+    (test-equal "flatten all numel" (torch9-numel f) 24)
+    (torch9-free t) (torch9-free f))
+
+  ;; Flatten dims 1..end of [2,3,4] -> [2, 12]
+  (let* ((t (torch9-randn 2 3 4))
+         (f (torch9-flatten t 1 -1)))
+    (test-equal "flatten 1..-1 ndim" (torch9-ndim f) 2)
+    (let ((sz (torch9-sizes f)))
+      (test-equal "flatten 1..-1 dim0" (sz 0) 2)
+      (test-equal "flatten 1..-1 dim1" (sz 1) 12))
+    (torch9-free t) (torch9-free f))
+)
+
+;; ============================================================
+(test-suite "In-place operations: add!, mul!, sub!"
+
+  ;; add!
+  (let* ((t1 (torch9-ones 3))
+         (t2 (torch9-full 2.0 3))
+         (dummy (torch9-add! t1 t2))
+         (out (torch9-to-idx t1)))
+    (test-approx "add! [0] = 3" (out 0) 3.0 1e-10)
+    (test-approx "add! [2] = 3" (out 2) 3.0 1e-10)
+    (torch9-free t1) (torch9-free t2))
+
+  ;; mul!
+  (let* ((t1 (torch9-full 3.0 3))
+         (t2 (torch9-full 2.0 3))
+         (dummy (torch9-mul! t1 t2))
+         (out (torch9-to-idx t1)))
+    (test-approx "mul! [0] = 6" (out 0) 6.0 1e-10)
+    (test-approx "mul! [2] = 6" (out 2) 6.0 1e-10)
+    (torch9-free t1) (torch9-free t2))
+
+  ;; sub!
+  (let* ((t1 (torch9-full 5.0 3))
+         (t2 (torch9-full 2.0 3))
+         (dummy (torch9-sub! t1 t2))
+         (out (torch9-to-idx t1)))
+    (test-approx "sub! [0] = 3" (out 0) 3.0 1e-10)
+    (test-approx "sub! [2] = 3" (out 2) 3.0 1e-10)
+    (torch9-free t1) (torch9-free t2))
+)
+
+;; ============================================================
+(test-suite "In-place operations: zero!, fill!, copy!"
+
+  ;; zero!
+  (let* ((t (torch9-full 7.0 4))
+         (dummy (torch9-zero! t))
+         (out (torch9-to-idx t)))
+    (test-approx "zero! [0]" (out 0) 0.0 1e-10)
+    (test-approx "zero! [3]" (out 3) 0.0 1e-10)
+    (torch9-free t))
+
+  ;; fill!
+  (let* ((t (torch9-zeros 4))
+         (dummy (torch9-fill! t 42.0))
+         (out (torch9-to-idx t)))
+    (test-approx "fill! [0]" (out 0) 42.0 1e-10)
+    (test-approx "fill! [3]" (out 3) 42.0 1e-10)
+    (torch9-free t))
+
+  ;; copy!
+  (let* ((src (torch9-full 9.0 3))
+         (dst (torch9-zeros 3))
+         (dummy (torch9-copy! dst src))
+         (out (torch9-to-idx dst)))
+    (test-approx "copy! [0]" (out 0) 9.0 1e-10)
+    (test-approx "copy! [2]" (out 2) 9.0 1e-10)
+    (torch9-free src) (torch9-free dst))
+)
+
+;; ============================================================
+(test-suite "Parameter initialization: normal!, uniform!"
+
+  ;; normal!: check that values have been changed and mean is roughly correct
+  (let* ((t (torch9-zeros 10000))
+         (dummy (torch9-normal! t 5.0 1.0))
+         (m (torch9-mean t))
+         (mean-val (torch9-item m)))
+    (test-check "normal! mean ~ 5.0" (and (> mean-val 4.5) (< mean-val 5.5)))
+    (torch9-free t) (torch9-free m))
+
+  ;; uniform!: check values in [0, 1]
+  (let* ((t (torch9-zeros 10000))
+         (dummy (torch9-uniform! t 0.0 1.0))
+         (mn (torch9-mean t))
+         (mean-val (torch9-item mn)))
+    (test-check "uniform! mean ~ 0.5" (and (> mean-val 0.4) (< mean-val 0.6)))
+    (torch9-free t) (torch9-free mn))
+)
+
+;; ============================================================
+(test-suite "Parameter initialization: kaiming_normal!, xavier_normal!"
+
+  ;; kaiming_normal! (fan_in mode, relu)
+  ;; For [out_features, in_features] weight, variance should be ~ 2/fan_in
+  (let* ((t (torch9-randn 256 512))
+         (dummy (torch9-kaiming-normal! t 0 0 1))  ;; a=0, fan_in, relu
+         ;; Compute variance: E[x^2] - E[x]^2
+         (sq (torch9-pow t 2))
+         (mean-sq (torch9-item (torch9-mean sq)))
+         (mean-val (torch9-item (torch9-mean t)))
+         (var-val (- mean-sq (* mean-val mean-val)))
+         ;; Expected: 2/fan_in = 2/512 = 0.00390625
+         (expected (/ 2.0 512.0)))
+    (test-check "kaiming variance ~ 2/fan_in"
+      (< (abs (- var-val expected)) (* expected 0.3)))
+    (torch9-free t) (torch9-free sq))
+
+  ;; xavier_normal! (gain=1)
+  ;; For [out, in], variance should be ~ 2/(fan_in + fan_out)
+  (let* ((t (torch9-randn 256 512))
+         (dummy (torch9-xavier-normal! t 1.0))
+         (sq (torch9-pow t 2))
+         (mean-sq (torch9-item (torch9-mean sq)))
+         (mean-val (torch9-item (torch9-mean t)))
+         (var-val (- mean-sq (* mean-val mean-val)))
+         ;; Expected: 2/(256+512) = 0.002604
+         (expected (/ 2.0 768.0)))
+    (test-check "xavier variance ~ 2/(fan_in+fan_out)"
+      (< (abs (- var-val expected)) (* expected 0.3)))
+    (torch9-free t) (torch9-free sq))
+)
+
+;; ============================================================
+(test-suite "Gradient clipping"
+
+  ;; Create parameters with known gradients
+  (let* ((w (torch9-randn 3 4))
+         (dummy (torch9-requires-grad! w 1))
+         ;; Compute loss = sum(w^2), gradient = 2*w
+         (loss (torch9-sum (torch9-pow w 2)))
+         (dummy2 (torch9-backward loss))
+         (norm-before (torch9-clip-grad-norm (list w) 1.0)))
+    ;; After clipping, grad norm should be <= 1.0
+    (let* ((g (torch9-grad w))
+           (g-sq (torch9-pow g 2))
+           (norm-after-sq (torch9-item (torch9-sum g-sq)))
+           (norm-after (sqrt norm-after-sq)))
+      (test-check "clip returns positive norm" (> norm-before 0))
+      (test-check "grad norm <= max_norm after clip" (<= norm-after 1.001))
+      (torch9-free g) (torch9-free g-sq))
+    (torch9-free w) (torch9-free loss))
+)
+
+;; ============================================================
+(test-suite "Extra activations: gelu, silu, elu"
+
+  ;; GELU: gelu(0) ~ 0
+  (let* ((m (double-matrix 3))
+         (dummy (progn (m 0 -1.0) (m 1 0.0) (m 2 1.0)))
+         (t (torch9-from-idx m))
+         (r (torch9-gelu t))
+         (out (torch9-to-idx r)))
+    (test-approx "gelu(0) ~ 0" (out 1) 0.0 1e-6)
+    (test-check "gelu(-1) < 0" (< (out 0) 0))
+    (test-check "gelu(1) > 0" (> (out 2) 0))
+    (test-check "gelu(1) < 1" (< (out 2) 1.0))
+    (torch9-free t) (torch9-free r))
+
+  ;; SiLU: silu(x) = x * sigmoid(x)
+  (let* ((m (double-matrix 3))
+         (dummy (progn (m 0 -1.0) (m 1 0.0) (m 2 2.0)))
+         (t (torch9-from-idx m))
+         (r (torch9-silu t))
+         (out (torch9-to-idx r)))
+    ;; silu(0) = 0*sigmoid(0) = 0*0.5 = 0
+    (test-approx "silu(0) = 0" (out 1) 0.0 1e-6)
+    ;; silu(2) = 2*sigmoid(2) = 2*(1/(1+exp(-2))) ~ 2*0.8808 ~ 1.7616
+    (test-approx "silu(2) ~ 1.762" (out 2) 1.7616 1e-3)
+    (torch9-free t) (torch9-free r))
+
+  ;; ELU: elu(x) = x for x>0, alpha*(exp(x)-1) for x<=0
+  (let* ((m (double-matrix 3))
+         (dummy (progn (m 0 -1.0) (m 1 0.0) (m 2 2.0)))
+         (t (torch9-from-idx m))
+         (r (torch9-elu t 1.0))
+         (out (torch9-to-idx r)))
+    (test-approx "elu(2) = 2" (out 2) 2.0 1e-10)
+    (test-approx "elu(0) = 0" (out 1) 0.0 1e-10)
+    ;; elu(-1) = 1*(exp(-1)-1) ~ -0.6321
+    (test-approx "elu(-1) ~ -0.632" (out 0) -0.6321 1e-3)
+    (torch9-free t) (torch9-free r))
+)
+
+;; ============================================================
+(test-suite "Extra losses: nll_loss"
+
+  ;; nll_loss with log_softmax should approximate cross_entropy_loss
+  (let* ((logits-data (double-matrix 3 4))
+         (labels-data (int-matrix 3))
+         (dummy (progn
+                  (logits-data 0 0 2.0) (logits-data 0 1 1.0)
+                  (logits-data 0 2 0.1) (logits-data 0 3 0.5)
+                  (logits-data 1 0 0.5) (logits-data 1 1 2.5)
+                  (logits-data 1 2 0.3) (logits-data 1 3 1.0)
+                  (logits-data 2 0 0.1) (logits-data 2 1 0.2)
+                  (logits-data 2 2 3.0) (logits-data 2 3 0.5)
+                  (labels-data 0 0) (labels-data 1 1) (labels-data 2 2)))
+         (tl (torch9-from-idx logits-data))
+         (ty (torch9-from-idx labels-data))
+         ;; cross_entropy_loss
+         (ce-loss (torch9-cross-entropy-loss tl ty))
+         (ce-val (torch9-item ce-loss))
+         ;; log_softmax + nll_loss
+         (log-probs (torch9-log-softmax tl 1))
+         (nll-loss (torch9-nll-loss log-probs ty))
+         (nll-val (torch9-item nll-loss)))
+    (test-approx "nll+log_softmax ~ cross_entropy" nll-val ce-val 1e-5)
+    (torch9-free tl) (torch9-free ty)
+    (torch9-free ce-loss) (torch9-free log-probs) (torch9-free nll-loss))
+)
+
+;; ============================================================
+(test-suite "Extra losses: bce_with_logits, l1, smooth_l1"
+
+  ;; bce_with_logits_loss
+  (let* ((logits-data (double-matrix 4))
+         (target-data (double-matrix 4))
+         (dummy (progn
+                  (logits-data 0 2.0) (logits-data 1 -1.0)
+                  (logits-data 2 0.5) (logits-data 3 -0.5)
+                  (target-data 0 1.0) (target-data 1 0.0)
+                  (target-data 2 1.0) (target-data 3 0.0)))
+         (tl (torch9-from-idx logits-data))
+         (tt (torch9-from-idx target-data))
+         (loss (torch9-bce-with-logits-loss tl tt))
+         (val (torch9-item loss)))
+    (test-check "bce_with_logits > 0" (> val 0))
+    (test-check "bce_with_logits reasonable" (< val 2.0))
+    (torch9-free tl) (torch9-free tt) (torch9-free loss))
+
+  ;; l1_loss = mean(|input - target|)
+  (let* ((in-data (double-matrix 4))
+         (tgt-data (double-matrix 4))
+         (dummy (progn
+                  (in-data 0 1.0) (in-data 1 2.0) (in-data 2 3.0) (in-data 3 4.0)
+                  (tgt-data 0 1.5) (tgt-data 1 2.5) (tgt-data 2 2.5) (tgt-data 3 4.0)))
+         (ti (torch9-from-idx in-data))
+         (tt (torch9-from-idx tgt-data))
+         (loss (torch9-l1-loss ti tt))
+         (val (torch9-item loss)))
+    ;; |1-1.5| + |2-2.5| + |3-2.5| + |4-4| = 0.5+0.5+0.5+0 = 1.5 / 4 = 0.375
+    (test-approx "l1_loss = 0.375" val 0.375 1e-6)
+    (torch9-free ti) (torch9-free tt) (torch9-free loss))
+
+  ;; smooth_l1_loss (beta=1.0)
+  (let* ((in-data (double-matrix 4))
+         (tgt-data (double-matrix 4))
+         (dummy (progn
+                  (in-data 0 1.0) (in-data 1 2.0) (in-data 2 3.0) (in-data 3 4.0)
+                  (tgt-data 0 1.5) (tgt-data 1 2.5) (tgt-data 2 2.5) (tgt-data 3 4.0)))
+         (ti (torch9-from-idx in-data))
+         (tt (torch9-from-idx tgt-data))
+         (loss (torch9-smooth-l1-loss ti tt 1.0))
+         (val (torch9-item loss)))
+    ;; All diffs are <= 1.0 (beta), so all use quadratic: 0.5*d^2/beta
+    ;; 0.5*0.25 + 0.5*0.25 + 0.5*0.25 + 0 = 0.375 / 4 = 0.09375
+    (test-approx "smooth_l1_loss (quadratic)" val 0.09375 1e-6)
+    (torch9-free ti) (torch9-free tt) (torch9-free loss))
+)
+
+;; ============================================================
+(test-suite "Integration: accuracy pipeline"
+
+  ;; Simulate: compute accuracy from predictions vs labels
+  ;; preds [batch, classes], labels [batch]
+  (let* ((pred-data (double-matrix 4 3))
+         (label-data (int-matrix 4))
+         (dummy (progn
+                  ;; Row 0: class 2 (max at col 2) -- correct label 2
+                  (pred-data 0 0 0.1) (pred-data 0 1 0.2) (pred-data 0 2 0.9)
+                  ;; Row 1: class 0 (max at col 0) -- correct label 0
+                  (pred-data 1 0 0.8) (pred-data 1 1 0.1) (pred-data 1 2 0.1)
+                  ;; Row 2: class 1 (max at col 1) -- correct label 2 (wrong!)
+                  (pred-data 2 0 0.1) (pred-data 2 1 0.7) (pred-data 2 2 0.2)
+                  ;; Row 3: class 0 (max at col 0) -- correct label 0
+                  (pred-data 3 0 0.9) (pred-data 3 1 0.05) (pred-data 3 2 0.05)
+                  (label-data 0 2) (label-data 1 0) (label-data 2 2) (label-data 3 0)))
+         (tp (torch9-from-idx pred-data))
+         (tl (torch9-from-idx label-data))
+         ;; argmax -> int64 indices
+         (pred-classes (torch9-argmax tp 1))
+         ;; Cast labels to int64 and compare
+         (tl-i64 (torch9-to-dtype tl 9))
+         (correct (torch9-eq pred-classes tl-i64))
+         ;; Cast bool to double and compute mean = accuracy
+         (correct-d (torch9-to-dtype correct 3))
+         (acc-t (torch9-mean correct-d))
+         (acc (torch9-item acc-t)))
+    ;; 3 correct out of 4 = 0.75
+    (test-approx "accuracy pipeline: 3/4 = 0.75" acc 0.75 1e-6)
+    (torch9-free tp) (torch9-free tl) (torch9-free pred-classes)
+    (torch9-free tl-i64) (torch9-free correct) (torch9-free correct-d)
+    (torch9-free acc-t))
+)
+
+;; ============================================================
+(test-suite "Integration: training with kaiming init + grad clip"
+
+  ;; Simple linear regression with kaiming init and gradient clipping
+  (let* ((w (torch9-randn 1 2))
+         (b (torch9-zeros 1))
+         (dummy (progn
+                  (torch9-kaiming-normal! w)
+                  (torch9-requires-grad! w 1)
+                  (torch9-requires-grad! b 1)))
+         ;; Data: y = 2*x1 + 3*x2 + 1
+         (x-data (double-matrix 4 2))
+         (y-data (double-matrix 4 1))
+         (dummy2 (progn
+                   (x-data 0 0 1.0) (x-data 0 1 0.0) (y-data 0 0 3.0)
+                   (x-data 1 0 0.0) (x-data 1 1 1.0) (y-data 1 0 4.0)
+                   (x-data 2 0 1.0) (x-data 2 1 1.0) (y-data 2 0 6.0)
+                   (x-data 3 0 2.0) (x-data 3 1 1.0) (y-data 3 0 8.0)))
+         (tx (torch9-from-idx x-data))
+         (ty (torch9-from-idx y-data))
+         (opt (torch9-adam (list w b) 0.05))
+         (loss-start 0.0)
+         (loss-end 0.0)
+         (i 0))
+    (while (< i 200)
+      (torch9-optimizer-zero-grad opt)
+      (let* ((pred (torch9-linear tx w b))
+             (loss (torch9-mse-loss pred ty)))
+        (when (= i 0) (setq loss-start (torch9-item loss)))
+        (when (= i 199) (setq loss-end (torch9-item loss)))
+        (torch9-backward loss)
+        ;; Clip gradients
+        (torch9-clip-grad-norm (list w b) 5.0)
+        (torch9-optimizer-step opt)
+        (torch9-free pred) (torch9-free loss))
+      (setq i (+ i 1)))
+    (test-check "kaiming+clip loss decreased" (< loss-end loss-start))
+    (test-check "kaiming+clip loss < 1" (< loss-end 1.0))
+    (torch9-optimizer-free opt)
+    (torch9-free w) (torch9-free b) (torch9-free tx) (torch9-free ty))
+)
+
+;; ============================================================
+(test-suite "Integration: dtype casting pipeline"
+
+  ;; Create float tensor, cast to double, compute, cast back
+  (let* ((fm (float-matrix 3))
+         (dummy (progn (fm 0 1.0) (fm 1 4.0) (fm 2 9.0)))
+         (t (torch9-from-idx fm))
+         (td (torch9-to-dtype t 3))           ;; float -> double
+         (sq (torch9-sqrt td))
+         (tf (torch9-to-dtype sq 2))          ;; double -> float
+         (out (torch9-to-idx sq)))
+    (test-equal "input is float" (torch9-dtype t) 2)
+    (test-equal "cast to double" (torch9-dtype td) 3)
+    (test-equal "result is double" (torch9-dtype sq) 3)
+    (test-equal "cast back to float" (torch9-dtype tf) 2)
+    (test-approx "sqrt(4) through casts = 2" (out 1) 2.0 1e-6)
+    (torch9-free t) (torch9-free td) (torch9-free sq) (torch9-free tf))
+)
+
+;; ============================================================
+(test-suite "Integration: flatten + linear pipeline"
+
+  ;; Simulate FC after conv: [batch=2, C=3, H=2, W=2] -> flatten -> linear
+  (let* ((input (torch9-randn 2 3 2 2))
+         (flat (torch9-flatten input 1 -1))    ;; [2, 12]
+         (weight (torch9-randn 5 12))          ;; [out=5, in=12]
+         (bias (torch9-zeros 5))
+         (out (torch9-linear flat weight bias)))
+    (test-equal "flatten+linear ndim" (torch9-ndim out) 2)
+    (let ((sz (torch9-sizes out)))
+      (test-equal "flatten+linear dim0" (sz 0) 2)
+      (test-equal "flatten+linear dim1" (sz 1) 5))
+    (torch9-free input) (torch9-free flat)
+    (torch9-free weight) (torch9-free bias) (torch9-free out))
+)
+
+;; ============================================================
+(test-suite "Integration: nll_loss with autograd"
+
+  ;; Verify nll_loss supports backward pass
+  (let* ((logits (torch9-randn 4 3))
+         (dummy (torch9-requires-grad! logits 1))
+         (labels-data (int-matrix 4))
+         (dummy2 (progn (labels-data 0 0) (labels-data 1 1)
+                        (labels-data 2 2) (labels-data 3 0)))
+         (tl (torch9-from-idx labels-data))
+         (log-probs (torch9-log-softmax logits 1))
+         (loss (torch9-nll-loss log-probs tl)))
+    (test-check "nll_loss > 0" (> (torch9-item loss) 0))
+    (torch9-backward loss)
+    (let ((g (torch9-grad logits)))
+      (test-check "nll_loss grad defined" (<> g (gptr ())))
+      (torch9-free g))
+    (torch9-free logits) (torch9-free tl)
+    (torch9-free log-probs) (torch9-free loss))
+)
+
+
+;; ============================================================
 (printf "\n")
 (test-summary)

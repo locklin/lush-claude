@@ -1196,6 +1196,336 @@
        $handle = lt9_tensor_load((const char *)($path->data)); #}
     handle))
 
+;; ============================================================
+;; Stage 5: Training Toolkit DHC wrappers
+;; ============================================================
+
+;; --- Element-wise math ---
+(de _torch9-exp (tens)
+  ((-gptr-) tens)
+  (let ((handle (gptr ())))
+    ((-gptr-) handle)
+    #{ extern void* lt9_exp(void*);
+       $handle = lt9_exp($tens); #}
+    handle))
+
+(de _torch9-log (tens)
+  ((-gptr-) tens)
+  (let ((handle (gptr ())))
+    ((-gptr-) handle)
+    #{ extern void* lt9_log(void*);
+       $handle = lt9_log($tens); #}
+    handle))
+
+(de _torch9-sqrt (tens)
+  ((-gptr-) tens)
+  (let ((handle (gptr ())))
+    ((-gptr-) handle)
+    #{ extern void* lt9_sqrt(void*);
+       $handle = lt9_sqrt($tens); #}
+    handle))
+
+(de _torch9-abs (tens)
+  ((-gptr-) tens)
+  (let ((handle (gptr ())))
+    ((-gptr-) handle)
+    #{ extern void* lt9_abs(void*);
+       $handle = lt9_abs($tens); #}
+    handle))
+
+(de _torch9-pow (tens exponent)
+  ((-gptr-) tens)
+  ((-double-) exponent)
+  (let ((handle (gptr ())))
+    ((-gptr-) handle)
+    #{ extern void* lt9_pow(void*, double);
+       $handle = lt9_pow($tens, $exponent); #}
+    handle))
+
+(de _torch9-clamp (tens min-val max-val)
+  ((-gptr-) tens)
+  ((-double-) min-val max-val)
+  (let ((handle (gptr ())))
+    ((-gptr-) handle)
+    #{ extern void* lt9_clamp(void*, double, double);
+       $handle = lt9_clamp($tens, $min_val, $max_val); #}
+    handle))
+
+;; --- Scalar-tensor ops ---
+(de _torch9-add-scalar (tens scalar)
+  ((-gptr-) tens)
+  ((-double-) scalar)
+  (let ((handle (gptr ())))
+    ((-gptr-) handle)
+    #{ extern void* lt9_add_scalar(void*, double);
+       $handle = lt9_add_scalar($tens, $scalar); #}
+    handle))
+
+(de _torch9-mul-scalar (tens scalar)
+  ((-gptr-) tens)
+  ((-double-) scalar)
+  (let ((handle (gptr ())))
+    ((-gptr-) handle)
+    #{ extern void* lt9_mul_scalar(void*, double);
+       $handle = lt9_mul_scalar($tens, $scalar); #}
+    handle))
+
+;; --- Type casting ---
+(de _torch9-to-dtype (tens dtype)
+  ((-gptr-) tens)
+  ((-int-) dtype)
+  (let ((handle (gptr ())))
+    ((-gptr-) handle)
+    #{ extern void* lt9_to_dtype(void*, int);
+       $handle = lt9_to_dtype($tens, $dtype); #}
+    handle))
+
+;; --- Index generation ---
+(de _torch9-arange (start end step dtype)
+  ((-double-) start end step)
+  ((-int-) dtype)
+  (let ((handle (gptr ())))
+    ((-gptr-) handle)
+    #{ extern void* lt9_arange(double, double, double, int);
+       $handle = lt9_arange($start, $end, $step, $dtype); #}
+    handle))
+
+;; --- Comparisons ---
+(de _torch9-eq (a b)
+  ((-gptr-) a b)
+  (let ((handle (gptr ())))
+    ((-gptr-) handle)
+    #{ extern void* lt9_eq(void*, void*);
+       $handle = lt9_eq($a, $b); #}
+    handle))
+
+(de _torch9-gt (a b)
+  ((-gptr-) a b)
+  (let ((handle (gptr ())))
+    ((-gptr-) handle)
+    #{ extern void* lt9_gt(void*, void*);
+       $handle = lt9_gt($a, $b); #}
+    handle))
+
+;; --- Reductions with dimension ---
+(de _torch9-argmax (tens dim)
+  ((-gptr-) tens)
+  ((-int-) dim)
+  (let ((handle (gptr ())))
+    ((-gptr-) handle)
+    #{ extern void* lt9_argmax(void*, int);
+       $handle = lt9_argmax($tens, $dim); #}
+    handle))
+
+(de _torch9-sum-dim (tens dim keepdim)
+  ((-gptr-) tens)
+  ((-int-) dim keepdim)
+  (let ((handle (gptr ())))
+    ((-gptr-) handle)
+    #{ extern void* lt9_sum_dim(void*, int, int);
+       $handle = lt9_sum_dim($tens, $dim, $keepdim); #}
+    handle))
+
+(de _torch9-mean-dim (tens dim keepdim)
+  ((-gptr-) tens)
+  ((-int-) dim keepdim)
+  (let ((handle (gptr ())))
+    ((-gptr-) handle)
+    #{ extern void* lt9_mean_dim(void*, int, int);
+       $handle = lt9_mean_dim($tens, $dim, $keepdim); #}
+    handle))
+
+(de _torch9-max-dim (tens dim)
+  ((-gptr-) tens)
+  ((-int-) dim)
+  (let ((handle (gptr ())))
+    ((-gptr-) handle)
+    #{ extern void* lt9_max_dim(void*, int);
+       $handle = lt9_max_dim($tens, $dim); #}
+    handle))
+
+;; --- Indexing ---
+(de _torch9-narrow (tens dim start length)
+  ((-gptr-) tens)
+  ((-int-) dim)
+  ((-int-) start length)
+  (let ((handle (gptr ())))
+    ((-gptr-) handle)
+    #{ extern void* lt9_narrow(void*, int, int64_t, int64_t);
+       $handle = lt9_narrow($tens, $dim, (int64_t)$start, (int64_t)$length); #}
+    handle))
+
+(de _torch9-index-select (tens dim index)
+  ((-gptr-) tens index)
+  ((-int-) dim)
+  (let ((handle (gptr ())))
+    ((-gptr-) handle)
+    #{ extern void* lt9_index_select(void*, int, void*);
+       $handle = lt9_index_select($tens, $dim, $index); #}
+    handle))
+
+(de _torch9-select (tens dim index)
+  ((-gptr-) tens)
+  ((-int-) dim)
+  ((-int-) index)
+  (let ((handle (gptr ())))
+    ((-gptr-) handle)
+    #{ extern void* lt9_select(void*, int, int64_t);
+       $handle = lt9_select($tens, $dim, (int64_t)$index); #}
+    handle))
+
+;; --- Flatten ---
+(de _torch9-flatten (tens start-dim end-dim)
+  ((-gptr-) tens)
+  ((-int-) start-dim end-dim)
+  (let ((handle (gptr ())))
+    ((-gptr-) handle)
+    #{ extern void* lt9_flatten(void*, int, int);
+       $handle = lt9_flatten($tens, $start_dim, $end_dim); #}
+    handle))
+
+;; --- In-place operations ---
+(de _torch9-add-inplace (tens other)
+  ((-gptr-) tens other)
+  #{ extern void lt9_add_inplace(void*, void*);
+     lt9_add_inplace($tens, $other); #}
+  ())
+
+(de _torch9-mul-inplace (tens other)
+  ((-gptr-) tens other)
+  #{ extern void lt9_mul_inplace(void*, void*);
+     lt9_mul_inplace($tens, $other); #}
+  ())
+
+(de _torch9-sub-inplace (tens other)
+  ((-gptr-) tens other)
+  #{ extern void lt9_sub_inplace(void*, void*);
+     lt9_sub_inplace($tens, $other); #}
+  ())
+
+(de _torch9-zero-inplace (tens)
+  ((-gptr-) tens)
+  #{ extern void lt9_zero_inplace(void*);
+     lt9_zero_inplace($tens); #}
+  ())
+
+(de _torch9-fill-inplace (tens value)
+  ((-gptr-) tens)
+  ((-double-) value)
+  #{ extern void lt9_fill_inplace(void*, double);
+     lt9_fill_inplace($tens, $value); #}
+  ())
+
+(de _torch9-copy-inplace (dst src)
+  ((-gptr-) dst src)
+  #{ extern void lt9_copy_inplace(void*, void*);
+     lt9_copy_inplace($dst, $src); #}
+  ())
+
+;; --- Parameter initialization ---
+(de _torch9-normal-init (tens mean std)
+  ((-gptr-) tens)
+  ((-double-) mean std)
+  #{ extern void lt9_normal_init(void*, double, double);
+     lt9_normal_init($tens, $mean, $std); #}
+  ())
+
+(de _torch9-uniform-init (tens low high)
+  ((-gptr-) tens)
+  ((-double-) low high)
+  #{ extern void lt9_uniform_init(void*, double, double);
+     lt9_uniform_init($tens, $low, $high); #}
+  ())
+
+(de _torch9-kaiming-normal-init (tens a mode nonlinearity)
+  ((-gptr-) tens)
+  ((-double-) a)
+  ((-int-) mode nonlinearity)
+  #{ extern void lt9_kaiming_normal_init(void*, double, int, int);
+     lt9_kaiming_normal_init($tens, $a, $mode, $nonlinearity); #}
+  ())
+
+(de _torch9-xavier-normal-init (tens gain)
+  ((-gptr-) tens)
+  ((-double-) gain)
+  #{ extern void lt9_xavier_normal_init(void*, double);
+     lt9_xavier_normal_init($tens, $gain); #}
+  ())
+
+;; --- Gradient clipping ---
+(de _torch9-clip-grad-norm (pg max-norm)
+  ((-gptr-) pg)
+  ((-double-) max-norm)
+  (let ((r 0.0))
+    ((-double-) r)
+    #{ extern double lt9_clip_grad_norm(void*, double);
+       $r = lt9_clip_grad_norm($pg, $max_norm); #}
+    r))
+
+;; --- Extra activations ---
+(de _torch9-gelu (tens)
+  ((-gptr-) tens)
+  (let ((handle (gptr ())))
+    ((-gptr-) handle)
+    #{ extern void* lt9_gelu(void*);
+       $handle = lt9_gelu($tens); #}
+    handle))
+
+(de _torch9-silu (tens)
+  ((-gptr-) tens)
+  (let ((handle (gptr ())))
+    ((-gptr-) handle)
+    #{ extern void* lt9_silu(void*);
+       $handle = lt9_silu($tens); #}
+    handle))
+
+(de _torch9-elu (tens alpha)
+  ((-gptr-) tens)
+  ((-double-) alpha)
+  (let ((handle (gptr ())))
+    ((-gptr-) handle)
+    #{ extern void* lt9_elu(void*, double);
+       $handle = lt9_elu($tens, $alpha); #}
+    handle))
+
+;; --- Extra loss functions ---
+(de _torch9-nll-loss (input target reduction)
+  ((-gptr-) input target)
+  ((-int-) reduction)
+  (let ((handle (gptr ())))
+    ((-gptr-) handle)
+    #{ extern void* lt9_nll_loss(void*, void*, int);
+       $handle = lt9_nll_loss($input, $target, $reduction); #}
+    handle))
+
+(de _torch9-bce-with-logits-loss (input target reduction)
+  ((-gptr-) input target)
+  ((-int-) reduction)
+  (let ((handle (gptr ())))
+    ((-gptr-) handle)
+    #{ extern void* lt9_bce_with_logits_loss(void*, void*, int);
+       $handle = lt9_bce_with_logits_loss($input, $target, $reduction); #}
+    handle))
+
+(de _torch9-l1-loss (input target reduction)
+  ((-gptr-) input target)
+  ((-int-) reduction)
+  (let ((handle (gptr ())))
+    ((-gptr-) handle)
+    #{ extern void* lt9_l1_loss(void*, void*, int);
+       $handle = lt9_l1_loss($input, $target, $reduction); #}
+    handle))
+
+(de _torch9-smooth-l1-loss (input target reduction beta)
+  ((-gptr-) input target)
+  ((-int-) reduction)
+  ((-double-) beta)
+  (let ((handle (gptr ())))
+    ((-gptr-) handle)
+    #{ extern void* lt9_smooth_l1_loss(void*, void*, int, double);
+       $handle = lt9_smooth_l1_loss($input, $target, $reduction, $beta); #}
+    handle))
+
 
 ;; --- Compile all DHC wrappers ---
 (let ((dhc-make-lushflags
@@ -1250,7 +1580,30 @@
     _torch9-optimizer-step _torch9-optimizer-zero-grad
     _torch9-optimizer-get-lr _torch9-optimizer-set-lr _torch9-optimizer-free
     ;; Stage 4: Save/load
-    _torch9-tensor-save _torch9-tensor-load))
+    _torch9-tensor-save _torch9-tensor-load
+    ;; Stage 5: Math ops
+    _torch9-exp _torch9-log _torch9-sqrt _torch9-abs
+    _torch9-pow _torch9-clamp
+    ;; Stage 5: Scalar ops + dtype + arange
+    _torch9-add-scalar _torch9-mul-scalar _torch9-to-dtype _torch9-arange
+    ;; Stage 5: Comparisons + dim-reductions
+    _torch9-eq _torch9-gt _torch9-argmax
+    _torch9-sum-dim _torch9-mean-dim _torch9-max-dim
+    ;; Stage 5: Indexing + flatten
+    _torch9-narrow _torch9-index-select _torch9-select _torch9-flatten
+    ;; Stage 5: In-place ops
+    _torch9-add-inplace _torch9-mul-inplace _torch9-sub-inplace
+    _torch9-zero-inplace _torch9-fill-inplace _torch9-copy-inplace
+    ;; Stage 5: Parameter initialization
+    _torch9-normal-init _torch9-uniform-init
+    _torch9-kaiming-normal-init _torch9-xavier-normal-init
+    ;; Stage 5: Gradient clipping
+    _torch9-clip-grad-norm
+    ;; Stage 5: Extra activations
+    _torch9-gelu _torch9-silu _torch9-elu
+    ;; Stage 5: Extra losses
+    _torch9-nll-loss _torch9-bce-with-logits-loss
+    _torch9-l1-loss _torch9-smooth-l1-loss))
 
 
 ;; ============================================================
@@ -2455,4 +2808,472 @@
   (let ((h (_torch9-tensor-load path)))
     (when (= h (gptr ()))
       (error "torch9-tensor-load" (sprintf "Failed to load tensor from %s" path) ()))
+    h))
+
+
+;; ============================================================
+;; Stage 5: Training Toolkit High-Level API
+;; ============================================================
+
+#? ** Element-wise Math
+
+#? (torch9-exp <handle>)
+;; Element-wise exponential.
+;; Returns a new tensor handle.
+;; {<see> (torch9-log <handle>)}
+(de torch9-exp (handle)
+  (let ((h (_torch9-exp handle)))
+    (when (= h (gptr ()))
+      (error "torch9-exp" "exp returned NULL" ()))
+    h))
+
+#? (torch9-log <handle>)
+;; Element-wise natural logarithm.
+;; Returns a new tensor handle.
+;; {<see> (torch9-exp <handle>)}
+(de torch9-log (handle)
+  (let ((h (_torch9-log handle)))
+    (when (= h (gptr ()))
+      (error "torch9-log" "log returned NULL" ()))
+    h))
+
+#? (torch9-sqrt <handle>)
+;; Element-wise square root.
+;; Returns a new tensor handle.
+;; {<see> (torch9-pow <handle> <exponent>)}
+(de torch9-sqrt (handle)
+  (let ((h (_torch9-sqrt handle)))
+    (when (= h (gptr ()))
+      (error "torch9-sqrt" "sqrt returned NULL" ()))
+    h))
+
+#? (torch9-abs <handle>)
+;; Element-wise absolute value.
+;; Returns a new tensor handle.
+(de torch9-abs (handle)
+  (let ((h (_torch9-abs handle)))
+    (when (= h (gptr ()))
+      (error "torch9-abs" "abs returned NULL" ()))
+    h))
+
+#? (torch9-pow <handle> <exponent>)
+;; Element-wise power.  Raises each element to <exponent>.
+;; Returns a new tensor handle.
+;; {<see> (torch9-sqrt <handle>)}
+(de torch9-pow (handle exponent)
+  (let ((h (_torch9-pow handle (to-double exponent))))
+    (when (= h (gptr ()))
+      (error "torch9-pow" "pow returned NULL" ()))
+    h))
+
+#? (torch9-clamp <handle> <min> <max>)
+;; Clamp all values to the range [<min>, <max>].
+;; Returns a new tensor handle.
+(de torch9-clamp (handle mn mx)
+  (let ((h (_torch9-clamp handle (to-double mn) (to-double mx))))
+    (when (= h (gptr ()))
+      (error "torch9-clamp" "clamp returned NULL" ()))
+    h))
+
+#? (torch9-add-scalar <handle> <scalar>)
+;; Add a scalar to all elements.
+;; Returns a new tensor handle.
+;; {<see> (torch9-mul-scalar <handle> <scalar>)}
+(de torch9-add-scalar (handle scalar)
+  (let ((h (_torch9-add-scalar handle (to-double scalar))))
+    (when (= h (gptr ()))
+      (error "torch9-add-scalar" "add_scalar returned NULL" ()))
+    h))
+
+#? (torch9-mul-scalar <handle> <scalar>)
+;; Multiply all elements by a scalar.
+;; Returns a new tensor handle.
+;; {<see> (torch9-add-scalar <handle> <scalar>)}
+(de torch9-mul-scalar (handle scalar)
+  (let ((h (_torch9-mul-scalar handle (to-double scalar))))
+    (when (= h (gptr ()))
+      (error "torch9-mul-scalar" "mul_scalar returned NULL" ()))
+    h))
+
+#? (torch9-to-dtype <handle> <dtype>)
+;; Cast tensor to a different dtype.
+;; <dtype> is a Lush ST_* code: 2=float, 3=double, 4=int32, 9=int64.
+;; Returns a new tensor handle.
+;;
+;; {<b> Example:}
+;; {<code>
+;;  ;; Cast int tensor to double for computation
+;;  (let* ((t (torch9-from-idx (int-matrix 3)))
+;;         (td (torch9-to-dtype t 3)))  ;; 3 = ST_D (double)
+;;    (torch9-free t) (torch9-free td))
+;; </code>}
+(de torch9-to-dtype (handle dtype)
+  (let ((h (_torch9-to-dtype handle dtype)))
+    (when (= h (gptr ()))
+      (error "torch9-to-dtype" "to_dtype returned NULL" ()))
+    h))
+
+#? (torch9-arange <start> <end> &optional <step>)
+;; Create a 1D range tensor [<start>, <end>) with given <step>.
+;; Default step is 1.  Returns a double tensor.
+;;
+;; {<b> Example:}
+;; {<code>
+;;  (let ((t (torch9-arange 0 10)))    ;; [0, 1, 2, ..., 9]
+;;    (torch9-print t)
+;;    (torch9-free t))
+;; </code>}
+(de torch9-arange (start end &optional (step 1))
+  (let ((h (_torch9-arange (to-double start) (to-double end)
+                           (to-double step) 3)))  ;; 3 = ST_D (double)
+    (when (= h (gptr ()))
+      (error "torch9-arange" "arange returned NULL" ()))
+    h))
+
+
+#? ** Comparisons
+
+#? (torch9-eq <a> <b>)
+;; Element-wise equality comparison.
+;; Returns a uint8 tensor (1 where equal, 0 otherwise).
+;; {<see> (torch9-gt <a> <b>)}
+(de torch9-eq (a b)
+  (let ((h (_torch9-eq a b)))
+    (when (= h (gptr ()))
+      (error "torch9-eq" "eq returned NULL" ()))
+    h))
+
+#? (torch9-gt <a> <b>)
+;; Element-wise greater-than comparison.
+;; Returns a uint8 tensor (1 where a > b, 0 otherwise).
+;; {<see> (torch9-eq <a> <b>)}
+(de torch9-gt (a b)
+  (let ((h (_torch9-gt a b)))
+    (when (= h (gptr ()))
+      (error "torch9-gt" "gt returned NULL" ()))
+    h))
+
+
+#? ** Dimensional Reductions
+
+#? (torch9-argmax <handle> <dim>)
+;; Indices of maximum values along dimension <dim>.
+;; Returns an int64 tensor.
+;;
+;; {<b> Example:}
+;; {<code>
+;;  ;; Get predicted classes from logits [batch, n_classes]
+;;  (let* ((logits (torch9-randn 4 3))
+;;         (preds (torch9-argmax logits 1)))
+;;    (torch9-print preds)
+;;    (torch9-free logits) (torch9-free preds))
+;; </code>}
+;; {<see> (torch9-max-dim <handle> <dim>)}
+(de torch9-argmax (handle dim)
+  (let ((h (_torch9-argmax handle dim)))
+    (when (= h (gptr ()))
+      (error "torch9-argmax" "argmax returned NULL" ()))
+    h))
+
+#? (torch9-sum-dim <handle> <dim> &optional <keepdim>)
+;; Sum along dimension <dim>.
+;; If <keepdim> is non-nil, the reduced dimension is retained with size 1.
+;; Returns a new tensor handle.
+;; {<see> (torch9-mean-dim <handle> <dim>)}
+;; {<see> (torch9-sum <handle>)}
+(de torch9-sum-dim (handle dim &optional keepdim)
+  (let ((h (_torch9-sum-dim handle dim (if keepdim 1 0))))
+    (when (= h (gptr ()))
+      (error "torch9-sum-dim" "sum_dim returned NULL" ()))
+    h))
+
+#? (torch9-mean-dim <handle> <dim> &optional <keepdim>)
+;; Mean along dimension <dim>.
+;; If <keepdim> is non-nil, the reduced dimension is retained with size 1.
+;; Returns a new tensor handle.
+;; {<see> (torch9-sum-dim <handle> <dim>)}
+;; {<see> (torch9-mean <handle>)}
+(de torch9-mean-dim (handle dim &optional keepdim)
+  (let ((h (_torch9-mean-dim handle dim (if keepdim 1 0))))
+    (when (= h (gptr ()))
+      (error "torch9-mean-dim" "mean_dim returned NULL" ()))
+    h))
+
+#? (torch9-max-dim <handle> <dim>)
+;; Maximum values along dimension <dim>.
+;; Returns a tensor of the max values (not the indices).
+;; Use {<b> torch9-argmax} if you need the indices.
+;; {<see> (torch9-argmax <handle> <dim>)}
+(de torch9-max-dim (handle dim)
+  (let ((h (_torch9-max-dim handle dim)))
+    (when (= h (gptr ()))
+      (error "torch9-max-dim" "max_dim returned NULL" ()))
+    h))
+
+
+#? ** Indexing and Slicing
+
+#? (torch9-narrow <handle> <dim> <start> <length>)
+;; Return a narrowed view along dimension <dim>, starting at
+;; <start> with the given <length>.
+;;
+;; {<b> Example:}
+;; {<code>
+;;  ;; Get first 2 rows of a 5x3 tensor
+;;  (let* ((t (torch9-randn 5 3))
+;;         (s (torch9-narrow t 0 0 2)))
+;;    (torch9-print s)
+;;    (torch9-free t) (torch9-free s))
+;; </code>}
+;; {<see> (torch9-select <handle> <dim> <index>)}
+;; {<see> (torch9-index-select <handle> <dim> <index>)}
+(de torch9-narrow (handle dim start length)
+  (let ((h (_torch9-narrow handle dim start length)))
+    (when (= h (gptr ()))
+      (error "torch9-narrow" "narrow returned NULL" ()))
+    h))
+
+#? (torch9-index-select <handle> <dim> <index>)
+;; Select entries along <dim> using an int64 index tensor.
+;; <index> is a 1D tensor handle containing the indices.
+;; Returns a new tensor handle.
+;; {<see> (torch9-narrow <handle> <dim> <start> <length>)}
+;; {<see> (torch9-select <handle> <dim> <index>)}
+(de torch9-index-select (handle dim index)
+  (let ((h (_torch9-index-select handle dim index)))
+    (when (= h (gptr ()))
+      (error "torch9-index-select" "index_select returned NULL" ()))
+    h))
+
+#? (torch9-select <handle> <dim> <index>)
+;; Select a single slice at <index> along <dim>.
+;; The selected dimension is removed (rank decreases by 1).
+;; Returns a new tensor handle.
+;; {<see> (torch9-narrow <handle> <dim> <start> <length>)}
+(de torch9-select (handle dim index)
+  (let ((h (_torch9-select handle dim index)))
+    (when (= h (gptr ()))
+      (error "torch9-select" "select returned NULL" ()))
+    h))
+
+#? (torch9-flatten <handle> &optional <start-dim> <end-dim>)
+;; Flatten dimensions from <start-dim> to <end-dim> inclusive.
+;; Defaults: start-dim=0, end-dim=-1 (flatten all).
+;;
+;; {<b> Example:}
+;; {<code>
+;;  ;; Flatten [2,3,4] to [2,12] for FC layer input
+;;  (let* ((t (torch9-randn 2 3 4))
+;;         (f (torch9-flatten t 1 -1)))  ;; flatten dims 1..end
+;;    (torch9-print f)
+;;    (torch9-free t) (torch9-free f))
+;; </code>}
+(de torch9-flatten (handle &optional (start-dim 0) (end-dim -1))
+  (let ((h (_torch9-flatten handle start-dim end-dim)))
+    (when (= h (gptr ()))
+      (error "torch9-flatten" "flatten returned NULL" ()))
+    h))
+
+
+#? ** In-place Operations
+
+#? (torch9-add! <t> <other>)
+;; In-place element-wise addition: <t> += <other>.
+;; Modifies <t> directly.  Returns nil.
+;; {<see> (torch9-sub! <t> <other>)}
+;; {<see> (torch9-mul! <t> <other>)}
+(de torch9-add! (t other)
+  (_torch9-add-inplace t other)
+  ())
+
+#? (torch9-mul! <t> <other>)
+;; In-place element-wise multiplication: <t> *= <other>.
+;; Modifies <t> directly.  Returns nil.
+;; {<see> (torch9-add! <t> <other>)}
+(de torch9-mul! (t other)
+  (_torch9-mul-inplace t other)
+  ())
+
+#? (torch9-sub! <t> <other>)
+;; In-place element-wise subtraction: <t> -= <other>.
+;; Modifies <t> directly.  Returns nil.
+;; {<see> (torch9-add! <t> <other>)}
+(de torch9-sub! (t other)
+  (_torch9-sub-inplace t other)
+  ())
+
+#? (torch9-zero! <t>)
+;; Fill tensor with zeros in-place.
+;; {<see> (torch9-fill! <t> <value>)}
+(de torch9-zero! (t)
+  (_torch9-zero-inplace t)
+  ())
+
+#? (torch9-fill! <t> <value>)
+;; Fill tensor with <value> in-place.
+;; {<see> (torch9-zero! <t>)}
+(de torch9-fill! (t value)
+  (_torch9-fill-inplace t (to-double value))
+  ())
+
+#? (torch9-copy! <dst> <src>)
+;; Copy <src> tensor data into <dst> in-place.
+;; Tensors must have the same shape.
+(de torch9-copy! (dst src)
+  (_torch9-copy-inplace dst src)
+  ())
+
+
+#? ** Parameter Initialization
+
+#? (torch9-normal! <t> <mean> <std>)
+;; Fill tensor with values drawn from Normal(<mean>, <std>) in-place.
+;; {<see> (torch9-uniform! <t> <low> <high>)}
+;; {<see> (torch9-kaiming-normal! <t>)}
+(de torch9-normal! (t mean std)
+  (_torch9-normal-init t (to-double mean) (to-double std))
+  ())
+
+#? (torch9-uniform! <t> <low> <high>)
+;; Fill tensor with values drawn from Uniform[<low>, <high>) in-place.
+;; {<see> (torch9-normal! <t> <mean> <std>)}
+(de torch9-uniform! (t low high)
+  (_torch9-uniform-init t (to-double low) (to-double high))
+  ())
+
+#? (torch9-kaiming-normal! <t> &optional <a> <mode> <nonlinearity>)
+;; Kaiming (He) normal initialization in-place.
+;; <a> is the negative slope for LeakyReLU (default 0).
+;; <mode>: 0=fan_in (default), 1=fan_out.
+;; <nonlinearity>: 0=leaky_relu (default), 1=relu, 2=tanh,
+;; 3=sigmoid, 4=linear.
+;;
+;; For ReLU networks: {<c> (torch9-kaiming-normal! w 0 0 1)}
+;; produces variance = 2/fan_in.
+;; {<see> (torch9-xavier-normal! <t>)}
+(de torch9-kaiming-normal! (t &optional (a 0) (mode 0) (nonlinearity 0))
+  (_torch9-kaiming-normal-init t (to-double a) mode nonlinearity)
+  ())
+
+#? (torch9-xavier-normal! <t> &optional <gain>)
+;; Xavier (Glorot) normal initialization in-place.
+;; <gain> defaults to 1.0.
+;; Produces variance = 2/(fan_in + fan_out).
+;; {<see> (torch9-kaiming-normal! <t>)}
+(de torch9-xavier-normal! (t &optional (gain 1.0))
+  (_torch9-xavier-normal-init t (to-double gain))
+  ())
+
+
+#? ** Gradient Clipping
+
+#? (torch9-clip-grad-norm <params> <max-norm>)
+;; Clip gradient norms of parameters.
+;; <params> is a Lush list of tensor handles with gradients.
+;; <max-norm> is the maximum allowed total norm.
+;; Returns the total gradient norm before clipping.
+;;
+;; {<b> Example:}
+;; {<code>
+;;  ;; After backward, clip gradients before optimizer step
+;;  (let ((norm (torch9-clip-grad-norm (list w b) 1.0)))
+;;    (printf "grad norm before clip: %g\n" norm)
+;;    (torch9-optimizer-step opt))
+;; </code>}
+(de torch9-clip-grad-norm (params max-norm)
+  (let ((pg (_torch9-param-group-create))
+        (rest params))
+    (while rest
+      (_torch9-param-group-add pg (car rest))
+      (setq rest (cdr rest)))
+    (let ((norm (_torch9-clip-grad-norm pg (to-double max-norm))))
+      (_torch9-param-group-free pg)
+      norm)))
+
+
+#? ** Extra Activations
+
+#? (torch9-gelu <handle>)
+;; GELU (Gaussian Error Linear Unit) activation.
+;; Used in Transformers (BERT, GPT).
+;; {<see> (torch9-silu <handle>)}
+;; {<see> (torch9-relu <handle>)}
+(de torch9-gelu (handle)
+  (let ((h (_torch9-gelu handle)))
+    (when (= h (gptr ()))
+      (error "torch9-gelu" "gelu returned NULL" ()))
+    h))
+
+#? (torch9-silu <handle>)
+;; SiLU (Sigmoid Linear Unit) / Swish activation.
+;; Computes x * sigmoid(x).
+;; {<see> (torch9-gelu <handle>)}
+(de torch9-silu (handle)
+  (let ((h (_torch9-silu handle)))
+    (when (= h (gptr ()))
+      (error "torch9-silu" "silu returned NULL" ()))
+    h))
+
+#? (torch9-elu <handle> &optional <alpha>)
+;; ELU (Exponential Linear Unit) activation.
+;; For x > 0: x.  For x <= 0: alpha * (exp(x) - 1).
+;; Default alpha is 1.0.
+;; {<see> (torch9-relu <handle>)}
+(de torch9-elu (handle &optional (alpha 1.0))
+  (let ((h (_torch9-elu handle (to-double alpha))))
+    (when (= h (gptr ()))
+      (error "torch9-elu" "elu returned NULL" ()))
+    h))
+
+
+#? ** Extra Loss Functions
+
+#? (torch9-nll-loss <input> <target>)
+;; Negative log-likelihood loss.
+;; <input> should be log-probabilities (e.g., from {<b> torch9-log-softmax}).
+;; <target> is an integer class label tensor.
+;; Uses mean reduction by default.
+;;
+;; {<b> Note:} {<c> torch9-log-softmax} + {<c> torch9-nll-loss}
+;; is equivalent to {<c> torch9-cross-entropy-loss}.
+;; {<see> (torch9-cross-entropy-loss <input> <target>)}
+(de torch9-nll-loss (input target)
+  (let ((h (_torch9-nll-loss input target 1)))  ;; 1 = Mean
+    (when (= h (gptr ()))
+      (error "torch9-nll-loss" "nll_loss returned NULL" ()))
+    h))
+
+#? (torch9-bce-with-logits-loss <input> <target>)
+;; Binary cross-entropy with logits (numerically stable).
+;; <input> is raw logits (before sigmoid).
+;; <target> is float tensor of 0s and 1s.
+;; Uses mean reduction by default.
+;; {<see> (torch9-cross-entropy-loss <input> <target>)}
+(de torch9-bce-with-logits-loss (input target)
+  (let ((h (_torch9-bce-with-logits-loss input target 1)))  ;; 1 = Mean
+    (when (= h (gptr ()))
+      (error "torch9-bce-with-logits-loss" "bce_with_logits_loss returned NULL" ()))
+    h))
+
+#? (torch9-l1-loss <input> <target>)
+;; L1 / mean absolute error loss.
+;; Uses mean reduction by default.
+;; {<see> (torch9-smooth-l1-loss <input> <target>)}
+;; {<see> (torch9-mse-loss <input> <target>)}
+(de torch9-l1-loss (input target)
+  (let ((h (_torch9-l1-loss input target 1)))  ;; 1 = Mean
+    (when (= h (gptr ()))
+      (error "torch9-l1-loss" "l1_loss returned NULL" ()))
+    h))
+
+#? (torch9-smooth-l1-loss <input> <target> &optional <beta>)
+;; Smooth L1 / Huber loss.
+;; Uses L2 loss when |input - target| < <beta>, L1 otherwise.
+;; Default <beta> is 1.0.
+;; {<see> (torch9-l1-loss <input> <target>)}
+;; {<see> (torch9-mse-loss <input> <target>)}
+(de torch9-smooth-l1-loss (input target &optional (beta 1.0))
+  (let ((h (_torch9-smooth-l1-loss input target 1 (to-double beta))))  ;; 1 = Mean
+    (when (= h (gptr ()))
+      (error "torch9-smooth-l1-loss" "smooth_l1_loss returned NULL" ()))
     h))

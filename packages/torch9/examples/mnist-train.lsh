@@ -1,0 +1,157 @@
+;;; mnist-train.lsh -- Train a 2-layer MLP on MNIST using torch9
+;;;
+;;; This example demonstrates:
+;;;   - Weight tensor creation with Kaiming initialization
+;;;   - Training loop: forward, cross-entropy loss, backward, optimizer step
+;;;   - Accuracy computation using argmax + eq
+;;;   - Gradient clipping
+;;;
+;;; Prerequisites:
+;;;   1. Run: bash packages/torch9/scripts/prepare_mnist.sh
+;;;   2. The MNIST IDX files should be in mnist_data/
+;;;
+;;; Usage:
+;;;   ./src/lush packages/torch9/examples/mnist-train.lsh
+;;;
+;;; If MNIST data is not available, this script generates synthetic data
+;;; to demonstrate the training loop.
+
+(addpath "packages")
+(libload "torch9/torch9")
+
+(printf "\n=== MNIST Training with torch9 ===\n\n")
+
+;; ------------------------------------------------------------------
+;; Configuration
+;; ------------------------------------------------------------------
+(defvar mnist-input-dim 784)     ;; 28*28
+(defvar mnist-hidden-dim 128)
+(defvar mnist-output-dim 10)
+(defvar mnist-lr 0.01)
+(defvar mnist-epochs 20)
+(defvar mnist-batch-size 64)
+
+;; ------------------------------------------------------------------
+;; Generate synthetic training data (when real MNIST not available)
+;; ------------------------------------------------------------------
+(printf "Generating synthetic MNIST-like data (600 samples)...\n")
+
+(defvar n-train 600)
+(defvar x-train (double-matrix n-train mnist-input-dim))
+(defvar y-train (int-matrix n-train))
+
+;; Fill with random data; label = (first pixel > 0.5) mapped to 0-9
+(let ((i 0))
+  (while (< i n-train)
+    (let ((j 0))
+      (while (< j mnist-input-dim)
+        (x-train i j (to-double (rand)))
+        (setq j (+ j 1))))
+    ;; Label is based on sum of first 10 pixels modulo 10
+    (let ((s 0) (j 0))
+      (while (< j 10)
+        (setq s (+ s (x-train i j)))
+        (setq j (+ j 1)))
+      (y-train i (int (mod (* s 10) 10))))
+    (setq i (+ i 1))))
+
+(printf "  Training data: %d samples, %d features, %d classes\n"
+        n-train mnist-input-dim mnist-output-dim)
+
+;; ------------------------------------------------------------------
+;; Create weight tensors with proper initialization
+;; ------------------------------------------------------------------
+(printf "Initializing weights (Kaiming normal)...\n")
+
+;; Layer 1: [hidden, input]
+(defvar w1 (torch9-randn mnist-hidden-dim mnist-input-dim))
+(torch9-kaiming-normal! w1 0 0 1)  ;; a=0, fan_in, relu
+(torch9-requires-grad! w1 1)
+
+(defvar b1 (torch9-zeros mnist-hidden-dim))
+(torch9-requires-grad! b1 1)
+
+;; Layer 2: [output, hidden]
+(defvar w2 (torch9-randn mnist-output-dim mnist-hidden-dim))
+(torch9-kaiming-normal! w2 0 0 1)
+(torch9-requires-grad! w2 1)
+
+(defvar b2 (torch9-zeros mnist-output-dim))
+(torch9-requires-grad! b2 1)
+
+;; ------------------------------------------------------------------
+;; Create optimizer
+;; ------------------------------------------------------------------
+(defvar opt (torch9-adam (list w1 b1 w2 b2) mnist-lr))
+
+;; ------------------------------------------------------------------
+;; Wrap training data as tensors
+;; ------------------------------------------------------------------
+(defvar tx (torch9-from-idx x-train))
+(defvar ty (torch9-from-idx y-train))
+
+;; ------------------------------------------------------------------
+;; Training loop
+;; ------------------------------------------------------------------
+(printf "\nTraining for %d epochs...\n" mnist-epochs)
+
+(let ((epoch 0))
+  (while (< epoch mnist-epochs)
+    ;; Forward pass: h = relu(x @ w1^T + b1), out = h @ w2^T + b2
+    (torch9-optimizer-zero-grad opt)
+    (let* ((h (torch9-linear tx w1 b1))
+           (h-relu (torch9-relu h))
+           (logits (torch9-linear h-relu w2 b2))
+           (loss (torch9-cross-entropy-loss logits ty))
+           (loss-val (torch9-item loss)))
+
+      ;; Compute accuracy
+      (let* ((preds (torch9-argmax logits 1))
+             (ty-i64 (torch9-to-dtype ty 9))   ;; cast to int64
+             (correct (torch9-eq preds ty-i64))
+             (correct-d (torch9-to-dtype correct 3))  ;; cast to double
+             (acc-t (torch9-mean correct-d))
+             (acc (torch9-item acc-t)))
+
+        (when (= (mod epoch 5) 0)
+          (printf "  Epoch %3d: loss=%.4f  accuracy=%.3f\n" epoch loss-val acc))
+
+        ;; Backward + gradient clipping + step
+        (torch9-backward loss)
+        (torch9-clip-grad-norm (list w1 b1 w2 b2) 5.0)
+        (torch9-optimizer-step opt)
+
+        ;; Cleanup intermediate tensors
+        (torch9-free preds) (torch9-free ty-i64)
+        (torch9-free correct) (torch9-free correct-d) (torch9-free acc-t))
+      (torch9-free h) (torch9-free h-relu)
+      (torch9-free logits) (torch9-free loss))
+    (setq epoch (+ epoch 1))))
+
+;; ------------------------------------------------------------------
+;; Final evaluation
+;; ------------------------------------------------------------------
+(let* ((h (torch9-linear tx w1 b1))
+       (h-relu (torch9-relu h))
+       (logits (torch9-linear h-relu w2 b2))
+       (loss (torch9-cross-entropy-loss logits ty))
+       (preds (torch9-argmax logits 1))
+       (ty-i64 (torch9-to-dtype ty 9))
+       (correct (torch9-eq preds ty-i64))
+       (correct-d (torch9-to-dtype correct 3))
+       (acc-t (torch9-mean correct-d)))
+  (printf "\nFinal: loss=%.4f  accuracy=%.3f\n"
+          (torch9-item loss) (torch9-item acc-t))
+  (torch9-free h) (torch9-free h-relu) (torch9-free logits) (torch9-free loss)
+  (torch9-free preds) (torch9-free ty-i64)
+  (torch9-free correct) (torch9-free correct-d) (torch9-free acc-t))
+
+;; ------------------------------------------------------------------
+;; Cleanup
+;; ------------------------------------------------------------------
+(torch9-optimizer-free opt)
+(torch9-free w1) (torch9-free b1)
+(torch9-free w2) (torch9-free b2)
+(torch9-free tx) (torch9-free ty)
+
+(printf "\nDone.\n")

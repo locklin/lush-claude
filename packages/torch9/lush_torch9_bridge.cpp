@@ -772,3 +772,304 @@ lt9_tensor lt9_tensor_load(const char *path) {
         return nullptr;
     }
 }
+
+/* ============================================================
+ * Stage 5: Training Toolkit
+ * ============================================================ */
+
+/* ---- Element-wise math ---- */
+
+lt9_tensor lt9_exp(lt9_tensor t) {
+    if (!t) return nullptr;
+    auto *tp = static_cast<torch::Tensor*>(t);
+    return new torch::Tensor(torch::exp(*tp));
+}
+
+lt9_tensor lt9_log(lt9_tensor t) {
+    if (!t) return nullptr;
+    auto *tp = static_cast<torch::Tensor*>(t);
+    return new torch::Tensor(torch::log(*tp));
+}
+
+lt9_tensor lt9_sqrt(lt9_tensor t) {
+    if (!t) return nullptr;
+    auto *tp = static_cast<torch::Tensor*>(t);
+    return new torch::Tensor(torch::sqrt(*tp));
+}
+
+lt9_tensor lt9_abs(lt9_tensor t) {
+    if (!t) return nullptr;
+    auto *tp = static_cast<torch::Tensor*>(t);
+    return new torch::Tensor(torch::abs(*tp));
+}
+
+lt9_tensor lt9_pow(lt9_tensor t, double exponent) {
+    if (!t) return nullptr;
+    auto *tp = static_cast<torch::Tensor*>(t);
+    return new torch::Tensor(torch::pow(*tp, exponent));
+}
+
+lt9_tensor lt9_clamp(lt9_tensor t, double min_val, double max_val) {
+    if (!t) return nullptr;
+    auto *tp = static_cast<torch::Tensor*>(t);
+    return new torch::Tensor(torch::clamp(*tp, min_val, max_val));
+}
+
+/* ---- Scalar-tensor ops ---- */
+
+lt9_tensor lt9_add_scalar(lt9_tensor t, double scalar) {
+    if (!t) return nullptr;
+    auto *tp = static_cast<torch::Tensor*>(t);
+    return new torch::Tensor(*tp + scalar);
+}
+
+lt9_tensor lt9_mul_scalar(lt9_tensor t, double scalar) {
+    if (!t) return nullptr;
+    auto *tp = static_cast<torch::Tensor*>(t);
+    return new torch::Tensor(*tp * scalar);
+}
+
+/* ---- Type casting ---- */
+
+lt9_tensor lt9_to_dtype(lt9_tensor t, int dtype) {
+    if (!t || dtype < 0 || dtype > 9) return nullptr;
+    auto *tp = static_cast<torch::Tensor*>(t);
+    return new torch::Tensor(tp->to(st_to_torch[dtype]));
+}
+
+/* ---- Index generation ---- */
+
+lt9_tensor lt9_arange(double start, double end, double step, int dtype) {
+    if (dtype < 0 || dtype > 9) return nullptr;
+    auto opts = torch::TensorOptions().dtype(st_to_torch[dtype]);
+    return new torch::Tensor(torch::arange(start, end, step, opts));
+}
+
+/* ---- Comparisons ---- */
+
+lt9_tensor lt9_eq(lt9_tensor a, lt9_tensor b) {
+    if (!a || !b) return nullptr;
+    auto *ta = static_cast<torch::Tensor*>(a);
+    auto *tb = static_cast<torch::Tensor*>(b);
+    return new torch::Tensor(torch::eq(*ta, *tb));
+}
+
+lt9_tensor lt9_gt(lt9_tensor a, lt9_tensor b) {
+    if (!a || !b) return nullptr;
+    auto *ta = static_cast<torch::Tensor*>(a);
+    auto *tb = static_cast<torch::Tensor*>(b);
+    return new torch::Tensor(torch::gt(*ta, *tb));
+}
+
+/* ---- Reductions with dimension ---- */
+
+lt9_tensor lt9_argmax(lt9_tensor t, int dim) {
+    if (!t) return nullptr;
+    auto *tp = static_cast<torch::Tensor*>(t);
+    return new torch::Tensor(torch::argmax(*tp, dim));
+}
+
+lt9_tensor lt9_sum_dim(lt9_tensor t, int dim, int keepdim) {
+    if (!t) return nullptr;
+    auto *tp = static_cast<torch::Tensor*>(t);
+    return new torch::Tensor(torch::sum(*tp, dim, keepdim != 0));
+}
+
+lt9_tensor lt9_mean_dim(lt9_tensor t, int dim, int keepdim) {
+    if (!t) return nullptr;
+    auto *tp = static_cast<torch::Tensor*>(t);
+    return new torch::Tensor(torch::mean(*tp, dim, keepdim != 0));
+}
+
+lt9_tensor lt9_max_dim(lt9_tensor t, int dim) {
+    if (!t) return nullptr;
+    auto *tp = static_cast<torch::Tensor*>(t);
+    return new torch::Tensor(std::get<0>(torch::max(*tp, dim)));
+}
+
+/* ---- Indexing ---- */
+
+lt9_tensor lt9_narrow(lt9_tensor t, int dim, int64_t start, int64_t length) {
+    if (!t) return nullptr;
+    auto *tp = static_cast<torch::Tensor*>(t);
+    auto result = tp->narrow(dim, start, length);
+    return new torch::Tensor(result.contiguous());
+}
+
+lt9_tensor lt9_index_select(lt9_tensor t, int dim, lt9_tensor index) {
+    if (!t || !index) return nullptr;
+    auto *tp = static_cast<torch::Tensor*>(t);
+    auto *idx = static_cast<torch::Tensor*>(index);
+    return new torch::Tensor(torch::index_select(*tp, dim, *idx));
+}
+
+lt9_tensor lt9_select(lt9_tensor t, int dim, int64_t index) {
+    if (!t) return nullptr;
+    auto *tp = static_cast<torch::Tensor*>(t);
+    auto result = torch::select(*tp, dim, index);
+    return new torch::Tensor(result.contiguous());
+}
+
+/* ---- Flatten ---- */
+
+lt9_tensor lt9_flatten(lt9_tensor t, int start_dim, int end_dim) {
+    if (!t) return nullptr;
+    auto *tp = static_cast<torch::Tensor*>(t);
+    return new torch::Tensor(torch::flatten(*tp, start_dim, end_dim));
+}
+
+/* ---- In-place operations ---- */
+
+void lt9_add_inplace(lt9_tensor t, lt9_tensor other) {
+    if (!t || !other) return;
+    auto *tp = static_cast<torch::Tensor*>(t);
+    auto *op = static_cast<torch::Tensor*>(other);
+    tp->add_(*op);
+}
+
+void lt9_mul_inplace(lt9_tensor t, lt9_tensor other) {
+    if (!t || !other) return;
+    auto *tp = static_cast<torch::Tensor*>(t);
+    auto *op = static_cast<torch::Tensor*>(other);
+    tp->mul_(*op);
+}
+
+void lt9_sub_inplace(lt9_tensor t, lt9_tensor other) {
+    if (!t || !other) return;
+    auto *tp = static_cast<torch::Tensor*>(t);
+    auto *op = static_cast<torch::Tensor*>(other);
+    tp->sub_(*op);
+}
+
+void lt9_zero_inplace(lt9_tensor t) {
+    if (!t) return;
+    auto *tp = static_cast<torch::Tensor*>(t);
+    tp->zero_();
+}
+
+void lt9_fill_inplace(lt9_tensor t, double value) {
+    if (!t) return;
+    auto *tp = static_cast<torch::Tensor*>(t);
+    tp->fill_(value);
+}
+
+void lt9_copy_inplace(lt9_tensor dst, lt9_tensor src) {
+    if (!dst || !src) return;
+    auto *dp = static_cast<torch::Tensor*>(dst);
+    auto *sp = static_cast<torch::Tensor*>(src);
+    dp->copy_(*sp);
+}
+
+/* ---- Parameter initialization ---- */
+
+void lt9_normal_init(lt9_tensor t, double mean, double std) {
+    if (!t) return;
+    auto *tp = static_cast<torch::Tensor*>(t);
+    {
+        torch::NoGradGuard no_grad;
+        tp->normal_(mean, std);
+    }
+}
+
+void lt9_uniform_init(lt9_tensor t, double low, double high) {
+    if (!t) return;
+    auto *tp = static_cast<torch::Tensor*>(t);
+    {
+        torch::NoGradGuard no_grad;
+        tp->uniform_(low, high);
+    }
+}
+
+void lt9_kaiming_normal_init(lt9_tensor t, double a, int mode,
+                              int nonlinearity) {
+    if (!t) return;
+    auto *tp = static_cast<torch::Tensor*>(t);
+    torch::nn::init::NonlinearityType nl = torch::kLeakyReLU;
+    switch (nonlinearity) {
+        case 1:  nl = torch::kReLU; break;
+        case 2:  nl = torch::kTanh; break;
+        case 3:  nl = torch::kSigmoid; break;
+        case 4:  nl = torch::kLinear; break;
+        default: nl = torch::kLeakyReLU; break;
+    }
+    {
+        torch::NoGradGuard no_grad;
+        if (mode == 1)
+            torch::nn::init::kaiming_normal_(*tp, a, torch::kFanOut, nl);
+        else
+            torch::nn::init::kaiming_normal_(*tp, a, torch::kFanIn, nl);
+    }
+}
+
+void lt9_xavier_normal_init(lt9_tensor t, double gain) {
+    if (!t) return;
+    auto *tp = static_cast<torch::Tensor*>(t);
+    {
+        torch::NoGradGuard no_grad;
+        torch::nn::init::xavier_normal_(*tp, gain);
+    }
+}
+
+/* ---- Gradient clipping ---- */
+
+double lt9_clip_grad_norm(lt9_param_group pg, double max_norm) {
+    if (!pg) return 0.0;
+    auto *params = static_cast<std::vector<torch::Tensor>*>(pg);
+    return torch::nn::utils::clip_grad_norm_(*params, max_norm);
+}
+
+/* ---- Extra activations ---- */
+
+lt9_tensor lt9_gelu(lt9_tensor t) {
+    if (!t) return nullptr;
+    auto *tp = static_cast<torch::Tensor*>(t);
+    return new torch::Tensor(torch::gelu(*tp));
+}
+
+lt9_tensor lt9_silu(lt9_tensor t) {
+    if (!t) return nullptr;
+    auto *tp = static_cast<torch::Tensor*>(t);
+    return new torch::Tensor(torch::silu(*tp));
+}
+
+lt9_tensor lt9_elu(lt9_tensor t, double alpha) {
+    if (!t) return nullptr;
+    auto *tp = static_cast<torch::Tensor*>(t);
+    return new torch::Tensor(torch::elu(*tp, alpha));
+}
+
+/* ---- Extra loss functions ---- */
+
+lt9_tensor lt9_nll_loss(lt9_tensor input, lt9_tensor target, int reduction) {
+    if (!input || !target) return nullptr;
+    auto *in = static_cast<torch::Tensor*>(input);
+    auto *tgt = static_cast<torch::Tensor*>(target);
+    auto tgt64 = tgt->to(torch::kInt64);
+    return new torch::Tensor(torch::nll_loss(
+        *in, tgt64, {}, int_to_reduction(reduction)));
+}
+
+lt9_tensor lt9_bce_with_logits_loss(lt9_tensor input, lt9_tensor target,
+                                     int reduction) {
+    if (!input || !target) return nullptr;
+    auto *in = static_cast<torch::Tensor*>(input);
+    auto *tgt = static_cast<torch::Tensor*>(target);
+    return new torch::Tensor(torch::binary_cross_entropy_with_logits(
+        *in, *tgt, {}, {}, int_to_reduction(reduction)));
+}
+
+lt9_tensor lt9_l1_loss(lt9_tensor input, lt9_tensor target, int reduction) {
+    if (!input || !target) return nullptr;
+    auto *in = static_cast<torch::Tensor*>(input);
+    auto *tgt = static_cast<torch::Tensor*>(target);
+    return new torch::Tensor(torch::l1_loss(*in, *tgt, int_to_reduction(reduction)));
+}
+
+lt9_tensor lt9_smooth_l1_loss(lt9_tensor input, lt9_tensor target,
+                               int reduction, double beta) {
+    if (!input || !target) return nullptr;
+    auto *in = static_cast<torch::Tensor*>(input);
+    auto *tgt = static_cast<torch::Tensor*>(target);
+    return new torch::Tensor(torch::smooth_l1_loss(
+        *in, *tgt, int_to_reduction(reduction), beta));
+}

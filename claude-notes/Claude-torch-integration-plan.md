@@ -734,9 +734,27 @@ Stage 4: Training support ✅ COMPLETE (2026-03-05)
   ↓
   Milestone: Train models from Lush REPL (SGD/Adam converge on regression + classification)
   ↓
-Stage 5: gblearn2 integration + model zoo
+Stage 5: Training toolkit + model zoo ✅ COMPLETE (2026-03-05)
+  - Element-wise math: exp, log, sqrt, abs, pow, clamp
+  - Scalar-tensor ops: add_scalar, mul_scalar
+  - Type casting: to_dtype; index generation: arange
+  - Comparisons: eq, gt (return uint8 tensors)
+  - Dim reductions: argmax, sum_dim, mean_dim, max_dim (with keepdim)
+  - Indexing: narrow, index_select, select, flatten
+  - In-place ops: add!, mul!, sub!, zero!, fill!, copy!
+  - Parameter init: normal!, uniform!, kaiming_normal!, xavier_normal!
+  - Gradient clipping: clip_grad_norm
+  - Extra activations: gelu, silu, elu
+  - Extra losses: nll_loss, bce_with_logits_loss, l1_loss, smooth_l1_loss
+  - Model zoo: MNIST MLP training example, ResNet18 inference example
+  - Python export scripts: export_resnet18.py, export_mnist_mlp.py
+  - ~123 C bridge functions, ~141 DHC wrappers, ~113 high-level API functions
+  - tests/test-torch9.lsh (623 tests, all passing)
+  ↓
+  Milestone: Full training toolkit from Lush REPL (Kaiming init, grad clipping, accuracy computation)
+  ↓
+Stage 6: gblearn2 integration (future)
   - Optional torch-accelerated gblearn2 modules
-  - Pre-trained model scripts (ResNet, ViT, BERT, etc.)
 ```
 
 ### Reference: R torch package architecture
