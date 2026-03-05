@@ -722,10 +722,17 @@ Stage 3: Model loading + NN functional ops  ✅ IMPLEMENTED 2026-03-05
   ↓
   Milestone: Load and run TorchScript models from Lush REPL
   ↓
-Stage 4: Training support
-  - Autograd: requires_grad_, backward()
-  - Optimizers: Adam, SGD
-  - save/load state dict
+Stage 4: Training support ✅ COMPLETE (2026-03-05)
+  - Data-owning tensor creation: randn, zeros, ones, full
+  - Reductions: sum, mean, item; neg
+  - Autograd: requires_grad, requires_grad!, backward, grad, detach, grad_enabled
+  - Loss functions: mse_loss, cross_entropy_loss
+  - Optimizers: SGD, Adam (with lr get/set, step, zero_grad)
+  - Tensor save/load
+  - ~85 C bridge functions, ~103 DHC wrappers, ~75 high-level API functions
+  - tests/test-torch9.lsh (488 tests, all passing)
+  ↓
+  Milestone: Train models from Lush REPL (SGD/Adam converge on regression + classification)
   ↓
 Stage 5: gblearn2 integration + model zoo
   - Optional torch-accelerated gblearn2 modules

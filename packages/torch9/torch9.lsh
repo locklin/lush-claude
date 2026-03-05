@@ -919,6 +919,284 @@
        $handle = lt9_dropout($input, $p, $training); #}
     handle))
 
+;; ============================================================
+;; Stage 4: Training support DHC wrappers
+;; ============================================================
+
+;; --- Data-owning tensor creation ---
+(de _torch9-randn (shape dtype)
+  ((-idx1- (-int-)) shape)
+  ((-int-) dtype)
+  (let ((handle (gptr ())))
+    ((-gptr-) handle)
+    #{
+    extern void* lt9_randn(int64_t*, int, int);
+    int64_t tmp[11];
+    int i, nd = ($shape)->dim[0];
+    int *sp = IDX_PTR($shape, int);
+    for (i = 0; i < nd; i++) tmp[i] = (int64_t)sp[i];
+    $handle = lt9_randn(tmp, nd, $dtype);
+    #}
+    handle))
+
+(de _torch9-zeros (shape dtype)
+  ((-idx1- (-int-)) shape)
+  ((-int-) dtype)
+  (let ((handle (gptr ())))
+    ((-gptr-) handle)
+    #{
+    extern void* lt9_zeros(int64_t*, int, int);
+    int64_t tmp[11];
+    int i, nd = ($shape)->dim[0];
+    int *sp = IDX_PTR($shape, int);
+    for (i = 0; i < nd; i++) tmp[i] = (int64_t)sp[i];
+    $handle = lt9_zeros(tmp, nd, $dtype);
+    #}
+    handle))
+
+(de _torch9-ones (shape dtype)
+  ((-idx1- (-int-)) shape)
+  ((-int-) dtype)
+  (let ((handle (gptr ())))
+    ((-gptr-) handle)
+    #{
+    extern void* lt9_ones(int64_t*, int, int);
+    int64_t tmp[11];
+    int i, nd = ($shape)->dim[0];
+    int *sp = IDX_PTR($shape, int);
+    for (i = 0; i < nd; i++) tmp[i] = (int64_t)sp[i];
+    $handle = lt9_ones(tmp, nd, $dtype);
+    #}
+    handle))
+
+(de _torch9-full (shape dtype fill-val)
+  ((-idx1- (-int-)) shape)
+  ((-int-) dtype)
+  ((-double-) fill-val)
+  (let ((handle (gptr ())))
+    ((-gptr-) handle)
+    #{
+    extern void* lt9_full(int64_t*, int, int, double);
+    int64_t tmp[11];
+    int i, nd = ($shape)->dim[0];
+    int *sp = IDX_PTR($shape, int);
+    for (i = 0; i < nd; i++) tmp[i] = (int64_t)sp[i];
+    $handle = lt9_full(tmp, nd, $dtype, $fill_val);
+    #}
+    handle))
+
+;; --- Reductions + scalar ---
+(de _torch9-sum (tens)
+  ((-gptr-) tens)
+  (let ((handle (gptr ())))
+    ((-gptr-) handle)
+    #{ extern void* lt9_sum(void*);
+       $handle = lt9_sum($tens); #}
+    handle))
+
+(de _torch9-mean (tens)
+  ((-gptr-) tens)
+  (let ((handle (gptr ())))
+    ((-gptr-) handle)
+    #{ extern void* lt9_mean(void*);
+       $handle = lt9_mean($tens); #}
+    handle))
+
+(de _torch9-item (tens)
+  ((-gptr-) tens)
+  (let ((r 0.0))
+    ((-double-) r)
+    #{ extern double lt9_item(void*);
+       $r = lt9_item($tens); #}
+    r))
+
+;; --- Neg ---
+(de _torch9-neg (tens)
+  ((-gptr-) tens)
+  (let ((handle (gptr ())))
+    ((-gptr-) handle)
+    #{ extern void* lt9_neg(void*);
+       $handle = lt9_neg($tens); #}
+    handle))
+
+;; --- Autograd ---
+(de _torch9-requires-grad (tens)
+  ((-gptr-) tens)
+  (let ((r 0))
+    ((-int-) r)
+    #{ extern int lt9_requires_grad(void*);
+       $r = lt9_requires_grad($tens); #}
+    r))
+
+(de _torch9-set-requires-grad (tens flag)
+  ((-gptr-) tens)
+  ((-int-) flag)
+  #{ extern void lt9_requires_grad_(void*, int);
+     lt9_requires_grad_($tens, $flag); #}
+  ())
+
+(de _torch9-backward (tens)
+  ((-gptr-) tens)
+  #{ extern void lt9_backward(void*);
+     lt9_backward($tens); #}
+  ())
+
+(de _torch9-backward-with-grad (tens gradient)
+  ((-gptr-) tens gradient)
+  #{ extern void lt9_backward_with_grad(void*, void*);
+     lt9_backward_with_grad($tens, $gradient); #}
+  ())
+
+(de _torch9-grad (tens)
+  ((-gptr-) tens)
+  (let ((handle (gptr ())))
+    ((-gptr-) handle)
+    #{ extern void* lt9_grad(void*);
+       $handle = lt9_grad($tens); #}
+    handle))
+
+(de _torch9-grad-defined (tens)
+  ((-gptr-) tens)
+  (let ((r 0))
+    ((-int-) r)
+    #{ extern int lt9_grad_defined(void*);
+       $r = lt9_grad_defined($tens); #}
+    r))
+
+(de _torch9-grad-enabled ()
+  (let ((r 0))
+    ((-int-) r)
+    #{ extern int lt9_grad_enabled(void);
+       $r = lt9_grad_enabled(); #}
+    r))
+
+(de _torch9-set-grad-enabled (flag)
+  ((-int-) flag)
+  #{ extern void lt9_set_grad_enabled(int);
+     lt9_set_grad_enabled($flag); #}
+  ())
+
+(de _torch9-detach (tens)
+  ((-gptr-) tens)
+  (let ((handle (gptr ())))
+    ((-gptr-) handle)
+    #{ extern void* lt9_detach(void*);
+       $handle = lt9_detach($tens); #}
+    handle))
+
+;; --- Loss functions ---
+(de _torch9-mse-loss (input target reduction)
+  ((-gptr-) input target)
+  ((-int-) reduction)
+  (let ((handle (gptr ())))
+    ((-gptr-) handle)
+    #{ extern void* lt9_mse_loss(void*, void*, int);
+       $handle = lt9_mse_loss($input, $target, $reduction); #}
+    handle))
+
+(de _torch9-cross-entropy-loss (input target reduction)
+  ((-gptr-) input target)
+  ((-int-) reduction)
+  (let ((handle (gptr ())))
+    ((-gptr-) handle)
+    #{ extern void* lt9_cross_entropy_loss(void*, void*, int);
+       $handle = lt9_cross_entropy_loss($input, $target, $reduction); #}
+    handle))
+
+;; --- Param group builder ---
+(de _torch9-param-group-create ()
+  (let ((handle (gptr ())))
+    ((-gptr-) handle)
+    #{ extern void* lt9_param_group_create(void);
+       $handle = lt9_param_group_create(); #}
+    handle))
+
+(de _torch9-param-group-add (pg tens)
+  ((-gptr-) pg tens)
+  #{ extern void lt9_param_group_add(void*, void*);
+     lt9_param_group_add($pg, $tens); #}
+  ())
+
+(de _torch9-param-group-free (pg)
+  ((-gptr-) pg)
+  #{ extern void lt9_param_group_free(void*);
+     lt9_param_group_free($pg); #}
+  ())
+
+;; --- Optimizer creation ---
+(de _torch9-sgd-create (pg lr momentum dampening weight-decay nesterov)
+  ((-gptr-) pg)
+  ((-double-) lr momentum dampening weight-decay)
+  ((-int-) nesterov)
+  (let ((handle (gptr ())))
+    ((-gptr-) handle)
+    #{ extern void* lt9_sgd_create(void*, double, double, double, double, int);
+       $handle = lt9_sgd_create($pg, $lr, $momentum, $dampening, $weight_decay, $nesterov); #}
+    handle))
+
+(de _torch9-adam-create (pg lr beta1 beta2 eps weight-decay amsgrad)
+  ((-gptr-) pg)
+  ((-double-) lr beta1 beta2 eps weight-decay)
+  ((-int-) amsgrad)
+  (let ((handle (gptr ())))
+    ((-gptr-) handle)
+    #{ extern void* lt9_adam_create(void*, double, double, double, double, double, int);
+       $handle = lt9_adam_create($pg, $lr, $beta1, $beta2, $eps, $weight_decay, $amsgrad); #}
+    handle))
+
+;; --- Optimizer operations ---
+(de _torch9-optimizer-step (opt)
+  ((-gptr-) opt)
+  #{ extern void lt9_optimizer_step(void*);
+     lt9_optimizer_step($opt); #}
+  ())
+
+(de _torch9-optimizer-zero-grad (opt)
+  ((-gptr-) opt)
+  #{ extern void lt9_optimizer_zero_grad(void*);
+     lt9_optimizer_zero_grad($opt); #}
+  ())
+
+(de _torch9-optimizer-get-lr (opt)
+  ((-gptr-) opt)
+  (let ((r 0.0))
+    ((-double-) r)
+    #{ extern double lt9_optimizer_get_lr(void*);
+       $r = lt9_optimizer_get_lr($opt); #}
+    r))
+
+(de _torch9-optimizer-set-lr (opt lr)
+  ((-gptr-) opt)
+  ((-double-) lr)
+  #{ extern void lt9_optimizer_set_lr(void*, double);
+     lt9_optimizer_set_lr($opt, $lr); #}
+  ())
+
+(de _torch9-optimizer-free (opt)
+  ((-gptr-) opt)
+  #{ extern void lt9_optimizer_free(void*);
+     lt9_optimizer_free($opt); #}
+  ())
+
+;; --- Tensor save/load ---
+(de _torch9-tensor-save (tens path)
+  ((-gptr-) tens)
+  ((-str-) path)
+  (let ((r 0))
+    ((-int-) r)
+    #{ extern int lt9_tensor_save(void*, const char*);
+       $r = lt9_tensor_save($tens, (const char *)($path->data)); #}
+    r))
+
+(de _torch9-tensor-load (path)
+  ((-str-) path)
+  (let ((handle (gptr ())))
+    ((-gptr-) handle)
+    #{ extern void* lt9_tensor_load(const char*);
+       $handle = lt9_tensor_load((const char *)($path->data)); #}
+    handle))
+
+
 ;; --- Compile all DHC wrappers ---
 (let ((dhc-make-lushflags
        (concat dhc-make-lushflags " -I" (dirname file-being-loaded))))
@@ -955,7 +1233,24 @@
     ;; Stage 3: NN Functional ops
     _torch9-conv2d _torch9-batch-norm _torch9-layer-norm
     _torch9-max-pool2d _torch9-avg-pool2d
-    _torch9-linear _torch9-embedding _torch9-dropout))
+    _torch9-linear _torch9-embedding _torch9-dropout
+    ;; Stage 4: Tensor creation + reductions
+    _torch9-randn _torch9-zeros _torch9-ones _torch9-full
+    _torch9-sum _torch9-mean _torch9-item _torch9-neg
+    ;; Stage 4: Autograd
+    _torch9-requires-grad _torch9-set-requires-grad
+    _torch9-backward _torch9-backward-with-grad
+    _torch9-grad _torch9-grad-defined
+    _torch9-grad-enabled _torch9-set-grad-enabled _torch9-detach
+    ;; Stage 4: Loss functions
+    _torch9-mse-loss _torch9-cross-entropy-loss
+    ;; Stage 4: Optimizers
+    _torch9-param-group-create _torch9-param-group-add _torch9-param-group-free
+    _torch9-sgd-create _torch9-adam-create
+    _torch9-optimizer-step _torch9-optimizer-zero-grad
+    _torch9-optimizer-get-lr _torch9-optimizer-set-lr _torch9-optimizer-free
+    ;; Stage 4: Save/load
+    _torch9-tensor-save _torch9-tensor-load))
 
 
 ;; ============================================================
@@ -1770,3 +2065,394 @@
          (result (torch9-ivalue-unpack iv)))
     (_torch9-ivalue-free iv)
     result))
+
+
+;; ============================================================
+;; Stage 4: Training Support API
+;; ============================================================
+
+#? ** Data-Owning Tensor Creation
+
+#? (torch9-randn . <dims>)
+;; Create a tensor filled with random normal values (mean=0, std=1).
+;; The tensor owns its data (not backed by an idx).
+;; Default dtype is double (ST_D=3).
+;;
+;; {<b> Example:}
+;; {<code>
+;;  (let ((t (torch9-randn 3 4)))   ;; 3x4 random tensor
+;;    (torch9-print t)
+;;    (torch9-free t))
+;; </code>}
+;; {<see> (torch9-zeros . <dims>)}
+;; {<see> (torch9-ones . <dims>)}
+(de torch9-randn dims
+  (let* ((shape (let ((s (int-matrix (length dims)))
+                      (i 0))
+                  (mapc (lambda (d) (s i d) (setq i (+ i 1))) dims)
+                  s))
+         (h (_torch9-randn shape 3)))
+    (when (= h (gptr ()))
+      (error "torch9-randn" "randn returned NULL" ()))
+    h))
+
+#? (torch9-zeros . <dims>)
+;; Create a tensor filled with zeros.
+;; Default dtype is double.
+;;
+;; {<b> Example:}
+;; {<code>
+;;  (let ((t (torch9-zeros 2 3)))   ;; 2x3 zero tensor
+;;    (torch9-free t))
+;; </code>}
+;; {<see> (torch9-randn . <dims>)}
+;; {<see> (torch9-ones . <dims>)}
+(de torch9-zeros dims
+  (let* ((shape (let ((s (int-matrix (length dims)))
+                      (i 0))
+                  (mapc (lambda (d) (s i d) (setq i (+ i 1))) dims)
+                  s))
+         (h (_torch9-zeros shape 3)))
+    (when (= h (gptr ()))
+      (error "torch9-zeros" "zeros returned NULL" ()))
+    h))
+
+#? (torch9-ones . <dims>)
+;; Create a tensor filled with ones.
+;; Default dtype is double.
+;;
+;; {<b> Example:}
+;; {<code>
+;;  (let ((t (torch9-ones 5)))   ;; 5-element ones vector
+;;    (torch9-free t))
+;; </code>}
+;; {<see> (torch9-randn . <dims>)}
+;; {<see> (torch9-zeros . <dims>)}
+(de torch9-ones dims
+  (let* ((shape (let ((s (int-matrix (length dims)))
+                      (i 0))
+                  (mapc (lambda (d) (s i d) (setq i (+ i 1))) dims)
+                  s))
+         (h (_torch9-ones shape 3)))
+    (when (= h (gptr ()))
+      (error "torch9-ones" "ones returned NULL" ()))
+    h))
+
+#? (torch9-full <value> . <dims>)
+;; Create a tensor filled with <value>.
+;; Default dtype is double.
+;;
+;; {<b> Example:}
+;; {<code>
+;;  (let ((t (torch9-full 3.14 2 3)))   ;; 2x3 tensor filled with pi
+;;    (torch9-free t))
+;; </code>}
+;; {<see> (torch9-zeros . <dims>)}
+;; {<see> (torch9-ones . <dims>)}
+(de torch9-full (value . dims)
+  (let* ((shape (let ((s (int-matrix (length dims)))
+                      (i 0))
+                  (mapc (lambda (d) (s i d) (setq i (+ i 1))) dims)
+                  s))
+         (h (_torch9-full shape 3 value)))
+    (when (= h (gptr ()))
+      (error "torch9-full" "full returned NULL" ()))
+    h))
+
+
+#? ** Reductions
+
+#? (torch9-sum <handle>)
+;; Reduce a tensor to its scalar sum.
+;; Returns a new scalar tensor handle.
+;; {<see> (torch9-mean <handle>)}
+;; {<see> (torch9-item <handle>)}
+(de torch9-sum (handle)
+  (let ((h (_torch9-sum handle)))
+    (when (= h (gptr ()))
+      (error "torch9-sum" "sum returned NULL" ()))
+    h))
+
+#? (torch9-mean <handle>)
+;; Reduce a tensor to its scalar mean.
+;; Returns a new scalar tensor handle.
+;; {<see> (torch9-sum <handle>)}
+;; {<see> (torch9-item <handle>)}
+(de torch9-mean (handle)
+  (let ((h (_torch9-mean handle)))
+    (when (= h (gptr ()))
+      (error "torch9-mean" "mean returned NULL" ()))
+    h))
+
+#? (torch9-item <handle>)
+;; Extract the scalar value from a tensor as a Lush number.
+;; The tensor must have exactly one element.
+;;
+;; {<b> Example:}
+;; {<code>
+;;  (let* ((v [3.14])
+;;         (tv (torch9-from-idx v))
+;;         (ts (torch9-sum tv)))
+;;    (printf "sum = %g\n" (torch9-item ts))
+;;    (torch9-free tv) (torch9-free ts))
+;; </code>}
+;; {<see> (torch9-sum <handle>)}
+;; {<see> (torch9-mean <handle>)}
+(de torch9-item (handle)
+  (_torch9-item handle))
+
+
+#? ** Element-wise Operations (continued)
+
+#? (torch9-neg <handle>)
+;; Element-wise negation: -x.
+;; Returns a new tensor handle.
+;; {<see> (torch9-sub <a> <b>)}
+(de torch9-neg (handle)
+  (let ((h (_torch9-neg handle)))
+    (when (= h (gptr ()))
+      (error "torch9-neg" "neg returned NULL" ()))
+    h))
+
+
+#? ** Autograd
+
+#? (torch9-requires-grad <handle>)
+;; Query whether a tensor has gradient tracking enabled.
+;; Returns 1 if requires_grad is true, 0 otherwise.
+;; {<see> (torch9-requires-grad! <handle> <flag>)}
+(de torch9-requires-grad (handle)
+  (_torch9-requires-grad handle))
+
+#? (torch9-requires-grad! <handle> <flag>)
+;; Enable or disable gradient tracking on a tensor (in-place).
+;; <flag> is 1 to enable, 0 to disable.
+;; {<see> (torch9-requires-grad <handle>)}
+;; {<see> (torch9-backward <handle>)}
+(de torch9-requires-grad! (handle flag)
+  (_torch9-set-requires-grad handle flag)
+  ())
+
+#? (torch9-backward <handle> &optional <gradient>)
+;; Compute gradients via backpropagation.
+;; <handle> should be a scalar tensor (e.g. a loss value).
+;; If <gradient> is provided, it is used as the gradient of the
+;; output (for non-scalar backward).
+;;
+;; After calling backward, retrieve gradients with {<b> torch9-grad}.
+;;
+;; {<b> Example:}
+;; {<code>
+;;  (let* ((x (torch9-randn 3))
+;;         (dummy (torch9-requires-grad! x 1))
+;;         (y (torch9-mul x x))
+;;         (s (torch9-sum y)))
+;;    (torch9-backward s)
+;;    ;; grad(x) = 2*x
+;;    (let ((g (torch9-grad x)))
+;;      (torch9-print g)
+;;      (torch9-free g))
+;;    (torch9-free x) (torch9-free y) (torch9-free s))
+;; </code>}
+;; {<see> (torch9-grad <handle>)}
+;; {<see> (torch9-requires-grad! <handle> <flag>)}
+(de torch9-backward (handle &optional gradient)
+  (if gradient
+    (_torch9-backward-with-grad handle gradient)
+    (_torch9-backward handle))
+  ())
+
+#? (torch9-grad <handle>)
+;; Return the gradient tensor for <handle>.
+;; Returns a tensor handle, or () if gradient is not defined.
+;; {<see> (torch9-backward <handle>)}
+;; {<see> (torch9-requires-grad! <handle> <flag>)}
+(de torch9-grad (handle)
+  (let ((h (_torch9-grad handle)))
+    (if (= h (gptr ())) () h)))
+
+#? (torch9-detach <handle>)
+;; Detach a tensor from the computation graph.
+;; Returns a new tensor handle that shares data but does not
+;; track gradients.
+;; {<see> (torch9-requires-grad! <handle> <flag>)}
+(de torch9-detach (handle)
+  (let ((h (_torch9-detach handle)))
+    (when (= h (gptr ()))
+      (error "torch9-detach" "detach returned NULL" ()))
+    h))
+
+#? (torch9-grad-enabled)
+;; Query whether gradient computation is globally enabled.
+;; Returns 1 if enabled, 0 if disabled.
+;; {<see> (torch9-set-grad-enabled <flag>)}
+(de torch9-grad-enabled ()
+  (_torch9-grad-enabled))
+
+#? (torch9-set-grad-enabled <flag>)
+;; Globally enable or disable gradient computation.
+;; <flag> is 1 to enable, 0 to disable.
+;; Useful for inference to reduce memory usage.
+;; {<see> (torch9-grad-enabled)}
+(de torch9-set-grad-enabled (flag)
+  (_torch9-set-grad-enabled flag)
+  ())
+
+
+#? ** Loss Functions
+
+#? (torch9-mse-loss <input> <target>)
+;; Mean squared error loss with mean reduction.
+;; Both <input> and <target> are tensor handles of the same shape.
+;; Returns a scalar tensor handle (the loss value).
+;;
+;; For gradient computation, <input> should have requires_grad enabled.
+;; {<see> (torch9-cross-entropy-loss <input> <target>)}
+;; {<see> (torch9-backward <handle>)}
+(de torch9-mse-loss (input target)
+  (let ((h (_torch9-mse-loss input target 1)))
+    (when (= h (gptr ()))
+      (error "torch9-mse-loss" "mse_loss returned NULL" ()))
+    h))
+
+#? (torch9-cross-entropy-loss <input> <target>)
+;; Cross-entropy loss with mean reduction.
+;; <input> is logits with shape {<c> [N, C]} (N samples, C classes).
+;; <target> is class indices with shape {<c> [N]} (long/int tensor).
+;; Returns a scalar tensor handle (the loss value).
+;;
+;; {<see> (torch9-mse-loss <input> <target>)}
+;; {<see> (torch9-backward <handle>)}
+(de torch9-cross-entropy-loss (input target)
+  (let ((h (_torch9-cross-entropy-loss input target 1)))
+    (when (= h (gptr ()))
+      (error "torch9-cross-entropy-loss" "cross_entropy_loss returned NULL" ()))
+    h))
+
+
+#? ** Optimizers
+
+#? (torch9-sgd <params> <lr> &optional <momentum> <weight-decay>)
+;; Create an SGD optimizer.
+;; <params> is a Lush list of tensor handles (the parameters to optimize).
+;; <lr> is the learning rate.
+;; Returns an opaque optimizer handle.
+;;
+;; {<b> Example:}
+;; {<code>
+;;  (let* ((w (torch9-randn 3 4))
+;;         (b (torch9-randn 4))
+;;         (opt (torch9-sgd (list w b) 0.01)))
+;;    ;; ... training loop ...
+;;    (torch9-optimizer-free opt)
+;;    (torch9-free w) (torch9-free b))
+;; </code>}
+;; {<see> (torch9-adam <params>)}
+;; {<see> (torch9-optimizer-step <opt>)}
+;; {<see> (torch9-optimizer-zero-grad <opt>)}
+(de torch9-sgd (params lr &optional (momentum 0) (weight-decay 0))
+  (let ((pg (_torch9-param-group-create))
+        (rest params))
+    (while rest
+      (_torch9-param-group-add pg (car rest))
+      (setq rest (cdr rest)))
+    (let ((opt (_torch9-sgd-create pg lr momentum 0 weight-decay 0)))
+      (_torch9-param-group-free pg)
+      (when (= opt (gptr ()))
+        (error "torch9-sgd" "SGD creation failed" ()))
+      opt)))
+
+#? (torch9-adam <params> &optional <lr> <beta1> <beta2> <eps> <weight-decay>)
+;; Create an Adam optimizer.
+;; <params> is a Lush list of tensor handles.
+;; Default parameters: lr=0.001, beta1=0.9, beta2=0.999, eps=1e-8.
+;; Returns an opaque optimizer handle.
+;;
+;; {<see> (torch9-sgd <params> <lr>)}
+;; {<see> (torch9-optimizer-step <opt>)}
+(de torch9-adam (params &optional (lr 0.001) (beta1 0.9) (beta2 0.999)
+                                  (eps 1e-8) (weight-decay 0))
+  (let ((pg (_torch9-param-group-create))
+        (rest params))
+    (while rest
+      (_torch9-param-group-add pg (car rest))
+      (setq rest (cdr rest)))
+    (let ((opt (_torch9-adam-create pg lr beta1 beta2 eps weight-decay 0)))
+      (_torch9-param-group-free pg)
+      (when (= opt (gptr ()))
+        (error "torch9-adam" "Adam creation failed" ()))
+      opt)))
+
+#? (torch9-optimizer-step <opt>)
+;; Perform one optimization step (update parameters).
+;; {<see> (torch9-optimizer-zero-grad <opt>)}
+;; {<see> (torch9-sgd <params> <lr>)}
+(de torch9-optimizer-step (opt)
+  (_torch9-optimizer-step opt)
+  ())
+
+#? (torch9-optimizer-zero-grad <opt>)
+;; Zero all parameter gradients.
+;; Call before each backward pass in a training loop.
+;; {<see> (torch9-optimizer-step <opt>)}
+(de torch9-optimizer-zero-grad (opt)
+  (_torch9-optimizer-zero-grad opt)
+  ())
+
+#? (torch9-optimizer-get-lr <opt>)
+;; Get the current learning rate.
+;; {<see> (torch9-optimizer-set-lr <opt> <lr>)}
+(de torch9-optimizer-get-lr (opt)
+  (_torch9-optimizer-get-lr opt))
+
+#? (torch9-optimizer-set-lr <opt> <lr>)
+;; Set the learning rate.
+;; {<see> (torch9-optimizer-get-lr <opt>)}
+(de torch9-optimizer-set-lr (opt lr)
+  (_torch9-optimizer-set-lr opt lr)
+  ())
+
+#? (torch9-optimizer-free <opt>)
+;; Free an optimizer handle.
+;; {<see> (torch9-sgd <params> <lr>)}
+;; {<see> (torch9-adam <params>)}
+(de torch9-optimizer-free (opt)
+  (_torch9-optimizer-free opt)
+  ())
+
+
+#? ** Tensor Save/Load
+
+#? (torch9-tensor-save <handle> <path>)
+;; Save a tensor to a file (libtorch format).
+;; Returns 0 on success, errors on failure.
+;;
+;; {<b> Example:}
+;; {<code>
+;;  (let ((t (torch9-randn 3 4)))
+;;    (torch9-tensor-save t "/tmp/my-tensor.pt")
+;;    (torch9-free t))
+;; </code>}
+;; {<see> (torch9-tensor-load <path>)}
+(de torch9-tensor-save (handle path)
+  (let ((r (_torch9-tensor-save handle path)))
+    (when (<> r 0)
+      (error "torch9-tensor-save" (sprintf "Failed to save tensor to %s" path) ()))
+    r))
+
+#? (torch9-tensor-load <path>)
+;; Load a tensor from a file (libtorch format).
+;; Returns a tensor handle.
+;;
+;; {<b> Example:}
+;; {<code>
+;;  (let ((t (torch9-tensor-load "/tmp/my-tensor.pt")))
+;;    (torch9-print t)
+;;    (torch9-free t))
+;; </code>}
+;; {<see> (torch9-tensor-save <handle> <path>)}
+(de torch9-tensor-load (path)
+  (let ((h (_torch9-tensor-load path)))
+    (when (= h (gptr ()))
+      (error "torch9-tensor-load" (sprintf "Failed to load tensor from %s" path) ()))
+    h))

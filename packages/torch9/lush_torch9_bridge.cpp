@@ -8,6 +8,7 @@
 #include <torch/torch.h>
 #include <torch/script.h>
 #include <iostream>
+#include <vector>
 #include "lush_torch9_bridge.h"
 
 /* ---- Internal: Lush ST_* enum → torch ScalarType mapping ---- */
@@ -491,4 +492,283 @@ lt9_tensor lt9_dropout(lt9_tensor input, double p, int training) {
     if (!input) return nullptr;
     auto *in = static_cast<torch::Tensor*>(input);
     return new torch::Tensor(torch::dropout(*in, p, training != 0));
+}
+
+/* ============================================================
+ * Stage 4: Training Support (Autograd + Optimizers + Save/Load)
+ * ============================================================ */
+
+/* ---- Data-owning tensor creation ---- */
+
+lt9_tensor lt9_randn(int64_t *sizes, int ndim, int dtype) {
+    if (!sizes || ndim < 1 || dtype < 0 || dtype > 9) return nullptr;
+    auto opts = torch::TensorOptions().dtype(st_to_torch[dtype]);
+    return new torch::Tensor(torch::randn(
+        c10::IntArrayRef(sizes, static_cast<size_t>(ndim)), opts));
+}
+
+lt9_tensor lt9_zeros(int64_t *sizes, int ndim, int dtype) {
+    if (!sizes || ndim < 1 || dtype < 0 || dtype > 9) return nullptr;
+    auto opts = torch::TensorOptions().dtype(st_to_torch[dtype]);
+    return new torch::Tensor(torch::zeros(
+        c10::IntArrayRef(sizes, static_cast<size_t>(ndim)), opts));
+}
+
+lt9_tensor lt9_ones(int64_t *sizes, int ndim, int dtype) {
+    if (!sizes || ndim < 1 || dtype < 0 || dtype > 9) return nullptr;
+    auto opts = torch::TensorOptions().dtype(st_to_torch[dtype]);
+    return new torch::Tensor(torch::ones(
+        c10::IntArrayRef(sizes, static_cast<size_t>(ndim)), opts));
+}
+
+lt9_tensor lt9_full(int64_t *sizes, int ndim, int dtype, double fill_value) {
+    if (!sizes || ndim < 1 || dtype < 0 || dtype > 9) return nullptr;
+    auto opts = torch::TensorOptions().dtype(st_to_torch[dtype]);
+    return new torch::Tensor(torch::full(
+        c10::IntArrayRef(sizes, static_cast<size_t>(ndim)),
+        fill_value, opts));
+}
+
+/* ---- Reductions + scalar extraction ---- */
+
+lt9_tensor lt9_sum(lt9_tensor t) {
+    if (!t) return nullptr;
+    auto *tp = static_cast<torch::Tensor*>(t);
+    return new torch::Tensor(tp->sum());
+}
+
+lt9_tensor lt9_mean(lt9_tensor t) {
+    if (!t) return nullptr;
+    auto *tp = static_cast<torch::Tensor*>(t);
+    return new torch::Tensor(tp->mean());
+}
+
+double lt9_item(lt9_tensor t) {
+    if (!t) return 0.0;
+    auto *tp = static_cast<torch::Tensor*>(t);
+    return tp->item<double>();
+}
+
+/* ---- Element-wise ops ---- */
+
+lt9_tensor lt9_neg(lt9_tensor t) {
+    if (!t) return nullptr;
+    auto *tp = static_cast<torch::Tensor*>(t);
+    return new torch::Tensor(torch::neg(*tp));
+}
+
+/* ---- Autograd ---- */
+
+int lt9_requires_grad(lt9_tensor t) {
+    if (!t) return 0;
+    auto *tp = static_cast<torch::Tensor*>(t);
+    return tp->requires_grad() ? 1 : 0;
+}
+
+void lt9_requires_grad_(lt9_tensor t, int flag) {
+    if (!t) return;
+    auto *tp = static_cast<torch::Tensor*>(t);
+    tp->set_requires_grad(flag != 0);
+}
+
+void lt9_backward(lt9_tensor t) {
+    if (!t) return;
+    auto *tp = static_cast<torch::Tensor*>(t);
+    tp->backward();
+}
+
+void lt9_backward_with_grad(lt9_tensor t, lt9_tensor gradient) {
+    if (!t || !gradient) return;
+    auto *tp = static_cast<torch::Tensor*>(t);
+    auto *gp = static_cast<torch::Tensor*>(gradient);
+    tp->backward(*gp);
+}
+
+lt9_tensor lt9_grad(lt9_tensor t) {
+    if (!t) return nullptr;
+    auto *tp = static_cast<torch::Tensor*>(t);
+    if (!tp->grad().defined()) return nullptr;
+    return new torch::Tensor(tp->grad());
+}
+
+int lt9_grad_defined(lt9_tensor t) {
+    if (!t) return 0;
+    auto *tp = static_cast<torch::Tensor*>(t);
+    return tp->grad().defined() ? 1 : 0;
+}
+
+int lt9_grad_enabled(void) {
+    return torch::GradMode::is_enabled() ? 1 : 0;
+}
+
+void lt9_set_grad_enabled(int enabled) {
+    torch::GradMode::set_enabled(enabled != 0);
+}
+
+lt9_tensor lt9_detach(lt9_tensor t) {
+    if (!t) return nullptr;
+    auto *tp = static_cast<torch::Tensor*>(t);
+    return new torch::Tensor(tp->detach());
+}
+
+/* ---- Loss functions ---- */
+
+static torch::Reduction::Reduction int_to_reduction(int r) {
+    switch (r) {
+        case 0: return torch::Reduction::None;
+        case 1: return torch::Reduction::Mean;
+        case 2: return torch::Reduction::Sum;
+        default: return torch::Reduction::Mean;
+    }
+}
+
+lt9_tensor lt9_mse_loss(lt9_tensor input, lt9_tensor target, int reduction) {
+    if (!input || !target) return nullptr;
+    auto *in = static_cast<torch::Tensor*>(input);
+    auto *tgt = static_cast<torch::Tensor*>(target);
+    return new torch::Tensor(torch::mse_loss(*in, *tgt, int_to_reduction(reduction)));
+}
+
+lt9_tensor lt9_cross_entropy_loss(lt9_tensor input, lt9_tensor target,
+                                   int reduction) {
+    if (!input || !target) return nullptr;
+    auto *in = static_cast<torch::Tensor*>(input);
+    auto *tgt = static_cast<torch::Tensor*>(target);
+    /* cross_entropy_loss requires Long (int64) targets */
+    auto tgt64 = tgt->to(torch::kInt64);
+    return new torch::Tensor(torch::cross_entropy_loss(
+        *in, tgt64, {}, int_to_reduction(reduction)));
+}
+
+/* ---- Optimizer: param group builder ---- */
+
+lt9_param_group lt9_param_group_create(void) {
+    return new std::vector<torch::Tensor>();
+}
+
+void lt9_param_group_add(lt9_param_group pg, lt9_tensor t) {
+    if (!pg || !t) return;
+    auto *params = static_cast<std::vector<torch::Tensor>*>(pg);
+    auto *tp = static_cast<torch::Tensor*>(t);
+    params->push_back(*tp);
+}
+
+void lt9_param_group_free(lt9_param_group pg) {
+    if (pg)
+        delete static_cast<std::vector<torch::Tensor>*>(pg);
+}
+
+/* ---- Optimizer: creation ---- */
+
+lt9_optimizer lt9_sgd_create(lt9_param_group pg, double lr, double momentum,
+                              double dampening, double weight_decay, int nesterov) {
+    if (!pg) return nullptr;
+    auto *params = static_cast<std::vector<torch::Tensor>*>(pg);
+    try {
+        auto opts = torch::optim::SGDOptions(lr)
+            .momentum(momentum)
+            .dampening(dampening)
+            .weight_decay(weight_decay)
+            .nesterov(nesterov != 0);
+        return new torch::optim::SGD(*params, opts);
+    } catch (const c10::Error &e) {
+        std::cerr << "lt9_sgd_create error: " << e.what() << std::endl;
+        return nullptr;
+    }
+}
+
+lt9_optimizer lt9_adam_create(lt9_param_group pg, double lr, double beta1,
+                               double beta2, double eps, double weight_decay,
+                               int amsgrad) {
+    if (!pg) return nullptr;
+    auto *params = static_cast<std::vector<torch::Tensor>*>(pg);
+    try {
+        auto opts = torch::optim::AdamOptions(lr)
+            .betas(std::make_tuple(beta1, beta2))
+            .eps(eps)
+            .weight_decay(weight_decay)
+            .amsgrad(amsgrad != 0);
+        return new torch::optim::Adam(*params, opts);
+    } catch (const c10::Error &e) {
+        std::cerr << "lt9_adam_create error: " << e.what() << std::endl;
+        return nullptr;
+    }
+}
+
+/* ---- Optimizer: operations ---- */
+
+void lt9_optimizer_step(lt9_optimizer opt) {
+    if (!opt) return;
+    auto *op = static_cast<torch::optim::Optimizer*>(opt);
+    op->step();
+}
+
+void lt9_optimizer_zero_grad(lt9_optimizer opt) {
+    if (!opt) return;
+    auto *op = static_cast<torch::optim::Optimizer*>(opt);
+    op->zero_grad();
+}
+
+double lt9_optimizer_get_lr(lt9_optimizer opt) {
+    if (!opt) return 0.0;
+    auto *op = static_cast<torch::optim::Optimizer*>(opt);
+    for (auto &pg : op->param_groups()) {
+        if (auto *sgd_opts = dynamic_cast<torch::optim::SGDOptions*>(&pg.options())) {
+            return sgd_opts->lr();
+        } else if (auto *adam_opts = dynamic_cast<torch::optim::AdamOptions*>(&pg.options())) {
+            return adam_opts->lr();
+        }
+    }
+    return 0.0;
+}
+
+void lt9_optimizer_set_lr(lt9_optimizer opt, double lr) {
+    if (!opt) return;
+    auto *op = static_cast<torch::optim::Optimizer*>(opt);
+    /* Update defaults and all param groups */
+    for (auto &pg : op->param_groups()) {
+        if (auto *sgd_opts = dynamic_cast<torch::optim::SGDOptions*>(&pg.options())) {
+            sgd_opts->lr(lr);
+        } else if (auto *adam_opts = dynamic_cast<torch::optim::AdamOptions*>(&pg.options())) {
+            adam_opts->lr(lr);
+        }
+    }
+}
+
+void lt9_optimizer_free(lt9_optimizer opt) {
+    if (!opt) return;
+    /* We need to determine the actual type to delete properly */
+    auto *op = static_cast<torch::optim::Optimizer*>(opt);
+    if (auto *sgd = dynamic_cast<torch::optim::SGD*>(op)) {
+        delete sgd;
+    } else if (auto *adam = dynamic_cast<torch::optim::Adam*>(op)) {
+        delete adam;
+    } else {
+        /* Fallback: delete as base (may leak, but shouldn't reach here) */
+        delete op;
+    }
+}
+
+/* ---- Tensor save/load ---- */
+
+int lt9_tensor_save(lt9_tensor t, const char *path) {
+    if (!t || !path) return -1;
+    auto *tp = static_cast<torch::Tensor*>(t);
+    try {
+        torch::save(*tp, path);
+        return 0;
+    } catch (...) {
+        return -1;
+    }
+}
+
+lt9_tensor lt9_tensor_load(const char *path) {
+    if (!path) return nullptr;
+    torch::Tensor t;
+    try {
+        torch::load(t, path);
+        return new torch::Tensor(t);
+    } catch (...) {
+        return nullptr;
+    }
 }

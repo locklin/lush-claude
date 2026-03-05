@@ -168,6 +168,76 @@ lt9_tensor  lt9_embedding(lt9_tensor weight, lt9_tensor indices);
 /* Dropout (only active when training=1; pass-through when training=0). */
 lt9_tensor  lt9_dropout(lt9_tensor input, double p, int training);
 
+
+/* ============================================================
+ * Stage 4: Training Support (Autograd + Optimizers + Save/Load)
+ * ============================================================ */
+
+typedef void* lt9_optimizer;
+typedef void* lt9_param_group;
+
+/* ---- Data-owning tensor creation ---- */
+
+lt9_tensor  lt9_randn(int64_t *sizes, int ndim, int dtype);
+lt9_tensor  lt9_zeros(int64_t *sizes, int ndim, int dtype);
+lt9_tensor  lt9_ones(int64_t *sizes, int ndim, int dtype);
+lt9_tensor  lt9_full(int64_t *sizes, int ndim, int dtype, double fill_value);
+
+/* ---- Reductions + scalar extraction ---- */
+
+lt9_tensor  lt9_sum(lt9_tensor t);
+lt9_tensor  lt9_mean(lt9_tensor t);
+double      lt9_item(lt9_tensor t);
+
+/* ---- Element-wise ops ---- */
+
+lt9_tensor  lt9_neg(lt9_tensor t);
+
+/* ---- Autograd ---- */
+
+int         lt9_requires_grad(lt9_tensor t);
+void        lt9_requires_grad_(lt9_tensor t, int flag);
+void        lt9_backward(lt9_tensor t);
+void        lt9_backward_with_grad(lt9_tensor t, lt9_tensor gradient);
+lt9_tensor  lt9_grad(lt9_tensor t);
+int         lt9_grad_defined(lt9_tensor t);
+int         lt9_grad_enabled(void);
+void        lt9_set_grad_enabled(int enabled);
+lt9_tensor  lt9_detach(lt9_tensor t);
+
+/* ---- Loss functions (reduction: 0=None, 1=Mean, 2=Sum) ---- */
+
+lt9_tensor  lt9_mse_loss(lt9_tensor input, lt9_tensor target, int reduction);
+lt9_tensor  lt9_cross_entropy_loss(lt9_tensor input, lt9_tensor target,
+                                    int reduction);
+
+/* ---- Optimizer: param group builder ---- */
+
+lt9_param_group lt9_param_group_create(void);
+void            lt9_param_group_add(lt9_param_group pg, lt9_tensor t);
+void            lt9_param_group_free(lt9_param_group pg);
+
+/* ---- Optimizer: creation ---- */
+
+lt9_optimizer lt9_sgd_create(lt9_param_group pg, double lr, double momentum,
+                              double dampening, double weight_decay, int nesterov);
+lt9_optimizer lt9_adam_create(lt9_param_group pg, double lr, double beta1,
+                               double beta2, double eps, double weight_decay,
+                               int amsgrad);
+
+/* ---- Optimizer: operations ---- */
+
+void   lt9_optimizer_step(lt9_optimizer opt);
+void   lt9_optimizer_zero_grad(lt9_optimizer opt);
+double lt9_optimizer_get_lr(lt9_optimizer opt);
+void   lt9_optimizer_set_lr(lt9_optimizer opt, double lr);
+void   lt9_optimizer_free(lt9_optimizer opt);
+
+/* ---- Tensor save/load ---- */
+
+int         lt9_tensor_save(lt9_tensor t, const char *path);
+lt9_tensor  lt9_tensor_load(const char *path);
+
 #ifdef __cplusplus
 }
 #endif

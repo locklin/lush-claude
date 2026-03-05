@@ -1571,5 +1571,829 @@
 
 
 ;; ============================================================
+;; Stage 4 Tests: Training Support (Autograd + Optimizers + Save/Load)
+;; ============================================================
+
+
+;; ============================================================
+(test-suite "Data-owning tensor creation: randn"
+
+  ;; randn produces correct shape
+  (let ((t (torch9-randn 3 4)))
+    (test-equal "randn ndim" (torch9-ndim t) 2)
+    (let ((sz (torch9-sizes t)))
+      (test-equal "randn dim0" (sz 0) 3)
+      (test-equal "randn dim1" (sz 1) 4))
+    (test-equal "randn dtype" (torch9-dtype t) 3)
+    (test-equal "randn numel" (torch9-numel t) 12)
+    (torch9-free t))
+
+  ;; randn 1D
+  (let ((t (torch9-randn 5)))
+    (test-equal "randn 1D ndim" (torch9-ndim t) 1)
+    (test-equal "randn 1D numel" (torch9-numel t) 5)
+    (torch9-free t))
+
+  ;; randn 3D
+  (let ((t (torch9-randn 2 3 4)))
+    (test-equal "randn 3D ndim" (torch9-ndim t) 3)
+    (test-equal "randn 3D numel" (torch9-numel t) 24)
+    (torch9-free t))
+
+  ;; randn produces different values each call
+  (let* ((t1 (torch9-randn 10))
+         (t2 (torch9-randn 10))
+         (v1 (torch9-to-idx t1))
+         (v2 (torch9-to-idx t2))
+         (diff 0.0))
+    (for (i 0 9)
+      (setq diff (+ diff (abs (- (v1 i) (v2 i))))))
+    (test-check "randn different values" (> diff 0.01))
+    (torch9-free t1) (torch9-free t2))
+
+  ;; randn can be converted to idx
+  (let* ((t (torch9-randn 3 2))
+         (m (torch9-to-idx t)))
+    (test-equal "randn to-idx ndim" (idx-ndim m) 2)
+    (test-equal "randn to-idx dim0" (idx-dim m 0) 3)
+    (test-equal "randn to-idx dim1" (idx-dim m 1) 2)
+    (torch9-free t))
+)
+
+
+;; ============================================================
+(test-suite "Data-owning tensor creation: zeros"
+
+  (let* ((t (torch9-zeros 3 4))
+         (m (torch9-to-idx t)))
+    (test-equal "zeros ndim" (torch9-ndim t) 2)
+    (test-approx "zeros [0,0]" (m 0 0) 0.0 1e-14)
+    (test-approx "zeros [1,2]" (m 1 2) 0.0 1e-14)
+    (test-approx "zeros [2,3]" (m 2 3) 0.0 1e-14)
+    (torch9-free t))
+
+  ;; 1D zeros
+  (let* ((t (torch9-zeros 5))
+         (v (torch9-to-idx t)))
+    (test-equal "zeros 1D numel" (torch9-numel t) 5)
+    (test-approx "zeros 1D [0]" (v 0) 0.0 1e-14)
+    (test-approx "zeros 1D [4]" (v 4) 0.0 1e-14)
+    (torch9-free t))
+)
+
+
+;; ============================================================
+(test-suite "Data-owning tensor creation: ones"
+
+  (let* ((t (torch9-ones 2 3))
+         (m (torch9-to-idx t)))
+    (test-equal "ones ndim" (torch9-ndim t) 2)
+    (test-approx "ones [0,0]" (m 0 0) 1.0 1e-14)
+    (test-approx "ones [0,2]" (m 0 2) 1.0 1e-14)
+    (test-approx "ones [1,1]" (m 1 1) 1.0 1e-14)
+    (torch9-free t))
+
+  ;; 1D ones
+  (let* ((t (torch9-ones 4))
+         (v (torch9-to-idx t)))
+    (test-approx "ones 1D [0]" (v 0) 1.0 1e-14)
+    (test-approx "ones 1D [3]" (v 3) 1.0 1e-14)
+    (torch9-free t))
+)
+
+
+;; ============================================================
+(test-suite "Data-owning tensor creation: full"
+
+  (let* ((t (torch9-full 3.14 2 3))
+         (m (torch9-to-idx t)))
+    (test-equal "full ndim" (torch9-ndim t) 2)
+    (test-approx "full [0,0]" (m 0 0) 3.14 1e-14)
+    (test-approx "full [0,2]" (m 0 2) 3.14 1e-14)
+    (test-approx "full [1,1]" (m 1 1) 3.14 1e-14)
+    (torch9-free t))
+
+  ;; full with negative value
+  (let* ((t (torch9-full -7.5 3))
+         (v (torch9-to-idx t)))
+    (test-approx "full neg [0]" (v 0) -7.5 1e-14)
+    (test-approx "full neg [2]" (v 2) -7.5 1e-14)
+    (torch9-free t))
+)
+
+
+;; ============================================================
+(test-suite "Reductions: sum and mean"
+
+  ;; sum of known values
+  (let* ((v [1.0 2.0 3.0 4.0 5.0])
+         (tv (torch9-from-idx v))
+         (ts (torch9-sum tv)))
+    (test-approx "sum of 1..5" (torch9-item ts) 15.0 1e-14)
+    (test-equal "sum is scalar (ndim=0)" (torch9-ndim ts) 0)
+    (torch9-free tv) (torch9-free ts))
+
+  ;; mean of known values
+  (let* ((v [2.0 4.0 6.0 8.0])
+         (tv (torch9-from-idx v))
+         (tm (torch9-mean tv)))
+    (test-approx "mean of 2,4,6,8" (torch9-item tm) 5.0 1e-14)
+    (torch9-free tv) (torch9-free tm))
+
+  ;; sum of 2D matrix
+  (let* ((m [[1.0 2.0] [3.0 4.0]])
+         (tm (torch9-from-idx m))
+         (ts (torch9-sum tm)))
+    (test-approx "sum of 2D" (torch9-item ts) 10.0 1e-14)
+    (torch9-free tm) (torch9-free ts))
+
+  ;; mean of ones
+  (let* ((t (torch9-ones 5 5))
+         (tm (torch9-mean t)))
+    (test-approx "mean of ones" (torch9-item tm) 1.0 1e-14)
+    (torch9-free t) (torch9-free tm))
+
+  ;; sum of zeros
+  (let* ((t (torch9-zeros 10))
+         (ts (torch9-sum t)))
+    (test-approx "sum of zeros" (torch9-item ts) 0.0 1e-14)
+    (torch9-free t) (torch9-free ts))
+)
+
+
+;; ============================================================
+(test-suite "Item: scalar extraction"
+
+  (let* ((v [42.0])
+         (tv (torch9-from-idx v))
+         (ts (torch9-sum tv)))
+    (test-approx "item from sum" (torch9-item ts) 42.0 1e-14)
+    (torch9-free tv) (torch9-free ts))
+
+  ;; item from full
+  (let* ((t (torch9-full 99.5 1))
+         (ts (torch9-sum t)))
+    (test-approx "item from full" (torch9-item ts) 99.5 1e-14)
+    (torch9-free t) (torch9-free ts))
+)
+
+
+;; ============================================================
+(test-suite "Neg (element-wise)"
+
+  (let* ((v [1.0 -2.0 3.0 0.0 -5.0])
+         (tv (torch9-from-idx v))
+         (tn (torch9-neg tv))
+         (r  (torch9-to-idx tn)))
+    (test-approx "neg [0]" (r 0) -1.0 1e-14)
+    (test-approx "neg [1]" (r 1) 2.0 1e-14)
+    (test-approx "neg [2]" (r 2) -3.0 1e-14)
+    (test-approx "neg [3]" (r 3) 0.0 1e-14)
+    (test-approx "neg [4]" (r 4) 5.0 1e-14)
+    (torch9-free tv) (torch9-free tn))
+
+  ;; 2D neg
+  (let* ((m [[1.0 -2.0] [-3.0 4.0]])
+         (tm (torch9-from-idx m))
+         (tn (torch9-neg tm))
+         (r  (torch9-to-idx tn)))
+    (test-approx "neg 2D [0,0]" (r 0 0) -1.0 1e-14)
+    (test-approx "neg 2D [0,1]" (r 0 1) 2.0 1e-14)
+    (test-approx "neg 2D [1,0]" (r 1 0) 3.0 1e-14)
+    (test-approx "neg 2D [1,1]" (r 1 1) -4.0 1e-14)
+    (torch9-free tm) (torch9-free tn))
+)
+
+
+;; ============================================================
+(test-suite "Autograd: requires_grad"
+
+  ;; Default: no grad tracking on from-idx
+  (let* ((v [1.0 2.0 3.0])
+         (tv (torch9-from-idx v)))
+    (test-equal "from-idx no grad" (torch9-requires-grad tv) 0)
+    (torch9-free tv))
+
+  ;; Set requires_grad on randn
+  (let ((t (torch9-randn 3)))
+    (test-equal "randn no grad by default" (torch9-requires-grad t) 0)
+    (torch9-requires-grad! t 1)
+    (test-equal "after set grad=1" (torch9-requires-grad t) 1)
+    (torch9-requires-grad! t 0)
+    (test-equal "after set grad=0" (torch9-requires-grad t) 0)
+    (torch9-free t))
+)
+
+
+;; ============================================================
+(test-suite "Autograd: simple backward"
+
+  ;; y = x * 2, backward, grad(x) = 2
+  (let* ((x (torch9-randn 1))
+         (dummy (torch9-requires-grad! x 1))
+         (two (torch9-full 2.0 1))
+         (y (torch9-mul x two))
+         (s (torch9-sum y)))
+    (torch9-backward s)
+    (let ((g (torch9-grad x)))
+      (test-check "grad defined after backward" (<> g ()))
+      (when g
+        (let ((gv (torch9-to-idx g)))
+          (test-approx "grad x*2 = 2" (gv 0) 2.0 1e-10))
+        (torch9-free g)))
+    (torch9-free x) (torch9-free two) (torch9-free y) (torch9-free s))
+
+  ;; y = x^2, backward, grad(x) = 2*x
+  (let* ((x-val 3.0)
+         (x-idx [3.0])
+         (x (torch9-from-idx x-idx))
+         (xc (torch9-clone x))
+         (dummy (torch9-free x))
+         (dummy2 (torch9-requires-grad! xc 1))
+         (y (torch9-mul xc xc))
+         (s (torch9-sum y)))
+    (torch9-backward s)
+    (let ((g (torch9-grad xc)))
+      (test-check "grad defined for x^2" (<> g ()))
+      (when g
+        (let ((gv (torch9-to-idx g)))
+          (test-approx "grad x^2 = 2x" (gv 0) (* 2 x-val) 1e-10))
+        (torch9-free g)))
+    (torch9-free xc) (torch9-free y) (torch9-free s))
+
+  ;; y = sum(relu(x)), grad: 1 where x>0, 0 where x<=0
+  (let* ((x (torch9-randn 5))
+         (dummy (torch9-requires-grad! x 1))
+         (xv (torch9-to-idx (torch9-detach x)))
+         (y (torch9-relu x))
+         (s (torch9-sum y)))
+    (torch9-backward s)
+    (let ((g (torch9-grad x)))
+      (test-check "relu grad defined" (<> g ()))
+      (when g
+        (let ((gv (torch9-to-idx g)))
+          ;; Check that grad is 1 where x>0, 0 where x<=0
+          (for (i 0 4)
+            (if (> (xv i) 0)
+              (test-approx (sprintf "relu grad pos [%d]" i) (gv i) 1.0 1e-10)
+              (test-approx (sprintf "relu grad neg [%d]" i) (gv i) 0.0 1e-10))))
+        (torch9-free g)))
+    (torch9-free x) (torch9-free y) (torch9-free s))
+)
+
+
+;; ============================================================
+(test-suite "Autograd: linear gradient"
+
+  ;; y = w @ x + b, check grad shapes
+  (let* ((w (torch9-randn 2 3))
+         (x (torch9-randn 3 1))
+         (b (torch9-randn 2 1))
+         (dummy (progn (torch9-requires-grad! w 1)
+                       (torch9-requires-grad! b 1)))
+         (y (torch9-matmul w x))
+         (z (torch9-add y b))
+         (s (torch9-sum z)))
+    (torch9-backward s)
+    (let ((gw (torch9-grad w))
+          (gb (torch9-grad b)))
+      (test-check "w grad defined" (<> gw ()))
+      (test-check "b grad defined" (<> gb ()))
+      (when gw
+        (test-equal "w grad ndim" (torch9-ndim gw) 2)
+        (let ((sz (torch9-sizes gw)))
+          (test-equal "w grad dim0" (sz 0) 2)
+          (test-equal "w grad dim1" (sz 1) 3))
+        (torch9-free gw))
+      (when gb
+        (test-equal "b grad ndim" (torch9-ndim gb) 2)
+        (let ((sz (torch9-sizes gb)))
+          (test-equal "b grad dim0" (sz 0) 2)
+          (test-equal "b grad dim1" (sz 1) 1))
+        (torch9-free gb)))
+    (torch9-free w) (torch9-free x) (torch9-free b)
+    (torch9-free y) (torch9-free z) (torch9-free s))
+)
+
+
+;; ============================================================
+(test-suite "Autograd: detach"
+
+  ;; Detached tensor does not propagate gradients
+  (let* ((x (torch9-randn 3))
+         (dummy (torch9-requires-grad! x 1))
+         (y (torch9-mul x x))
+         (yd (torch9-detach y))
+         (s (torch9-sum yd)))
+    ;; yd is detached, so backward from s should not reach x
+    ;; (backward on s would fail since yd has no grad_fn, but
+    ;;  we test that yd has requires_grad=false)
+    (test-equal "detached requires_grad" (torch9-requires-grad yd) 0)
+    (torch9-free x) (torch9-free y) (torch9-free yd) (torch9-free s))
+)
+
+
+;; ============================================================
+(test-suite "Autograd: grad_enabled toggle"
+
+  ;; Default should be enabled
+  (test-equal "grad enabled by default" (torch9-grad-enabled) 1)
+
+  ;; Disable
+  (torch9-set-grad-enabled 0)
+  (test-equal "grad disabled" (torch9-grad-enabled) 0)
+
+  ;; Re-enable
+  (torch9-set-grad-enabled 1)
+  (test-equal "grad re-enabled" (torch9-grad-enabled) 1)
+
+  ;; Operations with grad disabled don't track
+  (torch9-set-grad-enabled 0)
+  (let* ((x (torch9-randn 3))
+         (dummy (torch9-requires-grad! x 1))
+         (y (torch9-mul x x)))
+    (test-equal "y no grad_fn when disabled" (torch9-requires-grad y) 0)
+    (torch9-free x) (torch9-free y))
+  (torch9-set-grad-enabled 1)
+)
+
+
+;; ============================================================
+(test-suite "Autograd: grad_defined"
+
+  ;; Before backward, grad is not defined
+  (let* ((x (torch9-randn 3))
+         (dummy (torch9-requires-grad! x 1)))
+    (test-equal "grad not defined before backward" (_torch9-grad-defined x) 0)
+    (let* ((y (torch9-sum (torch9-mul x x))))
+      (torch9-backward y)
+      (test-equal "grad defined after backward" (_torch9-grad-defined x) 1)
+      (torch9-free y))
+    (torch9-free x))
+)
+
+
+;; ============================================================
+(test-suite "Autograd: backward with gradient"
+
+  ;; Non-scalar backward with explicit gradient
+  (let* ((x (torch9-randn 3))
+         (dummy (torch9-requires-grad! x 1))
+         (y (torch9-mul x x))
+         (grad-out (torch9-ones 3)))
+    (torch9-backward y grad-out)
+    (let ((g (torch9-grad x)))
+      (test-check "grad defined with explicit gradient" (<> g ()))
+      ;; grad should be 2*x (chain rule: d(x^2)/dx * grad_out = 2x * 1)
+      (when g
+        (let ((gv (torch9-to-idx g))
+              (xv (torch9-to-idx (torch9-detach x))))
+          (for (i 0 2)
+            (test-approx (sprintf "backward-with-grad [%d]" i)
+                         (gv i) (* 2 (xv i)) 1e-10)))
+        (torch9-free g)))
+    (torch9-free x) (torch9-free y) (torch9-free grad-out))
+)
+
+
+;; ============================================================
+(test-suite "MSE loss"
+
+  ;; MSE of identical tensors = 0
+  (let* ((v [1.0 2.0 3.0])
+         (tv (torch9-from-idx v))
+         (tc (torch9-clone tv))
+         (loss (torch9-mse-loss tv tc)))
+    (test-approx "mse identical = 0" (torch9-item loss) 0.0 1e-14)
+    (torch9-free tv) (torch9-free tc) (torch9-free loss))
+
+  ;; MSE of known values
+  ;; pred=[1,2,3], target=[4,5,6] => diffs=[3,3,3] => mse=mean(9,9,9)=9
+  (let* ((pred [1.0 2.0 3.0])
+         (target [4.0 5.0 6.0])
+         (tp (torch9-from-idx pred))
+         (tt (torch9-from-idx target))
+         (loss (torch9-mse-loss tp tt)))
+    (test-approx "mse known values" (torch9-item loss) 9.0 1e-10)
+    (torch9-free tp) (torch9-free tt) (torch9-free loss))
+
+  ;; MSE backward produces gradients
+  (let* ((pred (torch9-randn 5))
+         (target (torch9-randn 5))
+         (dummy (torch9-requires-grad! pred 1))
+         (loss (torch9-mse-loss pred target)))
+    (torch9-backward loss)
+    (let ((g (torch9-grad pred)))
+      (test-check "mse backward produces grad" (<> g ()))
+      (when g
+        (test-equal "mse grad shape" (torch9-numel g) 5)
+        (torch9-free g)))
+    (torch9-free pred) (torch9-free target) (torch9-free loss))
+
+  ;; MSE vs manual computation
+  (let* ((pred [1.0 3.0 5.0])
+         (target [2.0 4.0 6.0])
+         (tp (torch9-from-idx pred))
+         (tt (torch9-from-idx target))
+         (loss (torch9-mse-loss tp tt))
+         ;; Manual: mean((1-2)^2 + (3-4)^2 + (5-6)^2) = mean(1,1,1) = 1
+         (manual-loss 1.0))
+    (test-approx "mse vs manual" (torch9-item loss) manual-loss 1e-10)
+    (torch9-free tp) (torch9-free tt) (torch9-free loss))
+)
+
+
+;; ============================================================
+(test-suite "Cross-entropy loss"
+
+  ;; Cross-entropy on known logits
+  ;; logits [2,3]: two samples, 3 classes
+  ;; targets [2]: class indices
+  (let* ((logits (double-matrix 2 3))
+         (targets (int-matrix 2))
+         (dummy (progn
+                  ;; Sample 0: logits [10, 0, 0] -> class 0 should have low loss
+                  (logits 0 0 10.0) (logits 0 1 0.0) (logits 0 2 0.0)
+                  ;; Sample 1: logits [0, 0, 10] -> class 2 should have low loss
+                  (logits 1 0 0.0) (logits 1 1 0.0) (logits 1 2 10.0)
+                  (targets 0 0)   ;; correct class for sample 0
+                  (targets 1 2))) ;; correct class for sample 1
+         (tl (torch9-from-idx logits))
+         (tt (torch9-from-idx targets))
+         (loss (torch9-cross-entropy-loss tl tt)))
+    ;; Loss should be very small (confident correct predictions)
+    (test-check "ce loss confident correct < 0.1" (< (torch9-item loss) 0.1))
+    (torch9-free tl) (torch9-free tt) (torch9-free loss))
+
+  ;; Cross-entropy on wrong predictions should be high
+  (let* ((logits (double-matrix 2 3))
+         (targets (int-matrix 2))
+         (dummy (progn
+                  ;; Sample 0: logits [0, 0, 10] but target is class 0
+                  (logits 0 0 0.0) (logits 0 1 0.0) (logits 0 2 10.0)
+                  ;; Sample 1: logits [10, 0, 0] but target is class 2
+                  (logits 1 0 10.0) (logits 1 1 0.0) (logits 1 2 0.0)
+                  (targets 0 0) (targets 1 2)))
+         (tl (torch9-from-idx logits))
+         (tt (torch9-from-idx targets))
+         (loss (torch9-cross-entropy-loss tl tt)))
+    ;; Loss should be high (wrong predictions)
+    (test-check "ce loss wrong > 1.0" (> (torch9-item loss) 1.0))
+    (torch9-free tl) (torch9-free tt) (torch9-free loss))
+
+  ;; Cross-entropy backward produces gradients
+  (let* ((logits (double-matrix 3 4))
+         (targets (int-matrix 3))
+         (dummy (progn
+                  (for (i 0 2) (for (j 0 3) (logits i j (- (* 0.5 j) 1.0))))
+                  (targets 0 0) (targets 1 1) (targets 2 2)))
+         (tl (torch9-from-idx logits))
+         (dummy2 (torch9-requires-grad! tl 1))
+         (tt (torch9-from-idx targets))
+         (loss (torch9-cross-entropy-loss tl tt)))
+    (torch9-backward loss)
+    (let ((g (torch9-grad tl)))
+      (test-check "ce backward produces grad" (<> g ()))
+      (when g
+        (test-equal "ce grad ndim" (torch9-ndim g) 2)
+        (let ((sz (torch9-sizes g)))
+          (test-equal "ce grad dim0" (sz 0) 3)
+          (test-equal "ce grad dim1" (sz 1) 4))
+        (torch9-free g)))
+    (torch9-free tl) (torch9-free tt) (torch9-free loss))
+)
+
+
+;; ============================================================
+(test-suite "SGD optimizer"
+
+  ;; Create SGD and verify
+  (let* ((w (torch9-randn 3))
+         (dummy (torch9-requires-grad! w 1))
+         (opt (torch9-sgd (list w) 0.01)))
+    (test-check "sgd created" t)
+
+    ;; get_lr
+    (test-approx "sgd get_lr" (torch9-optimizer-get-lr opt) 0.01 1e-10)
+
+    ;; set_lr
+    (torch9-optimizer-set-lr opt 0.1)
+    (test-approx "sgd set_lr" (torch9-optimizer-get-lr opt) 0.1 1e-10)
+
+    ;; zero_grad
+    (torch9-optimizer-zero-grad opt)
+    (test-check "sgd zero_grad no crash" t)
+
+    ;; Free
+    (torch9-optimizer-free opt)
+    (test-check "sgd free no crash" t)
+    (torch9-free w))
+
+  ;; SGD step updates parameters
+  (let* ((w (torch9-full 5.0 3))
+         (dummy (torch9-requires-grad! w 1))
+         (opt (torch9-sgd (list w) 0.1))
+         (w-before (torch9-to-idx (torch9-detach w)))
+         ;; Compute loss = sum(w^2) -> grad = 2*w
+         (loss (torch9-sum (torch9-mul w w))))
+    (torch9-backward loss)
+    (torch9-optimizer-step opt)
+    ;; w should have changed: w_new = w - lr * 2 * w = 5 - 0.1*10 = 4
+    (let ((w-after (torch9-to-idx (torch9-detach w))))
+      (test-approx "sgd step w[0]" (w-after 0) 4.0 1e-5)
+      (test-approx "sgd step w[1]" (w-after 1) 4.0 1e-5)
+      (test-approx "sgd step w[2]" (w-after 2) 4.0 1e-5))
+    (torch9-optimizer-free opt)
+    (torch9-free w) (torch9-free loss))
+)
+
+
+;; ============================================================
+(test-suite "SGD: linear regression convergence"
+
+  ;; Train y = 2x + 1 using SGD
+  ;; True: w=2, b=1
+  (let* ((w (torch9-full 0.0 1))        ;; init w=0
+         (b (torch9-full 0.0 1))        ;; init b=0
+         (dummy (progn (torch9-requires-grad! w 1)
+                       (torch9-requires-grad! b 1)))
+         (opt (torch9-sgd (list w b) 0.01))
+         ;; Training data: x=[1,2,3,4,5], y=[3,5,7,9,11]
+         (x-data [1.0 2.0 3.0 4.0 5.0])
+         (y-data [3.0 5.0 7.0 9.0 11.0])
+         (tx (torch9-from-idx x-data))
+         (ty (torch9-from-idx y-data))
+         (final-loss 999.0)
+         (i 0))
+
+    ;; Train for 200 steps
+    (while (< i 200)
+      (torch9-optimizer-zero-grad opt)
+      ;; pred = x * w + b
+      (let* ((pred (torch9-add (torch9-mul tx w) b))
+             (loss (torch9-mse-loss pred ty)))
+        (when (= i 199)
+          (setq final-loss (torch9-item loss)))
+        (torch9-backward loss)
+        (torch9-optimizer-step opt)
+        (torch9-free pred) (torch9-free loss))
+      (setq i (+ i 1)))
+
+    (test-check "sgd linear regression loss < 0.1" (< final-loss 0.1))
+
+    ;; Check learned parameters
+    (let ((w-val (torch9-item w))
+          (b-val (torch9-item b)))
+      (test-approx "sgd learned w~2" w-val 2.0 0.3)
+      (test-approx "sgd learned b~1" b-val 1.0 0.3))
+
+    (torch9-optimizer-free opt)
+    (torch9-free w) (torch9-free b)
+    (torch9-free tx) (torch9-free ty))
+)
+
+
+;; ============================================================
+(test-suite "Adam optimizer"
+
+  ;; Create Adam and verify
+  (let* ((w (torch9-randn 4))
+         (dummy (torch9-requires-grad! w 1))
+         (opt (torch9-adam (list w))))
+    (test-check "adam created" t)
+
+    ;; get_lr (default 0.001)
+    (test-approx "adam get_lr" (torch9-optimizer-get-lr opt) 0.001 1e-10)
+
+    ;; set_lr
+    (torch9-optimizer-set-lr opt 0.01)
+    (test-approx "adam set_lr" (torch9-optimizer-get-lr opt) 0.01 1e-10)
+
+    ;; zero_grad + step
+    (torch9-optimizer-zero-grad opt)
+    (let ((loss (torch9-sum (torch9-mul w w))))
+      (torch9-backward loss)
+      (torch9-optimizer-step opt)
+      (torch9-free loss))
+    (test-check "adam step no crash" t)
+
+    (torch9-optimizer-free opt)
+    (torch9-free w))
+
+  ;; Adam step updates parameters
+  (let* ((w (torch9-full 5.0 3))
+         (dummy (torch9-requires-grad! w 1))
+         (opt (torch9-adam (list w) 0.1))
+         (w-before (torch9-to-idx (torch9-detach w)))
+         (loss (torch9-sum (torch9-mul w w))))
+    (torch9-backward loss)
+    (torch9-optimizer-step opt)
+    ;; w should have changed
+    (let ((w-after (torch9-to-idx (torch9-detach w))))
+      (test-check "adam step changed w" (<> (w-after 0) (w-before 0))))
+    (torch9-optimizer-free opt)
+    (torch9-free w) (torch9-free loss))
+)
+
+
+;; ============================================================
+(test-suite "Adam: linear regression convergence"
+
+  ;; Train y = 2x + 1 using Adam
+  (let* ((w (torch9-full 0.0 1))
+         (b (torch9-full 0.0 1))
+         (dummy (progn (torch9-requires-grad! w 1)
+                       (torch9-requires-grad! b 1)))
+         (opt (torch9-adam (list w b) 0.05))
+         (x-data [1.0 2.0 3.0 4.0 5.0])
+         (y-data [3.0 5.0 7.0 9.0 11.0])
+         (tx (torch9-from-idx x-data))
+         (ty (torch9-from-idx y-data))
+         (final-loss 999.0)
+         (i 0))
+
+    (while (< i 200)
+      (torch9-optimizer-zero-grad opt)
+      (let* ((pred (torch9-add (torch9-mul tx w) b))
+             (loss (torch9-mse-loss pred ty)))
+        (when (= i 199)
+          (setq final-loss (torch9-item loss)))
+        (torch9-backward loss)
+        (torch9-optimizer-step opt)
+        (torch9-free pred) (torch9-free loss))
+      (setq i (+ i 1)))
+
+    (test-check "adam linear regression loss < 0.1" (< final-loss 0.1))
+
+    (let ((w-val (torch9-item w))
+          (b-val (torch9-item b)))
+      (test-approx "adam learned w~2" w-val 2.0 0.5)
+      (test-approx "adam learned b~1" b-val 1.0 0.5))
+
+    (torch9-optimizer-free opt)
+    (torch9-free w) (torch9-free b)
+    (torch9-free tx) (torch9-free ty))
+)
+
+
+;; ============================================================
+(test-suite "Tensor save/load"
+
+  ;; Save and load a tensor, verify values match
+  (let* ((t (torch9-randn 3 4))
+         (path "/tmp/claude-1000/test-torch9-save.pt")
+         (v-before (torch9-to-idx t)))
+    (torch9-tensor-save t path)
+    (torch9-free t)
+    ;; Load it back
+    (let* ((t2 (torch9-tensor-load path))
+           (v-after (torch9-to-idx t2)))
+      (test-equal "load ndim" (idx-ndim v-after) 2)
+      (test-equal "load dim0" (idx-dim v-after 0) 3)
+      (test-equal "load dim1" (idx-dim v-after 1) 4)
+      (test-approx "load [0,0]" (v-after 0 0) (v-before 0 0) 1e-14)
+      (test-approx "load [1,2]" (v-after 1 2) (v-before 1 2) 1e-14)
+      (test-approx "load [2,3]" (v-after 2 3) (v-before 2 3) 1e-14)
+      (torch9-free t2)))
+
+  ;; Save 1D tensor
+  (let* ((v [100.0 200.0 300.0])
+         (tv (torch9-from-idx v))
+         (tc (torch9-clone tv))
+         (path "/tmp/claude-1000/test-torch9-save1d.pt"))
+    (torch9-tensor-save tc path)
+    (torch9-free tv) (torch9-free tc)
+    (let* ((t2 (torch9-tensor-load path))
+           (v2 (torch9-to-idx t2)))
+      (test-equal "save/load 1D ndim" (idx-ndim v2) 1)
+      (test-approx "save/load 1D [0]" (v2 0) 100.0 1e-14)
+      (test-approx "save/load 1D [2]" (v2 2) 300.0 1e-14)
+      (torch9-free t2)))
+
+  ;; Load non-existent file should return null (caught by high-level)
+  (let ((ok ()))
+    (setq ok (not (= (gptr ()) (_torch9-tensor-load "/tmp/nonexistent-file-xyz.pt"))))
+    (test-check "load nonexistent returns null" (not ok)))
+
+  ;; Save zeros, load, verify
+  (let* ((t (torch9-zeros 5))
+         (path "/tmp/claude-1000/test-torch9-zeros.pt"))
+    (torch9-tensor-save t path)
+    (torch9-free t)
+    (let* ((t2 (torch9-tensor-load path))
+           (v2 (torch9-to-idx t2)))
+      (test-approx "save/load zeros [0]" (v2 0) 0.0 1e-14)
+      (test-approx "save/load zeros [4]" (v2 4) 0.0 1e-14)
+      (torch9-free t2)))
+
+  ;; Save ones, load, verify
+  (let* ((t (torch9-ones 2 3))
+         (path "/tmp/claude-1000/test-torch9-ones.pt"))
+    (torch9-tensor-save t path)
+    (torch9-free t)
+    (let* ((t2 (torch9-tensor-load path))
+           (v2 (torch9-to-idx t2)))
+      (test-equal "save/load ones ndim" (idx-ndim v2) 2)
+      (test-approx "save/load ones [0,0]" (v2 0 0) 1.0 1e-14)
+      (test-approx "save/load ones [1,2]" (v2 1 2) 1.0 1e-14)
+      (torch9-free t2)))
+)
+
+
+;; ============================================================
+(test-suite "Training loop integration: MSE convergence"
+
+  ;; Train a simple linear model with MSE loss
+  ;; f(x) = w*x, target w=3
+  (let* ((w (torch9-full 0.1 1))
+         (dummy (torch9-requires-grad! w 1))
+         (opt (torch9-sgd (list w) 0.01))
+         (x-data [1.0 2.0 3.0 4.0])
+         (y-data [3.0 6.0 9.0 12.0])
+         (tx (torch9-from-idx x-data))
+         (ty (torch9-from-idx y-data))
+         (loss-start 0.0)
+         (loss-end 0.0)
+         (i 0))
+
+    ;; First iteration loss
+    (torch9-optimizer-zero-grad opt)
+    (let* ((pred (torch9-mul tx w))
+           (loss (torch9-mse-loss pred ty)))
+      (setq loss-start (torch9-item loss))
+      (torch9-backward loss)
+      (torch9-optimizer-step opt)
+      (torch9-free pred) (torch9-free loss))
+    (setq i 1)
+
+    ;; Train more
+    (while (< i 100)
+      (torch9-optimizer-zero-grad opt)
+      (let* ((pred (torch9-mul tx w))
+             (loss (torch9-mse-loss pred ty)))
+        (when (= i 99)
+          (setq loss-end (torch9-item loss)))
+        (torch9-backward loss)
+        (torch9-optimizer-step opt)
+        (torch9-free pred) (torch9-free loss))
+      (setq i (+ i 1)))
+
+    (test-check "training loss decreased" (< loss-end loss-start))
+    (test-check "final loss small" (< loss-end 0.5))
+    (test-approx "learned w~3" (torch9-item w) 3.0 0.3)
+
+    (torch9-optimizer-free opt)
+    (torch9-free w) (torch9-free tx) (torch9-free ty))
+)
+
+
+;; ============================================================
+(test-suite "Training loop integration: classification"
+
+  ;; Train logistic: 2-class, 2-feature, simple separable data
+  ;; We use cross-entropy with a linear layer
+  (let* ((w (torch9-randn 2 2))     ;; [out_features=2, in_features=2]
+         (b (torch9-zeros 2))
+         (dummy (progn (torch9-requires-grad! w 1)
+                       (torch9-requires-grad! b 1)))
+         (opt (torch9-adam (list w b) 0.05))
+         ;; Class 0: (1,0), (0.5, -0.5)  => label 0
+         ;; Class 1: (-1,0), (-0.5, 0.5) => label 1
+         (x-data (double-matrix 4 2))
+         (y-data (int-matrix 4))
+         (dummy2 (progn
+                   (x-data 0 0 1.0)   (x-data 0 1 0.0)
+                   (x-data 1 0 0.5)   (x-data 1 1 -0.5)
+                   (x-data 2 0 -1.0)  (x-data 2 1 0.0)
+                   (x-data 3 0 -0.5)  (x-data 3 1 0.5)
+                   (y-data 0 0) (y-data 1 0) (y-data 2 1) (y-data 3 1)))
+         (tx (torch9-from-idx x-data))
+         (ty (torch9-from-idx y-data))
+         (loss-start 0.0)
+         (loss-end 0.0)
+         (i 0))
+
+    ;; Train
+    (while (< i 100)
+      (torch9-optimizer-zero-grad opt)
+      ;; logits = x @ w^T + b
+      (let* ((logits (torch9-linear tx w b))
+             (loss (torch9-cross-entropy-loss logits ty)))
+        (when (= i 0) (setq loss-start (torch9-item loss)))
+        (when (= i 99) (setq loss-end (torch9-item loss)))
+        (torch9-backward loss)
+        (torch9-optimizer-step opt)
+        (torch9-free logits) (torch9-free loss))
+      (setq i (+ i 1)))
+
+    (test-check "classification loss decreased" (< loss-end loss-start))
+    (test-check "classification loss < 0.5" (< loss-end 0.5))
+
+    (torch9-optimizer-free opt)
+    (torch9-free w) (torch9-free b) (torch9-free tx) (torch9-free ty))
+)
+
+
+;; ============================================================
 (printf "\n")
 (test-summary)
