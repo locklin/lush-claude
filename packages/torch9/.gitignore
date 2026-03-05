@@ -1,0 +1,8 @@
+# Vendored libtorch (downloaded at install time by torch9-config.lsh)
+lib/libtorch/
+
+# Compiled bridge shared library (built from lush_torch9_bridge.cpp)
+lush_torch9_bridge.so
+
+# DHC compilation artifacts (covered by root .gitignore too)
+C/

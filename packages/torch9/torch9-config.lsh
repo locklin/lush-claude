@@ -1,0 +1,114 @@
+;;; torch9-config.lsh -- Detect backend, download libtorch, compile bridge
+;;;
+;;; This file handles:
+;;;   1. Backend detection (CUDA / ROCm / CPU)
+;;;   2. Downloading prebuilt libtorch from download.pytorch.org
+;;;   3. Compiling lush_torch9_bridge.cpp against libtorch headers
+;;;   4. Loading the resulting .so via mod-load
+;;;
+;;; Loaded automatically by torch9.lsh; should not be loaded directly.
+;;;
+;;; Copyright (C) 2026 Scott Locklin, Lugos LLC
+;;; Distributed under the GNU General Public License v2+.
+
+#? ** Build Configuration
+;; Detects GPU backend, downloads prebuilt libtorch, compiles the
+;; {<c> extern "C"} bridge library, and loads it.
+;;
+;; {<b> Backends:}
+;; {<ul>
+;; {<li> {<b> CUDA}: detected via {<c> nvidia-smi}.  Downloads
+;;   the CUDA 12.8 libtorch build.}
+;; {<li> {<b> ROCm}: detected via {<c> /opt/rocm/bin/rocminfo}.
+;;   Downloads the ROCm 6.4 libtorch build.}
+;; {<li> {<b> CPU}: fallback when no GPU runtime found.}
+;; }
+;;
+;; Libtorch (~267 MB for CPU) is unpacked into
+;; {<c> packages/torch9/lib/libtorch/}.
+;;
+;; The bridge library ({<c> lush_torch9_bridge.so}) is compiled
+;; only when the source is newer than the existing .so or when
+;; the .so does not exist.
+
+(let* ((dir      (dirname file-being-loaded))
+       (lt-dir   (concat-fname dir "lib/libtorch"))
+       (lt-lib   (concat-fname lt-dir "lib/libtorch.so"))
+       (src      (concat-fname dir "lush_torch9_bridge.cpp"))
+       (hdr      (concat-fname dir "lush_torch9_bridge.h"))
+       (so       (concat-fname dir "lush_torch9_bridge.so"))
+       (lt-ver   "2.7.0")
+       (backend  ()) )
+
+  ;; ---- Step 1: Detect GPU backend ----
+  (cond
+   ((= 0 (sys "test -x /opt/rocm/bin/rocminfo 2>/dev/null"))
+    (setq backend "rocm6.4")
+    (printf "*** torch9: ROCm backend detected\n") )
+   ((= 0 (sys "nvidia-smi >/dev/null 2>&1"))
+    (setq backend "cu128")
+    (printf "*** torch9: CUDA backend detected\n") )
+   (t
+    (setq backend "cpu")
+    (printf "*** torch9: CPU backend (no GPU detected)\n") ) )
+
+  ;; ---- Step 2: Download libtorch if not present ----
+  (when (not (filep lt-lib))
+    (let* ((base-url "https://download.pytorch.org/libtorch")
+           (fname (cond
+                   ((= backend "rocm6.4")
+                    (sprintf "libtorch-cxx11-abi-shared-with-deps-%s%%2Brocm6.4.zip" lt-ver))
+                   ((= backend "cu128")
+                    (sprintf "libtorch-cxx11-abi-shared-with-deps-%s%%2Bcu128.zip" lt-ver))
+                   (t
+                    (sprintf "libtorch-cxx11-abi-shared-with-deps-%s%%2Bcpu.zip" lt-ver))))
+           (variant (cond
+                     ((= backend "rocm6.4") "rocm6.4")
+                     ((= backend "cu128")   "cu128")
+                     (t                     "cpu")))
+           (url (sprintf "%s/%s/%s" base-url variant fname))
+           (zip-path (concat-fname dir "lib/libtorch.zip"))
+           (lib-dir  (concat-fname dir "lib")))
+      (printf "*** torch9: Downloading libtorch %s (%s)...\n" lt-ver backend)
+      (printf "    URL: %s\n" url)
+      (let ((ret (sys (sprintf "wget -q --show-progress -O \"%s\" \"%s\"" zip-path url))))
+        (when (<> ret 0)
+          (error "torch9-config"
+                 (sprintf "Failed to download libtorch (wget returned %d). URL: %s" ret url)
+                 ()) ) )
+      (printf "*** torch9: Unpacking libtorch...\n")
+      (let ((ret (sys (sprintf "cd \"%s\" && unzip -q -o \"%s\"" lib-dir zip-path))))
+        (when (<> ret 0)
+          (error "torch9-config" "Failed to unzip libtorch" ret) ) )
+      ;; Clean up zip
+      (sys (sprintf "rm -f \"%s\"" zip-path))
+      (printf "*** torch9: libtorch installed to %s\n" lt-dir) ) )
+
+  ;; Verify libtorch is present
+  (when (not (filep (concat-fname lt-dir "lib/libtorch_cpu.so")))
+    (error "torch9-config"
+           (sprintf "libtorch not found at %s. Delete lib/ and reload to re-download." lt-dir)
+           ()) )
+
+  ;; ---- Step 3: Compile bridge if needed ----
+  (when (or (not (filep so))
+            (= 0 (sys (sprintf "test \"%s\" -nt \"%s\" 2>/dev/null" src so)))
+            (= 0 (sys (sprintf "test \"%s\" -nt \"%s\" 2>/dev/null" hdr so))))
+    (printf "*** torch9: Compiling bridge (g++ -O2 -std=c++17)...\n")
+    (let* ((inc1 (concat-fname lt-dir "include"))
+           (inc2 (concat-fname lt-dir "include/torch/csrc/api/include"))
+           (libp (concat-fname lt-dir "lib"))
+           (cmd  (sprintf "g++ -std=c++17 -O2 -fPIC -shared -pthread -o \"%s\" \"%s\" -I\"%s\" -I\"%s\" -L\"%s\" -ltorch -ltorch_cpu -lc10 -Wl,-rpath,\"%s\" 2>&1"
+                          so src inc1 inc2 libp libp))
+           (ret  (sys cmd)))
+      (when (<> ret 0)
+        (error "torch9-config"
+               (sprintf "g++ compilation failed (exit %d). Command:\n%s" ret cmd)
+               ()) ) ) )
+
+  ;; ---- Step 4: Load bridge .so ----
+  ;; Note: -Wl,-rpath in the compile step ensures libtorch libs are found
+  ;; at runtime without needing LD_LIBRARY_PATH.
+  (printf "*** torch9: Loading lush_torch9_bridge.so\n")
+  (mod-load so)
+  (printf "*** torch9: Bridge loaded successfully\n") )

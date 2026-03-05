@@ -640,29 +640,107 @@ C/C++ APIs with zero-copy tensor creation from raw pointers.
 
 ---
 
-## Part 8: Recommended Implementation Order
+## Part 8: Revised Implementation Plan (2026-03-05)
+
+### Key Decisions
+
+- **Package name: `torch9`** — the existing `packages/torch/` wraps Torch3
+  (Ronan Collobert, 2002).  The new package is entirely separate.
+- **Skip ONNX, go straight to libtorch.** The ~267 MB binary size is
+  acceptable in 2026.  libtorch gives us training + inference + autograd +
+  GPU, not just inference.  ONNX can be revisited later if needed.
+- **R's `torch` package (mlverse/torch) proves this works.** They built a
+  C shim layer called "lantern" (`extern "C"` over libtorch) and it ships
+  as a production CRAN package.  Our architecture is the same pattern.
+
+### Vendored libtorch via lush-pkg
+
+PyTorch publishes prebuilt libtorch zip archives for every release on
+their official CDN at `download.pytorch.org`.  All three GPU backends
+are available — no building from source needed:
+
+| Backend | URL Pattern |
+|---------|-------------|
+| CPU     | `https://download.pytorch.org/libtorch/cpu/libtorch-cxx11-abi-shared-with-deps-{VER}%2Bcpu.zip` |
+| CUDA    | `https://download.pytorch.org/libtorch/cu{CUVER}/libtorch-cxx11-abi-shared-with-deps-{VER}%2Bcu{CUVER}.zip` |
+| ROCm    | `https://download.pytorch.org/libtorch/rocm{ROCVER}/libtorch-cxx11-abi-shared-with-deps-{VER}%2Brocm{ROCVER}.zip` |
+
+As of PyTorch 2.9.1: CUDA 12.6/12.8/13.0, ROCm 6.4, CPU.
+Linux has two ABI variants (pre-CXX11 and CXX11); we use CXX11.
+macOS is CPU-only (or MPS via Metal on Apple Silicon).
+Windows has Release and Debug variants.
+
+The `lush-pkg` install recipe for torch9:
+
+1. **Detect backend**: check for ROCm (`/opt/rocm/bin/rocminfo`), then
+   CUDA (`nvidia-smi`), fall back to CPU.
+2. **Fetch**: download the appropriate libtorch zip from
+   `download.pytorch.org` (~267 MB CPU, larger for GPU).
+3. **Unpack** to `packages/torch9/lib/`.
+4. **Build bridge**: compile `lush_torch9_bridge.cpp` against the
+   unpacked libtorch headers/libs.  This is the only compile step and
+   takes seconds — it's just our small `extern "C"` shim, not libtorch
+   itself.
+5. **Done**: user does `(libload "torch9/torch9")` and has GPU tensors.
+
+Note: ROCm/CUDA libtorch zips link dynamically against the GPU runtime.
+The user must have ROCm or CUDA drivers installed on their system.  The
+libtorch zip does NOT bundle the GPU driver/runtime.
+
+### Implementation Stages
 
 ```
-Stage 1: ONNX Runtime inference     [~500 LOC C, ~200 LOC Lush]
+Stage 1: torch9 package skeleton + bridge + matmul demo  ✅ IMPLEMENTED 2026-03-05
+  - packages/torch9/torch9-config.lsh (detect backend, download libtorch, compile bridge)
+  - lush_torch9_bridge.h/.cpp (extern "C" API: from_blob, matmul, add, clone, free, print)
+  - torch9.lsh (DHC wrappers + interpreted API: torch9-from-idx, torch9-matmul, torch9-to-idx)
+  - tests/test-torch9.lsh (~50 tests: roundtrip, matmul, add, clone, dtype preservation)
+  - Zero-copy idx→tensor via from_blob, tensor→idx via data_ptr copy
+  - Supports double/float/int, rank 1-2
   ↓
-  Milestone: Run pre-trained models from Lush prompt
+Stage 2: More operations + GPU support
+  - Add sub/mul/div, relu/sigmoid/tanh, softmax to bridge
+  - GPU: to_cuda, to_cpu
+  - Higher-rank tensor support (rank 3-4)
   ↓
-Stage 2: libtorch bridge            [~2000 LOC C++, ~500 LOC Lush]
+  Milestone: GPU matrix multiply from Lush REPL
   ↓
-  Milestone: GPU tensor operations from Lush
+Stage 3: Model loading + inference
+  - TorchScript load + forward
+  - torch.export / AOTInductor .so loading (dlopen)
+  - Tier 2 ops: attention, conv2d, batchnorm, layernorm, embedding
   ↓
-Stage 3: gblearn2 integration       [~500 LOC Lush]
+  Milestone: Load and run ResNet/BERT from Lush prompt
   ↓
-  Milestone: Train/finetune models with Lush NN framework on GPU
+Stage 4: Training support
+  - Autograd: requires_grad_, backward()
+  - Optimizers: Adam, SGD
+  - save/load state dict
   ↓
-Stage 4: Model zoo                  [Lush scripts only]
-  ↓
-  Milestone: Off-the-shelf models usable from Lush
+Stage 5: gblearn2 integration + model zoo
+  - Optional torch-accelerated gblearn2 modules
+  - Pre-trained model scripts (ResNet, ViT, BERT, etc.)
 ```
 
-Stage 1 alone provides enormous value — the ability to load and run
-any pre-trained model from the Lush REPL. Stages 2-4 add progressive
-capability but each is independently useful.
+### Reference: R torch package architecture
+
+R's `torch` package (https://github.com/mlverse/torch) uses this stack:
+
+```
+R  →  R C FFI  →  lantern.so (extern "C")  →  libtorch (C++)
+```
+
+Our equivalent:
+
+```
+Lush  →  dlopen  →  lush_torch9_bridge.so (extern "C")  →  libtorch (C++)
+```
+
+R's `lantern` source is open (MIT license) and can be studied for the
+C bridge patterns.  They fetch libtorch from the same PyTorch CDN URLs.
+Their custom `lantern` bridge binary is hosted on their own CDN
+(`torch-cdn.mlverse.org`), but we compile ours at install time via
+lush-pkg, so we don't need to host prebuilt bridges.
 
 ---
 

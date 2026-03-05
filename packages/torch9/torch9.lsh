@@ -1,0 +1,555 @@
+;;; torch9.lsh -- libtorch integration for Lush
+;;;
+;;; Two layers:
+;;;   1. DHC-compiled thin wrappers (_torch9-*) that bridge Lush idx
+;;;      to the C functions in lush_torch9_bridge.so (loaded via mod-load).
+;;;   2. Interpreted high-level API (torch9-from-idx, torch9-matmul,
+;;;      torch9-to-idx, torch9-free, etc.) that handle dispatch, error
+;;;      checking, and convenience features.
+;;;
+;;; Copyright (C) 2026 Scott Locklin, Lugos LLC
+;;; Distributed under the GNU General Public License v2+.
+
+(libload "torch9/torch9-config")
+
+#? *** torch9: libtorch Integration for Lush
+;; Integration with modern libtorch (PyTorch C++ frontend) via an
+;; {<c> extern "C"} bridge library.  Provides zero-copy {<c> idx} to
+;; {<c> torch::Tensor} conversion and access to libtorch operations.
+;;
+;; This is a separate package from the legacy {<c> packages/torch/}
+;; which wraps Torch3 (2002).
+;;
+;; {<b> Quick start:}
+;; {<code>
+;;  (libload "torch9/torch9")
+;;  (let* ((a (double-matrix 3 4))
+;;         (b (double-matrix 4 5)))
+;;    ;; fill with test data
+;;    (idx-bloop ((row a)) (idx-bloop ((x row)) (x 1)))
+;;    (idx-bloop ((row b)) (idx-bloop ((x row)) (x 2)))
+;;    (let* ((ta (torch9-from-idx a))
+;;           (tb (torch9-from-idx b))
+;;           (tc (torch9-matmul ta tb))
+;;           (c  (torch9-to-idx tc)))
+;;      (pretty c)
+;;      (torch9-free ta)
+;;      (torch9-free tb)
+;;      (torch9-free tc)))
+;; </code>}
+;;
+;; {<b> Memory management:} Tensor handles returned by {<b> torch9-from-idx},
+;; {<b> torch9-matmul}, {<b> torch9-add}, and {<b> torch9-clone} must be
+;; freed with {<b> torch9-free} when no longer needed.
+;;
+;; {<see> (torch9-from-idx <m>)}
+;; {<see> (torch9-matmul <a> <b>)}
+;; {<see> (torch9-to-idx <handle>)}
+
+;; ============================================================
+;; DHC-compiled wrappers (idx -> bridge C calls)
+;; ============================================================
+
+;; --- Initialization ---
+
+(de _torch9-init ()
+  (let ((r 0))
+    ((-int-) r)
+    #{ extern int lt9_init(void);
+       $r = lt9_init(); #}
+    r))
+
+;; --- From-blob: double-matrix rank 1 ---
+(de _torch9-from-d1-double (m)
+  ((-idx1- (-double-)) m)
+  (let ((handle (gptr ())))
+    ((-gptr-) handle)
+    #{
+    extern void* lt9_from_blob(void*, int64_t*, int64_t*, int, int);
+    int64_t sizes[1], strides[1];
+    sizes[0] = ($m)->dim[0];
+    strides[0] = ($m)->mod[0];
+    $handle = lt9_from_blob(IDX_PTR($m, double), sizes, strides, 1, 3);
+    #}
+    handle))
+
+;; --- From-blob: double-matrix rank 2 ---
+(de _torch9-from-d2-double (m)
+  ((-idx2- (-double-)) m)
+  (let ((handle (gptr ())))
+    ((-gptr-) handle)
+    #{
+    extern void* lt9_from_blob(void*, int64_t*, int64_t*, int, int);
+    int64_t sizes[2], strides[2];
+    sizes[0] = ($m)->dim[0];  sizes[1] = ($m)->dim[1];
+    strides[0] = ($m)->mod[0]; strides[1] = ($m)->mod[1];
+    $handle = lt9_from_blob(IDX_PTR($m, double), sizes, strides, 2, 3);
+    #}
+    handle))
+
+;; --- From-blob: float-matrix rank 1 ---
+(de _torch9-from-d1-float (m)
+  ((-idx1- (-float-)) m)
+  (let ((handle (gptr ())))
+    ((-gptr-) handle)
+    #{
+    extern void* lt9_from_blob(void*, int64_t*, int64_t*, int, int);
+    int64_t sizes[1], strides[1];
+    sizes[0] = ($m)->dim[0];
+    strides[0] = ($m)->mod[0];
+    $handle = lt9_from_blob(IDX_PTR($m, float), sizes, strides, 1, 2);
+    #}
+    handle))
+
+;; --- From-blob: float-matrix rank 2 ---
+(de _torch9-from-d2-float (m)
+  ((-idx2- (-float-)) m)
+  (let ((handle (gptr ())))
+    ((-gptr-) handle)
+    #{
+    extern void* lt9_from_blob(void*, int64_t*, int64_t*, int, int);
+    int64_t sizes[2], strides[2];
+    sizes[0] = ($m)->dim[0];  sizes[1] = ($m)->dim[1];
+    strides[0] = ($m)->mod[0]; strides[1] = ($m)->mod[1];
+    $handle = lt9_from_blob(IDX_PTR($m, float), sizes, strides, 2, 2);
+    #}
+    handle))
+
+;; --- From-blob: int-matrix rank 1 ---
+(de _torch9-from-d1-int (m)
+  ((-idx1- (-int-)) m)
+  (let ((handle (gptr ())))
+    ((-gptr-) handle)
+    #{
+    extern void* lt9_from_blob(void*, int64_t*, int64_t*, int, int);
+    int64_t sizes[1], strides[1];
+    sizes[0] = ($m)->dim[0];
+    strides[0] = ($m)->mod[0];
+    $handle = lt9_from_blob(IDX_PTR($m, int), sizes, strides, 1, 4);
+    #}
+    handle))
+
+;; --- From-blob: int-matrix rank 2 ---
+(de _torch9-from-d2-int (m)
+  ((-idx2- (-int-)) m)
+  (let ((handle (gptr ())))
+    ((-gptr-) handle)
+    #{
+    extern void* lt9_from_blob(void*, int64_t*, int64_t*, int, int);
+    int64_t sizes[2], strides[2];
+    sizes[0] = ($m)->dim[0];  sizes[1] = ($m)->dim[1];
+    strides[0] = ($m)->mod[0]; strides[1] = ($m)->mod[1];
+    $handle = lt9_from_blob(IDX_PTR($m, int), sizes, strides, 2, 4);
+    #}
+    handle))
+
+;; --- Matmul ---
+(de _torch9-matmul (a b)
+  ((-gptr-) a b)
+  (let ((handle (gptr ())))
+    ((-gptr-) handle)
+    #{
+    extern void* lt9_matmul(void*, void*);
+    $handle = lt9_matmul($a, $b);
+    #}
+    handle))
+
+;; --- Add ---
+(de _torch9-add (a b)
+  ((-gptr-) a b)
+  (let ((handle (gptr ())))
+    ((-gptr-) handle)
+    #{
+    extern void* lt9_add(void*, void*);
+    $handle = lt9_add($a, $b);
+    #}
+    handle))
+
+;; --- Clone ---
+(de _torch9-clone (tens)
+  ((-gptr-) tens)
+  (let ((handle (gptr ())))
+    ((-gptr-) handle)
+    #{
+    extern void* lt9_clone(void*);
+    $handle = lt9_clone($tens);
+    #}
+    handle))
+
+;; --- Free ---
+(de _torch9-free (tens)
+  ((-gptr-) tens)
+  #{ extern void lt9_free(void*);
+     lt9_free($tens); #}
+  ())
+
+;; --- Print ---
+(de _torch9-print (tens)
+  ((-gptr-) tens)
+  #{ extern void lt9_print(void*);
+     lt9_print($tens); #}
+  ())
+
+;; --- Introspection ---
+(de _torch9-ndim (tens)
+  ((-gptr-) tens)
+  (let ((r 0))
+    ((-int-) r)
+    #{ extern int lt9_ndim(void*);
+       $r = lt9_ndim($tens); #}
+    r))
+
+(de _torch9-dtype (tens)
+  ((-gptr-) tens)
+  (let ((r 0))
+    ((-int-) r)
+    #{ extern int lt9_dtype(void*);
+       $r = lt9_dtype($tens); #}
+    r))
+
+(de _torch9-numel (tens)
+  ((-gptr-) tens)
+  (let ((r 0))
+    ((-int-) r)
+    #{ extern int64_t lt9_numel(void*);
+       $r = (int)lt9_numel($tens); #}
+    r))
+
+;; --- Sizes/strides into pre-allocated int-matrix ---
+(de _torch9-sizes (tens out)
+  ((-gptr-) tens)
+  ((-idx1- (-int-)) out)
+  #{
+  extern void lt9_sizes(void*, int64_t*);
+  extern int lt9_ndim(void*);
+  int nd = lt9_ndim($tens);
+  int64_t tmp[11];
+  int i;
+  lt9_sizes($tens, tmp);
+  for (i = 0; i < nd; i++)
+    IDX_PTR($out, int)[i] = (int)tmp[i];
+  #}
+  ())
+
+(de _torch9-strides (tens out)
+  ((-gptr-) tens)
+  ((-idx1- (-int-)) out)
+  #{
+  extern void lt9_strides(void*, int64_t*);
+  extern int lt9_ndim(void*);
+  int nd = lt9_ndim($tens);
+  int64_t tmp[11];
+  int i;
+  lt9_strides($tens, tmp);
+  for (i = 0; i < nd; i++)
+    IDX_PTR($out, int)[i] = (int)tmp[i];
+  #}
+  ())
+
+;; --- Copy tensor data to a contiguous double-matrix ---
+(de _torch9-copy-to-d1-double (tens out)
+  ((-gptr-) tens)
+  ((-idx1- (-double-)) out)
+  #{
+  extern void* lt9_data_ptr(void*);
+  extern int64_t lt9_numel(void*);
+  double *src = (double *)lt9_data_ptr($tens);
+  double *dst = IDX_PTR($out, double);
+  int64_t n = lt9_numel($tens);
+  int64_t i;
+  for (i = 0; i < n; i++) dst[i] = src[i];
+  #}
+  ())
+
+(de _torch9-copy-to-d2-double (tens out)
+  ((-gptr-) tens)
+  ((-idx2- (-double-)) out)
+  #{
+  extern void* lt9_data_ptr(void*);
+  extern void lt9_sizes(void*, int64_t*);
+  extern void lt9_strides(void*, int64_t*);
+  int64_t sizes[2], strides[2];
+  lt9_sizes($tens, sizes);
+  lt9_strides($tens, strides);
+  double *src = (double *)lt9_data_ptr($tens);
+  double *dst = IDX_PTR($out, double);
+  int64_t i, j;
+  int64_t dst_s0 = ($out)->mod[0], dst_s1 = ($out)->mod[1];
+  for (i = 0; i < sizes[0]; i++)
+    for (j = 0; j < sizes[1]; j++)
+      dst[i * dst_s0 + j * dst_s1] = src[i * strides[0] + j * strides[1]];
+  #}
+  ())
+
+(de _torch9-copy-to-d1-float (tens out)
+  ((-gptr-) tens)
+  ((-idx1- (-float-)) out)
+  #{
+  extern void* lt9_data_ptr(void*);
+  extern int64_t lt9_numel(void*);
+  float *src = (float *)lt9_data_ptr($tens);
+  float *dst = IDX_PTR($out, float);
+  int64_t n = lt9_numel($tens);
+  int64_t i;
+  for (i = 0; i < n; i++) dst[i] = src[i];
+  #}
+  ())
+
+(de _torch9-copy-to-d2-float (tens out)
+  ((-gptr-) tens)
+  ((-idx2- (-float-)) out)
+  #{
+  extern void* lt9_data_ptr(void*);
+  extern void lt9_sizes(void*, int64_t*);
+  extern void lt9_strides(void*, int64_t*);
+  int64_t sizes[2], strides[2];
+  lt9_sizes($tens, sizes);
+  lt9_strides($tens, strides);
+  float *src = (float *)lt9_data_ptr($tens);
+  float *dst = IDX_PTR($out, float);
+  int64_t i, j;
+  int64_t dst_s0 = ($out)->mod[0], dst_s1 = ($out)->mod[1];
+  for (i = 0; i < sizes[0]; i++)
+    for (j = 0; j < sizes[1]; j++)
+      dst[i * dst_s0 + j * dst_s1] = src[i * strides[0] + j * strides[1]];
+  #}
+  ())
+
+;; --- Compile all DHC wrappers ---
+(let ((dhc-make-lushflags
+       (concat dhc-make-lushflags " -I" (dirname file-being-loaded))))
+  (dhc-make ()
+    _torch9-init
+    _torch9-from-d1-double _torch9-from-d2-double
+    _torch9-from-d1-float  _torch9-from-d2-float
+    _torch9-from-d1-int    _torch9-from-d2-int
+    _torch9-matmul _torch9-add _torch9-clone
+    _torch9-free _torch9-print
+    _torch9-ndim _torch9-dtype _torch9-numel
+    _torch9-sizes _torch9-strides
+    _torch9-copy-to-d1-double _torch9-copy-to-d2-double
+    _torch9-copy-to-d1-float  _torch9-copy-to-d2-float))
+
+
+;; ============================================================
+;; Interpreted high-level API
+;; ============================================================
+
+#? ** Initialization
+
+#? (torch9-init)
+;; Initialize libtorch and return information about the backend.
+;; Returns 1 if CUDA is available, 0 for CPU-only.
+;; Called automatically on package load.
+;; {<see> torch9-has-cuda}
+(de torch9-init ()
+  (let ((cuda (_torch9-init)))
+    (setq torch9-has-cuda (= cuda 1))
+    cuda))
+
+#? torch9-has-cuda
+;; Boolean flag set by {<b> torch9-init}.
+;; {<c> t} if CUDA is available, {<c> ()} otherwise.
+(defvar torch9-has-cuda ())
+
+;; Initialize on load
+(torch9-init)
+
+
+#? ** Tensor Creation
+
+#? (torch9-from-idx <m>)
+;; Wrap a Lush idx as a libtorch tensor (zero-copy via
+;; {<c> torch::from_blob}).  The idx data must remain alive for
+;; the lifetime of the returned tensor handle.
+;;
+;; Supported element types: {<c> double}, {<c> float}, {<c> int}.
+;; Supported ranks: 1 and 2 (vectors and matrices).
+;;
+;; Returns an opaque tensor handle (gptr).  Must be freed with
+;; {<b> torch9-free} when no longer needed.
+;;
+;; {<b> Example:}
+;; {<code>
+;;  (let* ((m (double-matrix 3 4))
+;;         (t (torch9-from-idx m)))
+;;    ;; ... use t ...
+;;    (torch9-free t))
+;; </code>}
+;; {<see> (torch9-to-idx <handle>)}
+;; {<see> (torch9-free <handle>)}
+(de torch9-from-idx (m)
+  (let ((nd (idx-ndim m))
+        (st (idx-storage m)))
+    (cond
+     ;; Double rank 1
+     ((and (= nd 1) (is-of-class st |DSTORAGE|))
+      (_torch9-from-d1-double m))
+     ;; Double rank 2
+     ((and (= nd 2) (is-of-class st |DSTORAGE|))
+      (_torch9-from-d2-double m))
+     ;; Float rank 1
+     ((and (= nd 1) (is-of-class st |FSTORAGE|))
+      (_torch9-from-d1-float m))
+     ;; Float rank 2
+     ((and (= nd 2) (is-of-class st |FSTORAGE|))
+      (_torch9-from-d2-float m))
+     ;; Int rank 1
+     ((and (= nd 1) (is-of-class st |I32STORAGE|))
+      (_torch9-from-d1-int m))
+     ;; Int rank 2
+     ((and (= nd 2) (is-of-class st |I32STORAGE|))
+      (_torch9-from-d2-int m))
+     (t
+      (error "torch9-from-idx"
+             (sprintf "Unsupported idx: ndim=%d (supported: double/float/int, rank 1-2)" nd)
+             ())))))
+
+
+#? ** Operations
+
+#? (torch9-matmul <a> <b>)
+;; Matrix multiplication via libtorch.
+;; <a> and <b> are tensor handles from {<b> torch9-from-idx}.
+;; Returns a new tensor handle that must be freed with {<b> torch9-free}.
+;;
+;; For 2D inputs: standard matrix multiply (MxK @ KxN -> MxN).
+;; For 1D inputs: dot product.
+;;
+;; {<b> Example:}
+;; {<code>
+;;  (let* ((a (double-matrix 3 4))
+;;         (b (double-matrix 4 5))
+;;         (ta (torch9-from-idx a))
+;;         (tb (torch9-from-idx b))
+;;         (tc (torch9-matmul ta tb))
+;;         (c  (torch9-to-idx tc)))
+;;    (pretty c)
+;;    (torch9-free ta) (torch9-free tb) (torch9-free tc))
+;; </code>}
+;; {<see> (torch9-from-idx <m>)}
+;; {<see> (torch9-to-idx <handle>)}
+(de torch9-matmul (a b)
+  (let ((handle (_torch9-matmul a b)))
+    (when (= handle (gptr ()))
+      (error "torch9-matmul" "matmul returned NULL" ()))
+    handle))
+
+
+#? (torch9-add <a> <b>)
+;; Element-wise addition via libtorch.
+;; <a> and <b> are tensor handles from {<b> torch9-from-idx}.
+;; Returns a new tensor handle that must be freed with {<b> torch9-free}.
+;; {<see> (torch9-matmul <a> <b>)}
+(de torch9-add (a b)
+  (let ((handle (_torch9-add a b)))
+    (when (= handle (gptr ()))
+      (error "torch9-add" "add returned NULL" ()))
+    handle))
+
+
+#? ** Tensor Conversion
+
+#? (torch9-to-idx <handle>)
+;; Convert a libtorch tensor back to a Lush idx.
+;; Allocates a new contiguous idx and copies data from the tensor.
+;; The tensor handle is NOT freed (call {<b> torch9-free} separately).
+;;
+;; Supports rank 1 and 2 tensors with double or float element types.
+;;
+;; Returns a new Lush idx (double-matrix or float-matrix).
+;; {<see> (torch9-from-idx <m>)}
+;; {<see> (torch9-free <handle>)}
+(de torch9-to-idx (handle)
+  (let* ((nd  (_torch9-ndim handle))
+         (dt  (_torch9-dtype handle))
+         (sz  (int-matrix 11)))
+    (_torch9-sizes handle sz)
+    (cond
+     ;; Double rank 1
+     ((and (= nd 1) (= dt 3))
+      (let ((out (double-matrix (sz 0))))
+        (_torch9-copy-to-d1-double handle out)
+        out))
+     ;; Double rank 2
+     ((and (= nd 2) (= dt 3))
+      (let ((out (double-matrix (sz 0) (sz 1))))
+        (_torch9-copy-to-d2-double handle out)
+        out))
+     ;; Float rank 1
+     ((and (= nd 1) (= dt 2))
+      (let ((out (float-matrix (sz 0))))
+        (_torch9-copy-to-d1-float handle out)
+        out))
+     ;; Float rank 2
+     ((and (= nd 2) (= dt 2))
+      (let ((out (float-matrix (sz 0) (sz 1))))
+        (_torch9-copy-to-d2-float handle out)
+        out))
+     (t
+      (error "torch9-to-idx"
+             (sprintf "Unsupported tensor: ndim=%d dtype=%d (supported: double/float, rank 1-2)"
+                      nd dt)
+             ())))))
+
+
+#? ** Tensor Introspection
+
+#? (torch9-ndim <handle>)
+;; Return the number of dimensions of a tensor.
+(de torch9-ndim (handle)
+  (_torch9-ndim handle))
+
+#? (torch9-dtype <handle>)
+;; Return the Lush ST_* type code for a tensor.
+;; 2=float, 3=double, 4=int32, 5=int16, 6=int8, 7=uint8, 9=int64.
+(de torch9-dtype (handle)
+  (_torch9-dtype handle))
+
+#? (torch9-numel <handle>)
+;; Return the total number of elements in a tensor.
+(de torch9-numel (handle)
+  (_torch9-numel handle))
+
+#? (torch9-sizes <handle>)
+;; Return an int-matrix of dimension sizes.
+(de torch9-sizes (handle)
+  (let* ((nd (_torch9-ndim handle))
+         (out (int-matrix nd)))
+    (_torch9-sizes handle out)
+    out))
+
+#? (torch9-strides <handle>)
+;; Return an int-matrix of dimension strides.
+(de torch9-strides (handle)
+  (let* ((nd (_torch9-ndim handle))
+         (out (int-matrix nd)))
+    (_torch9-strides handle out)
+    out))
+
+
+#? ** Lifecycle
+
+#? (torch9-clone <handle>)
+;; Create a deep copy of a tensor.
+;; Returns a new tensor handle that must be freed independently.
+;; {<see> (torch9-free <handle>)}
+(de torch9-clone (handle)
+  (let ((h (_torch9-clone handle)))
+    (when (= h (gptr ()))
+      (error "torch9-clone" "clone returned NULL" ()))
+    h))
+
+#? (torch9-free <handle>)
+;; Free a tensor handle.  Must be called when the tensor is no longer
+;; needed to avoid memory leaks.
+;; {<see> (torch9-from-idx <m>)}
+(de torch9-free (handle)
+  (_torch9-free handle)
+  ())
+
+#? (torch9-print <handle>)
+;; Print a tensor to stdout (for debugging).
+(de torch9-print (handle)
+  (_torch9-print handle)
+  ())
