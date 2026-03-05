@@ -158,6 +158,8 @@ Given calibration set {(X_i, Y_i)}_{i=1..n} and a nonconformity score function s
 | Mondrian regression    |     |      |          |          |     | Y   |       |
 | AgACI                  | Y   | Y    | Y        | Y        | Y   | Y   | Y     |
 | Anomaly detection      |     | Y    |          |          |     |     |       |
+| Jackknife+             |     |      |          |          |     | Y   | Y     |
+| CV+                    | Y   |      | Y        |          |     | Y   |       |
 
 Y = implemented (all above now implemented as of 2026-03-04)
 
@@ -168,7 +170,7 @@ Y = implemented (all above now implemented as of 2026-03-04)
 - `(knn-conformal-predict ...)` in knn.lsh
 - `(==> glmnet conformal-predict ...)` in regression.lsh
 
-### Centralized module (`conformal.lsh`) — all 7 roadmap items implemented:
+### Centralized module (`conformal.lsh`) — all 8 sections implemented:
 1. **Mondrian CP**: `conformal-mondrian-classify` + 4 wrappers (RF, NB, GLMnet, kNN)
 2. **Venn-ABERS**: `venn-abers-predict` + 2 wrappers (RF, GLMnet)
 3. **Conformal predictive distributions**: `ConformalPredDist` class + 2 wrappers (lm, GLMnet)
@@ -176,13 +178,17 @@ Y = implemented (all above now implemented as of 2026-03-04)
 5. **Mondrian regression**: `conformal-mondrian-regression` (quantile-binned)
 6. **AgACI**: `AgACI` class with update/get-threshold/predict-interval
 7. **Anomaly detection**: `conformal-anomaly-detect` (kNN-based)
+8. **Jackknife+ and CV+**: `jackknife-plus` (generic), `jackknife-plus-lm` (Sherman-Morrison),
+   `jackknife-plus-ridge`, `cv-plus` (generic), `cv-plus-lm`, `cv-plus-rf`, `cv-plus-glmnet`
 
 ### Compiled C helpers:
 - `_cp-pava`: Pool Adjacent Violators (isotonic regression), O(n)
 - `_cp-bsearch`: binary search in sorted array
 - `_cp-abs-residuals`: |y - yhat| vectorized
+- `_cp-jkplus-intervals`: Jackknife+ interval construction from LOO preds/residuals
+- `_cp-loo-apply`: Sherman-Morrison LOO test predictions via cross-influence matrix
 
-### Tests: 79 tests in `packages/mlcore/tests/test-conformal.lsh`
+### Tests: 119 tests in `packages/mlcore/tests/test-conformal.lsh`
 
 ## 6. Design Principles
 
@@ -234,7 +240,7 @@ unless noted.  Times are for the conformal method only (model training excluded)
 - n_cal ~5000: RF-based methods take a few seconds; regression methods still instant
 - n_cal ~50K: would need compiled RF traversal and/or the VP-tree kNN backend
 
-## 8. Future Work: Jackknife+
+## 8. Jackknife+ and CV+ (Implemented 2026-03-04)
 
 ### What it is
 Jackknife+ (Barber, Candès, Ramdas, Tibshirani 2021) is a conformal method that
@@ -242,63 +248,33 @@ retrains the model on leave-one-out (LOO) subsets of the training data.  For n t
 points, it trains n separate models, computes the LOO residual for each, then builds
 prediction intervals using these more honest residuals.
 
-### Algorithm (regression):
-1. For i = 1..n: train model f_{-i} on all training data except point i
-2. Compute LOO residual: R_i = |Y_i - f_{-i}(X_i)|
-3. For test point X: interval = [q_{alpha/2}({f_{-i}(X) - R_i}),
-                                  q_{1-alpha/2}({f_{-i}(X) + R_i})]
-   where quantiles are taken over all i.
-
-Jackknife+ differs from naive Jackknife by using the leave-one-out PREDICTIONS on
-the test point (not the full-data prediction), giving valid finite-sample coverage.
-
 ### Coverage guarantee
 P(Y_{n+1} in C(X_{n+1})) >= 1 - 2*alpha  (slightly weaker than split conformal's 1-alpha).
 The "CV+" variant (using K-fold instead of LOO) achieves 1 - 2*alpha with K-fold models.
 
-### Why it could be useful
-- **No calibration split needed**: Uses ALL data for both training and calibration,
-  unlike split conformal which burns half the data on calibration.  With small datasets
-  (n < 100), this is a major advantage.
-- **Tighter intervals**: LOO residuals are more honest than in-sample residuals, and
-  using all n models for test-time prediction averages out model variance.
-- **Important predictions**: When each prediction matters (medical, financial), the
-  computational cost is justified by better uncertainty quantification.
+### Implementation (2026-03-04)
 
-### Computational cost
-- **Training**: n model fits for LOO, or K fits for CV+.  For a model that takes T
-  seconds to train on n points, LOO costs n*T total.
-  - lm-model: O(n * n*p^2) = O(n^2 * p^2).  With n=1000, p=10, this is ~1s.  Feasible.
-  - ridge: Same as lm (SVD-based), ~1s.
-  - RF (50 trees): O(n * n*p*log(n)*50) = very expensive.  n=500 -> ~500*0.02s = 10s.
-    Marginal.  n=5000 -> impractical without shortcuts.
-  - GLMnet: O(n * n*p*n_lambda) = expensive for large path.
-- **Prediction**: n forward passes per test point (one per LOO model).
-- **CV+ variant**: K-fold with K=10 reduces to 10 model fits.  Much more practical
-  and recommended for any model heavier than OLS.
+#### Generic functions:
+- `(jackknife-plus model-fn predict-fn train-x train-y test-x alpha)` — LOO retraining
+- `(cv-plus model-fn predict-fn train-x train-y test-x alpha [k])` — K-fold variant
 
-### Implementation sketch (not yet implemented)
-```
-(de jackknife-plus (model-fn predict-fn train-x train-y test-x alpha)
-  ;; model-fn: (lambda (x y) ...) returns a fitted model
-  ;; predict-fn: (lambda (model x) ...) returns predictions
-  ;; Returns: n_test x 2 interval matrix
-  ;;
-  ;; For each i: train model on train-x[-i], train-y[-i]
-  ;; Compute LOO residual and LOO prediction on test-x
-  ;; Build intervals from quantiles of {f_{-i}(test) +/- R_i}
-  ...)
-```
+#### Optimized wrappers (Sherman-Morrison LOO, no retraining):
+- `(jackknife-plus-lm lm train-x train-y test-x alpha)` — O(NP^2), same as one OLS fit
+- `(jackknife-plus-ridge train-x train-y lambda test-x alpha)` — O(NP^2)
 
-Convenience wrappers: `jackknife-plus-lm`, `jackknife-plus-ridge`.
-RF and GLMnet would use `cv-plus` (K-fold) variant.
+#### Convenience wrappers:
+- `(cv-plus-lm train-x train-y test-x alpha [k])`
+- `(cv-plus-rf n-trees train-x train-y test-x alpha [k])`
+- `(cv-plus-glmnet alpha-enet lam train-x train-y test-x alpha [k])`
 
-### Recommendation
-Implement Jackknife+ for lm-model and ridge only (cheap LOO via the Sherman-Morrison
-formula or SVD rank-1 update).  For RF and GLMnet, implement CV+ with K=10 as the
-practical alternative.  The Sherman-Morrison LOO trick for OLS makes Jackknife+ cost
-only O(n * p^2) total — the SAME as a single OLS fit — so there is essentially no
-extra cost for lm-model.  This should be Priority 1 for future conformal work.
+#### Compiled C helpers:
+- `_cp-jkplus-intervals`: builds sorted lo/hi arrays, extracts quantiles
+- `_cp-loo-apply`: computes LOO test predictions via cross-influence matrix G
+
+#### Verification:
+- `jackknife-plus-lm` output matches generic `jackknife-plus` with lm callbacks to 1e-6
+  (confirms Sherman-Morrison correctness)
+- 40 new tests (119 total), all passing
 
 ### References
 - Barber, Candès, Ramdas, Tibshirani (2021). "Predictive Inference with the Jackknife+"

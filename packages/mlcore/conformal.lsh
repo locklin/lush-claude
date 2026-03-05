@@ -8,12 +8,14 @@
 ;;;   - Mondrian conformal regression (adaptive intervals)
 ;;;   - AgACI (adaptive online conformal inference)
 ;;;   - Conformal anomaly detection (kNN-based)
+;;;   - Jackknife+ and CV+ (LOO/K-fold conformal prediction)
 ;;;
 ;;; Copyright (C) 2026 Scott Locklin, Lugos LLC
 ;;; Distributed under the GNU General Public License v2+.
 
 (libload "mlcore/model-selection")
 (libload "mlcore/knn")
+(libload "mlcore/regression")
 
 
 ;; ============================================================
@@ -39,6 +41,9 @@
 ;;   adjusts coverage over a data stream.}
 ;; {<li> {<b> Conformal anomaly detection}: kNN-based anomaly
 ;;   scoring with conformal p-values.}
+;; {<li> {<b> Jackknife+ and CV+}: LOO/K-fold conformal intervals
+;;   using all training data, with optimized Sherman-Morrison
+;;   wrappers for lm and ridge.}
 ;; }
 ;;
 ;; All methods follow the split conformal paradigm: calibrate on
@@ -170,6 +175,131 @@
   for (i = 0; i < nn; i++) {
       double diff = py[i * sy] - pyh[i * syh];
       po[i * so] = (diff < 0) ? -diff : diff;
+  }
+  #}
+  () )
+
+
+(de _cp-jkplus-intervals (loo-preds loo-resid n-train n-test alpha intervals)
+  ((-idx2- (-double-)) loo-preds intervals)
+  ((-idx1- (-double-)) loo-resid)
+  ((-int-) n-train n-test)
+  ((-double-) alpha)
+  ;; Build Jackknife+ intervals for each test point.
+  ;; loo-preds: N_train x N_test matrix of LOO predictions.
+  ;; loo-resid: N_train vector of LOO absolute residuals.
+  ;; For test point j: lo[i] = loo_preds[i][j] - R_i,
+  ;;   hi[i] = loo_preds[i][j] + R_i.
+  ;; Sort both, extract quantile at ceil((n+1)*alpha)-1 for lo,
+  ;;   ceil((n+1)*(1-alpha))-1 for hi.
+  ;; Writes intervals[j][0..1].
+  #{
+  double *pp = IDX_PTR($loo_preds, double);
+  int sp0 = ($loo_preds)->mod[0];
+  int sp1 = ($loo_preds)->mod[1];
+  double *pr = IDX_PTR($loo_resid, double);
+  int sr = ($loo_resid)->mod[0];
+  double *po = IDX_PTR($intervals, double);
+  int so0 = ($intervals)->mod[0];
+  int so1 = ($intervals)->mod[1];
+  int nt = $n_train;
+  int ntest = $n_test;
+  double a = $alpha;
+
+  double *lo = (double *)malloc(nt * sizeof(double));
+  double *hi = (double *)malloc(nt * sizeof(double));
+
+  /* Compute quantile indices */
+  /* lo quantile: ceil((n+1)*alpha) - 1, clamped to [0, n-1] */
+  double raw_lo = (nt + 1.0) * a;
+  int ilo = (int)raw_lo;
+  if (raw_lo > ilo) ilo = ilo + 1;
+  ilo = ilo - 1;
+  if (ilo < 0) ilo = 0;
+  if (ilo >= nt) ilo = nt - 1;
+  /* hi quantile: ceil((n+1)*(1-a)) - 1, clamped */
+  double raw_hi = (nt + 1.0) * (1.0 - a);
+  int ihi = (int)raw_hi;
+  if (raw_hi > ihi) ihi = ihi + 1;
+  ihi = ihi - 1;
+  if (ihi < 0) ihi = 0;
+  if (ihi >= nt) ihi = nt - 1;
+
+  int j, i, k;
+  for (j = 0; j < ntest; j++) {
+      /* Build lo and hi arrays */
+      for (i = 0; i < nt; i++) {
+          double pred = pp[i * sp0 + j * sp1];
+          double resid = pr[i * sr];
+          lo[i] = pred - resid;
+          hi[i] = pred + resid;
+      }
+      /* Insertion sort lo */
+      for (i = 1; i < nt; i++) {
+          double val = lo[i];
+          k = i - 1;
+          while (k >= 0 && lo[k] > val) {
+              lo[k + 1] = lo[k];
+              k--;
+          }
+          lo[k + 1] = val;
+      }
+      /* Insertion sort hi */
+      for (i = 1; i < nt; i++) {
+          double val = hi[i];
+          k = i - 1;
+          while (k >= 0 && hi[k] > val) {
+              hi[k + 1] = hi[k];
+              k--;
+          }
+          hi[k + 1] = val;
+      }
+      po[j * so0 + 0 * so1] = lo[ilo];
+      po[j * so0 + 1 * so1] = hi[ihi];
+  }
+  free(lo);
+  free(hi);
+  #}
+  () )
+
+
+(de _cp-loo-apply (cross-mat test-pred resid hat-diag n-train n-test loo-preds)
+  ((-idx2- (-double-)) cross-mat loo-preds)
+  ((-idx1- (-double-)) test-pred resid hat-diag)
+  ((-int-) n-train n-test)
+  ;; Compute LOO predictions for the Sherman-Morrison approach.
+  ;; cross-mat: N_test x N_train "cross-influence" matrix G.
+  ;; test-pred: N_test vector of full-model predictions.
+  ;; resid: N_train vector of training residuals.
+  ;; hat-diag: N_train vector of hat matrix diagonals.
+  ;; loo_preds[i][j] = test_pred[j] - G[j][i] * resid[i] / (1 - h_ii)
+  ;; Output: loo-preds is N_train x N_test.
+  #{
+  double *pg = IDX_PTR($cross_mat, double);
+  int sg0 = ($cross_mat)->mod[0];
+  int sg1 = ($cross_mat)->mod[1];
+  double *ptp = IDX_PTR($test_pred, double);
+  int stp = ($test_pred)->mod[0];
+  double *pre = IDX_PTR($resid, double);
+  int sre = ($resid)->mod[0];
+  double *ph = IDX_PTR($hat_diag, double);
+  int sh = ($hat_diag)->mod[0];
+  double *po = IDX_PTR($loo_preds, double);
+  int so0 = ($loo_preds)->mod[0];
+  int so1 = ($loo_preds)->mod[1];
+  int nt = $n_train;
+  int ntest = $n_test;
+  int i, j;
+  for (i = 0; i < nt; i++) {
+      double ri = pre[i * sre];
+      double hi = ph[i * sh];
+      double denom = 1.0 - hi;
+      if (denom < 1e-14) denom = 1e-14;
+      double ratio = ri / denom;
+      for (j = 0; j < ntest; j++) {
+          double gji = pg[j * sg0 + i * sg1];
+          po[i * so0 + j * so1] = ptp[j * stp] - gji * ratio;
+      }
   }
   #}
   () )
@@ -941,10 +1071,448 @@
 
 
 ;; ============================================================
+;; Section 9: Jackknife+ and CV+
+;; ============================================================
+
+#? ** Jackknife+ and CV+ Conformal Prediction
+;; Jackknife+ (Barber, Candes, Ramdas, Tibshirani 2021) builds
+;; prediction intervals using leave-one-out (LOO) refitting.
+;; Unlike split conformal, it uses ALL training data for both
+;; fitting and calibration, producing tighter intervals especially
+;; for small datasets (n < 100).
+;;
+;; {<b> Algorithm} (regression):
+;; {<ul>
+;; {<li> For each training point i: train model f_{-i} on all
+;;   data except point i.}
+;; {<li> Compute LOO residual: R_i = |Y_i - f_{-i}(X_i)|.}
+;; {<li> For test point X: interval =
+;;   [q_alpha({f_{-i}(X) - R_i}), q_{1-alpha}({f_{-i}(X) + R_i})].}
+;; }
+;;
+;; {<b> Coverage guarantee}: P(Y in C(X)) >= 1 - 2*alpha (slightly
+;; weaker than split conformal's 1 - alpha, but uses all data).
+;;
+;; CV+ is the K-fold variant: instead of N LOO models, train K
+;; fold models.  Recommended for expensive models (RF, GLMnet).
+;;
+;; {<b> Optimized wrappers}: {<c> jackknife-plus-lm} and
+;; {<c> jackknife-plus-ridge} use the Sherman-Morrison LOO trick,
+;; avoiding retraining entirely.  Cost is O(NP^2), same as one fit.
+;;
+;; {<b> Reference}: Barber, Candes, Ramdas, Tibshirani (2021).
+;; "Predictive Inference with the Jackknife+", Annals of Statistics.
+;;
+;; {<see> (conformal-regression-interval <predict-fn> <cal-x> <cal-y> <test-x> <alpha>)}
+
+
+#? (jackknife-plus <model-fn> <predict-fn> <train-x> <train-y> <test-x> <alpha>)
+;; Generic Jackknife+ prediction intervals via LOO retraining.
+;; <model-fn>: {<c> (lambda (x y) ...)} returning a fitted model.
+;; <predict-fn>: {<c> (lambda (model x) ...)} returning predictions (double vector).
+;; <train-x>: N x D training feature matrix.
+;; <train-y>: N double vector of training responses.
+;; <test-x>: N_test x D test feature matrix.
+;; <alpha>: significance level (e.g. 0.1 for 80% coverage guarantee).
+;; Returns an N_test x 2 double matrix [lower, upper].
+;;
+;; {<b> Warning}: This function trains N leave-one-out models.
+;; For expensive models, prefer {<c> cv-plus} (K-fold variant).
+;; For lm/ridge, prefer the optimized wrappers which avoid retraining.
+;;
+;; {<code>
+;;  (let* ((intervals (jackknife-plus
+;;            (lambda (x y) (new lm-model x y))
+;;            (lambda (m x) (==> m predict x))
+;;            train-x train-y test-x 0.1)))
+;;    (for (i 0 (1- (idx-dim intervals 0)))
+;;      (printf "[%g, %g]\n" (intervals i 0) (intervals i 1))))
+;; </code>}
+;; {<see> (jackknife-plus-lm <lm> <train-x> <train-y> <test-x> <alpha>)}
+;; {<see> (cv-plus <model-fn> <predict-fn> <train-x> <train-y> <test-x> <alpha> [<k>])}
+(de jackknife-plus (model-fn predict-fn train-x train-y test-x alpha)
+  (let* ((n (idx-dim train-x 0))
+         (d (idx-dim train-x 1))
+         (n-test (idx-dim test-x 0))
+         (loo-preds (double-matrix n n-test))
+         (loo-resid (double-matrix n))
+         (intervals (double-matrix n-test 2)))
+    ;; For each training point, build LOO dataset, train, predict
+    (for (i 0 (1- n))
+      (let* ((n-loo (1- n))
+             (loo-idx (int-matrix n-loo))
+             (pos 0))
+        ;; Build LOO index vector (all except i)
+        (for (j 0 (1- n))
+          (when (<> j i)
+            (loo-idx pos j)
+            (incr pos) ) )
+        (let* ((loo-x (select-rows-d2 train-x loo-idx))
+               (loo-y (select-rows-d1 train-y loo-idx))
+               ;; Train LOO model
+               (model (model-fn loo-x loo-y))
+               ;; LOO prediction on held-out point
+               (xi (double-matrix 1 d)))
+          (for (j 0 (1- d))
+            (xi 0 j (train-x i j)) )
+          (let ((pred-i (predict-fn model xi)))
+            (loo-resid i (abs (- (train-y i) (pred-i 0)))) )
+          ;; LOO predictions on test data
+          (let ((test-preds (predict-fn model test-x)))
+            (for (j 0 (1- n-test))
+              (loo-preds i j (test-preds j)) ) ) ) ) )
+    ;; Build intervals via compiled helper
+    (_cp-jkplus-intervals loo-preds loo-resid n n-test alpha intervals)
+    intervals ) )
+
+
+#? (cv-plus <model-fn> <predict-fn> <train-x> <train-y> <test-x> <alpha> [<k>])
+;; CV+ (cross-validation+) prediction intervals.
+;; K-fold variant of Jackknife+: trains K models instead of N.
+;; Recommended for models that are expensive to train.
+;; <model-fn>: {<c> (lambda (x y) ...)} returning a fitted model.
+;; <predict-fn>: {<c> (lambda (model x) ...)} returning predictions.
+;; <train-x>: N x D training feature matrix.
+;; <train-y>: N double vector of training responses.
+;; <test-x>: N_test x D test feature matrix.
+;; <alpha>: significance level.
+;; <k>: number of folds (default 10).
+;; Returns an N_test x 2 double matrix [lower, upper].
+;;
+;; The LOO residual for point i is computed from the fold model
+;; that excluded fold(i).  Test predictions come from all K models.
+;;
+;; {<code>
+;;  (let ((intervals (cv-plus
+;;          (lambda (x y) (new RandomForest 50 "regress" x y))
+;;          (lambda (m x) (==> m predict x))
+;;          train-x train-y test-x 0.1 5)))
+;;    ...)
+;; </code>}
+;; {<see> (jackknife-plus <model-fn> <predict-fn> <train-x> <train-y> <test-x> <alpha>)}
+(de cv-plus (model-fn predict-fn train-x train-y test-x alpha . rest)
+  (let* ((k (if rest (car rest) 10))
+         (n (idx-dim train-x 0))
+         (n-test (idx-dim test-x 0))
+         ;; Clamp k to n
+         (k (min k n))
+         (folds (kfold-indices n k))
+         (loo-preds (double-matrix n n-test))
+         (loo-resid (double-matrix n))
+         (intervals (double-matrix n-test 2)))
+    ;; For each fold
+    (each ((fold folds))
+      (let* ((train-idx (car fold))
+             (test-idx (cadr fold))
+             (fold-x (select-rows-d2 train-x train-idx))
+             (fold-y (select-rows-d1 train-y train-idx))
+             ;; Train fold model
+             (model (model-fn fold-x fold-y))
+             ;; Predict on test data
+             (test-preds (predict-fn model test-x))
+             ;; Predict on held-out fold points for residuals
+             (n-held (idx-dim test-idx 0))
+             (held-x (select-rows-d2 train-x test-idx))
+             (held-preds (predict-fn model held-x)))
+        ;; Store LOO residuals for held-out points
+        (for (j 0 (1- n-held))
+          (let ((idx (test-idx j)))
+            (loo-resid idx (abs (- (train-y idx) (held-preds j)))) ) )
+        ;; Store test predictions for all held-out indices
+        ;; (each held-out point uses this fold's model for test preds)
+        (for (j 0 (1- n-held))
+          (let ((idx (test-idx j)))
+            (for (ti 0 (1- n-test))
+              (loo-preds idx ti (test-preds ti)) ) ) ) ) )
+    ;; Build intervals via compiled helper
+    (_cp-jkplus-intervals loo-preds loo-resid n n-test alpha intervals)
+    intervals ) )
+
+
+#? (jackknife-plus-lm <lm> <train-x> <train-y> <test-x> <alpha>)
+;; Optimized Jackknife+ for lm-model using Sherman-Morrison LOO.
+;; No retraining needed: uses the hat matrix diagonal and residuals
+;; stored in the fitted lm-model to compute exact LOO predictions.
+;; Total cost: O(NP^2), same as one OLS fit.
+;;
+;; <lm>: a fitted lm-model object (created with {<c> (new lm-model train-x train-y)}).
+;; <train-x>: N x D training feature matrix (same as used to fit <lm>).
+;; <train-y>: N double vector of training responses.
+;; <test-x>: N_test x D test feature matrix.
+;; <alpha>: significance level.
+;; Returns an N_test x 2 double matrix [lower, upper].
+;;
+;; {<b> Sherman-Morrison LOO trick}:
+;; {<ul>
+;; {<li> LOO residual: r_i / (1 - h_ii) where h_ii is the hat diagonal.}
+;; {<li> LOO test prediction: f(x_test) - G[j,i] * r_i / (1 - h_ii)
+;;   where G = X_test_aug * (X'X)^{-1} * X_train_aug'.}
+;; }
+;;
+;; {<code>
+;;  (let* ((lm (new lm-model train-x train-y))
+;;         (intervals (jackknife-plus-lm lm train-x train-y test-x 0.1)))
+;;    ...)
+;; </code>}
+;; {<see> (jackknife-plus <model-fn> <predict-fn> <train-x> <train-y> <test-x> <alpha>)}
+;; {<see> (jackknife-plus-ridge <train-x> <train-y> <lambda> <test-x> <alpha>)}
+(de jackknife-plus-lm (lm train-x train-y test-x alpha)
+  (let* ((n (idx-dim train-x 0))
+         (n-test (idx-dim test-x 0))
+         (xa (scope lm x-aug))          ;; N x P+1 augmented design matrix
+         (resid (scope lm residuals))   ;; N-vector of residuals
+         (hd (scope lm hat-diag))       ;; N-vector of hat diagonals
+         (has-int (scope lm has-intercept))
+         (pp (idx-dim xa 1))            ;; P+1 (with intercept)
+         ;; Re-SVD x-aug to get (X'X)^{-1} = V diag(1/s^2) V'
+         (u-copy (idx-copy xa))
+         (v (double-matrix pp pp))
+         (s (double-matrix pp)))
+    (svd-inplace u-copy v s)
+    ;; Compute (X'X)^{-1} = V * diag(1/s^2) * V'
+    ;; Then G = X_test_aug * (X'X)^{-1} * X_train_aug'
+    ;; Step 1: Build test augmented matrix
+    (let* ((test-aug (if has-int (_reg-add-intercept test-x) (idx-copy test-x)))
+           ;; Step 2: Compute (X'X)^{-1} * X_train_aug' = V * diag(1/s^2) * V' * xa'
+           ;; = V * diag(1/s^2) * (xa * V)' [since (V' * xa')_ij = (xa * V)_ji]
+           ;; Let W = xa * V (N x pp), then scale columns by 1/s^2, then
+           ;; G = test_aug * V * diag(1/s^2) * W'
+           ;; First: W = xa * V
+           (w (double-matrix n pp)))
+      (for (i 0 (1- n))
+        (for (j 0 (1- pp))
+          (let ((val 0))
+            (for (k 0 (1- pp))
+              (incr val (* (xa i k) (v k j))) )
+            (w i j val) ) ) )
+      ;; Scale W columns by 1/s^2
+      (for (j 0 (1- pp))
+        (let ((sj (s j)))
+          (when (> sj 1e-14)
+            (let ((inv-s2 (/ 1.0 (* sj sj))))
+              (for (i 0 (1- n))
+                (w i j (* (w i j) inv-s2)) ) ) ) ) )
+      ;; Compute test_aug * V -> TV (n_test x pp)
+      (let ((tv (double-matrix n-test pp)))
+        (for (i 0 (1- n-test))
+          (for (j 0 (1- pp))
+            (let ((val 0))
+              (for (k 0 (1- pp))
+                (incr val (* (test-aug i k) (v k j))) )
+              (tv i j val) ) ) )
+        ;; G = TV * W' (n_test x n)
+        (let ((cross-mat (double-matrix n-test n)))
+          (for (i 0 (1- n-test))
+            (for (j 0 (1- n))
+              (let ((val 0))
+                (for (k 0 (1- pp))
+                  (incr val (* (tv i k) (w j k))) )
+                (cross-mat i j val) ) ) )
+          ;; LOO residuals: |r_i / (1 - h_ii)|
+          (let ((loo-resid (double-matrix n)))
+            (for (i 0 (1- n))
+              (let ((denom (- 1.0 (hd i))))
+                (when (< (abs denom) 1e-14)
+                  (setq denom 1e-14) )
+                (loo-resid i (abs (/ (resid i) denom))) ) )
+            ;; LOO test predictions via compiled helper
+            (let ((test-pred (==> lm predict test-x))
+                  (loo-preds (double-matrix n n-test))
+                  (intervals (double-matrix n-test 2)))
+              (_cp-loo-apply cross-mat test-pred resid hd n n-test loo-preds)
+              (_cp-jkplus-intervals loo-preds loo-resid n n-test alpha intervals)
+              intervals ) ) ) ) ) ) ) )
+
+
+#? (jackknife-plus-ridge <train-x> <train-y> <lambda> <test-x> <alpha>)
+;; Optimized Jackknife+ for ridge regression using Sherman-Morrison LOO.
+;; Centers data internally (matching {<c> ridge} function's approach),
+;; then uses (X'X + lambda*I)^{-1} via SVD for exact LOO predictions.
+;; Total cost: O(NP^2), same as one ridge fit.
+;;
+;; <train-x>: N x D training feature matrix.
+;; <train-y>: N double vector of training responses.
+;; <lambda>: ridge regularization parameter.
+;; <test-x>: N_test x D test feature matrix.
+;; <alpha>: significance level.
+;; Returns an N_test x 2 double matrix [lower, upper].
+;;
+;; {<code>
+;;  (let ((intervals (jackknife-plus-ridge train-x train-y 1.0 test-x 0.1)))
+;;    ...)
+;; </code>}
+;; {<see> (jackknife-plus-lm <lm> <train-x> <train-y> <test-x> <alpha>)}
+(de jackknife-plus-ridge (train-x train-y lambda test-x alpha)
+  (let* ((n (idx-dim train-x 0))
+         (pp (idx-dim train-x 1))
+         (n-test (idx-dim test-x 0))
+         ;; Center data
+         (x-mean (double-matrix pp))
+         (y-mean 0))
+    ;; Compute means
+    (for (j 0 (1- pp))
+      (let ((s 0))
+        (for (i 0 (1- n))
+          (incr s (train-x i j)) )
+        (x-mean j (/ s n)) ) )
+    (for (i 0 (1- n))
+      (incr y-mean (train-y i)) )
+    (setq y-mean (/ y-mean n))
+    ;; Center training data
+    (let ((xc (double-matrix n pp))
+          (yc (double-matrix n)))
+      (for (i 0 (1- n))
+        (yc i (- (train-y i) y-mean))
+        (for (j 0 (1- pp))
+          (xc i j (- (train-x i j) (x-mean j))) ) )
+      ;; SVD of centered X: xc = U S V'
+      (let* ((u (idx-copy xc))
+             (v (double-matrix pp pp))
+             (s (double-matrix pp)))
+        (svd-inplace u v s)
+        ;; Ridge coefficients: beta_c = V diag(s/(s^2+lambda)) U' yc
+        (let ((beta-c (double-matrix pp)))
+          (for (j 0 (1- pp))
+            (let* ((sj (s j))
+                   (shrink (/ sj (+ (* sj sj) lambda)))
+                   (c 0))
+              (for (i 0 (1- n))
+                (incr c (* (u i j) (yc i))) )
+              (setq c (* c shrink))
+              (for (k 0 (1- pp))
+                (beta-c k (+ (beta-c k) (* (v k j) c))) ) ) )
+          ;; Intercept = y-mean - x-mean' * beta-c
+          (let ((intercept y-mean))
+            (for (j 0 (1- pp))
+              (setq intercept (- intercept (* (x-mean j) (beta-c j)))) )
+            ;; Full model training predictions
+            (let ((train-pred (double-matrix n))
+                  (resid (double-matrix n)))
+              (for (i 0 (1- n))
+                (let ((v2 intercept))
+                  (for (j 0 (1- pp))
+                    (incr v2 (* (train-x i j) (beta-c j))) )
+                  (train-pred i v2)
+                  (resid i (- (train-y i) v2)) ) )
+              ;; Ridge hat diagonal: h_ii = sum_k U_ik^2 * s_k^2/(s_k^2+lambda)
+              (let ((hat-diag (double-matrix n)))
+                (for (i 0 (1- n))
+                  (let ((h 0))
+                    (for (k 0 (1- pp))
+                      (let* ((sk (s k))
+                             (ratio (/ (* sk sk) (+ (* sk sk) lambda))))
+                        (incr h (* (* (u i k) (u i k)) ratio)) ) )
+                    (hat-diag i h) ) )
+                ;; Center test data
+                (let ((test-c (double-matrix n-test pp)))
+                  (for (i 0 (1- n-test))
+                    (for (j 0 (1- pp))
+                      (test-c i j (- (test-x i j) (x-mean j))) ) )
+                  ;; Compute cross-influence matrix G
+                  ;; G = test_c * V * diag(s^2/(s^2+lam)) * (1/s^2) * V' * xc'
+                  ;;   = test_c * V * diag(1/(s^2+lam)) * V' * xc'
+                  ;; W = xc * V, scale cols by 1/(s^2+lam)
+                  (let ((w (double-matrix n pp)))
+                    (for (i 0 (1- n))
+                      (for (j 0 (1- pp))
+                        (let ((val 0))
+                          (for (k 0 (1- pp))
+                            (incr val (* (xc i k) (v k j))) )
+                          (w i j val) ) ) )
+                    ;; Scale by 1/(s^2+lambda)
+                    (for (j 0 (1- pp))
+                      (let ((sj (s j)))
+                        (let ((inv (/ 1.0 (+ (* sj sj) lambda))))
+                          (for (i 0 (1- n))
+                            (w i j (* (w i j) inv)) ) ) ) )
+                    ;; TV = test_c * V
+                    (let ((tv (double-matrix n-test pp)))
+                      (for (i 0 (1- n-test))
+                        (for (j 0 (1- pp))
+                          (let ((val 0))
+                            (for (k 0 (1- pp))
+                              (incr val (* (test-c i k) (v k j))) )
+                            (tv i j val) ) ) )
+                      ;; G = TV * W' (n_test x n)
+                      (let ((cross-mat (double-matrix n-test n)))
+                        (for (i 0 (1- n-test))
+                          (for (j 0 (1- n))
+                            (let ((val 0))
+                              (for (k 0 (1- pp))
+                                (incr val (* (tv i k) (w j k))) )
+                              (cross-mat i j val) ) ) )
+                        ;; LOO residuals
+                        (let ((loo-resid (double-matrix n)))
+                          (for (i 0 (1- n))
+                            (let ((denom (- 1.0 (hat-diag i))))
+                              (when (< (abs denom) 1e-14)
+                                (setq denom 1e-14) )
+                              (loo-resid i (abs (/ (resid i) denom))) ) )
+                          ;; Full model test predictions
+                          (let ((test-pred (double-matrix n-test)))
+                            (for (i 0 (1- n-test))
+                              (let ((v2 intercept))
+                                (for (j 0 (1- pp))
+                                  (incr v2 (* (test-x i j) (beta-c j))) )
+                                (test-pred i v2) ) )
+                            ;; LOO test predictions via compiled helper
+                            (let ((loo-preds (double-matrix n n-test))
+                                  (intervals (double-matrix n-test 2)))
+                              (_cp-loo-apply cross-mat test-pred resid hat-diag n n-test loo-preds)
+                              (_cp-jkplus-intervals loo-preds loo-resid n n-test alpha intervals)
+                              intervals ) ) ) ) ) ) ) ) ) ) ) ) ) ) ) )
+
+
+#? (cv-plus-lm <train-x> <train-y> <test-x> <alpha> [<k>])
+;; CV+ prediction intervals using lm-model.
+;; Thin wrapper around {<c> cv-plus} with lm-model callbacks.
+;; <k>: number of folds (default 10).
+;; {<see> (cv-plus <model-fn> <predict-fn> <train-x> <train-y> <test-x> <alpha> [<k>])}
+(de cv-plus-lm (train-x train-y test-x alpha . rest)
+  (let ((k (if rest (car rest) 10)))
+    (cv-plus
+      (lambda (x y) (new lm-model x y))
+      (lambda (m x) (==> m predict x))
+      train-x train-y test-x alpha k) ) )
+
+
+#? (cv-plus-rf <n-trees> <train-x> <train-y> <test-x> <alpha> [<k>])
+;; CV+ prediction intervals using Random Forest regression.
+;; <n-trees>: number of trees in the forest.
+;; <k>: number of folds (default 10).
+;; {<see> (cv-plus <model-fn> <predict-fn> <train-x> <train-y> <test-x> <alpha> [<k>])}
+(de cv-plus-rf (n-trees train-x train-y test-x alpha . rest)
+  (let ((k (if rest (car rest) 10)))
+    (cv-plus
+      (lambda (x y)
+        (let ((rf (new RandomForest n-trees "regress")))
+          (==> rf fit x y)
+          rf) )
+      (lambda (m x) (==> m predict x))
+      train-x train-y test-x alpha k) ) )
+
+
+#? (cv-plus-glmnet <alpha-enet> <lam> <train-x> <train-y> <test-x> <alpha> [<k>])
+;; CV+ prediction intervals using GLMnet gaussian model.
+;; <alpha-enet>: elastic net mixing parameter (1 = lasso, 0 = ridge).
+;; <lam>: regularization lambda to use for predictions.
+;; <k>: number of folds (default 10).
+;; {<see> (cv-plus <model-fn> <predict-fn> <train-x> <train-y> <test-x> <alpha> [<k>])}
+(de cv-plus-glmnet (alpha-enet lam train-x train-y test-x alpha . rest)
+  (let ((k (if rest (car rest) 10)))
+    (cv-plus
+      (lambda (x y) (new glmnet-model x y alpha-enet "gaussian"))
+      (lambda (m x) (==> m predict x lam))
+      train-x train-y test-x alpha k) ) )
+
+
+;; ============================================================
 ;; Compilation
 ;; ============================================================
 
 (dhc-make ()
   _cp-pava
   _cp-bsearch
-  _cp-abs-residuals )
+  _cp-abs-residuals
+  _cp-jkplus-intervals
+  _cp-loo-apply )
