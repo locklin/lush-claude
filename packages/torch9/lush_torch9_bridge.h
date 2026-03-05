@@ -95,6 +95,79 @@ void        lt9_free(lt9_tensor t);
 
 void        lt9_print(lt9_tensor t);
 
+/* ============================================================
+ * Stage 3: TorchScript Model Loading + IValue + NN Functional
+ * ============================================================ */
+
+typedef void* lt9_model;
+typedef void* lt9_ivalue;
+
+/* ---- Model loading ---- */
+
+/* Load a TorchScript model from disk (.pt file). */
+lt9_model   lt9_model_load(const char *path);
+
+/* Run forward pass with single tensor input, return tensor output. */
+lt9_tensor  lt9_model_forward(lt9_model m, lt9_tensor input);
+
+/* Run forward pass returning raw IValue (for tuple/list outputs like LSTM). */
+lt9_ivalue  lt9_model_forward_ivalue(lt9_model m, lt9_tensor input);
+
+/* Set model to eval mode (disables dropout, batchnorm training behavior). */
+void        lt9_model_eval(lt9_model m);
+
+/* Move model to CUDA device. */
+void        lt9_model_to_cuda(lt9_model m, int device);
+
+/* Free model. */
+void        lt9_model_free(lt9_model m);
+
+/* Create a simple test model in C++ (no Python needed).
+ * The model computes: forward(x) = x * 2 + 1 */
+lt9_model   lt9_model_create_test(void);
+
+/* ---- IValue navigation (for structured outputs) ---- */
+
+int         lt9_ivalue_is_tensor(lt9_ivalue iv);
+int         lt9_ivalue_is_tuple(lt9_ivalue iv);
+int         lt9_ivalue_is_list(lt9_ivalue iv);
+lt9_tensor  lt9_ivalue_to_tensor(lt9_ivalue iv);
+int         lt9_ivalue_tuple_size(lt9_ivalue iv);
+lt9_ivalue  lt9_ivalue_tuple_get(lt9_ivalue iv, int index);
+void        lt9_ivalue_free(lt9_ivalue iv);
+
+/* ---- Functional NN operations ---- */
+
+/* Conv2d: input[N,Cin,H,W] * weight[Cout,Cin,kH,kW] + bias[Cout] */
+lt9_tensor  lt9_conv2d(lt9_tensor input, lt9_tensor weight, lt9_tensor bias,
+                        int stride_h, int stride_w, int pad_h, int pad_w);
+
+/* Batch normalization (inference mode). */
+lt9_tensor  lt9_batch_norm(lt9_tensor input, lt9_tensor weight, lt9_tensor bias,
+                            lt9_tensor running_mean, lt9_tensor running_var,
+                            double eps, double momentum);
+
+/* Layer normalization. */
+lt9_tensor  lt9_layer_norm(lt9_tensor input, lt9_tensor weight, lt9_tensor bias,
+                            int64_t *normalized_shape, int shape_len, double eps);
+
+/* Max pool 2D. */
+lt9_tensor  lt9_max_pool2d(lt9_tensor input, int kh, int kw,
+                            int stride_h, int stride_w, int pad_h, int pad_w);
+
+/* Average pool 2D. */
+lt9_tensor  lt9_avg_pool2d(lt9_tensor input, int kh, int kw,
+                            int stride_h, int stride_w, int pad_h, int pad_w);
+
+/* Linear: xW^T + b. bias may be NULL. */
+lt9_tensor  lt9_linear(lt9_tensor input, lt9_tensor weight, lt9_tensor bias);
+
+/* Embedding lookup: weight[indices]. */
+lt9_tensor  lt9_embedding(lt9_tensor weight, lt9_tensor indices);
+
+/* Dropout (only active when training=1; pass-through when training=0). */
+lt9_tensor  lt9_dropout(lt9_tensor input, double p, int training);
+
 #ifdef __cplusplus
 }
 #endif

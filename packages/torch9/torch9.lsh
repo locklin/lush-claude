@@ -717,6 +717,208 @@
   #}
   ())
 
+;; ============================================================
+;; Stage 3: Model loading DHC wrappers
+;; ============================================================
+
+;; --- Model load ---
+(de _torch9-model-load (path)
+  ((-str-) path)
+  (let ((handle (gptr ())))
+    ((-gptr-) handle)
+    #{ extern void* lt9_model_load(const char*);
+       $handle = lt9_model_load((const char *)($path->data)); #}
+    handle))
+
+;; --- Model forward (tensor output) ---
+(de _torch9-model-forward (model input)
+  ((-gptr-) model input)
+  (let ((handle (gptr ())))
+    ((-gptr-) handle)
+    #{ extern void* lt9_model_forward(void*, void*);
+       $handle = lt9_model_forward($model, $input); #}
+    handle))
+
+;; --- Model forward (IValue output) ---
+(de _torch9-model-forward-ivalue (model input)
+  ((-gptr-) model input)
+  (let ((handle (gptr ())))
+    ((-gptr-) handle)
+    #{ extern void* lt9_model_forward_ivalue(void*, void*);
+       $handle = lt9_model_forward_ivalue($model, $input); #}
+    handle))
+
+;; --- Model eval ---
+(de _torch9-model-eval (model)
+  ((-gptr-) model)
+  #{ extern void lt9_model_eval(void*);
+     lt9_model_eval($model); #}
+  ())
+
+;; --- Model to CUDA ---
+(de _torch9-model-to-cuda (model device)
+  ((-gptr-) model)
+  ((-int-) device)
+  #{ extern void lt9_model_to_cuda(void*, int);
+     lt9_model_to_cuda($model, $device); #}
+  ())
+
+;; --- Model free ---
+(de _torch9-model-free (model)
+  ((-gptr-) model)
+  #{ extern void lt9_model_free(void*);
+     lt9_model_free($model); #}
+  ())
+
+;; --- Model create test ---
+(de _torch9-model-create-test ()
+  (let ((handle (gptr ())))
+    ((-gptr-) handle)
+    #{ extern void* lt9_model_create_test(void);
+       $handle = lt9_model_create_test(); #}
+    handle))
+
+;; ============================================================
+;; Stage 3: IValue navigation DHC wrappers
+;; ============================================================
+
+(de _torch9-ivalue-is-tensor (iv)
+  ((-gptr-) iv)
+  (let ((r 0))
+    ((-int-) r)
+    #{ extern int lt9_ivalue_is_tensor(void*);
+       $r = lt9_ivalue_is_tensor($iv); #}
+    r))
+
+(de _torch9-ivalue-is-tuple (iv)
+  ((-gptr-) iv)
+  (let ((r 0))
+    ((-int-) r)
+    #{ extern int lt9_ivalue_is_tuple(void*);
+       $r = lt9_ivalue_is_tuple($iv); #}
+    r))
+
+(de _torch9-ivalue-is-list (iv)
+  ((-gptr-) iv)
+  (let ((r 0))
+    ((-int-) r)
+    #{ extern int lt9_ivalue_is_list(void*);
+       $r = lt9_ivalue_is_list($iv); #}
+    r))
+
+(de _torch9-ivalue-to-tensor (iv)
+  ((-gptr-) iv)
+  (let ((handle (gptr ())))
+    ((-gptr-) handle)
+    #{ extern void* lt9_ivalue_to_tensor(void*);
+       $handle = lt9_ivalue_to_tensor($iv); #}
+    handle))
+
+(de _torch9-ivalue-tuple-size (iv)
+  ((-gptr-) iv)
+  (let ((r 0))
+    ((-int-) r)
+    #{ extern int lt9_ivalue_tuple_size(void*);
+       $r = lt9_ivalue_tuple_size($iv); #}
+    r))
+
+(de _torch9-ivalue-tuple-get (iv index)
+  ((-gptr-) iv)
+  ((-int-) index)
+  (let ((handle (gptr ())))
+    ((-gptr-) handle)
+    #{ extern void* lt9_ivalue_tuple_get(void*, int);
+       $handle = lt9_ivalue_tuple_get($iv, $index); #}
+    handle))
+
+(de _torch9-ivalue-free (iv)
+  ((-gptr-) iv)
+  #{ extern void lt9_ivalue_free(void*);
+     lt9_ivalue_free($iv); #}
+  ())
+
+;; ============================================================
+;; Stage 3: NN Functional ops DHC wrappers
+;; ============================================================
+
+(de _torch9-conv2d (input weight bias stride-h stride-w pad-h pad-w)
+  ((-gptr-) input weight bias)
+  ((-int-) stride-h stride-w pad-h pad-w)
+  (let ((handle (gptr ())))
+    ((-gptr-) handle)
+    #{ extern void* lt9_conv2d(void*, void*, void*, int, int, int, int);
+       $handle = lt9_conv2d($input, $weight, $bias, $stride_h, $stride_w, $pad_h, $pad_w); #}
+    handle))
+
+(de _torch9-batch-norm (input weight bias running-mean running-var eps momentum)
+  ((-gptr-) input weight bias running-mean running-var)
+  ((-double-) eps momentum)
+  (let ((handle (gptr ())))
+    ((-gptr-) handle)
+    #{ extern void* lt9_batch_norm(void*, void*, void*, void*, void*, double, double);
+       $handle = lt9_batch_norm($input, $weight, $bias, $running_mean, $running_var, $eps, $momentum); #}
+    handle))
+
+(de _torch9-layer-norm (input weight bias normalized-shape eps)
+  ((-gptr-) input weight bias)
+  ((-idx1- (-int-)) normalized-shape)
+  ((-double-) eps)
+  (let ((handle (gptr ())))
+    ((-gptr-) handle)
+    #{
+    extern void* lt9_layer_norm(void*, void*, void*, int64_t*, int, double);
+    int64_t tmp[11];
+    int i, nd = ($normalized_shape)->dim[0];
+    int *sp = IDX_PTR($normalized_shape, int);
+    for (i = 0; i < nd; i++) tmp[i] = (int64_t)sp[i];
+    $handle = lt9_layer_norm($input, $weight, $bias, tmp, nd, $eps);
+    #}
+    handle))
+
+(de _torch9-max-pool2d (input kh kw stride-h stride-w pad-h pad-w)
+  ((-gptr-) input)
+  ((-int-) kh kw stride-h stride-w pad-h pad-w)
+  (let ((handle (gptr ())))
+    ((-gptr-) handle)
+    #{ extern void* lt9_max_pool2d(void*, int, int, int, int, int, int);
+       $handle = lt9_max_pool2d($input, $kh, $kw, $stride_h, $stride_w, $pad_h, $pad_w); #}
+    handle))
+
+(de _torch9-avg-pool2d (input kh kw stride-h stride-w pad-h pad-w)
+  ((-gptr-) input)
+  ((-int-) kh kw stride-h stride-w pad-h pad-w)
+  (let ((handle (gptr ())))
+    ((-gptr-) handle)
+    #{ extern void* lt9_avg_pool2d(void*, int, int, int, int, int, int);
+       $handle = lt9_avg_pool2d($input, $kh, $kw, $stride_h, $stride_w, $pad_h, $pad_w); #}
+    handle))
+
+(de _torch9-linear (input weight bias)
+  ((-gptr-) input weight bias)
+  (let ((handle (gptr ())))
+    ((-gptr-) handle)
+    #{ extern void* lt9_linear(void*, void*, void*);
+       $handle = lt9_linear($input, $weight, $bias); #}
+    handle))
+
+(de _torch9-embedding (weight indices)
+  ((-gptr-) weight indices)
+  (let ((handle (gptr ())))
+    ((-gptr-) handle)
+    #{ extern void* lt9_embedding(void*, void*);
+       $handle = lt9_embedding($weight, $indices); #}
+    handle))
+
+(de _torch9-dropout (input p training)
+  ((-gptr-) input)
+  ((-double-) p)
+  ((-int-) training)
+  (let ((handle (gptr ())))
+    ((-gptr-) handle)
+    #{ extern void* lt9_dropout(void*, double, int);
+       $handle = lt9_dropout($input, $p, $training); #}
+    handle))
+
 ;; --- Compile all DHC wrappers ---
 (let ((dhc-make-lushflags
        (concat dhc-make-lushflags " -I" (dirname file-being-loaded))))
@@ -741,7 +943,19 @@
     _torch9-copy-to-d1-double _torch9-copy-to-d2-double
     _torch9-copy-to-d3-double _torch9-copy-to-d4-double
     _torch9-copy-to-d1-float  _torch9-copy-to-d2-float
-    _torch9-copy-to-d3-float  _torch9-copy-to-d4-float))
+    _torch9-copy-to-d3-float  _torch9-copy-to-d4-float
+    ;; Stage 3: Model loading
+    _torch9-model-load _torch9-model-forward _torch9-model-forward-ivalue
+    _torch9-model-eval _torch9-model-to-cuda _torch9-model-free
+    _torch9-model-create-test
+    ;; Stage 3: IValue navigation
+    _torch9-ivalue-is-tensor _torch9-ivalue-is-tuple _torch9-ivalue-is-list
+    _torch9-ivalue-to-tensor _torch9-ivalue-tuple-size _torch9-ivalue-tuple-get
+    _torch9-ivalue-free
+    ;; Stage 3: NN Functional ops
+    _torch9-conv2d _torch9-batch-norm _torch9-layer-norm
+    _torch9-max-pool2d _torch9-avg-pool2d
+    _torch9-linear _torch9-embedding _torch9-dropout))
 
 
 ;; ============================================================
@@ -1256,3 +1470,303 @@
 (de torch9-print (handle)
   (_torch9-print handle)
   ())
+
+
+;; ============================================================
+;; Stage 3: Model Loading API
+;; ============================================================
+
+#? ** TorchScript Model Loading
+
+#? (torch9-model-load <path>)
+;; Load a TorchScript model from a {<c> .pt} file.
+;; Returns an opaque model handle.
+;; The model must have been exported with {<c> torch.jit.script}
+;; or {<c> torch.jit.trace} in Python.
+;;
+;; {<b> Example:}
+;; {<code>
+;;  (let ((model (torch9-model-load "mymodel.pt")))
+;;    (torch9-model-eval model)
+;;    ;; ... run forward pass ...
+;;    (torch9-model-free model))
+;; </code>}
+;; {<see> (torch9-model-forward <model> <input>)}
+;; {<see> (torch9-model-eval <model>)}
+;; {<see> (torch9-model-free <model>)}
+(de torch9-model-load (path)
+  (let ((handle (_torch9-model-load path)))
+    (when (= handle (gptr ()))
+      (error "torch9-model-load" (sprintf "Failed to load model: %s" path) ()))
+    handle))
+
+#? (torch9-model-forward <model> <input>)
+;; Run forward pass on a TorchScript model with a single tensor input.
+;; Returns a tensor handle with the model output.
+;; For models that return tuples (e.g. LSTM), use
+;; {<b> torch9-model-forward-ivalue} instead.
+;; {<see> (torch9-model-load <path>)}
+;; {<see> (torch9-model-forward-ivalue <model> <input>)}
+(de torch9-model-forward (model input)
+  (let ((handle (_torch9-model-forward model input)))
+    (when (= handle (gptr ()))
+      (error "torch9-model-forward" "forward returned NULL" ()))
+    handle))
+
+#? (torch9-model-forward-ivalue <model> <input>)
+;; Run forward pass returning a raw IValue handle.
+;; Use this for models with structured outputs (tuples, lists).
+;; Navigate the result with {<b> torch9-ivalue-unpack} or
+;; the individual IValue functions.
+;; {<see> (torch9-ivalue-unpack <iv>)}
+;; {<see> (torch9-model-forward <model> <input>)}
+(de torch9-model-forward-ivalue (model input)
+  (let ((handle (_torch9-model-forward-ivalue model input)))
+    (when (= handle (gptr ()))
+      (error "torch9-model-forward-ivalue" "forward-ivalue returned NULL" ()))
+    handle))
+
+#? (torch9-model-eval <model>)
+;; Set a TorchScript model to evaluation mode.
+;; Disables dropout and sets batch normalization to use
+;; running statistics instead of batch statistics.
+;; Should be called before inference.
+;; {<see> (torch9-model-load <path>)}
+(de torch9-model-eval (model)
+  (_torch9-model-eval model)
+  ())
+
+#? (torch9-model-to-cuda <model> &optional <device>)
+;; Move a TorchScript model to a CUDA GPU.
+;; <device> is the GPU index (default 0).
+;; {<see> (torch9-model-load <path>)}
+(de torch9-model-to-cuda (model &optional (device 0))
+  (_torch9-model-to-cuda model device)
+  ())
+
+#? (torch9-model-free <model>)
+;; Free a TorchScript model handle.
+;; {<see> (torch9-model-load <path>)}
+(de torch9-model-free (model)
+  (_torch9-model-free model)
+  ())
+
+
+;; ============================================================
+;; Stage 3: IValue Navigation API
+;; ============================================================
+
+#? ** IValue Navigation
+
+#? (torch9-ivalue-to-tensor <iv>)
+;; Extract a tensor from an IValue handle.
+;; Returns a tensor handle, or errors if the IValue is not a tensor.
+;; {<see> (torch9-ivalue-unpack <iv>)}
+(de torch9-ivalue-to-tensor (iv)
+  (let ((handle (_torch9-ivalue-to-tensor iv)))
+    (when (= handle (gptr ()))
+      (error "torch9-ivalue-to-tensor" "IValue is not a tensor or extraction failed" ()))
+    handle))
+
+#? (torch9-ivalue-tuple-ref <iv> <index>)
+;; Get element at <index> from a tuple IValue.
+;; Returns a new IValue handle that must be freed.
+;; {<see> (torch9-ivalue-unpack <iv>)}
+(de torch9-ivalue-tuple-ref (iv index)
+  (let ((handle (_torch9-ivalue-tuple-get iv index)))
+    (when (= handle (gptr ()))
+      (error "torch9-ivalue-tuple-ref"
+             (sprintf "Failed to get tuple element %d" index) ()))
+    handle))
+
+#? (torch9-ivalue-free <iv>)
+;; Free an IValue handle.
+(de torch9-ivalue-free (iv)
+  (_torch9-ivalue-free iv)
+  ())
+
+#? (torch9-ivalue-unpack <iv>)
+;; Recursively unpack an IValue into a Lush structure.
+;; Tensors become tensor handles, tuples and lists become
+;; Lush lists of unpacked elements.
+;;
+;; {<b> Example} (LSTM output):
+;; {<code>
+;;  (let* ((iv (torch9-model-forward-ivalue lstm-model input))
+;;         (result (torch9-ivalue-unpack iv)))
+;;    ;; result = (output-handle h_n-handle c_n-handle)
+;;    (torch9-ivalue-free iv)
+;;    ;; ... use tensor handles ...
+;;    )
+;; </code>}
+;; {<see> (torch9-model-forward-ivalue <model> <input>)}
+(de torch9-ivalue-unpack (iv)
+  (cond
+   ((= 1 (_torch9-ivalue-is-tensor iv))
+    (_torch9-ivalue-to-tensor iv))
+   ((= 1 (_torch9-ivalue-is-tuple iv))
+    (let ((n (_torch9-ivalue-tuple-size iv))
+          (result ())
+          (i 0))
+      (while (< i n)
+        (let* ((child (_torch9-ivalue-tuple-get iv i))
+               (val (torch9-ivalue-unpack child)))
+          (setq result (nconc1 result val))
+          (_torch9-ivalue-free child))
+        (setq i (+ i 1)))
+      result))
+   ((= 1 (_torch9-ivalue-is-list iv))
+    (let ((n (_torch9-ivalue-tuple-size iv))
+          (result ())
+          (i 0))
+      (while (< i n)
+        (let* ((child (_torch9-ivalue-tuple-get iv i))
+               (val (torch9-ivalue-unpack child)))
+          (setq result (nconc1 result val))
+          (_torch9-ivalue-free child))
+        (setq i (+ i 1)))
+      result))
+   (t (error "torch9-ivalue-unpack" "Unsupported IValue type" ()))))
+
+
+;; ============================================================
+;; Stage 3: Functional NN Operations API
+;; ============================================================
+
+#? ** Functional NN Operations
+
+#? (torch9-conv2d <input> <weight> <bias> <stride-h> <stride-w> <pad-h> <pad-w>)
+;; 2D convolution: {<c> input[N,Cin,H,W] * weight[Cout,Cin,kH,kW] + bias[Cout]}.
+;; <bias> may be {<c> (gptr ())} for no bias.
+;; Returns a new tensor handle.
+;;
+;; {<b> Example:}
+;; {<code>
+;;  ;; 1x1x4x4 input, 1x1x3x3 kernel, stride=1, pad=0
+;;  (let* ((in  (torch9-from-idx input-4d))
+;;         (w   (torch9-from-idx kernel-4d))
+;;         (b   (torch9-from-idx bias-1d))
+;;         (out (torch9-conv2d in w b 1 1 0 0)))
+;;    ;; out is [N, Cout, H', W']
+;;    ...)
+;; </code>}
+;; {<see> (torch9-linear <input> <weight> <bias>)}
+;; {<see> (torch9-max-pool2d <input> <kh> <kw> <stride-h> <stride-w> <pad-h> <pad-w>)}
+(de torch9-conv2d (input weight bias stride-h stride-w pad-h pad-w)
+  (let ((handle (_torch9-conv2d input weight bias stride-h stride-w pad-h pad-w)))
+    (when (= handle (gptr ()))
+      (error "torch9-conv2d" "conv2d returned NULL" ()))
+    handle))
+
+#? (torch9-batch-norm <input> <weight> <bias> <running-mean> <running-var> <eps> <momentum>)
+;; Batch normalization (inference mode).
+;; <weight> and <bias> are the affine parameters (gamma/beta).
+;; <running-mean> and <running-var> are the running statistics.
+;; Pass {<c> (gptr ())} for any optional parameter to omit it.
+;; {<see> (torch9-layer-norm <input> <weight> <bias> <normalized-shape> <eps>)}
+(de torch9-batch-norm (input weight bias running-mean running-var eps momentum)
+  (let ((handle (_torch9-batch-norm input weight bias running-mean running-var eps momentum)))
+    (when (= handle (gptr ()))
+      (error "torch9-batch-norm" "batch_norm returned NULL" ()))
+    handle))
+
+#? (torch9-layer-norm <input> <weight> <bias> <normalized-shape> <eps>)
+;; Layer normalization.
+;; <normalized-shape> is an int-matrix specifying the shape of the
+;; dimensions to normalize over (typically the last N dims).
+;; <weight> and <bias> may be {<c> (gptr ())} to omit.
+;; {<see> (torch9-batch-norm <input> <weight> <bias> <running-mean> <running-var> <eps> <momentum>)}
+(de torch9-layer-norm (input weight bias normalized-shape eps)
+  (let ((handle (_torch9-layer-norm input weight bias normalized-shape eps)))
+    (when (= handle (gptr ()))
+      (error "torch9-layer-norm" "layer_norm returned NULL" ()))
+    handle))
+
+#? (torch9-max-pool2d <input> <kh> <kw> <stride-h> <stride-w> <pad-h> <pad-w>)
+;; 2D max pooling.
+;; <input> shape: {<c> [N, C, H, W]}.
+;; Returns a tensor with spatially downsampled output.
+;; {<see> (torch9-avg-pool2d <input> <kh> <kw> <stride-h> <stride-w> <pad-h> <pad-w>)}
+(de torch9-max-pool2d (input kh kw stride-h stride-w pad-h pad-w)
+  (let ((handle (_torch9-max-pool2d input kh kw stride-h stride-w pad-h pad-w)))
+    (when (= handle (gptr ()))
+      (error "torch9-max-pool2d" "max_pool2d returned NULL" ()))
+    handle))
+
+#? (torch9-avg-pool2d <input> <kh> <kw> <stride-h> <stride-w> <pad-h> <pad-w>)
+;; 2D average pooling.
+;; <input> shape: {<c> [N, C, H, W]}.
+;; Returns a tensor with spatially downsampled output.
+;; {<see> (torch9-max-pool2d <input> <kh> <kw> <stride-h> <stride-w> <pad-h> <pad-w>)}
+(de torch9-avg-pool2d (input kh kw stride-h stride-w pad-h pad-w)
+  (let ((handle (_torch9-avg-pool2d input kh kw stride-h stride-w pad-h pad-w)))
+    (when (= handle (gptr ()))
+      (error "torch9-avg-pool2d" "avg_pool2d returned NULL" ()))
+    handle))
+
+#? (torch9-linear <input> <weight> <bias>)
+;; Linear transformation: {<c> xW^T + b}.
+;; <input> shape: {<c> [*, in_features]}.
+;; <weight> shape: {<c> [out_features, in_features]}.
+;; <bias> may be {<c> (gptr ())} for no bias.
+;; Returns a new tensor handle.
+;; {<see> (torch9-conv2d <input> <weight> <bias> <stride-h> <stride-w> <pad-h> <pad-w>)}
+(de torch9-linear (input weight bias)
+  (let ((handle (_torch9-linear input weight bias)))
+    (when (= handle (gptr ()))
+      (error "torch9-linear" "linear returned NULL" ()))
+    handle))
+
+#? (torch9-embedding <weight> <indices>)
+;; Embedding lookup: select rows from <weight> by <indices>.
+;; <weight> shape: {<c> [num_embeddings, embedding_dim]}.
+;; <indices> is an int or long tensor of indices.
+;; Returns a tensor with the selected embedding vectors.
+(de torch9-embedding (weight indices)
+  (let ((handle (_torch9-embedding weight indices)))
+    (when (= handle (gptr ()))
+      (error "torch9-embedding" "embedding returned NULL" ()))
+    handle))
+
+#? (torch9-dropout <input> <p> <training>)
+;; Apply dropout.
+;; When <training> is 0, this is a pass-through (returns input unchanged).
+;; When <training> is 1, randomly zeroes elements with probability <p>.
+;; Returns a new tensor handle.
+(de torch9-dropout (input p training)
+  (let ((handle (_torch9-dropout input p training)))
+    (when (= handle (gptr ()))
+      (error "torch9-dropout" "dropout returned NULL" ()))
+    handle))
+
+
+;; ============================================================
+;; Stage 3: LSTM convenience function
+;; ============================================================
+
+#? ** LSTM Support
+
+#? (torch9-lstm-forward <model-handle> <input-handle>)
+;; Run an LSTM TorchScript model.
+;; The model should be a TorchScript-exported LSTM wrapper that returns
+;; a tuple of {<c> (output, h_n, c_n)}.
+;; Returns a Lush list of tensor handles: {<c> (output h_n c_n)}.
+;;
+;; {<b> Example:}
+;; {<code>
+;;  (let* ((model (torch9-model-load "lstm_10_20_1.pt"))
+;;         (input (torch9-from-idx (double-matrix 2 5 10)))
+;;         (result (torch9-lstm-forward model input))
+;;         (output (nth 0 result))
+;;         (h_n   (nth 1 result))
+;;         (c_n   (nth 2 result)))
+;;    ;; output=[2,5,20], h_n=[1,2,20], c_n=[1,2,20]
+;;    ...)
+;; </code>}
+;; {<see> (torch9-model-load <path>)}
+;; {<see> (torch9-ivalue-unpack <iv>)}
+(de torch9-lstm-forward (model-handle input-handle)
+  (let* ((iv (_torch9-model-forward-ivalue model-handle input-handle))
+         (result (torch9-ivalue-unpack iv)))
+    (_torch9-ivalue-free iv)
+    result))

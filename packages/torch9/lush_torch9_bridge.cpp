@@ -6,6 +6,7 @@
  */
 
 #include <torch/torch.h>
+#include <torch/script.h>
 #include <iostream>
 #include "lush_torch9_bridge.h"
 
@@ -291,4 +292,203 @@ void lt9_print(lt9_tensor t) {
     }
     auto *tp = static_cast<torch::Tensor*>(t);
     std::cout << *tp << std::endl;
+}
+
+/* ============================================================
+ * Stage 3: TorchScript Model Loading + IValue + NN Functional
+ * ============================================================ */
+
+/* ---- Model loading ---- */
+
+lt9_model lt9_model_load(const char *path) {
+    if (!path) return nullptr;
+    try {
+        auto *mod = new torch::jit::Module(torch::jit::load(path));
+        return static_cast<lt9_model>(mod);
+    } catch (const c10::Error &e) {
+        std::cerr << "lt9_model_load error: " << e.what() << std::endl;
+        return nullptr;
+    }
+}
+
+lt9_tensor lt9_model_forward(lt9_model m, lt9_tensor input) {
+    if (!m || !input) return nullptr;
+    auto *mod = static_cast<torch::jit::Module*>(m);
+    auto *in  = static_cast<torch::Tensor*>(input);
+    try {
+        auto result = mod->forward({*in});
+        return new torch::Tensor(result.toTensor());
+    } catch (const c10::Error &e) {
+        std::cerr << "lt9_model_forward error: " << e.what() << std::endl;
+        return nullptr;
+    }
+}
+
+lt9_ivalue lt9_model_forward_ivalue(lt9_model m, lt9_tensor input) {
+    if (!m || !input) return nullptr;
+    auto *mod = static_cast<torch::jit::Module*>(m);
+    auto *in  = static_cast<torch::Tensor*>(input);
+    try {
+        auto result = mod->forward({*in});
+        return new torch::jit::IValue(result);
+    } catch (const c10::Error &e) {
+        std::cerr << "lt9_model_forward_ivalue error: " << e.what() << std::endl;
+        return nullptr;
+    }
+}
+
+void lt9_model_eval(lt9_model m) {
+    if (!m) return;
+    auto *mod = static_cast<torch::jit::Module*>(m);
+    mod->eval();
+}
+
+void lt9_model_to_cuda(lt9_model m, int device) {
+    if (!m) return;
+    auto *mod = static_cast<torch::jit::Module*>(m);
+    if (torch::cuda::is_available())
+        mod->to(torch::Device(torch::kCUDA, device));
+}
+
+void lt9_model_free(lt9_model m) {
+    if (m)
+        delete static_cast<torch::jit::Module*>(m);
+}
+
+lt9_model lt9_model_create_test(void) {
+    try {
+        auto mod = new torch::jit::Module("TestModule");
+        mod->define(
+            "def forward(self, x: Tensor) -> Tensor:\n"
+            "    return x * 2 + 1\n"
+        );
+        return static_cast<lt9_model>(mod);
+    } catch (const c10::Error &e) {
+        std::cerr << "lt9_model_create_test error: " << e.what() << std::endl;
+        return nullptr;
+    }
+}
+
+/* ---- IValue navigation ---- */
+
+int lt9_ivalue_is_tensor(lt9_ivalue iv) {
+    if (!iv) return 0;
+    auto *val = static_cast<torch::jit::IValue*>(iv);
+    return val->isTensor() ? 1 : 0;
+}
+
+int lt9_ivalue_is_tuple(lt9_ivalue iv) {
+    if (!iv) return 0;
+    auto *val = static_cast<torch::jit::IValue*>(iv);
+    return val->isTuple() ? 1 : 0;
+}
+
+int lt9_ivalue_is_list(lt9_ivalue iv) {
+    if (!iv) return 0;
+    auto *val = static_cast<torch::jit::IValue*>(iv);
+    return val->isList() ? 1 : 0;
+}
+
+lt9_tensor lt9_ivalue_to_tensor(lt9_ivalue iv) {
+    if (!iv) return nullptr;
+    auto *val = static_cast<torch::jit::IValue*>(iv);
+    if (!val->isTensor()) return nullptr;
+    return new torch::Tensor(val->toTensor());
+}
+
+int lt9_ivalue_tuple_size(lt9_ivalue iv) {
+    if (!iv) return 0;
+    auto *val = static_cast<torch::jit::IValue*>(iv);
+    if (!val->isTuple()) return 0;
+    return static_cast<int>(val->toTuple()->elements().size());
+}
+
+lt9_ivalue lt9_ivalue_tuple_get(lt9_ivalue iv, int index) {
+    if (!iv) return nullptr;
+    auto *val = static_cast<torch::jit::IValue*>(iv);
+    if (!val->isTuple()) return nullptr;
+    auto &elems = val->toTuple()->elements();
+    if (index < 0 || index >= static_cast<int>(elems.size())) return nullptr;
+    return new torch::jit::IValue(elems[index]);
+}
+
+void lt9_ivalue_free(lt9_ivalue iv) {
+    if (iv)
+        delete static_cast<torch::jit::IValue*>(iv);
+}
+
+/* ---- Functional NN operations ---- */
+
+lt9_tensor lt9_conv2d(lt9_tensor input, lt9_tensor weight, lt9_tensor bias,
+                       int stride_h, int stride_w, int pad_h, int pad_w) {
+    if (!input || !weight) return nullptr;
+    auto *in = static_cast<torch::Tensor*>(input);
+    auto *w  = static_cast<torch::Tensor*>(weight);
+    auto b = bias ? c10::optional<torch::Tensor>(*static_cast<torch::Tensor*>(bias))
+                  : c10::nullopt;
+    return new torch::Tensor(torch::conv2d(*in, *w, b,
+        /*stride=*/{stride_h, stride_w}, /*padding=*/{pad_h, pad_w}));
+}
+
+lt9_tensor lt9_batch_norm(lt9_tensor input, lt9_tensor weight, lt9_tensor bias,
+                           lt9_tensor running_mean, lt9_tensor running_var,
+                           double eps, double momentum) {
+    if (!input) return nullptr;
+    auto *in = static_cast<torch::Tensor*>(input);
+    auto w    = weight       ? c10::optional<torch::Tensor>(*static_cast<torch::Tensor*>(weight))       : c10::nullopt;
+    auto b    = bias         ? c10::optional<torch::Tensor>(*static_cast<torch::Tensor*>(bias))         : c10::nullopt;
+    auto mean = running_mean ? c10::optional<torch::Tensor>(*static_cast<torch::Tensor*>(running_mean)) : c10::nullopt;
+    auto var  = running_var  ? c10::optional<torch::Tensor>(*static_cast<torch::Tensor*>(running_var))  : c10::nullopt;
+    return new torch::Tensor(torch::batch_norm(*in, w, b, mean, var,
+        /*training=*/false, momentum, eps, /*cudnn_enabled=*/true));
+}
+
+lt9_tensor lt9_layer_norm(lt9_tensor input, lt9_tensor weight, lt9_tensor bias,
+                           int64_t *normalized_shape, int shape_len, double eps) {
+    if (!input || !normalized_shape || shape_len < 1) return nullptr;
+    auto *in = static_cast<torch::Tensor*>(input);
+    auto shape = c10::IntArrayRef(normalized_shape, static_cast<size_t>(shape_len));
+    auto w = weight ? c10::optional<torch::Tensor>(*static_cast<torch::Tensor*>(weight)) : c10::nullopt;
+    auto b = bias   ? c10::optional<torch::Tensor>(*static_cast<torch::Tensor*>(bias))   : c10::nullopt;
+    return new torch::Tensor(torch::layer_norm(*in, shape, w, b, eps));
+}
+
+lt9_tensor lt9_max_pool2d(lt9_tensor input, int kh, int kw,
+                           int stride_h, int stride_w, int pad_h, int pad_w) {
+    if (!input) return nullptr;
+    auto *in = static_cast<torch::Tensor*>(input);
+    return new torch::Tensor(torch::max_pool2d(*in,
+        /*kernel_size=*/{kh, kw}, /*stride=*/{stride_h, stride_w},
+        /*padding=*/{pad_h, pad_w}));
+}
+
+lt9_tensor lt9_avg_pool2d(lt9_tensor input, int kh, int kw,
+                           int stride_h, int stride_w, int pad_h, int pad_w) {
+    if (!input) return nullptr;
+    auto *in = static_cast<torch::Tensor*>(input);
+    return new torch::Tensor(torch::avg_pool2d(*in,
+        /*kernel_size=*/{kh, kw}, /*stride=*/{stride_h, stride_w},
+        /*padding=*/{pad_h, pad_w}));
+}
+
+lt9_tensor lt9_linear(lt9_tensor input, lt9_tensor weight, lt9_tensor bias) {
+    if (!input || !weight) return nullptr;
+    auto *in = static_cast<torch::Tensor*>(input);
+    auto *w  = static_cast<torch::Tensor*>(weight);
+    auto b = bias ? c10::optional<torch::Tensor>(*static_cast<torch::Tensor*>(bias))
+                  : c10::nullopt;
+    return new torch::Tensor(torch::linear(*in, *w, b));
+}
+
+lt9_tensor lt9_embedding(lt9_tensor weight, lt9_tensor indices) {
+    if (!weight || !indices) return nullptr;
+    auto *w = static_cast<torch::Tensor*>(weight);
+    auto *i = static_cast<torch::Tensor*>(indices);
+    return new torch::Tensor(torch::embedding(*w, *i));
+}
+
+lt9_tensor lt9_dropout(lt9_tensor input, double p, int training) {
+    if (!input) return nullptr;
+    auto *in = static_cast<torch::Tensor*>(input);
+    return new torch::Tensor(torch::dropout(*in, p, training != 0));
 }

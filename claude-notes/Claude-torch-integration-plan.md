@@ -709,12 +709,18 @@ Stage 2: More operations + GPU + higher ranks  ✅ IMPLEMENTED 2026-03-05
   ↓
   Milestone: GPU matrix multiply from Lush REPL (ready when CUDA hardware available)
   ↓
-Stage 3: Model loading + inference
-  - TorchScript load + forward
-  - torch.export / AOTInductor .so loading (dlopen)
-  - Tier 2 ops: attention, conv2d, batchnorm, layernorm, embedding
+Stage 3: Model loading + NN functional ops  ✅ IMPLEMENTED 2026-03-05
+  - TorchScript model loading: load .pt, forward, eval, to-cuda, free
+  - Test model creation in C++ (no Python needed for testing)
+  - IValue navigation: is-tensor/tuple/list, to-tensor, tuple-get, unpack
+  - NN functional ops: conv2d, batch_norm, layer_norm, linear,
+    max_pool2d, avg_pool2d, embedding, dropout
+  - LSTM convenience: torch9-lstm-forward via TorchScript + IValue unpack
+  - Python export script: scripts/export_lstm.py
+  - ~55 C bridge functions, ~72 DHC wrappers, ~49 high-level API functions
+  - tests/test-torch9.lsh (~358 tests)
   ↓
-  Milestone: Load and run ResNet/BERT from Lush prompt
+  Milestone: Load and run TorchScript models from Lush REPL
   ↓
 Stage 4: Training support
   - Autograd: requires_grad_, backward()
