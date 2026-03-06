@@ -753,7 +753,28 @@ Stage 5: Training toolkit + model zoo ✅ COMPLETE (2026-03-05)
   ↓
   Milestone: Full training toolkit from Lush REPL (Kaiming init, grad clipping, accuracy computation)
   ↓
-Stage 6: gblearn2 integration (future)
+Stage 6: Module Building + Python Elimination  [COMPLETE 2026-03-05]
+  - Module building: module_create, module_define, register_parameter,
+    register_buffer, register_module, model_save, get_parameter, num_parameters
+  - Pure Lush model builders: export-mnist-mlp.lsh, build-resnet18.lsh
+  - No Python needed for model creation (export_mnist_mlp.py and
+    export_resnet18.py deleted — replaced by Lush equivalents)
+  - TorchScript define() quirks: use torch.addmm not torch.nn.functional.linear,
+    call .forward() explicitly on submodules
+  - ~131 C bridge functions, ~149 DHC wrappers, ~121 high-level API functions
+  - tests/test-torch9.lsh (665 tests, all passing)
+  ↓
+  Milestone: Models can be defined, composed, saved and loaded entirely in Lush
+  ↓
+Bonus: sn28 package fix  [COMPLETE 2026-03-06]
+  - Root cause: lushmake links each .o into separate .so, but sn28's 10 C modules
+    share global variables (neurbase, synbase, weightbase via extern in defn.h)
+  - Fix: created sn28_combined.c with combined init function that calls all 10
+    init_*() functions; modified sn28common.lsh to link all .o files into a single
+    sn28_combined.so via gcc -shared, using lushmake's objdir for correct paths
+  - All DX functions (alloc-net, iterative-mode, update-state, etc.) now load correctly
+  ↓
+Stage 7: gblearn2 integration (future)
   - Optional torch-accelerated gblearn2 modules
 ```
 
@@ -802,7 +823,8 @@ lush-pkg, so we don't need to host prebuilt bridges.
    for second-order methods) but is architecturally dated. A hybrid
    approach (Lush control flow + torch computation) might be best.
 
-5. **How should we handle the Python model export step?** Users need
-   Python + PyTorch to export models to ONNX or TorchScript. We could
-   provide a helper script, document the process, or even embed a
-   minimal Python subprocess for conversion.
+5. **How should we handle the Python model export step?** RESOLVED in
+   Stage 6: Models can now be built entirely in Lush using the module
+   building API (torch9-module-create, torch9-module-define, etc.).
+   Python is only needed for pretrained weights from torchvision
+   (pickle files), or for LSTM export (export_lstm.py).

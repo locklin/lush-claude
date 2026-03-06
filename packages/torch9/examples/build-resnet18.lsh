@@ -1,0 +1,202 @@
+;;; build-resnet18.lsh -- Build ResNet18 architecture in pure Lush
+;;;
+;;; Constructs the full ResNet18 architecture using torch9 module-building
+;;; API.  Weights are randomly initialized (Kaiming normal).  No Python or
+;;; torchvision required.
+;;;
+;;; Architecture:
+;;;   conv1(3->64, 7x7, stride=2, pad=3) -> bn1 -> relu -> maxpool(3x3, s=2, p=1)
+;;;   -> layer1 (2 BasicBlocks, 64->64)
+;;;   -> layer2 (2 BasicBlocks, 64->128, stride=2)
+;;;   -> layer3 (2 BasicBlocks, 128->256, stride=2)
+;;;   -> layer4 (2 BasicBlocks, 256->512, stride=2)
+;;;   -> adaptive_avg_pool (global) -> flatten -> fc(512->1000)
+;;;
+;;; Usage:
+;;;   ./src/lush packages/torch9/examples/build-resnet18.lsh
+;;;
+;;; For pretrained weights, use Python + torchvision (one-time export).
+;;; This script builds the same architecture for training from scratch.
+
+(addpath "packages")
+(libload "torch9/torch9")
+
+(printf "\n=== Building ResNet18 (pure Lush, no Python) ===\n\n")
+
+;; ------------------------------------------------------------------
+;; Helper: create a Conv2d submodule (no bias for ResNet convs)
+;; ------------------------------------------------------------------
+(de make-conv2d (name in-ch out-ch ksize stride pad)
+  (let ((m (torch9-module-create name))
+        (w (torch9-randn out-ch in-ch ksize ksize)))
+    (torch9-kaiming-normal! w 0 1 1)  ;; a=0, fan_out, relu
+    (torch9-module-register-parameter m "weight" w)
+    (torch9-free w)
+    (torch9-module-define m
+      (sprintf "def forward(self, x: Tensor) -> Tensor:\n    return torch.conv2d(x, self.weight, None, [%d, %d], [%d, %d])\n"
+               stride stride pad pad))
+    m))
+
+;; ------------------------------------------------------------------
+;; Helper: create a BatchNorm2d submodule
+;; ------------------------------------------------------------------
+(de make-batchnorm2d (name num-features)
+  (let ((m (torch9-module-create name))
+        (w (torch9-ones num-features))     ;; weight (gamma)
+        (b (torch9-zeros num-features))    ;; bias (beta)
+        (rm (torch9-zeros num-features))   ;; running_mean
+        (rv (torch9-ones num-features)))   ;; running_var
+    (torch9-module-register-parameter m "weight" w)
+    (torch9-module-register-parameter m "bias" b)
+    (torch9-module-register-buffer m "running_mean" rm)
+    (torch9-module-register-buffer m "running_var" rv)
+    (torch9-free w) (torch9-free b) (torch9-free rm) (torch9-free rv)
+    (torch9-module-define m
+      "def forward(self, x: Tensor) -> Tensor:\n    return torch.batch_norm(x, self.weight, self.bias, self.running_mean, self.running_var, False, 0.1, 1e-5, True)\n")
+    m))
+
+;; ------------------------------------------------------------------
+;; Helper: create a BasicBlock (2 conv + optional downsample)
+;; ------------------------------------------------------------------
+(de make-basic-block (name in-ch out-ch stride)
+  (let ((m (torch9-module-create name))
+        ;; conv1: 3x3, stride, pad=1
+        (conv1 (make-conv2d "Conv2d" in-ch out-ch 3 stride 1))
+        (bn1   (make-batchnorm2d "BatchNorm2d" out-ch))
+        ;; conv2: 3x3, stride=1, pad=1
+        (conv2 (make-conv2d "Conv2d" out-ch out-ch 3 1 1))
+        (bn2   (make-batchnorm2d "BatchNorm2d" out-ch)))
+    (torch9-module-register-module m "conv1" conv1)
+    (torch9-module-register-module m "bn1" bn1)
+    (torch9-module-register-module m "conv2" conv2)
+    (torch9-module-register-module m "bn2" bn2)
+    (torch9-model-free conv1) (torch9-model-free bn1)
+    (torch9-model-free conv2) (torch9-model-free bn2)
+    ;; Downsample path if dimensions change
+    (if (or (<> stride 1) (<> in-ch out-ch))
+        ;; With downsample: 1x1 conv + bn
+        (let ((ds-conv (make-conv2d "Conv2d" in-ch out-ch 1 stride 0))
+              (ds-bn   (make-batchnorm2d "BatchNorm2d" out-ch)))
+          (torch9-module-register-module m "ds_conv" ds-conv)
+          (torch9-module-register-module m "ds_bn" ds-bn)
+          (torch9-model-free ds-conv) (torch9-model-free ds-bn)
+          (torch9-module-define m
+            "def forward(self, x: Tensor) -> Tensor:\n    identity = self.ds_bn.forward(self.ds_conv.forward(x))\n    out = torch.relu(self.bn1.forward(self.conv1.forward(x)))\n    out = self.bn2.forward(self.conv2.forward(out))\n    return torch.relu(out + identity)\n"))
+      ;; No downsample: identity shortcut
+      (torch9-module-define m
+        "def forward(self, x: Tensor) -> Tensor:\n    identity = x\n    out = torch.relu(self.bn1.forward(self.conv1.forward(x)))\n    out = self.bn2.forward(self.conv2.forward(out))\n    return torch.relu(out + identity)\n"))
+    m))
+
+;; ------------------------------------------------------------------
+;; Helper: create a layer (sequence of BasicBlocks)
+;; ------------------------------------------------------------------
+(de make-layer (name in-ch out-ch num-blocks stride)
+  (let ((m (torch9-module-create name))
+        ;; First block may downsample
+        (b0 (make-basic-block "BasicBlock" in-ch out-ch stride)))
+    (torch9-module-register-module m "block0" b0)
+    (torch9-model-free b0)
+    ;; Remaining blocks: out-ch -> out-ch, stride=1
+    (let ((i 1))
+      (while (< i num-blocks)
+        (let ((bi (make-basic-block "BasicBlock" out-ch out-ch 1))
+              (bname (sprintf "block%d" i)))
+          (torch9-module-register-module m bname bi)
+          (torch9-model-free bi))
+        (setq i (+ i 1))))
+    ;; Generate forward that chains all blocks
+    (let ((fwd-body "def forward(self, x: Tensor) -> Tensor:\n    x = self.block0.forward(x)\n"))
+      (let ((i 1))
+        (while (< i num-blocks)
+          (setq fwd-body (concat fwd-body
+                           (sprintf "    x = self.block%d.forward(x)\n" i)))
+          (setq i (+ i 1))))
+      (setq fwd-body (concat fwd-body "    return x\n"))
+      (torch9-module-define m fwd-body))
+    m))
+
+;; ------------------------------------------------------------------
+;; Build ResNet18
+;; ------------------------------------------------------------------
+(printf "Building ResNet18 components...\n")
+
+;; Stem: conv1 + bn1
+(printf "  conv1: Conv2d(3, 64, 7x7, stride=2, pad=3)\n")
+(defvar r18-conv1 (make-conv2d "Conv2d" 3 64 7 2 3))
+
+(printf "  bn1: BatchNorm2d(64)\n")
+(defvar r18-bn1 (make-batchnorm2d "BatchNorm2d" 64))
+
+;; Residual layers
+(printf "  layer1: 2 BasicBlocks (64 -> 64)\n")
+(defvar r18-layer1 (make-layer "Layer" 64 64 2 1))
+
+(printf "  layer2: 2 BasicBlocks (64 -> 128, stride=2)\n")
+(defvar r18-layer2 (make-layer "Layer" 64 128 2 2))
+
+(printf "  layer3: 2 BasicBlocks (128 -> 256, stride=2)\n")
+(defvar r18-layer3 (make-layer "Layer" 128 256 2 2))
+
+(printf "  layer4: 2 BasicBlocks (256 -> 512, stride=2)\n")
+(defvar r18-layer4 (make-layer "Layer" 256 512 2 2))
+
+;; FC layer (512 -> 1000 classes)
+(printf "  fc: Linear(512, 1000)\n")
+(defvar r18-fc (torch9-module-create "Linear"))
+(let ((w (torch9-randn 1000 512))
+      (b (torch9-zeros 1000)))
+  (torch9-kaiming-normal! w 0 0 1)
+  (torch9-module-register-parameter r18-fc "weight" w)
+  (torch9-module-register-parameter r18-fc "bias" b)
+  (torch9-free w) (torch9-free b))
+(torch9-module-define r18-fc
+  "def forward(self, x: Tensor) -> Tensor:\n    return torch.addmm(self.bias, x, self.weight.t())\n")
+
+;; Assemble top-level model
+(printf "  Assembling ResNet18...\n")
+(defvar resnet18 (torch9-module-create "ResNet18"))
+(torch9-module-register-module resnet18 "conv1" r18-conv1)
+(torch9-module-register-module resnet18 "bn1" r18-bn1)
+(torch9-module-register-module resnet18 "layer1" r18-layer1)
+(torch9-module-register-module resnet18 "layer2" r18-layer2)
+(torch9-module-register-module resnet18 "layer3" r18-layer3)
+(torch9-module-register-module resnet18 "layer4" r18-layer4)
+(torch9-module-register-module resnet18 "fc" r18-fc)
+
+;; Define forward: stem -> layers -> global avg pool -> fc
+(torch9-module-define resnet18
+  "def forward(self, x: Tensor) -> Tensor:\n    x = torch.relu(self.bn1.forward(self.conv1.forward(x)))\n    x = torch.max_pool2d(x, [3, 3], [2, 2], [1, 1])\n    x = self.layer1.forward(x)\n    x = self.layer2.forward(x)\n    x = self.layer3.forward(x)\n    x = self.layer4.forward(x)\n    x = torch.adaptive_avg_pool2d(x, [1, 1])\n    x = torch.flatten(x, 1)\n    x = self.fc.forward(x)\n    return x\n")
+
+;; ------------------------------------------------------------------
+;; Save
+;; ------------------------------------------------------------------
+(defvar output-path "resnet18_lush.pt")
+(printf "\nSaving to %s...\n" output-path)
+(torch9-model-save resnet18 output-path)
+
+;; ------------------------------------------------------------------
+;; Verify: run inference
+;; ------------------------------------------------------------------
+(printf "Verifying: forward pass with [1, 3, 224, 224] input...\n")
+(let* ((loaded (torch9-model-load output-path))
+       (dummy  (torch9-model-eval loaded))
+       (input  (torch9-randn 1 3 224 224))
+       (output (torch9-model-forward loaded input)))
+  (let ((sz (torch9-sizes output)))
+    (printf "  Output shape: [%d, %d]\n" (sz 0) (sz 1)))
+  (torch9-free input) (torch9-free output)
+  (torch9-model-free loaded))
+
+;; ------------------------------------------------------------------
+;; Cleanup
+;; ------------------------------------------------------------------
+(torch9-model-free resnet18)
+(torch9-model-free r18-conv1) (torch9-model-free r18-bn1)
+(torch9-model-free r18-layer1) (torch9-model-free r18-layer2)
+(torch9-model-free r18-layer3) (torch9-model-free r18-layer4)
+(torch9-model-free r18-fc)
+
+(printf "\nDone. ResNet18 saved to %s\n" output-path)
+(printf "Load in Lush: (torch9-model-load \"%s\")\n" output-path)
+(printf "\nNote: Weights are randomly initialized.\n")
+(printf "For pretrained weights, use Python+torchvision for one-time export.\n")

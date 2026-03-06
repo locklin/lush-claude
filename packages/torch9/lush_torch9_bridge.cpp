@@ -1073,3 +1073,90 @@ lt9_tensor lt9_smooth_l1_loss(lt9_tensor input, lt9_tensor target,
     return new torch::Tensor(torch::smooth_l1_loss(
         *in, *tgt, int_to_reduction(reduction), beta));
 }
+
+
+/* ============================================================
+ * Stage 6: Module Building
+ * ============================================================ */
+
+lt9_model lt9_module_create(const char *name) {
+    if (!name) return nullptr;
+    try {
+        return new torch::jit::Module(name);
+    } catch (const c10::Error &e) {
+        std::cerr << "lt9_module_create error: " << e.what() << std::endl;
+        return nullptr;
+    }
+}
+
+void lt9_module_define(lt9_model m, const char *src) {
+    if (!m || !src) return;
+    auto *mod = static_cast<torch::jit::Module*>(m);
+    try {
+        mod->define(src);
+    } catch (const c10::Error &e) {
+        std::cerr << "lt9_module_define error: " << e.what() << std::endl;
+    }
+}
+
+void lt9_module_register_parameter(lt9_model m, const char *name, lt9_tensor t) {
+    if (!m || !name || !t) return;
+    auto *mod = static_cast<torch::jit::Module*>(m);
+    auto *tp  = static_cast<torch::Tensor*>(t);
+    try {
+        mod->register_parameter(name, tp->clone(), false);
+    } catch (const c10::Error &e) {
+        std::cerr << "lt9_module_register_parameter error: " << e.what() << std::endl;
+    }
+}
+
+void lt9_module_register_buffer(lt9_model m, const char *name, lt9_tensor t) {
+    if (!m || !name || !t) return;
+    auto *mod = static_cast<torch::jit::Module*>(m);
+    auto *tp  = static_cast<torch::Tensor*>(t);
+    try {
+        mod->register_buffer(name, tp->clone());
+    } catch (const c10::Error &e) {
+        std::cerr << "lt9_module_register_buffer error: " << e.what() << std::endl;
+    }
+}
+
+void lt9_module_register_module(lt9_model m, const char *name, lt9_model sub) {
+    if (!m || !name || !sub) return;
+    auto *mod = static_cast<torch::jit::Module*>(m);
+    auto *submod = static_cast<torch::jit::Module*>(sub);
+    try {
+        mod->register_module(name, *submod);
+    } catch (const c10::Error &e) {
+        std::cerr << "lt9_module_register_module error: " << e.what() << std::endl;
+    }
+}
+
+void lt9_model_save(lt9_model m, const char *path) {
+    if (!m || !path) return;
+    auto *mod = static_cast<torch::jit::Module*>(m);
+    try {
+        mod->save(path);
+    } catch (const c10::Error &e) {
+        std::cerr << "lt9_model_save error: " << e.what() << std::endl;
+    }
+}
+
+lt9_tensor lt9_model_get_parameter(lt9_model m, const char *name) {
+    if (!m || !name) return nullptr;
+    auto *mod = static_cast<torch::jit::Module*>(m);
+    try {
+        auto param = mod->attr(name).toTensor();
+        return new torch::Tensor(param);
+    } catch (...) {
+        return nullptr;
+    }
+}
+
+int lt9_model_num_parameters(lt9_model m) {
+    if (!m) return 0;
+    auto *mod = static_cast<torch::jit::Module*>(m);
+    int count = 0;
+    for (const auto& p : mod->parameters()) { (void)p; count++; }
+    return count;
+}

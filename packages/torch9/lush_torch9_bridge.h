@@ -323,6 +323,38 @@ lt9_tensor  lt9_l1_loss(lt9_tensor input, lt9_tensor target, int reduction);
 lt9_tensor  lt9_smooth_l1_loss(lt9_tensor input, lt9_tensor target,
                                 int reduction, double beta);
 
+/* ============================================================
+ * Stage 6: Module Building
+ * ============================================================ */
+
+/* Create a new empty TorchScript module with the given name. */
+lt9_model   lt9_module_create(const char *name);
+
+/* Define a TorchScript method (e.g. forward) from source code. */
+void        lt9_module_define(lt9_model m, const char *torchscript_src);
+
+/* Register a parameter tensor on the module (cloned). */
+void        lt9_module_register_parameter(lt9_model m, const char *name,
+                                           lt9_tensor t);
+
+/* Register a buffer tensor on the module (cloned, not a parameter). */
+void        lt9_module_register_buffer(lt9_model m, const char *name,
+                                        lt9_tensor t);
+
+/* Register a submodule on the module (copied). */
+void        lt9_module_register_module(lt9_model m, const char *name,
+                                        lt9_model submodule);
+
+/* Save a module to a .pt file (TorchScript format). */
+void        lt9_model_save(lt9_model m, const char *path);
+
+/* Get a named parameter tensor from the module. */
+lt9_tensor  lt9_model_get_parameter(lt9_model m, const char *name);
+
+/* Count the number of parameters in the module. */
+int         lt9_model_num_parameters(lt9_model m);
+
+
 #ifdef __cplusplus
 }
 #endif

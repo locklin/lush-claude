@@ -3174,5 +3174,337 @@
 
 
 ;; ============================================================
+;; Stage 6: Module Building Tests
+;; ============================================================
+
+(test-suite "Module creation"
+
+  ;; torch9-module-create returns non-null handle
+  (let ((m (torch9-module-create "TestModule")))
+    (test-check "module-create returns handle" (<> m (gptr ())))
+    (torch9-model-free m))
+
+  ;; module-create with different names
+  (let ((m1 (torch9-module-create "ModA"))
+        (m2 (torch9-module-create "ModB")))
+    (test-check "two modules are different handles" (<> m1 m2))
+    (torch9-model-free m1) (torch9-model-free m2))
+
+  ;; num-parameters on empty module
+  (let ((m (torch9-module-create "Empty")))
+    (test-equal "empty module has 0 params" (torch9-model-num-parameters m) 0)
+    (torch9-model-free m))
+)
+
+(test-suite "Module define + forward"
+
+  ;; Define simple forward: x * 2
+  (let ((m (torch9-module-create "Doubler")))
+    (torch9-module-define m
+      "def forward(self, x: Tensor) -> Tensor:\n    return x * 2\n")
+    (let* ((inp (torch9-randn 5))
+           (out (torch9-model-forward m inp)))
+      (test-equal "forward output numel" (torch9-numel out) 5)
+      ;; Verify values: out should be 2*inp
+      (let ((inp-idx (torch9-to-idx inp))
+            (out-idx (torch9-to-idx out)))
+        (test-approx "forward x*2 [0]" (out-idx 0) (* 2 (inp-idx 0)) 1e-6)
+        (test-approx "forward x*2 [4]" (out-idx 4) (* 2 (inp-idx 4)) 1e-6))
+      (torch9-free inp) (torch9-free out))
+    (torch9-model-free m))
+
+  ;; Define forward with relu
+  (let ((m (torch9-module-create "ReluMod")))
+    (torch9-module-define m
+      "def forward(self, x: Tensor) -> Tensor:\n    return torch.relu(x)\n")
+    (let* ((data (double-matrix 4))
+           (dummy (progn (data 0 -2.0) (data 1 0.0) (data 2 1.5) (data 3 -0.5)))
+           (inp (torch9-from-idx data))
+           (out (torch9-model-forward m inp))
+           (out-idx (torch9-to-idx out)))
+      (test-approx "relu(-2)=0" (out-idx 0) 0.0 1e-10)
+      (test-approx "relu(0)=0" (out-idx 1) 0.0 1e-10)
+      (test-approx "relu(1.5)=1.5" (out-idx 2) 1.5 1e-10)
+      (test-approx "relu(-0.5)=0" (out-idx 3) 0.0 1e-10)
+      (torch9-free inp) (torch9-free out))
+    (torch9-model-free m))
+
+  ;; Define forward: x + 1
+  (let ((m (torch9-module-create "AddOne")))
+    (torch9-module-define m
+      "def forward(self, x: Tensor) -> Tensor:\n    return x + 1\n")
+    (let* ((data (double-matrix 3))
+           (dummy (progn (data 0 10.0) (data 1 20.0) (data 2 30.0)))
+           (inp (torch9-from-idx data))
+           (out (torch9-model-forward m inp))
+           (out-idx (torch9-to-idx out)))
+      (test-approx "x+1 [0]" (out-idx 0) 11.0 1e-10)
+      (test-approx "x+1 [2]" (out-idx 2) 31.0 1e-10)
+      (torch9-free inp) (torch9-free out))
+    (torch9-model-free m))
+)
+
+(test-suite "Register parameter"
+
+  ;; Register 1 parameter, check count
+  (let ((m (torch9-module-create "P1")))
+    (let ((w (torch9-randn 3 4)))
+      (torch9-module-register-parameter m "weight" w)
+      (torch9-free w))
+    (test-equal "1 param registered" (torch9-model-num-parameters m) 1)
+    (torch9-model-free m))
+
+  ;; Register 2 parameters, check count
+  (let ((m (torch9-module-create "P2")))
+    (let ((w (torch9-randn 3 4))
+          (b (torch9-zeros 3)))
+      (torch9-module-register-parameter m "weight" w)
+      (torch9-module-register-parameter m "bias" b)
+      (torch9-free w) (torch9-free b))
+    (test-equal "2 params registered" (torch9-model-num-parameters m) 2)
+    (torch9-model-free m))
+
+  ;; Get parameter round-trip: values should match
+  (let ((m (torch9-module-create "PRT")))
+    (let* ((wdata (double-matrix 3))
+           (dummy (progn (wdata 0 1.5) (wdata 1 2.5) (wdata 2 3.5)))
+           (w (torch9-from-idx wdata)))
+      (torch9-module-register-parameter m "val" w)
+      (torch9-free w))
+    (let* ((got (torch9-model-get-parameter m "val"))
+           (got-idx (torch9-to-idx got)))
+      (test-approx "get-param [0]" (got-idx 0) 1.5 1e-10)
+      (test-approx "get-param [1]" (got-idx 1) 2.5 1e-10)
+      (test-approx "get-param [2]" (got-idx 2) 3.5 1e-10)
+      (torch9-free got))
+    (torch9-model-free m))
+
+  ;; Get parameter preserves shape
+  (let ((m (torch9-module-create "PShape")))
+    (let ((w (torch9-randn 4 5)))
+      (torch9-module-register-parameter m "w" w)
+      (torch9-free w))
+    (let ((got (torch9-model-get-parameter m "w")))
+      (test-equal "get-param ndim" (torch9-ndim got) 2)
+      (let ((sz (torch9-sizes got)))
+        (test-equal "get-param dim0" (sz 0) 4)
+        (test-equal "get-param dim1" (sz 1) 5))
+      (torch9-free got))
+    (torch9-model-free m))
+)
+
+(test-suite "Register buffer"
+
+  ;; Buffer is not counted as parameter
+  (let ((m (torch9-module-create "BufTest")))
+    (let ((w (torch9-randn 5))
+          (b (torch9-zeros 5)))
+      (torch9-module-register-parameter m "weight" w)
+      (torch9-module-register-buffer m "running_mean" b)
+      (torch9-free w) (torch9-free b))
+    (test-equal "buffer not in param count" (torch9-model-num-parameters m) 1)
+    (torch9-model-free m))
+
+  ;; Multiple buffers, still only parameters counted
+  (let ((m (torch9-module-create "BufTest2")))
+    (let ((w (torch9-randn 5))
+          (b1 (torch9-zeros 5))
+          (b2 (torch9-ones 5)))
+      (torch9-module-register-parameter m "weight" w)
+      (torch9-module-register-buffer m "rmean" b1)
+      (torch9-module-register-buffer m "rvar" b2)
+      (torch9-free w) (torch9-free b1) (torch9-free b2))
+    (test-equal "2 buffers, 1 param" (torch9-model-num-parameters m) 1)
+    (torch9-model-free m))
+)
+
+(test-suite "Register submodule"
+
+  ;; Submodule forward works through parent
+  (let ((child (torch9-module-create "Child")))
+    (torch9-module-define child
+      "def forward(self, x: Tensor) -> Tensor:\n    return x * 3\n")
+    (let ((parent (torch9-module-create "Parent")))
+      (torch9-module-register-module parent "child" child)
+      (torch9-module-define parent
+        "def forward(self, x: Tensor) -> Tensor:\n    return self.child.forward(x) + 1\n")
+      (let* ((inp (torch9-randn 4))
+             (out (torch9-model-forward parent inp))
+             (inp-idx (torch9-to-idx inp))
+             (out-idx (torch9-to-idx out)))
+        ;; out should be inp*3 + 1
+        (test-approx "submod forward [0]" (out-idx 0) (+ (* 3 (inp-idx 0)) 1) 1e-6)
+        (test-approx "submod forward [3]" (out-idx 3) (+ (* 3 (inp-idx 3)) 1) 1e-6)
+        (torch9-free inp) (torch9-free out))
+      (torch9-model-free parent))
+    (torch9-model-free child))
+
+  ;; Two submodules chained
+  (let ((s1 (torch9-module-create "S1"))
+        (s2 (torch9-module-create "S2")))
+    (torch9-module-define s1
+      "def forward(self, x: Tensor) -> Tensor:\n    return x + 10\n")
+    (torch9-module-define s2
+      "def forward(self, x: Tensor) -> Tensor:\n    return x * 2\n")
+    (let ((top (torch9-module-create "Top")))
+      (torch9-module-register-module top "s1" s1)
+      (torch9-module-register-module top "s2" s2)
+      (torch9-module-define top
+        "def forward(self, x: Tensor) -> Tensor:\n    return self.s2.forward(self.s1.forward(x))\n")
+      ;; (x + 10) * 2
+      (let* ((data (double-matrix 2))
+             (dummy (progn (data 0 5.0) (data 1 -3.0)))
+             (inp (torch9-from-idx data))
+             (out (torch9-model-forward top inp))
+             (out-idx (torch9-to-idx out)))
+        (test-approx "chain s1->s2 [0]" (out-idx 0) 30.0 1e-6)
+        (test-approx "chain s1->s2 [1]" (out-idx 1) 14.0 1e-6)
+        (torch9-free inp) (torch9-free out))
+      (torch9-model-free top))
+    (torch9-model-free s1) (torch9-model-free s2))
+)
+
+(test-suite "Model save/load round-trip"
+
+  ;; Save module, load, verify forward produces same output
+  (let ((m (torch9-module-create "SaveRT")))
+    (torch9-module-define m
+      "def forward(self, x: Tensor) -> Tensor:\n    return x * 5 + 3\n")
+    (torch9-model-save m "/tmp/claude-1000/t9_test_save.pt")
+    (torch9-model-free m))
+  (let* ((m2 (torch9-model-load "/tmp/claude-1000/t9_test_save.pt"))
+         (data (double-matrix 3))
+         (dummy (progn (data 0 1.0) (data 1 2.0) (data 2 3.0)))
+         (inp (torch9-from-idx data))
+         (out (torch9-model-forward m2 inp))
+         (out-idx (torch9-to-idx out)))
+    (test-approx "saved/loaded forward [0]" (out-idx 0) 8.0 1e-6)
+    (test-approx "saved/loaded forward [1]" (out-idx 1) 13.0 1e-6)
+    (test-approx "saved/loaded forward [2]" (out-idx 2) 18.0 1e-6)
+    (torch9-free inp) (torch9-free out)
+    (torch9-model-free m2))
+
+  ;; Save with parameters, load, verify parameter values preserved
+  (let ((m (torch9-module-create "ParamSave")))
+    (let* ((data (double-matrix 3))
+           (dummy (progn (data 0 7.0) (data 1 8.0) (data 2 9.0)))
+           (w (torch9-from-idx data)))
+      (torch9-module-register-parameter m "val" w)
+      (torch9-free w))
+    (torch9-module-define m
+      "def forward(self, x: Tensor) -> Tensor:\n    return x + self.val\n")
+    (torch9-model-save m "/tmp/claude-1000/t9_param_save.pt")
+    (torch9-model-free m))
+  (let* ((m2 (torch9-model-load "/tmp/claude-1000/t9_param_save.pt"))
+         (data (double-matrix 3))
+         (dummy (progn (data 0 1.0) (data 1 1.0) (data 2 1.0)))
+         (inp (torch9-from-idx data))
+         (out (torch9-model-forward m2 inp))
+         (out-idx (torch9-to-idx out)))
+    (test-approx "param preserved [0]" (out-idx 0) 8.0 1e-6)
+    (test-approx "param preserved [1]" (out-idx 1) 9.0 1e-6)
+    (test-approx "param preserved [2]" (out-idx 2) 10.0 1e-6)
+    (torch9-free inp) (torch9-free out)
+    (torch9-model-free m2))
+
+  ;; Save submodule hierarchy, load, verify structure
+  (let ((child (torch9-module-create "Child")))
+    (let ((w (torch9-full 2.0 1)))
+      (torch9-module-register-parameter child "scale" w)
+      (torch9-free w))
+    (torch9-module-define child
+      "def forward(self, x: Tensor) -> Tensor:\n    return x * self.scale\n")
+    (let ((parent (torch9-module-create "Parent")))
+      (torch9-module-register-module parent "child" child)
+      (torch9-module-define parent
+        "def forward(self, x: Tensor) -> Tensor:\n    return self.child.forward(x) + 100\n")
+      (torch9-model-save parent "/tmp/claude-1000/t9_hierarchy.pt")
+      (torch9-model-free parent))
+    (torch9-model-free child))
+  (let* ((m2 (torch9-model-load "/tmp/claude-1000/t9_hierarchy.pt"))
+         (data (double-matrix 1))
+         (dummy (data 0 5.0))
+         (inp (torch9-from-idx data))
+         (out (torch9-model-forward m2 inp))
+         (out-idx (torch9-to-idx out)))
+    (test-approx "hierarchy preserved" (out-idx 0) 110.0 1e-6) ;; 5*2+100
+    (torch9-free inp) (torch9-free out)
+    (torch9-model-free m2))
+)
+
+(test-suite "Integration: MLP via module API"
+
+  ;; Build 2-layer MLP, run forward, verify output shape
+  (let ((fc1 (torch9-module-create "Linear"))
+        (fc2 (torch9-module-create "Linear")))
+    (let ((w1 (torch9-randn 8 4))
+          (b1 (torch9-zeros 8))
+          (w2 (torch9-randn 2 8))
+          (b2 (torch9-zeros 2)))
+      (torch9-kaiming-normal! w1 0 0 1)
+      (torch9-kaiming-normal! w2 0 0 1)
+      (torch9-module-register-parameter fc1 "weight" w1)
+      (torch9-module-register-parameter fc1 "bias" b1)
+      (torch9-module-register-parameter fc2 "weight" w2)
+      (torch9-module-register-parameter fc2 "bias" b2)
+      (torch9-free w1) (torch9-free b1) (torch9-free w2) (torch9-free b2))
+    (torch9-module-define fc1
+      "def forward(self, x: Tensor) -> Tensor:\n    return torch.addmm(self.bias, x, self.weight.t())\n")
+    (torch9-module-define fc2
+      "def forward(self, x: Tensor) -> Tensor:\n    return torch.addmm(self.bias, x, self.weight.t())\n")
+    (let ((mlp (torch9-module-create "MLP")))
+      (torch9-module-register-module mlp "fc1" fc1)
+      (torch9-module-register-module mlp "fc2" fc2)
+      (torch9-module-define mlp
+        "def forward(self, x: Tensor) -> Tensor:\n    return self.fc2.forward(torch.relu(self.fc1.forward(x)))\n")
+      ;; Forward pass
+      (let* ((inp (torch9-randn 3 4))
+             (out (torch9-model-forward mlp inp)))
+        (test-equal "MLP output ndim" (torch9-ndim out) 2)
+        (let ((sz (torch9-sizes out)))
+          (test-equal "MLP output dim0" (sz 0) 3)
+          (test-equal "MLP output dim1" (sz 1) 2))
+        (torch9-free inp) (torch9-free out))
+
+      ;; Save and reload
+      (torch9-model-save mlp "/tmp/claude-1000/t9_mlp.pt")
+      (let* ((loaded (torch9-model-load "/tmp/claude-1000/t9_mlp.pt"))
+             (inp (torch9-randn 5 4))
+             (out (torch9-model-forward loaded inp)))
+        (test-equal "loaded MLP output ndim" (torch9-ndim out) 2)
+        (let ((sz (torch9-sizes out)))
+          (test-equal "loaded MLP dim0" (sz 0) 5)
+          (test-equal "loaded MLP dim1" (sz 1) 2))
+        (torch9-free inp) (torch9-free out)
+        (torch9-model-free loaded))
+      (torch9-model-free mlp))
+    (torch9-model-free fc1) (torch9-model-free fc2))
+)
+
+(test-suite "Module with parameter in forward"
+
+  ;; Module uses registered parameter in computation
+  (let ((m (torch9-module-create "Scaler")))
+    (let* ((s-data (double-matrix 1))
+           (dummy (s-data 0 3.0))
+           (s (torch9-from-idx s-data)))
+      (torch9-module-register-parameter m "scale" s)
+      (torch9-free s))
+    (torch9-module-define m
+      "def forward(self, x: Tensor) -> Tensor:\n    return x * self.scale\n")
+    (let* ((data (double-matrix 3))
+           (dummy (progn (data 0 1.0) (data 1 2.0) (data 2 4.0)))
+           (inp (torch9-from-idx data))
+           (out (torch9-model-forward m inp))
+           (out-idx (torch9-to-idx out)))
+      (test-approx "param in forward [0]" (out-idx 0) 3.0 1e-6)
+      (test-approx "param in forward [1]" (out-idx 1) 6.0 1e-6)
+      (test-approx "param in forward [2]" (out-idx 2) 12.0 1e-6)
+      (torch9-free inp) (torch9-free out))
+    (torch9-model-free m))
+)
+
+
+;; ============================================================
 (printf "\n")
 (test-summary)

@@ -1527,6 +1527,79 @@
     handle))
 
 
+;; ============================================================
+;; Stage 6: Module Building DHC wrappers
+;; ============================================================
+
+;; --- Module create ---
+(de _torch9-module-create (name)
+  ((-str-) name)
+  (let ((handle (gptr ())))
+    ((-gptr-) handle)
+    #{ extern void* lt9_module_create(const char*);
+       $handle = lt9_module_create((const char *)($name->data)); #}
+    handle))
+
+;; --- Module define (TorchScript source) ---
+(de _torch9-module-define (model src)
+  ((-gptr-) model)
+  ((-str-) src)
+  #{ extern void lt9_module_define(void*, const char*);
+     lt9_module_define($model, (const char *)($src->data)); #}
+  ())
+
+;; --- Module register parameter ---
+(de _torch9-module-register-parameter (model name tens)
+  ((-gptr-) model tens)
+  ((-str-) name)
+  #{ extern void lt9_module_register_parameter(void*, const char*, void*);
+     lt9_module_register_parameter($model, (const char *)($name->data), $tens); #}
+  ())
+
+;; --- Module register buffer ---
+(de _torch9-module-register-buffer (model name tens)
+  ((-gptr-) model tens)
+  ((-str-) name)
+  #{ extern void lt9_module_register_buffer(void*, const char*, void*);
+     lt9_module_register_buffer($model, (const char *)($name->data), $tens); #}
+  ())
+
+;; --- Module register submodule ---
+(de _torch9-module-register-module (model name sub)
+  ((-gptr-) model sub)
+  ((-str-) name)
+  #{ extern void lt9_module_register_module(void*, const char*, void*);
+     lt9_module_register_module($model, (const char *)($name->data), $sub); #}
+  ())
+
+;; --- Model save ---
+(de _torch9-model-save (model path)
+  ((-gptr-) model)
+  ((-str-) path)
+  #{ extern void lt9_model_save(void*, const char*);
+     lt9_model_save($model, (const char *)($path->data)); #}
+  ())
+
+;; --- Model get parameter ---
+(de _torch9-model-get-parameter (model name)
+  ((-gptr-) model)
+  ((-str-) name)
+  (let ((handle (gptr ())))
+    ((-gptr-) handle)
+    #{ extern void* lt9_model_get_parameter(void*, const char*);
+       $handle = lt9_model_get_parameter($model, (const char *)($name->data)); #}
+    handle))
+
+;; --- Model num parameters ---
+(de _torch9-model-num-parameters (model)
+  ((-gptr-) model)
+  (let ((n 0))
+    ((-int-) n)
+    #{ extern int lt9_model_num_parameters(void*);
+       $n = lt9_model_num_parameters($model); #}
+    n))
+
+
 ;; --- Compile all DHC wrappers ---
 (let ((dhc-make-lushflags
        (concat dhc-make-lushflags " -I" (dirname file-being-loaded))))
@@ -1603,7 +1676,12 @@
     _torch9-gelu _torch9-silu _torch9-elu
     ;; Stage 5: Extra losses
     _torch9-nll-loss _torch9-bce-with-logits-loss
-    _torch9-l1-loss _torch9-smooth-l1-loss))
+    _torch9-l1-loss _torch9-smooth-l1-loss
+    ;; Stage 6: Module building
+    _torch9-module-create _torch9-module-define
+    _torch9-module-register-parameter _torch9-module-register-buffer
+    _torch9-module-register-module _torch9-model-save
+    _torch9-model-get-parameter _torch9-model-num-parameters))
 
 
 ;; ============================================================
@@ -3277,3 +3355,127 @@
     (when (= h (gptr ()))
       (error "torch9-smooth-l1-loss" "smooth_l1_loss returned NULL" ()))
     h))
+
+
+;; ============================================================
+;; Stage 6: Module Building High-Level API
+;; ============================================================
+
+#? ** Module Building
+
+#? (torch9-module-create <name>)
+;; Create a new empty TorchScript module with the given <name>.
+;; Returns a model handle that can have parameters, buffers, submodules,
+;; and TorchScript methods added to it.
+;;
+;; {<b> Example:}
+;; {<code>
+;;   (let ((m (torch9-module-create "MyModule")))
+;;     (torch9-module-define m
+;;       "def forward(self, x: Tensor) -> Tensor:\n    return x * 2\n")
+;;     (torch9-model-save m "my_module.pt")
+;;     (torch9-model-free m))
+;; </code>}
+;; {<see> (torch9-module-define <model> <src>)}
+;; {<see> (torch9-module-register-parameter <model> <name> <tensor>)}
+;; {<see> (torch9-module-register-module <model> <name> <submodule>)}
+(de torch9-module-create (name)
+  (let ((handle (_torch9-module-create name)))
+    (when (= handle (gptr ()))
+      (error "torch9-module-create" (sprintf "Failed to create module: %s" name) ()))
+    handle))
+
+#? (torch9-module-define <model> <src>)
+;; Define a TorchScript method on <model> from source code string <src>.
+;; The source should be valid TorchScript (a subset of Python).
+;; Typically used to define the {<c> forward} method.
+;;
+;; {<b> Note:} Use {<c> \n} for newlines and proper indentation in <src>.
+;;
+;; {<b> Example:}
+;; {<code>
+;;   (torch9-module-define model
+;;     "def forward(self, x: Tensor) -> Tensor:\n    return torch.relu(x)\n")
+;; </code>}
+;; {<see> (torch9-module-create <name>)}
+(de torch9-module-define (model src)
+  (_torch9-module-define model src))
+
+#? (torch9-module-register-parameter <model> <name> <tensor>)
+;; Register a parameter tensor on the module.
+;; The tensor is cloned internally, so the original can be freed.
+;; Parameters are included in {<b> torch9-model-num-parameters} count
+;; and are saved/loaded with the model.
+;;
+;; {<b> Example:}
+;; {<code>
+;;   (let ((w (torch9-randn 10 5)))
+;;     (torch9-kaiming-normal! w 0 0 1)
+;;     (torch9-module-register-parameter model "weight" w)
+;;     (torch9-free w))
+;; </code>}
+;; {<see> (torch9-module-register-buffer <model> <name> <tensor>)}
+;; {<see> (torch9-model-get-parameter <model> <name>)}
+(de torch9-module-register-parameter (model name tensor)
+  (_torch9-module-register-parameter model name tensor))
+
+#? (torch9-module-register-buffer <model> <name> <tensor>)
+;; Register a buffer tensor on the module.
+;; Buffers are saved/loaded with the model but are not parameters
+;; (not returned by {<b> torch9-model-num-parameters}).
+;; Useful for running statistics like batch normalization means.
+;; {<see> (torch9-module-register-parameter <model> <name> <tensor>)}
+(de torch9-module-register-buffer (model name tensor)
+  (_torch9-module-register-buffer model name tensor))
+
+#? (torch9-module-register-module <model> <name> <submodule>)
+;; Register a submodule on <model> with the given <name>.
+;; The submodule is copied internally.
+;; This creates a hierarchical module structure, allowing TorchScript
+;; methods to call {<c> self.<name>(x)}.
+;;
+;; {<b> Example:}
+;; {<code>
+;;   (let ((fc1 (torch9-module-create "Linear")))
+;;     ;; ... register parameters on fc1, define forward ...
+;;     (torch9-module-register-module model "fc1" fc1))
+;; </code>}
+;; {<see> (torch9-module-create <name>)}
+(de torch9-module-register-module (model name submodule)
+  (_torch9-module-register-module model name submodule))
+
+#? (torch9-model-save <model> <path>)
+;; Save a TorchScript module to a {<c> .pt} file.
+;; The saved model can be loaded with {<b> torch9-model-load}.
+;; Works with both loaded models and modules built via
+;; {<b> torch9-module-create}.
+;;
+;; {<b> Example:}
+;; {<code>
+;;   (torch9-model-save model "my_model.pt")
+;; </code>}
+;; {<see> (torch9-model-load <path>)}
+;; {<see> (torch9-module-create <name>)}
+(de torch9-model-save (model path)
+  (_torch9-model-save model path))
+
+#? (torch9-model-get-parameter <model> <name>)
+;; Retrieve a named parameter tensor from the module.
+;; Returns a new tensor handle (must be freed with {<b> torch9-free}).
+;; Returns an error if the parameter is not found.
+;; {<see> (torch9-module-register-parameter <model> <name> <tensor>)}
+;; {<see> (torch9-model-num-parameters <model>)}
+(de torch9-model-get-parameter (model name)
+  (let ((handle (_torch9-model-get-parameter model name)))
+    (when (= handle (gptr ()))
+      (error "torch9-model-get-parameter"
+             (sprintf "Parameter not found: %s" name) ()))
+    handle))
+
+#? (torch9-model-num-parameters <model>)
+;; Return the number of parameters in the module.
+;; Buffers are not counted.
+;; {<see> (torch9-model-get-parameter <model> <name>)}
+;; {<see> (torch9-module-register-parameter <model> <name> <tensor>)}
+(de torch9-model-num-parameters (model)
+  (_torch9-model-num-parameters model))

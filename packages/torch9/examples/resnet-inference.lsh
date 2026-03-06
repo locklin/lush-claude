@@ -5,9 +5,13 @@
 ;;;   - Running inference with random input
 ;;;   - Getting top-5 predictions
 ;;;
-;;; Prerequisites:
-;;;   1. Run: python packages/torch9/scripts/export_resnet18.py
-;;;   2. The resnet18.pt file should be in the current directory
+;;; Prerequisites (choose one):
+;;;   A. Build ResNet18 in pure Lush (random weights):
+;;;      ./src/lush packages/torch9/examples/build-resnet18.lsh
+;;;      (creates resnet18_lush.pt)
+;;;
+;;;   B. Export pretrained ResNet18 via Python (requires torchvision):
+;;;      python -c "import torch, torchvision; m = torchvision.models.resnet18(weights='DEFAULT'); m.eval(); torch.jit.trace(m, torch.randn(1,3,224,224)).save('resnet18.pt')"
 ;;;
 ;;; Usage:
 ;;;   ./src/lush packages/torch9/examples/resnet-inference.lsh
@@ -22,9 +26,13 @@
 ;; ------------------------------------------------------------------
 (defvar model-path "resnet18.pt")
 
+;; Try resnet18.pt first, then resnet18_lush.pt
 (when (not (filep model-path))
-  (printf "Model file not found: %s\n" model-path)
-  (printf "Run first:  python packages/torch9/scripts/export_resnet18.py\n")
+  (setq model-path "resnet18_lush.pt"))
+
+(when (not (filep model-path))
+  (printf "No ResNet18 model found.\n")
+  (printf "Build one with: ./src/lush packages/torch9/examples/build-resnet18.lsh\n")
   (printf "\nRunning with a test model instead (computes x*2+1)...\n\n")
   (setq model-path ()))
 

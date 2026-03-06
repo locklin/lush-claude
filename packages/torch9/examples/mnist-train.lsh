@@ -147,6 +147,44 @@
   (torch9-free correct) (torch9-free correct-d) (torch9-free acc-t))
 
 ;; ------------------------------------------------------------------
+;; Save trained model as TorchScript (optional demonstration)
+;; ------------------------------------------------------------------
+(printf "\nSaving trained model as TorchScript...\n")
+(let ((fc1-mod (torch9-module-create "Linear"))
+      (fc2-mod (torch9-module-create "Linear")))
+  ;; Register trained weights (they are cloned internally)
+  (torch9-module-register-parameter fc1-mod "weight" w1)
+  (torch9-module-register-parameter fc1-mod "bias" b1)
+  (torch9-module-define fc1-mod
+    "def forward(self, x: Tensor) -> Tensor:\n    return torch.addmm(self.bias, x, self.weight.t())\n")
+  (torch9-module-register-parameter fc2-mod "weight" w2)
+  (torch9-module-register-parameter fc2-mod "bias" b2)
+  (torch9-module-define fc2-mod
+    "def forward(self, x: Tensor) -> Tensor:\n    return torch.addmm(self.bias, x, self.weight.t())\n")
+  (let ((model (torch9-module-create "MnistMLP")))
+    (torch9-module-register-module model "fc1" fc1-mod)
+    (torch9-module-register-module model "fc2" fc2-mod)
+    (torch9-module-define model
+      "def forward(self, x: Tensor) -> Tensor:\n    return self.fc2.forward(torch.relu(self.fc1.forward(x)))\n")
+    (torch9-model-save model "mnist_trained.pt")
+    (printf "  Saved to mnist_trained.pt\n")
+    ;; Verify: load and run
+    (let* ((loaded (torch9-model-load "mnist_trained.pt"))
+           (out (torch9-model-forward loaded tx)))
+      (let* ((preds (torch9-argmax out 1))
+             (ty-i64 (torch9-to-dtype ty 9))
+             (correct (torch9-eq preds ty-i64))
+             (correct-d (torch9-to-dtype correct 3))
+             (acc-t (torch9-mean correct-d)))
+        (printf "  Loaded model accuracy: %.3f\n" (torch9-item acc-t))
+        (torch9-free preds) (torch9-free ty-i64)
+        (torch9-free correct) (torch9-free correct-d) (torch9-free acc-t))
+      (torch9-free out)
+      (torch9-model-free loaded))
+    (torch9-model-free model))
+  (torch9-model-free fc1-mod) (torch9-model-free fc2-mod))
+
+;; ------------------------------------------------------------------
 ;; Cleanup
 ;; ------------------------------------------------------------------
 (torch9-optimizer-free opt)
