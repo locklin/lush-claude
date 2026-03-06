@@ -1,0 +1,142 @@
+;;; suite-copy.lsh -- copy-matrix tests for Lush core
+
+;; ---- Same-type copies ----
+
+(test-suite "Copy: double same-type"
+  (let ((src (double-matrix 5))
+        (dst (double-matrix 5)))
+    (for (i 0 4) (src i (* i 1.5)))
+    (copy-matrix src dst)
+    (test-approx "copy double elem 0" (dst 0) 0.0 1e-10)
+    (test-approx "copy double elem 4" (dst 4) 6.0 1e-10) ))
+
+(test-suite "Copy: float same-type"
+  (let ((src (float-matrix 4))
+        (dst (float-matrix 4)))
+    (for (i 0 3) (src i (* i 2.5)))
+    (copy-matrix src dst)
+    (test-approx "copy float elem 3" (dst 3) 7.5 1e-5) ))
+
+(test-suite "Copy: int same-type"
+  (let ((src (int-matrix 5))
+        (dst (int-matrix 5)))
+    (for (i 0 4) (src i (* i 100)))
+    (copy-matrix src dst)
+    (test-equal "copy int elem 4" (dst 4) 400) ))
+
+(test-suite "Copy: short same-type"
+  (let ((src (short-matrix 3))
+        (dst (short-matrix 3)))
+    (src 0 100) (src 1 -200) (src 2 300)
+    (copy-matrix src dst)
+    (test-equal "copy short elem 1" (dst 1) -200) ))
+
+(test-suite "Copy: byte same-type"
+  (let ((src (byte-matrix 3))
+        (dst (byte-matrix 3)))
+    (src 0 -50) (src 1 0) (src 2 100)
+    (copy-matrix src dst)
+    (test-equal "copy byte elem 0" (dst 0) -50) ))
+
+(test-suite "Copy: ubyte same-type"
+  (let ((src (ubyte-matrix 3))
+        (dst (ubyte-matrix 3)))
+    (src 0 0) (src 1 128) (src 2 255)
+    (copy-matrix src dst)
+    (test-equal "copy ubyte elem 2" (dst 2) 255) ))
+
+(test-suite "Copy: long same-type"
+  (let ((src (long-matrix 3))
+        (dst (long-matrix 3)))
+    (src 0 3000000000) (src 1 -1) (src 2 0)
+    (copy-matrix src dst)
+    (test-equal "copy long elem 0" (dst 0) 3000000000) ))
+
+;; ---- Cross-type copies ----
+
+(test-suite "Copy: double to float"
+  (let ((src (double-matrix 3))
+        (dst (float-matrix 3)))
+    (src 0 1.5) (src 1 2.5) (src 2 3.5)
+    (copy-matrix src dst)
+    (test-approx "double->float elem 0" (dst 0) 1.5 1e-6)
+    (test-approx "double->float elem 2" (dst 2) 3.5 1e-6) ))
+
+(test-suite "Copy: float to double"
+  (let ((src (float-matrix 3))
+        (dst (double-matrix 3)))
+    (src 0 1.5) (src 1 2.5) (src 2 3.5)
+    (copy-matrix src dst)
+    (test-approx "float->double elem 1" (dst 1) 2.5 1e-10) ))
+
+(test-suite "Copy: int to double"
+  (let ((src (int-matrix 3))
+        (dst (double-matrix 3)))
+    (src 0 10) (src 1 -20) (src 2 30)
+    (copy-matrix src dst)
+    (test-approx "int->double elem 0" (dst 0) 10.0 1e-10)
+    (test-approx "int->double elem 1" (dst 1) -20.0 1e-10) ))
+
+(test-suite "Copy: double to int (truncation)"
+  (let ((src (double-matrix 3))
+        (dst (int-matrix 3)))
+    (src 0 1.9) (src 1 -2.7) (src 2 3.0)
+    (copy-matrix src dst)
+    (test-equal "double->int truncation elem 0" (dst 0) 1)
+    (test-equal "double->int exact elem 2" (dst 2) 3) ))
+
+(test-suite "Copy: byte to int"
+  (let ((src (byte-matrix 3))
+        (dst (int-matrix 3)))
+    (src 0 -50) (src 1 0) (src 2 100)
+    (copy-matrix src dst)
+    (test-equal "byte->int elem 0" (dst 0) -50)
+    (test-equal "byte->int elem 2" (dst 2) 100) ))
+
+(test-suite "Copy: int to short"
+  (let ((src (int-matrix 3))
+        (dst (short-matrix 3)))
+    (src 0 100) (src 1 -200) (src 2 300)
+    (copy-matrix src dst)
+    (test-equal "int->short elem 0" (dst 0) 100)
+    (test-equal "int->short elem 2" (dst 2) 300) ))
+
+(test-suite "Copy: ubyte to double"
+  (let ((src (ubyte-matrix 3))
+        (dst (double-matrix 3)))
+    (src 0 0) (src 1 128) (src 2 255)
+    (copy-matrix src dst)
+    (test-approx "ubyte->double elem 1" (dst 1) 128.0 1e-10)
+    (test-approx "ubyte->double elem 2" (dst 2) 255.0 1e-10) ))
+
+(test-suite "Copy: long to double"
+  (let ((src (long-matrix 3))
+        (dst (double-matrix 3)))
+    (src 0 3000000000)
+    (copy-matrix src dst)
+    (test-approx "long->double elem 0" (dst 0) 3000000000.0 1.0) ))
+
+;; ---- 2D copy ----
+
+(test-suite "Copy: 2D double"
+  (let ((src (double-matrix 3 4))
+        (dst (double-matrix 3 4)))
+    (for (i 0 2)
+      (for (j 0 3)
+        (src i j (+ (* i 10.0) j)) ))
+    (copy-matrix src dst)
+    (test-approx "2D copy elem 0,0" (dst 0 0) 0.0 1e-10)
+    (test-approx "2D copy elem 2,3" (dst 2 3) 23.0 1e-10) ))
+
+;; ---- Copy into narrowed view ----
+
+(test-suite "Copy: into narrowed view"
+  (let ((m (double-matrix 10))
+        (src (double-matrix 3)))
+    (src 0 100) (src 1 200) (src 2 300)
+    (let ((view (narrow m 0 3 2)))
+      (copy-matrix src view)
+      (test-approx "narrowed copy elem 2" (m 2) 100.0 1e-10)
+      (test-approx "narrowed copy elem 4" (m 4) 300.0 1e-10)
+      ;; other elements unchanged
+      (test-approx "narrowed copy untouched" (m 0) 0.0 1e-10) )))

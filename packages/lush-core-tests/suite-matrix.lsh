@@ -1,0 +1,216 @@
+;;; suite-matrix.lsh -- Matrix operation tests for Lush core
+
+;; ---- 1D matrix creation for all numeric types ----
+
+(test-suite "Matrix: 1D creation"
+  (test-equal "double-matrix 1D ndim" (idx-ndim (double-matrix 5)) 1)
+  (test-equal "double-matrix 1D dim0" (idx-dim (double-matrix 5) 0) 5)
+  (test-equal "float-matrix 1D dim0" (idx-dim (float-matrix 8) 0) 8)
+  (test-equal "int-matrix 1D dim0" (idx-dim (int-matrix 3) 0) 3)
+  (test-equal "short-matrix 1D dim0" (idx-dim (short-matrix 4) 0) 4)
+  (test-equal "byte-matrix 1D dim0" (idx-dim (byte-matrix 6) 0) 6)
+  (test-equal "ubyte-matrix 1D dim0" (idx-dim (ubyte-matrix 7) 0) 7)
+  (test-equal "long-matrix 1D dim0" (idx-dim (long-matrix 2) 0) 2) )
+
+;; ---- 2D and 3D creation ----
+
+(test-suite "Matrix: 2D and 3D creation"
+  (let ((m (double-matrix 3 4)))
+    (test-equal "2D ndim" (idx-ndim m) 2)
+    (test-equal "2D dim0" (idx-dim m 0) 3)
+    (test-equal "2D dim1" (idx-dim m 1) 4)
+    (test-equal "2D nelements" (idx-nelements m) 12) )
+  (let ((m (int-matrix 2 3 4)))
+    (test-equal "3D ndim" (idx-ndim m) 3)
+    (test-equal "3D dim0" (idx-dim m 0) 2)
+    (test-equal "3D dim1" (idx-dim m 1) 3)
+    (test-equal "3D dim2" (idx-dim m 2) 4)
+    (test-equal "3D nelements" (idx-nelements m) 24) )
+  (let ((m (float-matrix 2 3)))
+    (test-equal "float 2D ndim" (idx-ndim m) 2)
+    (test-equal "float 2D dim0" (idx-dim m 0) 2) ) )
+
+;; ---- Element access ----
+
+(test-suite "Matrix: element access double"
+  (let ((m (double-matrix 5)))
+    (m 0 3.14)
+    (m 4 -2.718)
+    (test-approx "double 1D set/get" (m 0) 3.14 1e-10)
+    (test-approx "double 1D set/get last" (m 4) -2.718 1e-10) )
+  (let ((m (double-matrix 3 4)))
+    (m 1 2 99.5)
+    (test-approx "double 2D set/get" (m 1 2) 99.5 1e-10) ) )
+
+(test-suite "Matrix: element access int"
+  (let ((m (int-matrix 5)))
+    (m 0 42)
+    (m 4 -100)
+    (test-equal "int 1D set/get" (m 0) 42)
+    (test-equal "int 1D set/get neg" (m 4) -100) ) )
+
+(test-suite "Matrix: element access float"
+  (let ((m (float-matrix 3)))
+    (m 0 1.5)
+    (test-approx "float 1D set/get" (m 0) 1.5 1e-6) ) )
+
+(test-suite "Matrix: element access short"
+  (let ((m (short-matrix 3)))
+    (m 0 1000)
+    (m 2 -500)
+    (test-equal "short set/get" (m 0) 1000)
+    (test-equal "short set/get neg" (m 2) -500) ) )
+
+(test-suite "Matrix: element access byte/ubyte"
+  (let ((m (byte-matrix 3)))
+    (m 0 -50)
+    (test-equal "byte set/get signed" (m 0) -50) )
+  (let ((m (ubyte-matrix 3)))
+    (m 0 200)
+    (test-equal "ubyte set/get" (m 0) 200) ) )
+
+(test-suite "Matrix: element access long"
+  (let ((m (long-matrix 3)))
+    (m 0 3000000000)
+    (test-equal "long set/get large" (m 0) 3000000000)
+    (m 1 -1)
+    (test-equal "long set/get neg" (m 1) -1) ) )
+
+;; ---- idx metadata ----
+
+(test-suite "Matrix: idx-modulo and idx-offset"
+  (let ((m (double-matrix 3 4)))
+    (test-equal "2D modulo dim0" (idx-modulo m 0) 4)
+    (test-equal "2D modulo dim1" (idx-modulo m 1) 1)
+    (test-equal "2D offset" (idx-offset m) 0) )
+  (let ((m (int-matrix 5)))
+    (test-equal "1D modulo" (idx-modulo m 0) 1)
+    (test-equal "1D offset" (idx-offset m) 0) ) )
+
+;; ---- narrow ----
+
+(test-suite "Matrix: narrow"
+  (let ((m (double-matrix 10)))
+    (for (i 0 9) (m i (* i 10)))
+    (let ((n (narrow m 0 5 2)))
+      (test-equal "narrow dim" (idx-dim n 0) 5)
+      (test-approx "narrow elem 0" (n 0) 20.0 1e-10)
+      (test-approx "narrow elem 4" (n 4) 60.0 1e-10) ))
+  (let ((m (int-matrix 4 6)))
+    (let ((n (narrow m 1 3 1)))
+      (test-equal "narrow 2D dim0" (idx-dim n 0) 4)
+      (test-equal "narrow 2D dim1" (idx-dim n 1) 3) )) )
+
+;; ---- select ----
+
+(test-suite "Matrix: select"
+  (let ((m (double-matrix 3 4)))
+    (for (i 0 2)
+      (for (j 0 3)
+        (m i j (+ (* i 10) j)) ))
+    (let ((s (select m 0 1)))
+      (test-equal "select ndim" (idx-ndim s) 1)
+      (test-equal "select dim0" (idx-dim s 0) 4)
+      (test-approx "select elem 0" (s 0) 10.0 1e-10)
+      (test-approx "select elem 3" (s 3) 13.0 1e-10) ))
+  (let ((m (int-matrix 3 4)))
+    (for (i 0 2)
+      (for (j 0 3)
+        (m i j (+ (* i 10) j)) ))
+    (let ((s (select m 1 2)))
+      (test-equal "select dim1 ndim" (idx-ndim s) 1)
+      (test-equal "select dim1 dim0" (idx-dim s 0) 3)
+      (test-equal "select dim1 elem 0" (s 0) 2)
+      (test-equal "select dim1 elem 2" (s 2) 22) )) )
+
+;; ---- transpose ----
+
+(test-suite "Matrix: transpose"
+  (let ((m (double-matrix 3 4)))
+    (for (i 0 2)
+      (for (j 0 3)
+        (m i j (+ (* i 10) j)) ))
+    ;; idx-transpose2 modifies in-place
+    (idx-transpose2 m 0 1)
+    (test-equal "transpose dim0" (idx-dim m 0) 4)
+    (test-equal "transpose dim1" (idx-dim m 1) 3)
+    ;; element (2,1) in transposed = (1,2) in original = 12
+    (test-approx "transpose element" (m 2 1) 12.0 1e-10) ) )
+
+;; ---- unfold ----
+
+(test-suite "Matrix: unfold"
+  (let ((m (double-matrix 20)))
+    (idx-unfold m 0 5 3)
+    (test-equal "unfold ndim" (idx-ndim m) 2)
+    (test-equal "unfold dim0" (idx-dim m 0) 6)
+    (test-equal "unfold dim1" (idx-dim m 1) 5) )
+  (let ((m (int-matrix 12)))
+    (idx-unfold m 0 4 2)
+    (test-equal "unfold int dim0" (idx-dim m 0) 5)
+    (test-equal "unfold int dim1" (idx-dim m 1) 4) ) )
+
+;; ---- diagonal ----
+
+(test-suite "Matrix: diagonal"
+  (let ((m (double-matrix 5 5)))
+    (for (i 0 4) (m i i (+ 1.0 i)))
+    (idx-diagonal m 2)
+    (test-equal "diagonal ndim" (idx-ndim m) 1)
+    (test-equal "diagonal dim" (idx-dim m 0) 5)
+    (test-equal "diagonal modulo" (idx-modulo m 0) 6)
+    (test-approx "diagonal elem 0" (m 0) 1.0 1e-10)
+    (test-approx "diagonal elem 4" (m 4) 5.0 1e-10) ) )
+
+;; ---- contiguousp ----
+
+(test-suite "Matrix: contiguousp"
+  (let ((m (double-matrix 3 4)))
+    (test-check "fresh matrix contiguous" (contiguousp m))
+    (let ((n (narrow m 0 2 0)))
+      (test-check "full-width narrow contiguous" (contiguousp n)) )
+    (let ((n (narrow m 1 2 1)))
+      (test-check "narrowed cols not contiguous" (not (contiguousp n))) )) )
+
+;; ---- idx-sum, idx-sup, idx-inf ----
+
+(test-suite "Matrix: reductions"
+  (let ((m (double-matrix 5)))
+    (m 0 1) (m 1 2) (m 2 3) (m 3 4) (m 4 5)
+    (test-approx "idx-sum" ((idx-sum m)) 15.0 1e-10)
+    (test-approx "idx-sup" ((idx-sup m)) 5.0 1e-10)
+    (test-approx "idx-inf" ((idx-inf m)) 1.0 1e-10) )
+  (let ((m (double-matrix 3)))
+    (m 0 -5) (m 1 0) (m 2 10)
+    (test-approx "idx-sup with neg" ((idx-sup m)) 10.0 1e-10)
+    (test-approx "idx-inf with neg" ((idx-inf m)) -5.0 1e-10) ) )
+
+;; ---- new-index (reshape equivalent) ----
+
+(test-suite "Matrix: new-index reshape"
+  (let* ((m (double-matrix 12))
+         (s (idx-storage m))
+         (v (new-index s '(3 4))))
+    (test-equal "new-index ndim" (idx-ndim v) 2)
+    (test-equal "new-index dim0" (idx-dim v 0) 3)
+    (test-equal "new-index dim1" (idx-dim v 1) 4) )
+  (let* ((m (int-matrix 3 4))
+         (s (idx-storage m))
+         (v (new-index s '(12))))
+    (test-equal "new-index flatten ndim" (idx-ndim v) 1)
+    (test-equal "new-index flatten dim0" (idx-dim v 0) 12) ) )
+
+;; ---- zero initialization ----
+
+(test-suite "Matrix: zero initialization"
+  (let ((m (double-matrix 5)))
+    (let ((all-zero t))
+      (for (i 0 4)
+        (when (<> (m i) 0) (setq all-zero ())) )
+      (test-check "double-matrix initialized to zero" all-zero) ))
+  (let ((m (int-matrix 3 3)))
+    (let ((all-zero t))
+      (for (i 0 2)
+        (for (j 0 2)
+          (when (<> (m i j) 0) (setq all-zero ())) ))
+      (test-check "int-matrix 2D initialized to zero" all-zero) )) )

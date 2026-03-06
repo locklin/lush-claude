@@ -30,6 +30,12 @@
 #? *** Greyscale Images of floats
 ;; basic image processing on greyscale images
 ;; where each pixel is a float.
+;;
+;; {<b> WARNING: 64-bit type mismatch.}
+;; The warp functions ({<c> fim-warp}, {<c> fim-warp-fast}) use
+;; {<c> (-idx2- (-int-))} displacement maps with Lush-level element
+;; access.  On 64-bit systems this produces incorrect results.
+;; See {<c> ubimage.lsh} header for details.
 
 (libload "idx-macros")
 (libload "libimage/image-transform")

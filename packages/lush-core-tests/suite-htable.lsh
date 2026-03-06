@@ -1,0 +1,73 @@
+;;; suite-htable.lsh -- Hash table tests for Lush core
+
+(test-suite "Htable: creation"
+  (let ((ht (htable)))
+    (test-check "htable created" (not (not ht)))
+    (test-equal "htable initially empty" (htable-size ht) 0) ))
+
+(test-suite "Htable: insert and lookup"
+  (let ((ht (htable)))
+    (ht "key1" 42)
+    (test-equal "htable string key lookup" (ht "key1") 42)
+    (ht "key2" "hello")
+    (test-str-equal "htable string value" (ht "key2") "hello")
+    (test-equal "htable size after 2 inserts" (htable-size ht) 2)
+    (test-check "htable missing key returns nil" (not (ht "nonexistent"))) ))
+
+(test-suite "Htable: numeric keys"
+  (let ((ht (htable)))
+    (ht 1 "one")
+    (ht 2 "two")
+    (ht 3 "three")
+    (test-str-equal "htable numeric key 1" (ht 1) "one")
+    (test-str-equal "htable numeric key 3" (ht 3) "three")
+    (test-equal "htable size with numeric keys" (htable-size ht) 3) ))
+
+(test-suite "Htable: overwrite"
+  (let ((ht (htable)))
+    (ht "key" 10)
+    (test-equal "htable before overwrite" (ht "key") 10)
+    (ht "key" 20)
+    (test-equal "htable after overwrite" (ht "key") 20)
+    (test-equal "htable size unchanged after overwrite" (htable-size ht) 1) ))
+
+(test-suite "Htable: delete"
+  (let ((ht (htable)))
+    (ht "a" 1)
+    (ht "b" 2)
+    (ht "c" 3)
+    (test-equal "htable size before delete" (htable-size ht) 3)
+    (ht "b" ())
+    (test-check "htable deleted key returns nil" (not (ht "b")))
+    (test-equal "htable size after delete" (htable-size ht) 2)
+    (test-equal "htable other keys intact" (ht "a") 1)
+    (test-equal "htable other keys intact 2" (ht "c") 3) ))
+
+(test-suite "Htable: keys"
+  (let ((ht (htable)))
+    (ht "x" 10)
+    (ht "y" 20)
+    (ht "z" 30)
+    (let ((keys (htable-keys ht)))
+      (test-equal "htable-keys count" (length keys) 3)
+      ;; verify all keys are present (order may vary)
+      (let ((found-x ()) (found-y ()) (found-z ())
+            (rest keys))
+        (while rest
+          (let ((k (car rest)))
+            (when (= k "x") (setq found-x t))
+            (when (= k "y") (setq found-y t))
+            (when (= k "z") (setq found-z t)) )
+          (setq rest (cdr rest)) )
+        (test-check "htable-keys contains x" found-x)
+        (test-check "htable-keys contains y" found-y)
+        (test-check "htable-keys contains z" found-z) ))))
+
+(test-suite "Htable: complex values"
+  (let ((ht (htable)))
+    (ht "list" '(1 2 3))
+    (let ((v (ht "list")))
+      (test-equal "htable list value length" (length v) 3)
+      (test-equal "htable list value first" (car v) 1) )
+    (ht "matrix" (double-matrix 3))
+    (test-check "htable matrix value" (not (not (ht "matrix")))) ))

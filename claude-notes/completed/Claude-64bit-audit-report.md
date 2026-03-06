@@ -1146,3 +1146,432 @@ DHT_INT case that caused SIGFPE (Floating exception) when converting Lush
 numbers > INT_MAX to DH int arguments. This was the root cause of the
 "Floating exception" noted in the audit's instrumentation plan. Fixed by
 changing to `(intg)` casts.
+
+---
+
+## Remaining Defect: `(-idx*- (-int-))` / `int-matrix` Type Mismatch
+
+Audit date: 2026-03-06
+
+### Problem
+
+The 64-bit transition widened `(-int-)` in the DH compiler to `intg`
+(64-bit), but `int-matrix` still creates `I32STORAGE` (32-bit int
+elements).  When a compiled function declares `(-idx1- (-int-)) m` and
+receives an `int-matrix`, the generated C code accesses storage via
+`IDX_PTR(L1_m, intg)` — reading **8 bytes per element instead of 4**.
+This produces garbage values.
+
+**Verified broken** in core test harness (2026-03-06):
+
+```
+(de test-sum (m)
+  ((-idx1- (-int-)) m)
+  (let ((s 0)) ((-int-) s)
+    (for (i 0 (1- (idx-dim m 0))) (incr s (m i))) s))
+(dhc-make () test-sum)
+(let ((m (int-matrix 10)))
+  (for (i 0 9) (m i (1+ i)))
+  (test-sum m))   ;; → garbage (e.g. 2.48e+14), expected 55
+```
+
+Using `long-matrix` with `(-idx1- (-long-))` works correctly because
+`(-long-)` maps to `intg` and `long-matrix` uses `I64STORAGE` (64-bit).
+
+### Possible Fix Directions
+
+1. **Make `(-int-)` in idx context map to 32-bit** — change the DH
+   compiler so `(-idx*- (-int-))` generates `IDX_PTR(m, int)` instead
+   of `IDX_PTR(m, intg)`.  Scalar `(-int-)` would remain `intg`.
+2. **Make `int-matrix` use I64STORAGE** — widen `int-matrix` to 64-bit
+   storage.  Would change memory layout and break serialization.
+3. **Add a new `(-i32-)` type** — add an explicit 32-bit DH type for
+   use with `int-matrix`, keep `(-int-)` as 64-bit for scalars.
+4. **Runtime type check** — reject `int-matrix` passed to
+   `(-idx*- (-int-))` at the DH boundary with a clear error message.
+
+### All Occurrences in the Codebase
+
+The following files use `(-idx*- (-int-))` patterns in compiled
+function declarations. Each is potentially affected by this type
+mismatch if the function receives an `int-matrix` at runtime.
+
+**50 files, ~230+ occurrences total.**
+
+#### Core Image Processing (lsh/libimage/) — 11 files
+
+| File | Lines | Functions / Context |
+|------|-------|-------------------|
+| `lsh/libimage/image-transform.lsh` | 69-70 | `compute-bilin-transform`: `(-idx2- (-int-)) dispi dispj` |
+| `lsh/libimage/ubimage.lsh` | 430, 445, 472, 488 | `ubim-warp`, `ubim-warp-fast`: `(-idx2- (-int-)) pi pj` |
+| `lsh/libimage/fimage.lsh` | 214, 229, 256, 272 | `fim-warp`, `fim-warp-fast`: `(-idx2- (-int-)) pi pj` |
+| `lsh/libimage/shimage.lsh` | 284, 299, 326, 342 | `shim-warp`, `shim-warp-fast`: `(-idx2- (-int-)) pi pj` |
+| `lsh/libimage/rgbaimage.lsh` | 516, 537, 566, 579, 677 | `rgbaim-warp*`: `(-idx2- (-int-)) pi pj`, `(-idx1- (-int-)) wh` |
+| `lsh/libimage/rgbafimage.lsh` | 554, 569, 602, 618 | `rgbafim-warp*`: `(-idx2- (-int-)) pi pj` |
+| `lsh/libimage/cca.lsh` | 62, 64, 65, 576 | connected component analysis: `(-idx2- (-int-))` runs/descriptors, `(-idx1- (-int-)) cc-off` |
+| `lsh/libimage/rle.lsh` | 83, 110, 158, 166 | run-length encoding: `(-idx2- (-int-)) runs` |
+| `lsh/libimage/pbm.lsh` | 44, 52 | PBM runs: `(-idx2- (-int-)) runs` |
+| `lsh/libimage/runs2ubim.lsh` | multiple | run-to-image conversion: `(-idx2- (-int-)) runs`, `(-idx1- (-int-)) cc` |
+| `lsh/libimage/img-util.lsh` | 87 | `pixel2rgbim`: `(-idx2- (-int-)) image` |
+
+#### Machine Learning (packages/mlcore/) — 5 files
+
+| File | Lines | Functions / Context |
+|------|-------|-------------------|
+| `packages/mlcore/knn.lsh` | 66, 304, 368 | k-NN indices: `(-idx2- (-int-)) knn-idx` |
+| `packages/mlcore/rf.lsh` | 50, 188 | RandomForest: `(-idx1- (-int-)) sample-idx feature-subset tree-feat tree-left tree-right` |
+| `packages/mlcore/kmeans.lsh` | 51, 80 | cluster labels: `(-idx1- (-int-)) labels counts` |
+| `packages/mlcore/spectral.lsh` | 42 | spectral clustering: `(-idx2- (-int-)) knn-idx` |
+| `packages/mlcore/conformal.lsh` | 142 | conformal prediction: `(-idx0- (-int-)) out` |
+
+#### SVM (packages/svm/) — 5 files
+
+| File | Lines | Functions / Context |
+|------|-------|-------------------|
+| `packages/svm/kernel.lsh` | 154, 166, 188 | SVMExpansion: `(-idx1- (-int-)) sv s xm` |
+| `packages/svm/svqp2svm.lsh` | 45 | Svqp2SVM: `(-idx1- (-int-)) x` |
+| `packages/svm/lasvm.lsh` | 131, 144, 165 | LaSVM: `(-idx1- (-int-)) sv s` |
+| `packages/svm/lasvmcache.lsh` | 160 | shuffle: `(-idx1- (-int-)) a` |
+| `packages/svm/lasvmvector.lsh` | 78, 99 | vector indices: `(-idx1- (-int-)) ivec` |
+| `packages/svm/libsvm.lsh` | 87, 96 | libSVM: `(-idx1- (-int-)) x weight-label` |
+
+#### Mapper (packages/mapper/) — 4 files
+
+| File | Lines | Functions / Context |
+|------|-------|-------------------|
+| `packages/mapper/cluster.lsh` | 36, 57, 70, 83 | clustering: `(-idx1- (-int-)) ml mr labels` |
+| `packages/mapper/umap.lsh` | 76, 213, 216, 292, 468 | UMAP: `(-idx2- (-int-)) knn-idx`, `(-idx1- (-int-)) head tail` |
+| `packages/mapper/cover.lsh` | 34 | cover: `(-idx1- (-int-)) n-cubes` |
+| `packages/mapper/csvread.lsh` | 22 | CSV: `(-idx1- (-int-)) nr nc` |
+
+#### torch9 (packages/torch9/) — 1 file
+
+| File | Lines | Functions / Context |
+|------|-------|-------------------|
+| `packages/torch9/torch9.lsh` | 123, 137, 211, 225, 350, 376, 529, 544, 864, 928, 943, 958, 973 | int tensor creation `(-idx1/2/3/4- (-int-))`, shape/dim parameters |
+
+#### Database (lsh/libdb/) — 1 file
+
+| File | Lines | Functions / Context |
+|------|-------|-------------------|
+| `lsh/libdb/db.lsh` | 101, 111, 265, 269, 289, 294, 312, 371, 539, 546, 714, 719, 777, 932, 968 | database pointers/maps: `(-idx1- (-int-)) p m` |
+
+#### Graphs (lsh/libgraph/) — 2 files
+
+| File | Lines | Functions / Context |
+|------|-------|-------------------|
+| `lsh/libgraph/grammar.lsh` | multiple | grammar parsing: `(-idx1- (-int-)) meaning label im` |
+| `lsh/libgraph/rsearch.lsh` | 183 | restricted search: `(-idx1- (-int-)) meaning` |
+
+#### OpenGL / SDL (packages/opengl/, packages/sdl/) — 3 files
+
+| File | Lines | Functions / Context |
+|------|-------|-------------------|
+| `packages/opengl/opengl.lsh` | many | OpenGL vertex/param arrays: `(-idx1- (-int-))` |
+| `packages/opengl/openglu.lsh` | 130, 188, 193, 273 | GLU viewport: `(-idx1- (-int-)) view viewport` |
+| `packages/sdl/libsdl.lsh` | 104, 319, 370, 406-408, 582, 1050, 1051, 1123, 1124 | SDL state/collision: `(-idx1/3- (-int-))` |
+| `packages/sdl/SDL_joystick.lsh` | 229 | joystick: `(-idx0- (-int-)) dx dy` |
+
+#### Sparse Linear Algebra — 2 files
+
+| File | Lines | Functions / Context |
+|------|-------|-------------------|
+| `packages/sparse/sparse.lsh` | 74, 106, 160, 191 | CSR format: `(-idx1- (-int-)) row-ptr col-idx` |
+| `contrib/sanders/spmat.lsh` | 105, 143, 309, 445, 475, 505, 684, 826 | DCOO format: `(-idx2- (-int-)) coords` |
+
+#### Scientific Computing — 3 files
+
+| File | Lines | Functions / Context |
+|------|-------|-------------------|
+| `packages/gsl/aux_convert.lsh` | 149, 335, 521, 709 | GSL conversion: `(-idx1/2- (-int-)) lmat` |
+| `packages/lapack/lapack.hlp` | 59, 60 | LAPACK: `(-idx0- (-int-)) info`, `(-idx1- (-int-)) ipiv` |
+| `packages/libnum/linalgebra.lsh` | 467, 487, 468, 488 | permutation: `(-idx1- (-int-)) p`, `(-idx0- (-int-)) signum` |
+
+#### Miscellaneous Packages — 8 files
+
+| File | Lines | Functions / Context |
+|------|-------|-------------------|
+| `packages/audiofile/audiofile.lsh` | 585 | `afReadFrames_idx-int`: `(-idx2- (-int-)) mat` |
+| `packages/curl/curl.lsh` | 56, 68, 81, 126 | curl status: `(-idx1- (-int-))` |
+| `packages/devices/joystick.lsh` | 43-45 | joystick: `(-idx1- (-int-)) axis button buttontoggle` |
+| `packages/json/json.lsh` | 148, 169, 194 | JSON parsing: `(-idx1- (-int-))` |
+| `packages/libuv/libuv.lsh` | 148 | libuv callbacks: `(-idx1- (-int-))` |
+| `packages/opencv/aux_convert.lsh` | 148, 320, 446, 572 | OpenCV int images: `(-idx3- (-int-)) mat` |
+| `packages/sdlgames/slimevolley/slime.lsh` | 38-39 | game state: `(-idx1- (-int-)) resl resr`, `(-idx0- (-int-)) pressedkey` |
+| `packages/timedate/timedate.lsh` | 147 | time output: `(-idx1- (-int-)) out` |
+| `packages/video4linux/v4l2.lsh` | 71 | video buffers: `(-idx1- (-int-)) bsizes` |
+| `packages/wire/wire.lsh` | 213, 335 | sockets: `(-idx1- (-int-)) client-fds ready-out out` |
+| `packages/xgboost/xgboost.lsh` | 59, 73, 88, 107, 116, 123, 149, 156 | XGBoost status: `(-idx1- (-int-)) status-out` |
+
+#### Documentation / Help (2 files)
+
+| File | Lines | Context |
+|------|-------|---------|
+| `lsh/compiler/compiler.hlp` | 549, 725 | Examples in help text |
+| `lsh/manual/faq.hlp` | 33, 35 | FAQ examples |
+
+### Detailed Investigation Results (2026-03-06, revised)
+
+Deep per-category investigation of every `(-idx*- (-int-))` occurrence.
+
+#### Critical Discovery: C Inline vs Lush-Level Element Access
+
+**The type mismatch bug only manifests in one specific code pattern:**
+Lush-level compiled element access such as `(m i)` or `(m i j)`.
+
+The DH compiler generates `IDX_PTR(m, intg)` for `(-idx*- (-int-))`
+parameters, which reads 8 bytes per element from 4-byte I32STORAGE.
+
+**However**, most packages use C inline blocks (`#{ ... #}`) where the
+programmer writes explicit `IDX_PTR($var, int)` — casting to 32-bit
+`int*` and bypassing the DH compiler's type mapping entirely.  This
+access pattern is **correct** because the explicit `int` type matches
+I32STORAGE's 4-byte elements.
+
+| Access Pattern | Generated C | Status |
+|---------------|-------------|--------|
+| `(m i)` in compiled Lush | `*((intg*)data + offset + i*mod)` | **BROKEN** — 8-byte stride on 4-byte storage |
+| `#{ IDX_PTR($m, int) #}` in C inline | `*((int*)data + offset)` | **CORRECT** — 4-byte stride matches storage |
+| `cinline-idx2loop m "int"` | Explicit `int` cast in loop | **CORRECT** — programmer specifies type |
+
+**Verified by runtime testing**: kmeans, kNN, SpMV, accuracy (all use
+C inline) produce correct results with `int-matrix` arguments.
+
+#### DH Compiler Fix Status
+
+The recommended fix (make `(-int-)` in idx context generate 32-bit
+access) has **NOT been applied**.  The compiler code in `dh-util.lsh`
+maps `dht-int` → `"intg"` unconditionally.  The `idx-ptr` macro in
+`dh-macro.lsh` generates `IDX_PTR(m, intg)` for all `(-idx*- (-int-))`
+parameters.
+
+#### Pre/Post-64-bit Transition Timeline
+
+| Package | Era | Notes |
+|---------|-----|-------|
+| mlcore, model-selection | Post-64bit | Safe: C inline with explicit `int*` |
+| mapper | Post-64bit | Safe: C inline with explicit `int*` |
+| torch9 | Post-64bit | Safe: I32STORAGE type dispatch |
+| sparse | Post-64bit | Safe: C inline with explicit `int*` |
+| conformal | Post-64bit | Safe: scalar output only |
+| curl, json, libuv, timedate, wire, xgboost | Post-64bit | Safe: C inline |
+| libimage | Pre-64bit | **BROKEN**: uses Lush-level element access |
+| svm | Pre-64bit | Safe: C inline with explicit `int*` |
+| libdb, libgraph | Pre-64bit | Legacy, unused |
+| opengl, sdl, sdlgames | Pre-64bit | Safe: C inline wrapping C int32 APIs |
+| gsl, lapack, libnum | Pre-64bit | Safe: C inline wrapping C/Fortran int32 APIs |
+| audiofile | Pre-64bit | Safe: C inline with `IDX_PTR($mat, int)` |
+| opencv | Pre-64bit | Safe: C inline with `IDX_PTR($mat, int)` |
+| video4linux | Pre-64bit | Safe: C inline with `IDX_PTR($bsizes, int)` |
+
+---
+
+#### BROKEN — Must Fix
+
+##### libimage (lsh/libimage/) — BROKEN
+
+The **only** package with actually broken code.  The image warping
+functions use Lush-level compiled element access on `(-idx2- (-int-))`
+displacement maps, which generates `IDX_PTR(m, intg)` with 8-byte
+strides on I32STORAGE data.
+
+**Broken functions** (all compiled via `dhc-make`, all use Lush-level
+`(m i j)` or `idx-bloop` element access on int matrices):
+
+- **Warp functions**: `ubim-warp`, `ubim-warp-fast` (ubimage.lsh),
+  `fim-warp`, `fim-warp-fast` (fimage.lsh), `shim-warp`,
+  `shim-warp-fast` (shimage.lsh), `rgbaim-warp*` (rgbaimage.lsh),
+  `rgbafim-warp*` (rgbafimage.lsh) — all access displacement maps
+  `pi`/`pj` via `(llpi)` through `idx-bloop`, which reads 8 bytes
+  per 4-byte element.
+
+- **CCA** (cca.lsh): `run-analysis`, `cc-analysis`, and other methods
+  access `runs` (int-matrix) via `(runs id (RUN-Y) y)` etc. in
+  compiled code.  Reads/writes at wrong offsets in the runs matrix.
+
+- **RLE** (rle.lsh): `rle-read-runs`, `rle-write-runs` access `runs`
+  via `(runs id (run-y) n)` etc. in compiled code.
+
+- **runs2ubim.lsh, pbm.lsh**: Similar patterns.
+
+**Exception**: `compute-bilin-transform` (image-transform.lsh) is
+**SAFE** — uses `cinline-idx2loop2 dispi "int" dispj "int"` which
+specifies the element type explicitly.
+
+**Fix**: These functions need to be changed to use either:
+1. C inline blocks with explicit `IDX_PTR($var, int)` (matching
+   existing patterns in other packages), or
+2. `long-matrix` + `(-idx*- (-long-))` declarations, or
+3. Wait for the DH compiler fix.
+
+---
+
+#### SAFE — C Inline Bypasses the Bug
+
+All of the following packages declare `(-idx*- (-int-))` in their
+compiled functions but use C inline blocks (`#{ ... #}`) with explicit
+`IDX_PTR($var, int)` casts.  The explicit `int` type in the C code
+matches I32STORAGE's 4-byte elements, so the access is correct
+regardless of the DH compiler's broken type mapping.
+
+**The type declaration is semantically wrong but the code works.**
+
+##### mlcore — SAFE (verified by runtime test)
+
+All compiled functions use `#{ int *p = IDX_PTR($var, int); ... #}`:
+- **knn.lsh**: `_knn-vptree-search`, `_knn-brute-k` — `int *pidx = IDX_PTR($knn_idx, int)`
+- **rf.lsh**: `_rf-find-best-split`, `_rf-traverse-tree` — `int *psamp = IDX_PTR($sample_idx, int)` etc.
+- **kmeans.lsh**: `_km-assign`, `_km-update-centers` — `int *pl = IDX_PTR($labels, int)`
+- **spectral.lsh**: `_spectral-build-affinity` — `int *pidx = IDX_PTR($knn_idx, int)`
+- **hnsw-config.lsh**: `_knn-hnsw-search` — `int *pidx = IDX_PTR($knn_idx, int)`
+- **conformal.lsh**: scalar `idx0` output — `*(IDX_PTR($out, int)) = lo`
+- **model-selection.lsh**: `_ms-shuffle`, `_ms-select-rows-*`, `_ms-count-labels`,
+  `accuracy`, `_ms-confusion-matrix`, `log-loss` — all use `int *p = IDX_PTR($var, int)`
+
+**Fragility note**: If anyone refactors these to use Lush-level `(m i)`
+instead of C inline, the code will break.  Adding a comment to each
+file would help prevent this.
+
+##### sparse (packages/sparse/) — SAFE (verified by runtime test)
+
+All compiled functions use C inline:
+- `_sparse-csr-mv`, `_sparse-csr-tmv`: `int *prp = IDX_PTR($row_ptr, int)`
+- `_sparse-dense-to-csr`, `_sparse-csr-to-dense`: same pattern
+
+Verified: `(==> sp mv x)` produces correct results on test data.
+
+##### SVM (packages/svm/) — SAFE
+
+All 11 occurrences across 6 files use C inline with `IDX_PTR($var, int)`:
+- **kernel.lsh**: Uses Lush-level slot access but the SVM C library
+  functions receive `int*` from `IDX_PTR`
+- **svqp2svm.lsh**: `cinline-idx1loop x "int"` + `IDX_PTR($x, int)`
+- **lasvm.lsh**: `IDX_PTR($s, int)` passed to `lasvm_init()`
+- **lasvmcache.lsh**: `int *ilist = IDX_PTR($a, int)`
+- **lasvmvector.lsh**: `int *iv = IDX_PTR($ivec, int)`
+- **libsvm.lsh**: `IDX_PTR($weight_label, int)`, `IDX_PTR($x, int)`
+
+The underlying C libraries (libsvm, lasvm) use plain 32-bit `int`,
+which matches the explicit `int*` casts.
+
+##### mapper (packages/mapper/) — SAFE
+
+Uses C inline with explicit `int*` casts in compiled helper functions.
+
+##### torch9 (packages/torch9/) — SAFE
+
+Uses I32STORAGE type dispatch.  Compiled bridge functions use C inline
+with explicit pointer types matching libtorch expectations.
+
+##### OpenGL / SDL / sdlgames — SAFE
+
+Wrap C libraries that use `int` (32-bit).  All use C inline with
+explicit `int*` casts matching the C API expectations.
+
+##### GSL / LAPACK / libnum — SAFE
+
+Wrap C/Fortran libraries using `int` (32-bit).  C inline with
+explicit casts.
+
+##### curl, json, libuv, timedate, wire, xgboost — SAFE
+
+Post-64bit code.  C inline with explicit `int*` casts.
+
+##### audiofile (packages/audiofile/) — SAFE
+
+`afReadFrames_idx-int` uses `IDX_PTR($mat, int)` in C inline.
+Correct regardless of type declaration.
+
+##### opencv (packages/opencv/) — SAFE
+
+`aux_convert.lsh` uses `IDX_PTR($mat, int)` and raw data pointer
+assignment.  Correct regardless of type declaration.
+
+##### video4linux (packages/video4linux/) — SAFE
+
+`v4l2.lsh` uses `IDX_PTR($bsizes, int)` in C inline at 6 locations.
+Correct regardless of type declaration.
+
+---
+
+#### UNUSED / LEGACY (No Investigation Needed)
+
+##### libdb (lsh/libdb/) — LEGACY, MINIMAL USE
+
+Old database package.  Only used in example scripts.  Not actively
+used by any current package.
+
+##### libgraph (lsh/libgraph/) — LEGACY, UNUSED
+
+Grammar/graph search package.  Not imported by any other package.
+
+##### contrib/sanders/spmat.lsh — LEGACY, UNUSED
+
+Legacy sparse matrix code.  Not used by any active package.
+
+---
+
+#### DOCUMENTATION
+
+##### compiler.hlp, faq.hlp — UPDATED
+
+- `compiler.hlp`: Rewrote "Numerical Type Declarations" section with correct
+  64-bit type mappings.  Added `(-long-)`, `(-real-)`, `(-flt-)` entries.
+  Added "WARNING: (-int-) Type Mismatch with int-matrix" section,
+  "Recommended Patterns for Integer Arrays" (Approach 1: long-matrix,
+  Approach 2: C inline), "Passing int-matrix to C Libraries (FFI Pattern)"
+  with full worked example, and "Type/Storage Quick Reference" table.
+- `faq.hlp`: Added warning note after the `(-idx1- (-int-))` example
+  explaining the type mismatch and C inline workaround.
+- 10 libimage .lsh files: Added `{<b> WARNING: 64-bit type mismatch.}`
+  headers to all affected files (ubimage, fimage, shimage, rgbaimage,
+  rgbafimage, cca, rle, pbm, runs2ubim, img-util).
+
+---
+
+### Summary: Fix Priority (Revised)
+
+| Priority | Package | Status | Action Needed |
+|----------|---------|--------|--------------|
+| **P1 — Fix** | libimage (warp/CCA/RLE) | **BROKEN** — Lush-level element access | Rewrite to use C inline or await DH compiler fix |
+| **Safe** | mlcore, model-selection, sparse | C inline with explicit `int*` | Add fragility comments |
+| **Safe** | SVM | C inline with explicit `int*` | No changes needed |
+| **Safe** | mapper, torch9, conformal | C inline / type dispatch | No changes needed |
+| **Safe** | OpenGL, SDL, GSL, LAPACK, libnum | C inline wrapping C APIs | No changes needed |
+| **Safe** | curl, json, libuv, timedate, wire, xgboost | C inline, post-64bit | No changes needed |
+| **Safe** | audiofile, opencv, video4linux | C inline with explicit `int*` | No changes needed |
+| **Ignore** | libdb, libgraph, contrib/spmat | Unused | No changes needed |
+| **Doc** | compiler.hlp, faq.hlp, libimage .lsh files | **DONE** | Warnings, FFI patterns, type reference added |
+
+### Recommended DH Compiler Fix
+
+The cleanest long-term solution is **Option 1** from the "Possible Fix
+Directions" section above: make `(-int-)` in idx context generate
+`IDX_PTR(m, int)` (32-bit) while keeping scalar `(-int-)` as `intg`
+(64-bit).  This would:
+
+1. Fix the only actually-broken code (libimage) automatically
+2. Correctly support C library interop (OpenGL, SDL, GSL, LAPACK)
+3. Match `int-matrix` / I32STORAGE semantics
+4. Make C inline workarounds unnecessary (though they'd still work)
+5. Prevent future bugs from Lush-level element access on int matrices
+
+**Key location to modify**: `dh-util.lsh:376-394` (`dhc-type-to-c-decl`)
+needs a context-aware variant for idx element types, and
+`dh-macro.lsh:1516-1520` (`idx-ptr` macro) needs to call it.
+
+### Why Most Code is Safe Despite the Bug
+
+The bug was discovered in the core test harness using pure Lush-level
+compiled element access: `(for (i 0 ...) (incr s (m i)))`.  This
+pattern generates `IDX_PTR(m, intg)` through the DH compiler.
+
+But in practice, nearly all Lush packages that work with `int-matrix`
+use C inline blocks (`#{ ... #}`) for performance, and in C inline
+the programmer writes `IDX_PTR($m, int)` — explicitly specifying the
+correct 32-bit type.  This is why:
+
+- 324 tests pass in the core test harness (including all compiled tests
+  that use C inline for int matrices)
+- All mlcore, sparse, model-selection functions produce correct results
+- Only the synthetic test using `(m i)` in pure compiled Lush fails

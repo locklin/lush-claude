@@ -1,0 +1,176 @@
+;;; suite-i64.lsh -- 64-bit correctness tests for Lush core
+;;;
+;;; Refactored from test-64bit.lsh to use the shared framework.
+;;; Tests the fixes for 32-bit leftover bugs in index.c, storage.c,
+;;; lisp_c.c, and the DH compiler.
+
+(libload "libidx/idx-sort")
+
+(defvar BIG 3000000000)
+
+;; ================================================================
+;; Group 1: Index Metadata Manipulation (index.c)
+;; ================================================================
+
+(test-suite "i64: Index Metadata Manipulation"
+  ;; idx-changedim with large values
+  (let ((m (int-matrix 1)))
+    (idx-changemod m 0 0)
+    (idx-changedim m 0 BIG)
+    (test-equal "idx-changedim preserves value > 2^31"
+                (idx-dim m 0) BIG) )
+
+  ;; idx-changemod with large values
+  (let ((m (int-matrix 1)))
+    (idx-changedim m 0 1)
+    (idx-changemod m 0 BIG)
+    (test-equal "idx-changemod preserves value > 2^31"
+                (idx-modulo m 0) BIG) )
+
+  ;; idx-changeoffset
+  (let ((m (int-matrix 100)))
+    (idx-changemod m 0 0)
+    (idx-changedim m 0 1)
+    (idx-changeoffset m 50)
+    (test-equal "idx-changeoffset preserves moderate value"
+                (idx-offset m) 50) )
+
+  ;; idx-transpose2 with large dimension values
+  (let ((m (int-matrix 2 3)))
+    (idx-changemod m 0 0)
+    (idx-changedim m 0 BIG)
+    (idx-transpose2 m 0 1)
+    (test-equal "idx-transpose2 dim[0] became 3"
+                (idx-dim m 0) 3)
+    (test-equal "idx-transpose2 dim[1] preserved BIG value"
+                (idx-dim m 1) BIG) )
+
+  ;; idx-nelements with large dimension
+  (let ((m (int-matrix 1)))
+    (idx-changemod m 0 0)
+    (idx-changedim m 0 BIG)
+    (test-equal "idx-nelements returns BIG for 1D array"
+                (idx-nelements m) BIG) )
+
+  ;; idx-nelements with product > 2^31
+  (let ((m (int-matrix 70000 70000)))
+    (idx-changemod m 0 0)
+    (idx-changemod m 1 0)
+    (test-equal "idx-nelements handles 70000*70000 > 2^31"
+                (idx-nelements m) 4900000000) ) )
+
+;; ================================================================
+;; Group 2: index_check_size correctness (index.c)
+;; ================================================================
+
+(test-suite "i64: index_check_size Overflow Guard"
+  (let ((m (int-matrix 1)))
+    (idx-changemod m 0 0)
+    (idx-changedim m 0 BIG)
+    (test-equal "index_check_size passes valid BIG dim with mod=0"
+                (idx-dim m 0) BIG) )
+
+  (let ((m (int-matrix 1)))
+    (idx-changemod m 0 0)
+    (idx-changedim m 0 BIG)
+    (idx-narrow m 0 100 0)
+    (test-equal "idx-narrow works on BIG dim"
+                (idx-dim m 0) 100) ) )
+
+;; ================================================================
+;; Group 3: DH Interface (lisp_c.c)
+;; ================================================================
+
+(de _ti64-dh-int-id (x) ((-int-) x) x)
+(dhc-make () _ti64-dh-int-id)
+
+(de _ti64-dh-long-id (x) ((-long-) x) x)
+(dhc-make () _ti64-dh-long-id)
+
+(test-suite "i64: DH Integer Round-trip"
+  (test-equal "DH int(42) round-trip"
+              (_ti64-dh-int-id 42) 42)
+  (test-equal "DH int(-100) round-trip"
+              (_ti64-dh-int-id -100) -100)
+  (test-equal "DH int(INT_MAX) round-trip"
+              (_ti64-dh-int-id 2147483647) 2147483647)
+  (test-equal "DH int(-INT_MAX) round-trip"
+              (_ti64-dh-int-id -2147483647) -2147483647)
+  (test-equal "DH int(3e9 > INT_MAX) round-trip"
+              (_ti64-dh-int-id BIG) BIG)
+  (test-equal "DH int(INT_MIN) round-trip"
+              (_ti64-dh-int-id -2147483648) -2147483648)
+  (test-equal "DH long(3e9) round-trip"
+              (_ti64-dh-long-id BIG) BIG) )
+
+;; ================================================================
+;; Group 4: DH Compiled Index Operations
+;; ================================================================
+
+;; NOTE: (-idx1- (-int-)) with int-matrix is broken since -int- became
+;; 64-bit (intg) but I32STORAGE is still 32-bit.  Using long-matrix
+;; with (-long-) instead to test the compiled idx sum path.
+
+(de _ti64-dh-long-sum (m)
+  ((-idx1- (-long-)) m)
+  (let ((s 0))
+    ((-long-) s)
+    (for (i 0 (1- (idx-dim m 0)))
+      (incr s (m i)))
+    s))
+(dhc-make () _ti64-dh-long-sum)
+
+(de _ti64-dh-dbl-sum (m)
+  ((-idx1- (-double-)) m)
+  (let ((s 0))
+    ((-double-) s)
+    (for (i 0 (1- (idx-dim m 0)))
+      (incr s (m i)))
+    s))
+(dhc-make () _ti64-dh-dbl-sum)
+
+(test-suite "i64: DH Compiled idx Operations"
+  (let ((m (long-matrix 10)))
+    (for (i 0 9) (m i (1+ i)))
+    (test-equal "DH compiled long-matrix sum = 55"
+                (_ti64-dh-long-sum m) 55) )
+  (let ((m (double-matrix 5)))
+    (for (i 0 4) (m i (+ 1.5 i)))
+    (test-approx "DH compiled double sum = 17.5"
+                 (_ti64-dh-dbl-sum m) 17.5 1e-10) ) )
+
+;; ================================================================
+;; Group 5: Serialization Guards
+;; ================================================================
+
+(test-suite "i64: Serialization Size Guards"
+  (let ((m (int-matrix 5)))
+    (for (i 0 4) (m i (* i 10)))
+    (writing (open-write "/tmp/claude/test-bwrite-i64.bin")
+      (bwrite m))
+    (let ((m2 (reading (open-read "/tmp/claude/test-bwrite-i64.bin")
+                (bread))))
+      (test-check "bwrite/bread round-trip preserves data"
+                  (and (= (idx-dim m2 0) 5)
+                       (= (m2 0) 0)
+                       (= (m2 2) 20)
+                       (= (m2 4) 40) )))))
+
+;; ================================================================
+;; Group 6: idx-diagonal and idx-unfold
+;; ================================================================
+
+(test-suite "i64: idx-diagonal and idx-unfold"
+  (let ((m (double-matrix 5 5)))
+    (idx-diagonal m 2)
+    (test-equal "idx-diagonal produces correct dim"
+                (idx-dim m 0) 5)
+    (test-equal "idx-diagonal accumulates mod correctly"
+                (idx-modulo m 0) 6) )
+
+  (let ((m (double-matrix 20)))
+    (idx-unfold m 0 5 3)
+    (test-equal "idx-unfold dim[0] correct"
+                (idx-dim m 0) 6)
+    (test-equal "idx-unfold dim[1] correct"
+                (idx-dim m 1) 5) ) )

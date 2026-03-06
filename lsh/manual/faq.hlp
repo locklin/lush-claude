@@ -35,6 +35,14 @@ Example 2:
   (de foo2-correk (x) ((-idx1- (-int-)) x) #{ *(IDX_PTR($x,int)) = 34 #} ())
 </code>}
 
+{<b> Note}: The {<c> IDX_PTR($x,int)} pattern above explicitly
+specifies {<c> int} (32-bit) as the element type, which is correct
+for {<c> int-matrix} (I32STORAGE).  Do {<b> not} use Lush-level
+element access like {<c> (x i)} on {<c> (-idx1- (-int-))} parameters
+in compiled code, as it generates 64-bit pointer arithmetic that
+misaligns with the 32-bit storage.  Use {<c> long-matrix} with
+{<c> (-idx1- (-long-))} for Lush-level compiled integer array access.
+
 
 #? *** How Do I ... ?
 

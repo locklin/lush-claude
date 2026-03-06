@@ -30,6 +30,12 @@
 #? *** Greyscale Images of shorts
 ;; functions to manipulate images
 ;; where each pixel is a 16-bit short.
+;;
+;; {<b> WARNING: 64-bit type mismatch.}
+;; The warp functions ({<c> shim-warp}, {<c> shim-warp-fast}) use
+;; {<c> (-idx2- (-int-))} displacement maps with Lush-level element
+;; access.  On 64-bit systems this produces incorrect results.
+;; See {<c> ubimage.lsh} header for details.
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; linear coordinate transform using bilinear interpolation.

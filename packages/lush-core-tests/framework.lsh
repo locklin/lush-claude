@@ -1,0 +1,72 @@
+;;; framework.lsh -- Test framework for Lush core tests
+;;;
+;;; Based on packages/mlcore/tests/framework.lsh with additions:
+;;; test-error, test-skip, test-str-equal.
+;;;
+;;; Note: test-error uses on-error which does not suppress error
+;;; propagation.  The error handler records the PASS, then the error
+;;; propagates to the toplevel handler.  Use test-error as the last
+;;; test in a test-suite block, or in its own block.
+
+(defvar *test-pass-count* 0)
+(defvar *test-fail-count* 0)
+(defvar *test-skip-count* 0)
+
+(dmd test-suite (name . body)
+  `(progn (printf "\n--- %s ---\n" ,name) ,@body) )
+
+(de test-check (desc expr)
+  (if expr
+    (progn (setq *test-pass-count* (+ *test-pass-count* 1))
+           (printf "  PASS: %s\n" desc) )
+    (progn (setq *test-fail-count* (+ *test-fail-count* 1))
+           (printf "  FAIL: %s\n" desc) ) ) )
+
+(de test-equal (desc actual expected)
+  (if (= actual expected)
+    (progn (setq *test-pass-count* (+ *test-pass-count* 1))
+           (printf "  PASS: %s\n" desc) )
+    (progn (setq *test-fail-count* (+ *test-fail-count* 1))
+           (printf "  FAIL: %s (got %l, expected %l)\n" desc actual expected) ) ) )
+
+(de test-approx (desc actual expected tol)
+  (let ((diff (abs (- actual expected))))
+    (if (< diff tol)
+      (progn (setq *test-pass-count* (+ *test-pass-count* 1))
+             (printf "  PASS: %s\n" desc) )
+      (progn (setq *test-fail-count* (+ *test-fail-count* 1))
+             (printf "  FAIL: %s (got %g, expected %g, diff=%g)\n"
+                     desc actual expected diff) ) ) ) )
+
+(de test-str-equal (desc actual expected)
+  (if (= actual expected)
+    (progn (setq *test-pass-count* (+ *test-pass-count* 1))
+           (printf "  PASS: %s\n" desc) )
+    (progn (setq *test-fail-count* (+ *test-fail-count* 1))
+           (printf "  FAIL: %s (got \"%s\", expected \"%s\")\n"
+                   desc actual expected) ) ) )
+
+(de test-skip (desc reason)
+  (setq *test-skip-count* (+ *test-skip-count* 1))
+  (printf "  SKIP: %s (%s)\n" desc reason) )
+
+;; test-error records PASS in the on-error handler, then the error
+;; propagates to toplevel.  If no error occurs, FAIL is recorded.
+;; Because error propagation exits the enclosing block, place
+;; test-error calls last in a test-suite, or in their own block.
+(dmd test-error (desc . body)
+  `(progn
+     (on-error
+       (progn (setq *test-pass-count* (+ *test-pass-count* 1))
+              (printf "  PASS: %s\n" ,desc) )
+       (progn ,@body) )
+     ;; only reached if no error was raised
+     (setq *test-fail-count* (+ *test-fail-count* 1))
+     (printf "  FAIL: %s (expected error, none raised)\n" ,desc) ) )
+
+(de test-summary ()
+  (printf "\n========================================\n")
+  (printf "Results: %d passed, %d failed, %d skipped\n"
+          *test-pass-count* *test-fail-count* *test-skip-count*)
+  (printf "========================================\n")
+  (if (= *test-fail-count* 0) 0 1) )

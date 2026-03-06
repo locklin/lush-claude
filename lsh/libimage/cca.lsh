@@ -28,8 +28,16 @@
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
 #? *** Connected Component Analysis
-;; elementary routines for performing a connected component 
+;; elementary routines for performing a connected component
 ;; (CC) analysis on images.
+;;
+;; {<b> WARNING: 64-bit type mismatch.}
+;; The CCA methods use {<c> (-idx2- (-int-))} runs matrices with
+;; Lush-level element access in compiled code.  On 64-bit systems,
+;; {<c> (-int-)} maps to 64-bit {<c> intg} while {<c> int-matrix}
+;; uses 32-bit storage, causing misaligned reads/writes.
+;; CCA produces incorrect results until the DH compiler is fixed.
+;;
 ;; The basic procedure consists in:
 ;;.IP
 ;;  Creating a new <CCAnalyzer> object for a given image

@@ -28,6 +28,15 @@
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
 #? *** Greyscale Images of ubytes
+;; {<b> WARNING: 64-bit type mismatch.}
+;; The image warping functions ({<c> ubim-warp}, {<c> ubim-warp-fast},
+;; {<c> ubim-warp-quad}) use {<c> (-idx2- (-int-))} for displacement
+;; maps but access elements via compiled Lush-level code.  On 64-bit
+;; systems, {<c> (-int-)} maps to 64-bit {<c> intg} while
+;; {<c> int-matrix} uses 32-bit storage, causing misaligned reads.
+;; These functions produce incorrect results until the DH compiler
+;; is fixed.  The interpolation helper ({<c> ubim-interpolate-bilin})
+;; and non-warping functions are unaffected.
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; linear coordinate transform using bilinear interpolation.

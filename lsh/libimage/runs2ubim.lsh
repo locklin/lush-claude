@@ -28,6 +28,10 @@
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
 #? *** Converting RLE Image to Greyscale Pixelmap
+;; {<b> WARNING: 64-bit type mismatch.}
+;; Uses {<c> (-idx2- (-int-))} runs matrices with Lush-level element
+;; access.  On 64-bit systems this produces incorrect results.
+;; See {<c> ubimage.lsh} header for details.
 
 (libload "dynamic")
 (libload "libimage/ubimage")

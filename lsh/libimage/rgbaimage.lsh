@@ -30,6 +30,12 @@
 #? *** RGBA Images of ubytes
 ;; basic image processing on RGBA images
 ;; where each pixel component is an unsigned byte.
+;;
+;; {<b> WARNING: 64-bit type mismatch.}
+;; The warp functions ({<c> rgbaim-warp}, {<c> rgbaim-warp-fast}, etc.)
+;; use {<c> (-idx2- (-int-))} displacement maps with Lush-level element
+;; access.  On 64-bit systems this produces incorrect results.
+;; See {<c> ubimage.lsh} header for details.
 
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;

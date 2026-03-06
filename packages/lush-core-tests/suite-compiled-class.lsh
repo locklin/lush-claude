@@ -1,0 +1,83 @@
+;;; suite-compiled-class.lsh -- Compiled class tests for Lush core
+
+;; ---- Define a compiled class ----
+
+(defclass _TCC-Point object
+  ((-double-) x)
+  ((-double-) y))
+
+(defmethod _TCC-Point _TCC-Point (a b)
+  ((-double-) a b)
+  (setq x a)
+  (setq y b) )
+
+(defmethod _TCC-Point get-x ()
+  x)
+
+(defmethod _TCC-Point get-y ()
+  y)
+
+(defmethod _TCC-Point set-x (v)
+  ((-double-) v)
+  (setq x v) )
+
+(defmethod _TCC-Point set-y (v)
+  ((-double-) v)
+  (setq y v) )
+
+(defmethod _TCC-Point distance ()
+  (sqrt (+ (* x x) (* y y))))
+
+(defmethod _TCC-Point translate (dx dy)
+  ((-double-) dx dy)
+  (setq x (+ x dx))
+  (setq y (+ y dy)) )
+
+(defmethod _TCC-Point scale (factor)
+  ((-double-) factor)
+  (setq x (* x factor))
+  (setq y (* y factor)) )
+
+(dhc-make () (_TCC-Point _TCC-Point get-x get-y set-x set-y
+                          distance translate scale))
+
+;; ---- Tests ----
+
+(test-suite "Compiled class: construction"
+  (let ((p (new _TCC-Point 3.0 4.0)))
+    (test-approx "constructor x" (==> p get-x) 3.0 1e-10)
+    (test-approx "constructor y" (==> p get-y) 4.0 1e-10) ))
+
+(test-suite "Compiled class: getters"
+  (let ((p (new _TCC-Point 0.0 0.0)))
+    (test-approx "zero x" (==> p get-x) 0.0 1e-10)
+    (test-approx "zero y" (==> p get-y) 0.0 1e-10) )
+  (let ((p (new _TCC-Point -1.5 2.5)))
+    (test-approx "neg x" (==> p get-x) -1.5 1e-10)
+    (test-approx "pos y" (==> p get-y) 2.5 1e-10) ))
+
+(test-suite "Compiled class: setters"
+  (let ((p (new _TCC-Point 0.0 0.0)))
+    (==> p set-x 10.0)
+    (==> p set-y 20.0)
+    (test-approx "set-x" (==> p get-x) 10.0 1e-10)
+    (test-approx "set-y" (==> p get-y) 20.0 1e-10) ))
+
+(test-suite "Compiled class: distance"
+  (let ((p (new _TCC-Point 3.0 4.0)))
+    (test-approx "3-4-5 triangle" (==> p distance) 5.0 1e-10) )
+  (let ((p (new _TCC-Point 0.0 0.0)))
+    (test-approx "origin distance" (==> p distance) 0.0 1e-10) ))
+
+(test-suite "Compiled class: translate"
+  (let ((p (new _TCC-Point 1.0 2.0)))
+    (==> p translate 3.0 4.0)
+    (test-approx "translate x" (==> p get-x) 4.0 1e-10)
+    (test-approx "translate y" (==> p get-y) 6.0 1e-10) ))
+
+(test-suite "Compiled class: scale"
+  (let ((p (new _TCC-Point 3.0 4.0)))
+    (==> p scale 2.0)
+    (test-approx "scale x" (==> p get-x) 6.0 1e-10)
+    (test-approx "scale y" (==> p get-y) 8.0 1e-10)
+    (test-approx "scale distance" (==> p distance) 10.0 1e-10) ))

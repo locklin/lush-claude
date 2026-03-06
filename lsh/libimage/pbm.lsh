@@ -30,6 +30,11 @@
 #? *** Reading/Writing PBM Image Files
 ;; reading and writing PBM image files (one bit per pixel, bitonal images)
 ;; from and into lists of runs, and idx.
+;;
+;; {<b> WARNING: 64-bit type mismatch.}
+;; Uses {<c> (-idx2- (-int-))} runs matrices with Lush-level element
+;; access.  On 64-bit systems this produces incorrect results.
+;; See {<c> ubimage.lsh} header for details.
 
 (libload "libc/stdio")
 (libload "libidx/idx-int")

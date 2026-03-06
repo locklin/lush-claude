@@ -1,0 +1,30 @@
+;;; run-all.lsh -- Master runner for Lush core tests
+;;;
+;;; Usage:
+;;;   ./src/lush packages/lush-core-tests/run-all.lsh
+
+(printf "=== Lush Core Test Harness ===\n")
+
+;; Load test framework
+(load "packages/lush-core-tests/framework.lsh")
+
+;; Run interpreted suites first (no compilation needed)
+(load "packages/lush-core-tests/suite-storage.lsh")
+(load "packages/lush-core-tests/suite-matrix.lsh")
+(load "packages/lush-core-tests/suite-string.lsh")
+(load "packages/lush-core-tests/suite-htable.lsh")
+(load "packages/lush-core-tests/suite-matrix-io.lsh")
+(load "packages/lush-core-tests/suite-copy.lsh")
+
+;; Run compiled suites (require dhc-make)
+(load "packages/lush-core-tests/suite-compiled-basic.lsh")
+(load "packages/lush-core-tests/suite-compiled-idx.lsh")
+(load "packages/lush-core-tests/suite-compiled-class.lsh")
+
+;; Run 64-bit regression suite
+(load "packages/lush-core-tests/suite-i64.lsh")
+
+;; Print summary and exit with appropriate code
+(test-summary)
+(when (> *test-fail-count* 0)
+  (exit 1))

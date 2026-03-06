@@ -21,16 +21,24 @@ double x;
 void fprop(layer_1, layer_4, wbase)
  float layer_1[65][16];
  float layer_4[10][1];
- float wbase[1338];
+ float wbase[2378];
 {
   float layer_2[32][8];
   float layer_3[6][8];
+
+  /* BIAS-CONNECT */
+  {  int i,j;
+     float *w = wbase+0;
+     for (i=0; i<65; i++)
+       for (j=0; j<16; j++)
+          layer_1[i][j] = *w++;
+  }
 
    /**** LAYER layer_2 *****/
 
   /* TDNN-BIAS-CONNECT */
   {  int i,j;
-     float *w = wbase+0;
+     float *w = wbase+1040;
      for (j=0; j<8; j++) {
        for (i=0; i<32; i++)
           layer_2[i][j] = *w;
@@ -41,21 +49,21 @@ void fprop(layer_1, layer_4, wbase)
   /* CT-TDNN-CONNECT from layer_1 to layer_2 */
   {  int i1,i2,k,l1,l2;
      float sum;
-     float (*w)[16][8] = (void*)(wbase + 26);
+     float (*w)[16][8] = (void*)(wbase + 1066);
      for(i1=k=0; i1<32; i1+=1,k+=2)
        for(i2=0; i2<8; i2+=1) {
          sum = 0.0;
          for(l1=0;l1<3;l1++)
            for(l2=0;l2<16;l2++)
-             sum += w[l1][l2][i2] * layer_1[k+l1][l2];
+             sum += w[l1][l2][i2] * layer_1[k+l1+0][l2+0];
          layer_2[i1][i2] += sum;
        }
    }
 
   /* Sigmoid */
   {  int i,j;
-     for (j=0; j<32; j++) 
-       for (i=0; i<8; i++)
+     for (i=0; i<32; i++) 
+       for (j=0; j<8; j++)
           layer_2[i][j] = squash(layer_2[i][j]);
   }
 
@@ -63,7 +71,7 @@ void fprop(layer_1, layer_4, wbase)
 
   /* TDNN-BIAS-CONNECT */
   {  int i,j;
-     float *w = wbase+8;
+     float *w = wbase+1048;
      for (j=0; j<8; j++) {
        for (i=0; i<6; i++)
           layer_3[i][j] = *w;
@@ -74,21 +82,21 @@ void fprop(layer_1, layer_4, wbase)
   /* CT-TDNN-CONNECT from layer_2 to layer_3 */
   {  int i1,i2,k,l1,l2;
      float sum;
-     float (*w)[8][8] = (void*)(wbase + 410);
+     float (*w)[8][8] = (void*)(wbase + 1450);
      for(i1=k=0; i1<6; i1+=1,k+=5)
        for(i2=0; i2<8; i2+=1) {
          sum = 0.0;
          for(l1=0;l1<7;l1++)
            for(l2=0;l2<8;l2++)
-             sum += w[l1][l2][i2] * layer_2[k+l1][l2];
+             sum += w[l1][l2][i2] * layer_2[k+l1+0][l2+0];
          layer_3[i1][i2] += sum;
        }
    }
 
   /* Sigmoid */
   {  int i,j;
-     for (j=0; j<6; j++) 
-       for (i=0; i<8; i++)
+     for (i=0; i<6; i++) 
+       for (j=0; j<8; j++)
           layer_3[i][j] = squash(layer_3[i][j]);
   }
 
@@ -96,7 +104,7 @@ void fprop(layer_1, layer_4, wbase)
 
   /* BIAS-CONNECT */
   {  int i,j;
-     float *w = wbase+16;
+     float *w = wbase+1056;
      for (i=0; i<10; i++)
        for (j=0; j<1; j++)
           layer_4[i][j] = *w++;
@@ -105,39 +113,23 @@ void fprop(layer_1, layer_4, wbase)
   /* CT-CONNECT from layer_3 to layer_4 */
   {  int i,j,k,l;
      float sum;
-     float (*w)[8][10][1] = (void*)(wbase + 858);
+     float (*w)[8][10][1] = (void*)(wbase + 1898);
      for(i=0;i<10;i++)
        for(j=0;j<1;j++) {
          sum = 0.0;
          for(k=0;k<6;k++)
            for(l=0;l<8;l++)
-             sum += w[k][l][i][j] * layer_3[k][l];
+             sum += w[k][l][i][j] * layer_3[k+0][l+0];
          layer_4[i][j] += sum;
        }
    }
 
   /* Sigmoid */
   {  int i,j;
-     for (j=0; j<10; j++) 
-       for (i=0; i<1; i++)
+     for (i=0; i<10; i++) 
+       for (j=0; j<1; j++)
           layer_4[i][j] = squash(layer_4[i][j]);
   }
 }
 
-
-
-
-/**** Here is the DX interface function */
-
-#include "header.h"
-
-DX(xfprop)
-{
-  ARG_NUMBER(3);
-  ALL_ARGS_EVAL;
-  fprop( get_std_matrix(APOINTER(1),65,16),
-         get_std_matrix(APOINTER(2),10,1),
-         get_std_vector(APOINTER(3),1338) );
-  return NIL;
-}
 

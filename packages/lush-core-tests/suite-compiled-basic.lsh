@@ -1,0 +1,131 @@
+;;; suite-compiled-basic.lsh -- Compiled scalar type tests for Lush core
+
+;; ---- int ----
+
+(de _tcs-int-id (x) ((-int-) x) x)
+(de _tcs-int-add (a b) ((-int-) a b) (+ a b))
+(de _tcs-int-mul (a b) ((-int-) a b) (* a b))
+(de _tcs-int-neg (x) ((-int-) x) (- 0 x))
+(dhc-make () _tcs-int-id _tcs-int-add _tcs-int-mul _tcs-int-neg)
+
+(test-suite "Compiled: int scalar"
+  (test-equal "int identity 42" (_tcs-int-id 42) 42)
+  (test-equal "int identity -100" (_tcs-int-id -100) -100)
+  (test-equal "int add" (_tcs-int-add 10 20) 30)
+  (test-equal "int mul" (_tcs-int-mul 7 6) 42)
+  (test-equal "int neg" (_tcs-int-neg 5) -5)
+  (test-equal "int INT_MAX" (_tcs-int-id 2147483647) 2147483647)
+  (test-equal "int INT_MIN" (_tcs-int-id -2147483648) -2147483648) )
+
+;; ---- long ----
+
+(de _tcs-long-id (x) ((-long-) x) x)
+(de _tcs-long-add (a b) ((-long-) a b) (+ a b))
+(de _tcs-long-mul (a b) ((-long-) a b) (* a b))
+(dhc-make () _tcs-long-id _tcs-long-add _tcs-long-mul)
+
+(test-suite "Compiled: long scalar"
+  (test-equal "long identity 42" (_tcs-long-id 42) 42)
+  (test-equal "long identity 3e9" (_tcs-long-id 3000000000) 3000000000)
+  (test-equal "long identity -1" (_tcs-long-id -1) -1)
+  (test-equal "long add" (_tcs-long-add 1000000000 2000000000) 3000000000)
+  (test-equal "long mul" (_tcs-long-mul 100000 100000) 10000000000) )
+
+;; ---- flt (float) ----
+
+(de _tcs-flt-id (x) ((-flt-) x) x)
+(de _tcs-flt-add (a b) ((-flt-) a b) (+ a b))
+(de _tcs-flt-mul (a b) ((-flt-) a b) (* a b))
+(dhc-make () _tcs-flt-id _tcs-flt-add _tcs-flt-mul)
+
+(test-suite "Compiled: flt scalar"
+  (test-approx "flt identity" (_tcs-flt-id 3.14) 3.14 1e-5)
+  (test-approx "flt add" (_tcs-flt-add 1.5 2.5) 4.0 1e-5)
+  (test-approx "flt mul" (_tcs-flt-mul 3.0 4.0) 12.0 1e-5)
+  (test-approx "flt negative" (_tcs-flt-id -1.5) -1.5 1e-5) )
+
+;; ---- real (double) ----
+
+(de _tcs-real-id (x) ((-real-) x) x)
+(de _tcs-real-add (a b) ((-real-) a b) (+ a b))
+(de _tcs-real-sub (a b) ((-real-) a b) (- a b))
+(de _tcs-real-mul (a b) ((-real-) a b) (* a b))
+(de _tcs-real-div (a b) ((-real-) a b) (/ a b))
+(dhc-make () _tcs-real-id _tcs-real-add _tcs-real-sub _tcs-real-mul _tcs-real-div)
+
+(test-suite "Compiled: real (double) scalar"
+  (test-approx "real identity" (_tcs-real-id 3.14159265) 3.14159265 1e-10)
+  (test-approx "real add" (_tcs-real-add 1.1 2.2) 3.3 1e-10)
+  (test-approx "real sub" (_tcs-real-sub 10.0 3.0) 7.0 1e-10)
+  (test-approx "real mul" (_tcs-real-mul 2.5 4.0) 10.0 1e-10)
+  (test-approx "real div" (_tcs-real-div 10.0 4.0) 2.5 1e-10) )
+
+;; ---- byte ----
+
+(de _tcs-byte-id (x) ((-byte-) x) x)
+(de _tcs-byte-add (a b) ((-byte-) a b) (+ a b))
+(dhc-make () _tcs-byte-id _tcs-byte-add)
+
+(test-suite "Compiled: byte scalar"
+  (test-equal "byte identity 50" (_tcs-byte-id 50) 50)
+  (test-equal "byte identity -50" (_tcs-byte-id -50) -50)
+  (test-equal "byte add" (_tcs-byte-add 10 20) 30) )
+
+;; ---- ubyte ----
+
+(de _tcs-ubyte-id (x) ((-ubyte-) x) x)
+(de _tcs-ubyte-add (a b) ((-ubyte-) a b) (+ a b))
+(dhc-make () _tcs-ubyte-id _tcs-ubyte-add)
+
+(test-suite "Compiled: ubyte scalar"
+  (test-equal "ubyte identity 200" (_tcs-ubyte-id 200) 200)
+  (test-equal "ubyte identity 0" (_tcs-ubyte-id 0) 0)
+  (test-equal "ubyte add" (_tcs-ubyte-add 100 50) 150) )
+
+;; ---- short ----
+
+(de _tcs-short-id (x) ((-short-) x) x)
+(de _tcs-short-add (a b) ((-short-) a b) (+ a b))
+(dhc-make () _tcs-short-id _tcs-short-add)
+
+(test-suite "Compiled: short scalar"
+  (test-equal "short identity 1000" (_tcs-short-id 1000) 1000)
+  (test-equal "short identity -1000" (_tcs-short-id -1000) -1000)
+  (test-equal "short add" (_tcs-short-add 100 200) 300) )
+
+;; ---- gptr (pass-through) ----
+;; NOTE: C inline #{...#} only works inside already-compiled contexts.
+;; Testing gptr via compiled function that receives and returns a gptr.
+
+(de _tcs-gptr-roundtrip (p)
+  ((-gptr-) p)
+  p)
+(dhc-make () _tcs-gptr-roundtrip)
+
+(test-suite "Compiled: gptr scalar"
+  ;; Get a real gptr from a matrix storage
+  (let* ((m (double-matrix 3))
+         (p (to-gptr (idx-storage m))))
+    (test-check "gptr from storage is non-null" (not (not p)))
+    (let ((p2 (_tcs-gptr-roundtrip p)))
+      (test-check "gptr roundtrip returns non-null" (not (not p2)))
+      (test-check "gptr roundtrip preserves value" (= p p2)) )))
+
+;; ---- compiled calling compiled ----
+
+(de _tcs-helper (x) ((-int-) x) (* x x))
+(de _tcs-caller (x) ((-int-) x) (+ (_tcs-helper x) 1))
+(dhc-make () _tcs-helper _tcs-caller)
+
+(test-suite "Compiled: function calling function"
+  (test-equal "compiled call 5^2+1" (_tcs-caller 5) 26)
+  (test-equal "compiled call 0^2+1" (_tcs-caller 0) 1)
+  (test-equal "compiled call 10^2+1" (_tcs-caller 10) 101) )
+
+;; ---- type coercion ----
+
+(test-suite "Compiled: type coercion"
+  ;; pass int to real function
+  (test-approx "int->real coercion" (_tcs-real-id 42) 42.0 1e-10)
+  ;; pass float to real function
+  (test-approx "flt->real coercion" (_tcs-real-add 1.5 2.5) 4.0 1e-10) )

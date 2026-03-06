@@ -30,6 +30,12 @@
 #? *** Miscellaneous Image Macros and Conversions
 ;; basic macros and functions to manipulate
 ;; dimensions and internal formats of images
+;;
+;; {<b> WARNING: 64-bit type mismatch.}
+;; {<c> pixel2rgbim} uses {<c> (-idx2- (-int-))} with Lush-level
+;; element access in compiled code.  On 64-bit systems this produces
+;; incorrect pixel conversions.
+;; See {<c> ubimage.lsh} header for details.
 
 (dm FRED(f)  '0.299)
 (dm FGREEN(f) '0.587)

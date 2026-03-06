@@ -1,0 +1,92 @@
+;;; suite-storage.lsh -- Storage type tests for Lush core
+;;;
+;;; Tests storage class identification and size for all 8 types.
+;;; Element access is tested through matrix element access (storage
+;;; objects do not expose direct element get/set in Lush).
+
+(test-suite "Storage: double (DSTORAGE)"
+  (let* ((m (double-matrix 10))
+         (s (idx-storage m)))
+    (test-check "DSTORAGE is-of-class" (is-of-class s |DSTORAGE|))
+    (test-equal "DSTORAGE size" (storage-size s) 10)
+    ;; Verify element access via matrix
+    (m 0 3.14)
+    (test-approx "DSTORAGE via matrix set/get" (m 0) 3.14 1e-10)
+    (m 9 -2.718)
+    (test-approx "DSTORAGE via matrix set/get last" (m 9) -2.718 1e-10) ))
+
+(test-suite "Storage: float (FSTORAGE)"
+  (let* ((m (float-matrix 8))
+         (s (idx-storage m)))
+    (test-check "FSTORAGE is-of-class" (is-of-class s |FSTORAGE|))
+    (test-equal "FSTORAGE size" (storage-size s) 8)
+    (m 3 1.5)
+    (test-approx "FSTORAGE via matrix set/get" (m 3) 1.5 1e-6) ))
+
+(test-suite "Storage: int (I32STORAGE)"
+  (let* ((m (int-matrix 5))
+         (s (idx-storage m)))
+    (test-check "I32STORAGE is-of-class" (is-of-class s |I32STORAGE|))
+    (test-equal "I32STORAGE size" (storage-size s) 5)
+    (m 0 42)
+    (test-equal "I32STORAGE via matrix set/get" (m 0) 42)
+    (m 4 -100)
+    (test-equal "I32STORAGE via matrix set/get negative" (m 4) -100) ))
+
+(test-suite "Storage: short (I16STORAGE)"
+  (let* ((m (short-matrix 6))
+         (s (idx-storage m)))
+    (test-check "I16STORAGE is-of-class" (is-of-class s |I16STORAGE|))
+    (test-equal "I16STORAGE size" (storage-size s) 6)
+    (m 2 1000)
+    (test-equal "I16STORAGE via matrix set/get" (m 2) 1000) ))
+
+(test-suite "Storage: byte (I8STORAGE)"
+  (let* ((m (byte-matrix 4))
+         (s (idx-storage m)))
+    (test-check "I8STORAGE is-of-class" (is-of-class s |I8STORAGE|))
+    (test-equal "I8STORAGE size" (storage-size s) 4)
+    (m 1 -50)
+    (test-equal "I8STORAGE via matrix set/get signed" (m 1) -50) ))
+
+(test-suite "Storage: ubyte (U8STORAGE)"
+  (let* ((m (ubyte-matrix 4))
+         (s (idx-storage m)))
+    (test-check "U8STORAGE is-of-class" (is-of-class s |U8STORAGE|))
+    (test-equal "U8STORAGE size" (storage-size s) 4)
+    (m 0 200)
+    (test-equal "U8STORAGE via matrix set/get" (m 0) 200) ))
+
+(test-suite "Storage: long (I64STORAGE)"
+  (let* ((m (long-matrix 3))
+         (s (idx-storage m)))
+    (test-check "I64STORAGE is-of-class" (is-of-class s |I64STORAGE|))
+    (test-equal "I64STORAGE size" (storage-size s) 3)
+    (m 0 3000000000)
+    (test-equal "I64STORAGE via matrix set/get large" (m 0) 3000000000) ))
+
+(test-suite "Storage: gptr (GPTRSTORAGE)"
+  (let* ((m (gptr-matrix 2))
+         (s (idx-storage m)))
+    (test-check "GPTRSTORAGE is-of-class" (is-of-class s |GPTRSTORAGE|))
+    (test-equal "GPTRSTORAGE size" (storage-size s) 2) ))
+
+(test-suite "Storage: cross-type verification"
+  (test-check "double storage not float"
+    (not (is-of-class (idx-storage (double-matrix 1)) |FSTORAGE|)))
+  (test-check "int storage not short"
+    (not (is-of-class (idx-storage (int-matrix 1)) |I16STORAGE|)))
+  (test-check "byte storage not ubyte"
+    (not (is-of-class (idx-storage (byte-matrix 1)) |U8STORAGE|)))
+  (test-check "ubyte storage not byte"
+    (not (is-of-class (idx-storage (ubyte-matrix 1)) |I8STORAGE|))) )
+
+(test-suite "Storage: shared between matrix and view"
+  (let* ((m (double-matrix 5))
+         (s1 (idx-storage m))
+         (n (narrow m 0 3 1))
+         (s2 (idx-storage n)))
+    (test-check "narrow shares storage" (= s1 s2))
+    ;; write via view, read via original
+    (n 0 99.0)
+    (test-approx "shared storage write-through" (m 1) 99.0 1e-10) ))

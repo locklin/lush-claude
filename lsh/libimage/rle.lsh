@@ -31,6 +31,12 @@
 ;; read and write RLE images.
 ;; RLE images are a compact way of representing
 ;; binary images by a list of "runs" of black pixels.
+;;
+;; {<b> WARNING: 64-bit type mismatch.}
+;; The RLE functions use {<c> (-idx2- (-int-))} runs matrices with
+;; Lush-level element access in compiled code.  On 64-bit systems
+;; this produces incorrect results.
+;; See {<c> ubimage.lsh} header for details.
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; read RLE files

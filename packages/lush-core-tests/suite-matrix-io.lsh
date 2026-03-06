@@ -1,0 +1,114 @@
+;;; suite-matrix-io.lsh -- Matrix I/O tests for Lush core
+
+(defvar *test-tmpdir* (or (getenv "TMPDIR") "/tmp/claude"))
+
+;; ---- save-matrix / load-matrix round-trip ----
+
+(test-suite "Matrix I/O: save/load double"
+  (let* ((m (double-matrix 5))
+         (path (concat *test-tmpdir* "/test-io-double.mat")))
+    (for (i 0 4) (m i (* i 1.5)))
+    (save-matrix m path)
+    (let ((m2 (load-matrix path)))
+      (test-equal "load double ndim" (idx-ndim m2) 1)
+      (test-equal "load double dim0" (idx-dim m2 0) 5)
+      (test-approx "load double elem 0" (m2 0) 0.0 1e-10)
+      (test-approx "load double elem 4" (m2 4) 6.0 1e-10) )))
+
+(test-suite "Matrix I/O: save/load float"
+  (let* ((m (float-matrix 4))
+         (path (concat *test-tmpdir* "/test-io-float.mat")))
+    (for (i 0 3) (m i (* i 2.0)))
+    (save-matrix m path)
+    (let ((m2 (load-matrix path)))
+      (test-equal "load float dim0" (idx-dim m2 0) 4)
+      (test-approx "load float elem 3" (m2 3) 6.0 1e-5) )))
+
+(test-suite "Matrix I/O: save/load int"
+  (let* ((m (int-matrix 6))
+         (path (concat *test-tmpdir* "/test-io-int.mat")))
+    (for (i 0 5) (m i (* i 100)))
+    (save-matrix m path)
+    (let ((m2 (load-matrix path)))
+      (test-equal "load int dim0" (idx-dim m2 0) 6)
+      (test-equal "load int elem 5" (m2 5) 500) )))
+
+(test-suite "Matrix I/O: save/load short"
+  (let* ((m (short-matrix 3))
+         (path (concat *test-tmpdir* "/test-io-short.mat")))
+    (m 0 100) (m 1 -200) (m 2 300)
+    (save-matrix m path)
+    (let ((m2 (load-matrix path)))
+      (test-equal "load short elem 1" (m2 1) -200) )))
+
+(test-suite "Matrix I/O: save/load byte"
+  (let* ((m (byte-matrix 3))
+         (path (concat *test-tmpdir* "/test-io-byte.mat")))
+    (m 0 -50) (m 1 0) (m 2 100)
+    (save-matrix m path)
+    (let ((m2 (load-matrix path)))
+      (test-equal "load byte elem 0" (m2 0) -50)
+      (test-equal "load byte elem 2" (m2 2) 100) )))
+
+(test-suite "Matrix I/O: save/load ubyte"
+  (let* ((m (ubyte-matrix 3))
+         (path (concat *test-tmpdir* "/test-io-ubyte.mat")))
+    (m 0 0) (m 1 128) (m 2 255)
+    (save-matrix m path)
+    (let ((m2 (load-matrix path)))
+      (test-equal "load ubyte elem 1" (m2 1) 128)
+      (test-equal "load ubyte elem 2" (m2 2) 255) )))
+
+(test-suite "Matrix I/O: save/load long"
+  (let* ((m (long-matrix 3))
+         (path (concat *test-tmpdir* "/test-io-long.mat")))
+    (m 0 3000000000) (m 1 -1) (m 2 0)
+    (save-matrix m path)
+    (let ((m2 (load-matrix path)))
+      (test-equal "load long elem 0" (m2 0) 3000000000)
+      (test-equal "load long elem 1" (m2 1) -1) )))
+
+(test-suite "Matrix I/O: save/load 2D"
+  (let* ((m (double-matrix 3 4))
+         (path (concat *test-tmpdir* "/test-io-2d.mat")))
+    (for (i 0 2)
+      (for (j 0 3)
+        (m i j (+ (* i 10) j)) ))
+    (save-matrix m path)
+    (let ((m2 (load-matrix path)))
+      (test-equal "load 2D ndim" (idx-ndim m2) 2)
+      (test-equal "load 2D dim0" (idx-dim m2 0) 3)
+      (test-equal "load 2D dim1" (idx-dim m2 1) 4)
+      (test-approx "load 2D elem 2,3" (m2 2 3) 23.0 1e-10) )))
+
+;; ---- bwrite / bread round-trip ----
+
+(test-suite "Matrix I/O: bwrite/bread matrix"
+  (let* ((m (int-matrix 5))
+         (path (concat *test-tmpdir* "/test-io-bwrite-mat.bin")))
+    (for (i 0 4) (m i (* i 10)))
+    (writing (open-write path) (bwrite m))
+    (let ((m2 (reading (open-read path) (bread))))
+      (test-equal "bread matrix dim0" (idx-dim m2 0) 5)
+      (test-equal "bread matrix elem 0" (m2 0) 0)
+      (test-equal "bread matrix elem 4" (m2 4) 40) )))
+
+(test-suite "Matrix I/O: bwrite/bread scalar"
+  (let ((path (concat *test-tmpdir* "/test-io-bwrite-scalar.bin")))
+    (writing (open-write path) (bwrite 42))
+    (let ((v (reading (open-read path) (bread))))
+      (test-equal "bread scalar" v 42) )))
+
+(test-suite "Matrix I/O: bwrite/bread string"
+  (let ((path (concat *test-tmpdir* "/test-io-bwrite-str.bin")))
+    (writing (open-write path) (bwrite "hello world"))
+    (let ((v (reading (open-read path) (bread))))
+      (test-str-equal "bread string" v "hello world") )))
+
+(test-suite "Matrix I/O: bwrite/bread list"
+  (let ((path (concat *test-tmpdir* "/test-io-bwrite-list.bin")))
+    (writing (open-write path) (bwrite '(1 2 3 "four")))
+    (let ((v (reading (open-read path) (bread))))
+      (test-equal "bread list length" (length v) 4)
+      (test-equal "bread list elem 0" (car v) 1)
+      (test-str-equal "bread list elem 3" (nth 3 v) "four") )))

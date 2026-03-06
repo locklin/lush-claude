@@ -1,0 +1,73 @@
+;;; suite-string.lsh -- String operation tests for Lush core
+
+(test-suite "String: len"
+  (test-equal "len empty" (len "") 0)
+  (test-equal "len hello" (len "hello") 5)
+  (test-equal "len with spaces" (len "a b c") 5) )
+
+(test-suite "String: mid, left, right"
+  (test-str-equal "mid basic" (mid "hello world" 1 5) "hello")
+  (test-str-equal "mid offset" (mid "hello world" 7 5) "world")
+  (test-str-equal "mid single" (mid "abcdef" 3 1) "c")
+  (test-str-equal "left basic" (left "hello" 3) "hel")
+  (test-str-equal "left full" (left "hi" 2) "hi")
+  (test-str-equal "right basic" (right "hello" 3) "llo")
+  (test-str-equal "right full" (right "hi" 2) "hi") )
+
+(test-suite "String: upcase, downcase"
+  (test-str-equal "upcase basic" (upcase "hello") "HELLO")
+  (test-str-equal "upcase mixed" (upcase "Hello World") "HELLO WORLD")
+  (test-str-equal "upcase digits" (upcase "abc123") "ABC123")
+  (test-str-equal "downcase basic" (downcase "HELLO") "hello")
+  (test-str-equal "downcase mixed" (downcase "Hello World") "hello world") )
+
+(test-suite "String: concat"
+  (test-str-equal "concat two" (concat "hello" " world") "hello world")
+  (test-str-equal "concat three" (concat "a" "b" "c") "abc")
+  (test-str-equal "concat empty" (concat "" "hi") "hi")
+  (test-str-equal "concat all empty" (concat "" "") "") )
+
+(test-suite "String: asc and chr"
+  (test-equal "asc A" (asc "A") 65)
+  (test-equal "asc a" (asc "a") 97)
+  (test-equal "asc 0" (asc "0") 48)
+  (test-str-equal "chr 65" (chr 65) "A")
+  (test-str-equal "chr 97" (chr 97) "a")
+  (test-str-equal "chr roundtrip" (chr (asc "Z")) "Z") )
+
+(test-suite "String: regex-match"
+  (test-check "regex-match exact" (regex-match "hello" "hello"))
+  (test-check "regex-match pattern" (regex-match "hel.*" "hello"))
+  (test-check "regex-match digits" (regex-match "[0-9]+" "42"))
+  (test-check "regex-match no match" (not (regex-match "xyz" "hello"))) )
+
+(test-suite "String: regex-seek"
+  (let ((result (regex-seek "wor" "hello world")))
+    (test-check "regex-seek found" (not (not result)))
+    (test-equal "regex-seek position" (car result) 7)
+    (test-equal "regex-seek length" (car (cdr result)) 3) )
+  (test-check "regex-seek not found" (not (regex-seek "xyz" "hello"))) )
+
+(test-suite "String: regex-subst"
+  (test-str-equal "regex-subst basic"
+    (regex-subst "world" "there" "hello world") "hello there")
+  (test-str-equal "regex-subst pattern"
+    (regex-subst "[0-9]+" "NUM" "abc123def") "abcNUMdef") )
+
+(test-suite "String: regex-extract"
+  (let ((result (regex-extract ".*(wor).*" "hello world")))
+    (test-check "regex-extract found" (not (not result)))
+    (test-str-equal "regex-extract group" (car result) "wor") ) )
+
+(test-suite "String: val and sprintf"
+  (test-equal "val integer" (val "42") 42)
+  (test-equal "val negative" (val "-7") -7)
+  (test-str-equal "sprintf int" (sprintf "%d" 42) "42")
+  (test-str-equal "sprintf float" (sprintf "%.2f" 3.14) "3.14")
+  (test-str-equal "sprintf string" (sprintf "hi %s" "there") "hi there") )
+
+(test-suite "String: comparison"
+  (test-check "string = equal" (= "hello" "hello"))
+  (test-check "string = not equal" (not (= "hello" "world")))
+  (test-check "string < less" (< "abc" "abd"))
+  (test-check "string > greater" (> "abd" "abc")) )
