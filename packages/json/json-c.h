@@ -58,12 +58,14 @@ int lush_json_parse_l2update(
 
 /* Parse a Coinbase ticker message into column arrays.
  * Writes a single row at the given offset.
+ * volumes receives last_size (volume of last trade).
  * Returns 1 on success, -1 on error.
  */
 int lush_json_parse_ticker(
     const char *json, int len,
     double *prices, double *best_bids, double *best_asks,
     int *side_codes, long long *timestamps, int *product_codes,
+    double *volumes,
     int offset,
     const unsigned char *product_table, const int *product_offsets,
     int n_products);

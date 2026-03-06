@@ -201,6 +201,7 @@ int lush_json_parse_ticker(
     const char *json, int len,
     double *prices, double *best_bids, double *best_asks,
     int *side_codes, long long *timestamps, int *product_codes,
+    double *volumes,
     int offset,
     const unsigned char *product_table, const int *product_offsets,
     int n_products)
@@ -262,6 +263,14 @@ int lush_json_parse_ticker(
         side = (s && s[0] == 'b') ? LUSH_JSON_SIDE_BUY : LUSH_JSON_SIDE_SELL;
     }
 
+    /* Last size (volume of last trade) */
+    yyjson_val *size_val = yyjson_obj_get(root, "last_size");
+    double volume = 0.0;
+    if (size_val && yyjson_is_str(size_val))
+        volume = strtod(yyjson_get_str(size_val), NULL);
+    else if (size_val && yyjson_is_num(size_val))
+        volume = yyjson_get_num(size_val);
+
     /* Write to arrays */
     prices[offset] = price;
     best_bids[offset] = best_bid;
@@ -269,6 +278,7 @@ int lush_json_parse_ticker(
     side_codes[offset] = side;
     timestamps[offset] = ts;
     product_codes[offset] = pcode;
+    volumes[offset] = volume;
 
     return 1;
 }

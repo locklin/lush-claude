@@ -1,0 +1,82 @@
+;;; coinbase-feed.lsh -- Coinbase feed handler entry point
+;;;
+;;; Starts the feed handler, initializes product columns for BTC-USD
+;;; and ETH-USD, connects to the Coinbase WebSocket feed, and enters
+;;; the main event loop.
+;;;
+;;; Usage (from lush-claude root):
+;;;   ./src/lush packages/libuv/scripts/coinbase-feed.lsh
+;;;
+;;; Or via heredoc from coinbase-start.sh.
+
+(libload "libuv/feed-handler")
+
+;; Products and channels to subscribe to
+(defvar *cb-products* '("BTC-USD" "ETH-USD"))
+(defvar *cb-channels* '("ticker" "level2" "heartbeat"))
+(defvar *cb-fh-port* 19960)
+
+;; Initialize column buffers for the hot-path JSON parsers
+(fh-init-feed-columns *cb-products*)
+
+;; Build subscription message
+(let ((sub-msg (fh-build-subscribe-msg *cb-products* *cb-channels*)))
+
+  ;; Override feed-handler-start to auto-connect after setup
+  ;; We call the pieces manually instead of feed-handler-start
+  (printf "\n=== Coinbase Feed Handler ===\n")
+  (printf "products: %l\n" *cb-products*)
+  (printf "channels: %l\n" *cb-channels*)
+  (printf "wire port: %d\n\n" *cb-fh-port*)
+
+  (setq *fh-handles* ())
+  (setq *fh-ws-client* ())
+  (setq *fh-ws-poll-id* ())
+  (setq *fh-ws-url* ())
+  (setq *fh-ws-subscribe* ())
+  (setq *fh-reconnect-id* ())
+  (setq *fh-stats-events* 0)
+  (setq *fh-stats-ticks* 0)
+  (setq *fh-stats-broadcasts* 0)
+  (setq *fh-stats-l2* 0)
+  (setq *fh-stats-tickers* 0)
+  (setq *fh-stats-heartbeats* 0)
+
+  ;; Create libuv loop
+  (setq *fh-loop* (uv-loop-new))
+
+  ;; Signal handlers
+  (let ((sigterm-id (uv-signal-start *fh-loop* 15))
+        (sigint-id  (uv-signal-start *fh-loop* 2)) )
+    (setq *fh-handles* (nconc1 *fh-handles* sigterm-id))
+    (setq *fh-handles* (nconc1 *fh-handles* sigint-id)) )
+
+  ;; Heartbeat timer
+  (let ((hb-id (uv-timer-start *fh-loop* 5000 5000)))
+    (setq *fh-handles* (nconc1 *fh-handles* hb-id)) )
+
+  ;; Wire server
+  (setq *fh-wire* (new WireServer *cb-fh-port*))
+  (==> *fh-wire* start)
+  (printf "feed-handler: wire server on port %d\n" *cb-fh-port*)
+
+  (setq :*fh-wire*:on-connect
+    (lambda (fd) (printf "feed-handler: client connected (fd=%d)\n" fd)) )
+  (setq :*fh-wire*:on-disconnect
+    (lambda (fd) (printf "feed-handler: client disconnected (fd=%d)\n" fd)) )
+  (setq :*fh-wire*:on-sync
+    (lambda (fd expr encoding)
+      (cond
+       ((= expr "stats")
+        (list *fh-stats-ticks* *fh-stats-events* *fh-stats-broadcasts*) )
+       ((= expr "ping") "pong")
+       (t ()) ) ) )
+
+  ;; Connect to Coinbase
+  (fh-connect-feed "wss://ws-feed.exchange.coinbase.com" sub-msg)
+
+  ;; Enter main loop
+  (fh-main-loop)
+
+  ;; Shutdown
+  (fh-shutdown) )

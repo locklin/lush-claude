@@ -42,18 +42,21 @@
                           (cons "best_bid" 67312.00)
                           (cons "best_ask" 67312.50)
                           (cons "side" "sell")
+                          (cons "volume" 0.5)
                           (cons "time" 1718457605500000) ))
 (rdb-insert-ticker (list (cons "product" "ETH-USD")
                           (cons "price" 3850.75)
                           (cons "best_bid" 3850.50)
                           (cons "best_ask" 3851.00)
                           (cons "side" "buy")
+                          (cons "volume" 1.0)
                           (cons "time" 1718457606000000) ))
 (rdb-insert-ticker (list (cons "product" "BTC-USD")
                           (cons "price" 67315.00)
                           (cons "best_bid" 67314.50)
                           (cons "best_ask" 67315.50)
                           (cons "side" "buy")
+                          (cons "volume" 0.3)
                           (cons "time" 1718457607000000) ))
 
 ;; --- HDB Reader ---
@@ -89,8 +92,8 @@
 (setq *ana-ticker-hwm* 0)
 
 ;; Add analytics data by updating directly
-(ana-update-product "BTC-USD" 67312.02 67312.00 67312.50 1718457605500000)
-(ana-update-product "BTC-USD" 67315.00 67314.50 67315.50 1718457607000000)
+(ana-update-product "BTC-USD" 67312.02 67312.00 67312.50 0.5 1718457605500000)
+(ana-update-product "BTC-USD" 67315.00 67314.50 67315.50 0.3 1718457607000000)
 
 ;; --- HDB Writer ---
 ;; Initialize state for hdb-handle-query (no actual RDB connection needed)

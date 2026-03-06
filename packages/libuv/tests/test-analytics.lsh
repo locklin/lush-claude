@@ -62,19 +62,20 @@
                     (price (==> dt get r "price"))
                     (bid (==> dt get r "bid"))
                     (ask (==> dt get r "ask"))
+                    (volume (==> dt get r "volume"))
                     (time (==> dt get r "time")) )
-                (ana-update-product product price bid ask time) ) )
+                (ana-update-product product price bid ask volume time) ) )
             ;; Advance high-water mark
             (setq *ana-ticker-hwm* (+ *ana-ticker-hwm* new-rows)) ) ) ) ) ) )
 
 
 ;; ---- Tests ----
 
-;; Test 1: ana-init-table creates correct schema (9 columns)
-(printf "Test 1: ana-init-table creates correct schema (9 cols)... ")
+;; Test 1: ana-init-table creates correct schema (10 columns)
+(printf "Test 1: ana-init-table creates correct schema (10 cols)... ")
 (let ((names (==> *ana-table* col-names))
       (types (==> *ana-table* col-types)) )
-  (if (and (= (==> *ana-table* num-cols) 9)
+  (if (and (= (==> *ana-table* num-cols) 10)
            (= (car names) "product")
            (= (cadr names) "price")
            (= (caddr names) "mavg")
@@ -83,7 +84,8 @@
            (= (nth 5 names) "min_price")
            (= (nth 6 names) "max_price")
            (= (nth 7 names) "twap")
-           (= (nth 8 names) "time")
+           (= (nth 8 names) "vwap")
+           (= (nth 9 names) "time")
            (= (car types) 'string)
            (= (cadr types) 'real)
            (= (caddr types) 'real)
@@ -92,8 +94,9 @@
            (= (nth 5 types) 'real)
            (= (nth 6 types) 'real)
            (= (nth 7 types) 'real)
-           (= (nth 8 types) 'stamp) )
-    (printf "PASS (9 cols)\n")
+           (= (nth 8 types) 'real)
+           (= (nth 9 types) 'stamp) )
+    (printf "PASS (10 cols)\n")
     (printf "FAIL (ncols=%d names=%l types=%l)\n" (==> *ana-table* num-cols) names types) ) )
 
 
@@ -120,7 +123,7 @@
 
 ;; Test 5: ana-update-product with first price (mavg = price, spread = ask - bid)
 (printf "Test 5: ana-update-product first price... ")
-(ana-update-product "BTC-USD" 100.0 99.0 101.0 1718457605000000)
+(ana-update-product "BTC-USD" 100.0 99.0 101.0 1.0 1718457605000000)
 (let ((mavg (==> *ana-table* get 0 "mavg"))
       (spread (==> *ana-table* get 0 "spread"))
       (vol (==> *ana-table* get 0 "volatility"))
@@ -140,7 +143,7 @@
 
 ;; Test 6: ana-update-product with second price (mavg = mean of 2)
 (printf "Test 6: ana-update-product second price... ")
-(ana-update-product "BTC-USD" 200.0 199.0 201.0 1718457606000000)
+(ana-update-product "BTC-USD" 200.0 199.0 201.0 1.0 1718457606000000)
 (let ((mavg (==> *ana-table* get 1 "mavg"))
       (spread (==> *ana-table* get 1 "spread"))
       (minp (==> *ana-table* get 1 "min_price"))
@@ -155,7 +158,7 @@
 
 ;; Test 7: ana-update-product with third price (full window, mavg = mean of 3)
 (printf "Test 7: ana-update-product third price (full window)... ")
-(ana-update-product "BTC-USD" 300.0 299.0 301.0 1718457607000000)
+(ana-update-product "BTC-USD" 300.0 299.0 301.0 1.0 1718457607000000)
 (let ((mavg (==> *ana-table* get 2 "mavg"))
       (minp (==> *ana-table* get 2 "min_price"))
       (maxp (==> *ana-table* get 2 "max_price")) )
@@ -169,7 +172,7 @@
 ;; Test 8: ana-update-product with fourth price (window slides, oldest dropped)
 ;; Window was (100 200 300), now should be (200 300 400) -> mavg = 300
 (printf "Test 8: ana-update-product fourth price (window slides)... ")
-(ana-update-product "BTC-USD" 400.0 399.0 401.0 1718457608000000)
+(ana-update-product "BTC-USD" 400.0 399.0 401.0 1.0 1718457608000000)
 (let ((mavg (==> *ana-table* get 3 "mavg"))
       (minp (==> *ana-table* get 3 "min_price"))
       (maxp (==> *ana-table* get 3 "max_price")) )
@@ -202,8 +205,8 @@
 
 ;; Test 11: Multi-product — second product gets independent MA
 (printf "Test 11: Multi-product independent MA... ")
-(ana-update-product "ETH-USD" 50.0 49.0 51.0 1718457609000000)
-(ana-update-product "ETH-USD" 60.0 59.0 61.0 1718457610000000)
+(ana-update-product "ETH-USD" 50.0 49.0 51.0 1.0 1718457609000000)
+(ana-update-product "ETH-USD" 60.0 59.0 61.0 1.0 1718457610000000)
 ;; ETH-USD history is (50 60), mavg = 55
 ;; BTC-USD history still (200 300 400), mavg = 300
 (let ((eth-mavg (==> *ana-table* get 5 "mavg"))
@@ -365,18 +368,21 @@
                           (cons "best_bid" 67312.00)
                           (cons "best_ask" 67312.50)
                           (cons "side" "sell")
+                          (cons "volume" 0.5)
                           (cons "time" 1718457605500000) ))
 (rdb-insert-ticker (list (cons "product" "ETH-USD")
                           (cons "price" 3850.75)
                           (cons "best_bid" 3850.50)
                           (cons "best_ask" 3851.00)
                           (cons "side" "buy")
+                          (cons "volume" 1.0)
                           (cons "time" 1718457606000000) ))
 (rdb-insert-ticker (list (cons "product" "BTC-USD")
                           (cons "price" 67315.00)
                           (cons "best_bid" 67314.50)
                           (cons "best_ask" 67315.50)
                           (cons "side" "buy")
+                          (cons "volume" 0.3)
                           (cons "time" 1718457607000000) ))
 ;; Poll using direct RDB query
 (test-ana-poll)
@@ -475,9 +481,10 @@
            (assoc "min_price" result)
            (assoc "max_price" result)
            (assoc "twap" result)
+           (assoc "vwap" result)
            (assoc "count" result)
            (= (cdr (assoc "count" result)) 2) )
-    (printf "PASS (7 metrics, count=2)\n")
+    (printf "PASS (8 metrics, count=2)\n")
     (printf "FAIL (got: %l)\n" result) ) )
 
 

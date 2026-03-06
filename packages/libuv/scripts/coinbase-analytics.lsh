@@ -1,0 +1,13 @@
+;;; coinbase-analytics.lsh -- Coinbase Analytics entry point
+;;;
+;;; Connects to the RDB on port 19961, computes moving average,
+;;; spread, volatility, TWAP, and VWAP analytics, and serves
+;;; queries on port 19963.
+;;;
+;;; Usage (from lush-claude root):
+;;;   ./src/lush packages/libuv/scripts/coinbase-analytics.lsh
+
+(defvar *ana-no-autostart* t)
+(libload "libuv/analytics")
+
+(ana-start 19961 19963 20)

@@ -21,6 +21,7 @@
 (libload "wire/wire")
 (libload "wire/wire-serialize")
 (libload "datatable/datatable")
+(libload "timedate/timedate")
 
 #? *** RDB: Real-time Database
 ;; Accumulates ticker and L2 broadcasts from a feed handler into
@@ -67,7 +68,8 @@
 
 #? (rdb-init-tables)
 ;; Create empty ticker and L2 DataTables with the correct schema.
-;; Ticker: product(string), price(real), bid(real), ask(real), side(string), time(stamp)
+;; Ticker: product(string), price(real), bid(real), ask(real), side(string),
+;;         volume(real), time(stamp), local_time(stamp)
 ;; L2: side(int), price(real), quantity(real), time(stamp), product(string)
 (de rdb-init-tables ()
   ;; Ticker table
@@ -77,7 +79,9 @@
   (==> *rdb-ticker-table* add-column "bid" 'real)
   (==> *rdb-ticker-table* add-column "ask" 'real)
   (==> *rdb-ticker-table* add-column "side" 'string)
+  (==> *rdb-ticker-table* add-column "volume" 'real)
   (==> *rdb-ticker-table* add-column "time" 'stamp)
+  (==> *rdb-ticker-table* add-column "local_time" 'stamp)
 
   ;; L2 table
   (setq *rdb-l2-table* (new DataTable))
@@ -95,20 +99,25 @@
 #? (rdb-insert-ticker <data>)
 ;; Append one ticker alist as a row in *rdb-ticker-table*.
 ;; <data> is the ticker alist: (("product" . "BTC-USD") ("price" . 50050.5) ...)
+;; Stamps local_time with (timestamp-now) at receive time.
 (de rdb-insert-ticker (data)
   (let ((product (cdr (assoc "product" data)))
         (price (cdr (assoc "price" data)))
         (bid (cdr (assoc "best_bid" data)))
         (ask (cdr (assoc "best_ask" data)))
         (side (cdr (assoc "side" data)))
-        (time (cdr (assoc "time" data))) )
+        (volume (cdr (assoc "volume" data)))
+        (time (cdr (assoc "time" data)))
+        (local-time (timestamp-now)) )
     (==> *rdb-ticker-table* append-row
          (list (or product "")
                (or price 0)
                (or bid 0)
                (or ask 0)
                (or side "")
-               (or time 0) ))
+               (or volume 0)
+               (or time 0)
+               local-time ))
     (setq *rdb-total-tickers* (1+ *rdb-total-tickers*)) ) )
 
 

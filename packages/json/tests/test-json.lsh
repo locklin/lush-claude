@@ -237,6 +237,7 @@
                       "\"best_bid\":\"50050.00\","
                       "\"best_ask\":\"50051.00\","
                       "\"side\":\"sell\","
+                      "\"last_size\":\"0.01234\","
                       "\"time\":\"2024-06-15T14:30:05.500000Z\"}"))
          (prices (double-matrix 10))
          (best-bids (double-matrix 10))
@@ -244,9 +245,10 @@
          (side-codes (int-matrix 10))
          (timestamps (long-matrix 10))
          (product-codes (int-matrix 10))
+         (volumes (double-matrix 10))
          (pt (_json-build-product-table '("BTC-USD" "ETH-USD")))
          (rc (json-parse-ticker msg prices best-bids best-asks side-codes
-                                timestamps product-codes 0
+                                timestamps product-codes volumes 0
                                 (car pt) (cadr pt) (caddr pt))) )
 
     (test-equal "ticker: return code" rc 1)
@@ -255,6 +257,7 @@
     (test-approx "ticker: best_ask" (best-asks 0) 50051.00 0.01)
     (test-equal "ticker: side sell" (side-codes 0) 1)
     (test-equal "ticker: product BTC-USD" (product-codes 0) 0)
+    (test-approx "ticker: volume" (volumes 0) 0.01234 0.00001)
     (test-check "ticker: timestamp not null"
       (<> (timestamps 0) *td-stamp-null*) )
   )

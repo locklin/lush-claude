@@ -57,7 +57,7 @@
 ;; {<see> (json-parse <string>)}
 ;; {<see> (json-msg-type <string>)}
 ;; {<see> (json-parse-l2update <string> <side-codes> <prices> <quantities> <timestamps> <product-codes> <offset> <product-buf> <product-offsets> <n-products>)}
-;; {<see> (json-parse-ticker <string> <prices> <best-bids> <best-asks> <side-codes> <timestamps> <product-codes> <offset> <product-buf> <product-offsets> <n-products>)}
+;; {<see> (json-parse-ticker <string> <prices> <best-bids> <best-asks> <side-codes> <timestamps> <product-codes> <volumes> <offset> <product-buf> <product-offsets> <n-products>)}
 ;; {<see> (json-l2-make-table <n-rows> <side-codes> <prices> <quantities> <timestamps> <product-codes> <product-strings>)}
 
 
@@ -187,12 +187,13 @@
 (de _json-parse-ticker-inner (json-str len-val
                               prices best-bids best-asks
                               side-codes timestamps product-codes
+                              volumes
                               offset-val
                               product-buf product-offsets n-products-val)
   ((-str-) json-str)
   ((-int-) len-val offset-val n-products-val)
   ((-idx1- (-int-)) side-codes product-codes product-offsets)
-  ((-idx1- (-double-)) prices best-bids best-asks)
+  ((-idx1- (-double-)) prices best-bids best-asks volumes)
   ((-idx1- (-long-)) timestamps)
   ((-idx1- (-ubyte-)) product-buf)
   (let ((rc 0))
@@ -203,6 +204,7 @@
          IDX_PTR($best_asks, double),
          IDX_PTR($side_codes, int),
          IDX_PTR($timestamps, long long), IDX_PTR($product_codes, int),
+         IDX_PTR($volumes, double),
          $offset_val,
          IDX_PTR($product_buf, unsigned char),
          IDX_PTR($product_offsets, int), $n_products_val); #}
@@ -465,7 +467,7 @@
     rc ) )
 
 
-#? (json-parse-ticker <string> <prices> <best-bids> <best-asks> <side-codes> <timestamps> <product-codes> <offset> <product-buf> <product-offsets> <n-products>)
+#? (json-parse-ticker <string> <prices> <best-bids> <best-asks> <side-codes> <timestamps> <product-codes> <volumes> <offset> <product-buf> <product-offsets> <n-products>)
 ;; Parse a Coinbase ticker message directly into pre-allocated
 ;; column arrays at the given write offset.
 ;;
@@ -484,6 +486,8 @@
 ;; {<li> <timestamps>: long idx1.  Receives the message timestamp as
 ;; int64 microseconds since epoch.}
 ;; {<li> <product-codes>: int idx1.  Receives the integer product code.}
+;; {<li> <volumes>: double idx1.  Receives the last trade size
+;; (Coinbase <last_size> field).  Used for VWAP computation.}
 ;; {<li> <offset>: integer write position in each array.}
 ;; {<li> <product-buf>, <product-offsets>, <n-products>: product string
 ;; table created by {<b> _json-build-product-table}.}
@@ -495,16 +499,17 @@
 ;; {<code>
 ;;  {"type":"ticker","product_id":"BTC-USD",
 ;;   "price":"50050.50","best_bid":"50050.00","best_ask":"50051.00",
-;;   "side":"sell","time":"2024-06-15T14:30:05.500000Z"}
+;;   "side":"sell","last_size":"0.01234",
+;;   "time":"2024-06-15T14:30:05.500000Z"}
 ;; </code>}
 ;; {<see> (json-msg-type <string>)}
 ;; {<see> (_json-build-product-table <product-list>)}
 (de json-parse-ticker (s prices best-bids best-asks side-codes timestamps
-                       product-codes offset product-buf product-offsets
+                       product-codes volumes offset product-buf product-offsets
                        n-products)
   (let ((rc (_json-parse-ticker-inner s (len s)
               prices best-bids best-asks side-codes timestamps product-codes
-              offset product-buf product-offsets n-products)))
+              volumes offset product-buf product-offsets n-products)))
     (when (< rc 0)
       (error "json-parse-ticker" "failed to parse ticker" s) )
     rc ) )

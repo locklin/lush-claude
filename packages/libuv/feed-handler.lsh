@@ -82,6 +82,7 @@
 (defvar *fh-tk-sides* ())      ;; int-matrix: 0=buy, 1=sell
 (defvar *fh-tk-timestamps* ()) ;; long-matrix: microseconds since epoch
 (defvar *fh-tk-products* ())   ;; int-matrix: product code index
+(defvar *fh-tk-volumes* ())    ;; double-matrix: last trade size (for VWAP)
 
 ;; Statistics
 (defvar *fh-stats-events* 0)   ;; total events processed
@@ -175,6 +176,7 @@
   (setq *fh-tk-sides* (int-matrix 16))
   (setq *fh-tk-timestamps* (long-matrix 16))
   (setq *fh-tk-products* (int-matrix 16))
+  (setq *fh-tk-volumes* (double-matrix 16))
   (printf "feed-handler: column buffers initialized for %d products\n"
           (length products)) )
 
@@ -252,6 +254,7 @@
                  (rc (json-parse-ticker msg
                        *fh-tk-prices* *fh-tk-bids* *fh-tk-asks*
                        *fh-tk-sides* *fh-tk-timestamps* *fh-tk-products*
+                       *fh-tk-volumes*
                        0 (car pt) (cadr pt) (caddr pt))) )
             (when (> rc 0)
               (fh-broadcast
@@ -261,6 +264,7 @@
                         (cons "best_bid" (*fh-tk-bids* 0))
                         (cons "best_ask" (*fh-tk-asks* 0))
                         (cons "side" (if (= (*fh-tk-sides* 0) 0) "buy" "sell"))
+                        (cons "volume" (*fh-tk-volumes* 0))
                         (cons "time" (*fh-tk-timestamps* 0)) ) ) ) ) )
           ;; Fallback: general parse
           (fh-broadcast (list 'ticker (json-parse msg))) ) )

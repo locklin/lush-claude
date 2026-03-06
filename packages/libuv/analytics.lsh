@@ -15,8 +15,11 @@
 ;;; Per-product state alist:
 ;;;   ("BTC-USD" . (("prices" . (p1 p2 p3))
 ;;;                 ("times"  . (t1 t2 t3))
+;;;                 ("volumes" . (v1 v2 v3))
 ;;;                 ("sum"    . 600.0)          ;; running sum of prices
 ;;;                 ("sum-sq" . 140000.0)       ;; running sum of squared prices
+;;;                 ("sum-pv" . 12345.0)        ;; running sum of price*volume
+;;;                 ("sum-vol" . 2.5)           ;; running sum of volume
 ;;;                 ("bid"    . 67314.50)       ;; last bid
 ;;;                 ("ask"    . 67315.50)))     ;; last ask
 ;;;
@@ -38,6 +41,7 @@
 ;;.LI O(1) moving average via running sums (add-new / subtract-old).
 ;;.LI Bid-ask spread.
 ;;.LI Rolling volatility, min/max price, time-weighted average price (TWAP).
+;;.LI Volume-weighted average price (VWAP).
 ;;.PP
 ;; Results are stored in a DataTable and served via its own WireServer.
 ;;.VP
@@ -186,6 +190,16 @@
               (/ weighted-sum total-time) ) ) ) ) ) ) )
 
 
+#? (_ana-vwap <product>)
+;; Compute VWAP (volume-weighted average price) from running sums.
+;; VWAP = sum(price * volume) / sum(volume).
+;; Returns 0 if no volume data.
+(de _ana-vwap (product)
+  (let ((sum-vol (or (_ana-get product "sum-vol") 0)))
+    (if (<= sum-vol 0) 0
+      (/ (or (_ana-get product "sum-pv") 0) sum-vol) ) ) )
+
+
 ;; ============================================================
 ;; Table initialization
 ;; ============================================================
@@ -193,7 +207,8 @@
 #? (ana-init-table)
 ;; Create empty analytics DataTable with schema:
 ;; product(string), price(real), mavg(real), spread(real),
-;; volatility(real), min_price(real), max_price(real), twap(real), time(stamp)
+;; volatility(real), min_price(real), max_price(real), twap(real),
+;; vwap(real), time(stamp)
 (de ana-init-table ()
   (setq *ana-table* (new DataTable))
   (==> *ana-table* add-column "product" 'string)
@@ -204,6 +219,7 @@
   (==> *ana-table* add-column "min_price" 'real)
   (==> *ana-table* add-column "max_price" 'real)
   (==> *ana-table* add-column "twap" 'real)
+  (==> *ana-table* add-column "vwap" 'real)
   (==> *ana-table* add-column "time" 'stamp) )
 
 
@@ -211,42 +227,55 @@
 ;; Per-product update
 ;; ============================================================
 
-#? (ana-update-product <product> <price> <bid> <ask> <time>)
+#? (ana-update-product <product> <price> <bid> <ask> <volume> <time>)
 ;; Update per-product state with O(1) running-sum MA, compute all analytics,
 ;; append row to analytics table.
-;; 1. Push new price/time, add to running sums
+;; 1. Push new price/time/volume, add to running sums
 ;; 2. If length > window: pop oldest, subtract from running sums
-;; 3. Compute all analytics
+;; 3. Compute all analytics (including VWAP)
 ;; 4. Append row to *ana-table*
-(de ana-update-product (product price bid ask time)
+(de ana-update-product (product price bid ask volume time)
   ;; Get current state
   (let ((prices (_ana-get product "prices"))
         (times (_ana-get product "times"))
+        (volumes (_ana-get product "volumes"))
         (sum (or (_ana-get product "sum") 0))
-        (sum-sq (or (_ana-get product "sum-sq") 0)) )
+        (sum-sq (or (_ana-get product "sum-sq") 0))
+        (sum-pv (or (_ana-get product "sum-pv") 0))
+        (sum-vol (or (_ana-get product "sum-vol") 0)) )
 
-    ;; Append new price and time
+    ;; Append new price, time, and volume
     (setq prices (nconc1 prices price))
     (setq times (nconc1 times time))
+    (setq volumes (nconc1 volumes volume))
 
     ;; Update running sums
     (setq sum (+ sum price))
     (setq sum-sq (+ sum-sq (* price price)))
+    (setq sum-pv (+ sum-pv (* price volume)))
+    (setq sum-vol (+ sum-vol volume))
 
     ;; Trim to window size if needed
     (while (> (length prices) *ana-window*)
       (let ((old-price (car prices))
-            (old-time (car times)) )
+            (old-time (car times))
+            (old-vol (car volumes)) )
         (setq sum (- sum old-price))
         (setq sum-sq (- sum-sq (* old-price old-price)))
+        (setq sum-pv (- sum-pv (* old-price old-vol)))
+        (setq sum-vol (- sum-vol old-vol))
         (setq prices (cdr prices))
-        (setq times (cdr times)) ) )
+        (setq times (cdr times))
+        (setq volumes (cdr volumes)) ) )
 
     ;; Store updated state
     (_ana-set product "prices" prices)
     (_ana-set product "times" times)
+    (_ana-set product "volumes" volumes)
     (_ana-set product "sum" sum)
     (_ana-set product "sum-sq" sum-sq)
+    (_ana-set product "sum-pv" sum-pv)
+    (_ana-set product "sum-vol" sum-vol)
     (_ana-set product "bid" bid)
     (_ana-set product "ask" ask)
 
@@ -257,11 +286,12 @@
           (vol (_ana-volatility product))
           (minp (_ana-min-price product))
           (maxp (_ana-max-price product))
-          (twap (_ana-twap product)) )
+          (twap (_ana-twap product))
+          (vwap (_ana-vwap product)) )
 
       ;; Append row to analytics table
       (==> *ana-table* append-row
-           (list product price mavg spread vol minp maxp twap time) )
+           (list product price mavg spread vol minp maxp twap vwap time) )
 
       ;; Update counter
       (setq *ana-total-updates* (1+ *ana-total-updates*)) ) ) )
@@ -274,7 +304,7 @@
 #? (ana-poll)
 ;; Query RDB for new ticker rows via wire-call, process each.
 ;; Uses high-water mark to fetch only new rows.
-;; Now extracts bid and ask in addition to product, price, time.
+;; Extracts product, price, bid, ask, volume, time.
 (de ana-poll ()
   (let ((packed (wire-call *ana-rdb-conn* (list "rows-from" "ticker" *ana-ticker-hwm*))))
     (when (and (consp packed) (= (car packed) 'datatable))
@@ -286,8 +316,9 @@
                     (price (==> dt get r "price"))
                     (bid (==> dt get r "bid"))
                     (ask (==> dt get r "ask"))
+                    (volume (==> dt get r "volume"))
                     (time (==> dt get r "time")) )
-                (ana-update-product product price bid ask time) ) )
+                (ana-update-product product price bid ask volume time) ) )
             ;; Advance high-water mark
             (setq *ana-ticker-hwm* (+ *ana-ticker-hwm* new-rows)) ) ) ) ) ) )
 
@@ -430,7 +461,22 @@
                 (cons "min_price" (_ana-min-price product))
                 (cons "max_price" (_ana-max-price product))
                 (cons "twap" (_ana-twap product))
+                (cons "vwap" (_ana-vwap product))
                 (cons "count" (length prices)) ) ) ) ) )
+
+   ;; ("vwap" product) -- current VWAP value for a product
+   ((and (consp expr) (= (car expr) "vwap"))
+    (let ((product (cadr expr)))
+      (_ana-vwap product) ) )
+
+   ;; ("vwap-all") -- alist of all products -> current VWAP value
+   ((and (consp expr) (= (car expr) "vwap-all"))
+    (let ((result ()))
+      (each ((entry *ana-products*))
+        (let ((pname (car entry)))
+          (setq result (nconc1 result
+            (cons pname (_ana-vwap pname)) )) ) )
+      result ) )
 
    ;; Unknown query
    (t (sprintf "unknown query: %l" expr)) ) )

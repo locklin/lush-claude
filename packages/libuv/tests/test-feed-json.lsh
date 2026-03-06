@@ -47,7 +47,8 @@
          (tk-asks (double-matrix 16))
          (tk-sides (int-matrix 16))
          (tk-timestamps (long-matrix 16))
-         (tk-products (int-matrix 16)) )
+         (tk-products (int-matrix 16))
+         (tk-volumes (double-matrix 16)) )
 
     ;; Collect messages by type
     (let ((msg-types ())          ;; list of type symbols seen
@@ -74,6 +75,7 @@
                 (let ((rc (json-parse-ticker msg
                             tk-prices tk-bids tk-asks
                             tk-sides tk-timestamps tk-products
+                            tk-volumes
                             0 pbuf poff nprod)))
                   (when (> rc 0)
                     (setq ticker-parsed
