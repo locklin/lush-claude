@@ -1,0 +1,231 @@
+;;; zmq-gateway.lsh -- ZMQ Gateway process
+;;;
+;;; Unified query gateway: ROUTER frontend for REPL clients, 4 DEALER
+;;; backend connections to RDB, HDB Reader, Analytics, and HDB Writer.
+;;; Routes queries based on content (smart routing) or explicit prefix.
+
+(libload "zmq/zmq-serde")
+
+#? *** ZMQ Gateway: Unified Query Router
+;; ZMQ-based gateway with a ROUTER frontend for client queries and
+;; DEALER backend connections to RDB, HDB Reader, Analytics, and
+;; HDB Writer.
+;;.PP
+;; Features:
+;; {<ul>
+;; {<li> Explicit routing via {<b> ("rdb" ...)}, {<b> ("hdb" ...)},
+;; {<b> ("hdbw" ...)}, {<b> ("ana" ...)} prefixes.}
+;; {<li> Smart routing: auto-detects backend from query pattern.}
+;; }
+;;.SEE (zmq-gw-start <gw-port> <rdb-port> <hdb-port> <ana-port> <hdbw-port>)
+
+;; ============================================================
+;; ZMQ Gateway state
+;; ============================================================
+
+(defvar *zmq-gw-ctx* ())
+(defvar *zmq-gw-frontend* ())      ;; ROUTER socket for clients
+(defvar *zmq-gw-rdb-dealer* ())    ;; DEALER to RDB
+(defvar *zmq-gw-hdb-dealer* ())    ;; DEALER to HDB Reader
+(defvar *zmq-gw-ana-dealer* ())    ;; DEALER to Analytics
+(defvar *zmq-gw-hdbw-dealer* ())   ;; DEALER to HDB Writer
+(defvar *zmq-gw-running* ())
+(defvar *zmq-gw-total-queries* 0)
+(defvar *zmq-gw-start-time* 0)
+
+
+;; ============================================================
+;; Smart routing
+;; ============================================================
+
+(de _zmq-gw-smart-route (expr)
+  (let ((cmd (if (stringp expr) expr
+               (if (consp expr) (car expr) ()) )))
+    (cond
+     ;; HDB Reader-specific
+     ((= cmd "dates") "hdb")
+     ((= cmd "refresh") "hdb")
+     ((= cmd "range") "hdb")
+     ((= cmd "range-where") "hdb")
+     ((and (consp expr) (= cmd "meta")) "hdb")
+     ;; HDB Writer-specific
+     ((= cmd "flush") "hdbw")
+     ;; Analytics-specific
+     ((= cmd "mavg") "ana")
+     ((= cmd "mavg-all") "ana")
+     ((= cmd "analytics-all") "ana")
+     ((= cmd "vwap") "ana")
+     ((= cmd "vwap-all") "ana")
+     ;; Default to RDB for common queries
+     ((= cmd "tables") "rdb")
+     ((= cmd "count") "rdb")
+     ((= cmd "snapshot") "rdb")
+     ((= cmd "last") "rdb")
+     ((= cmd "where") "rdb")
+     ((= cmd "rows-from") "rdb")
+     ;; No match
+     (t ()) ) ) )
+
+
+;; ============================================================
+;; Backend call (DEALER round-trip)
+;; ============================================================
+
+(de _zmq-gw-call (dealer query)
+  (zmq-query-send dealer query)
+  ;; Poll for reply with timeout
+  (zmq-poll-set-socket 0 dealer *zmq-pollin*)
+  (let ((rc (zmq-poll 1 5000)))
+    (if (and (> rc 0) (zmq-poll-ready 0))
+      (zmq-query-recv dealer)
+      "timeout: backend did not respond" ) ) )
+
+
+;; ============================================================
+;; Query dispatch
+;; ============================================================
+
+(de zmq-gw-handle-query (expr)
+  (setq *zmq-gw-total-queries* (1+ *zmq-gw-total-queries*))
+  (cond
+   ;; Gateway health check
+   ((= expr "ping") "pong")
+
+   ;; Backend status
+   ((= expr "backends")
+    (let ((check (lambda (name dealer)
+            (if dealer
+              (cons name
+                (let ((r (_zmq-gw-call dealer "ping")))
+                  (if (= r "pong") "connected" "unreachable") ) )
+              (cons name "not configured") ) )))
+      (list (check "rdb" *zmq-gw-rdb-dealer*)
+            (check "hdb" *zmq-gw-hdb-dealer*)
+            (check "ana" *zmq-gw-ana-dealer*)
+            (check "hdbw" *zmq-gw-hdbw-dealer*) ) ) )
+
+   ;; Gateway stats
+   ((= expr "stats")
+    (list (cons "queries" *zmq-gw-total-queries*)
+          (cons "uptime" (- (_wire-time-seconds) *zmq-gw-start-time*))) )
+
+   ;; Explicit routing
+   ((and (consp expr) (= (car expr) "rdb"))
+    (_zmq-gw-call *zmq-gw-rdb-dealer* (cadr expr)) )
+   ((and (consp expr) (= (car expr) "hdb"))
+    (_zmq-gw-call *zmq-gw-hdb-dealer* (cadr expr)) )
+   ((and (consp expr) (= (car expr) "ana"))
+    (_zmq-gw-call *zmq-gw-ana-dealer* (cadr expr)) )
+   ((and (consp expr) (= (car expr) "hdbw"))
+    (_zmq-gw-call *zmq-gw-hdbw-dealer* (cadr expr)) )
+
+   ;; Smart routing
+   (t
+    (let ((backend (_zmq-gw-smart-route expr)))
+      (if backend
+        (let ((dealer (cond ((= backend "rdb") *zmq-gw-rdb-dealer*)
+                            ((= backend "hdb") *zmq-gw-hdb-dealer*)
+                            ((= backend "ana") *zmq-gw-ana-dealer*)
+                            ((= backend "hdbw") *zmq-gw-hdbw-dealer*)
+                            (t ()) )))
+          (if dealer
+            (_zmq-gw-call dealer expr)
+            (sprintf "no dealer for backend: %s" backend) ) )
+        (sprintf "unknown query: %l" expr) ) ) ) ) )
+
+
+;; ============================================================
+;; Main entry point
+;; ============================================================
+
+#? (zmq-gw-start <gw-port> <rdb-port> <hdb-port> <ana-port> <hdbw-port>)
+;; Start the ZMQ gateway.
+;; <gw-port>: ROUTER socket port for client queries (e.g. 19974).
+;; <rdb-port>: RDB ROUTER port to connect DEALER (e.g. 19971).
+;; <hdb-port>: HDB Reader ROUTER port (e.g. 19972).
+;; <ana-port>: Analytics ROUTER port (e.g. 19973).
+;; <hdbw-port>: HDB Writer ROUTER port (e.g. 19975), or () to skip.
+;; Blocks until interrupted.
+(de zmq-gw-start (gw-port rdb-port hdb-port ana-port hdbw-port)
+  (printf "\n=== ZMQ Gateway starting ===\n")
+  (printf "frontend: tcp://*:%d\n" gw-port)
+  (printf "backends: rdb=%d hdb=%d ana=%d hdbw=%l\n\n"
+          rdb-port hdb-port ana-port hdbw-port)
+
+  ;; Reset state
+  (setq *zmq-gw-running* t)
+  (setq *zmq-gw-total-queries* 0)
+  (setq *zmq-gw-start-time* (_wire-time-seconds))
+
+  ;; Create ZMQ context
+  (setq *zmq-gw-ctx* (zmq-ctx-new))
+
+  ;; Frontend ROUTER for client queries
+  (setq *zmq-gw-frontend* (zmq-socket *zmq-gw-ctx* *zmq-router*))
+  (zmq-set-linger *zmq-gw-frontend* 0)
+  (zmq-bind *zmq-gw-frontend* (sprintf "tcp://*:%d" gw-port))
+  (printf "zmq-gw: frontend ROUTER on port %d\n" gw-port)
+
+  ;; Backend DEALER connections
+  (setq *zmq-gw-rdb-dealer* (zmq-socket *zmq-gw-ctx* *zmq-dealer*))
+  (zmq-set-linger *zmq-gw-rdb-dealer* 0)
+  (zmq-set-identity *zmq-gw-rdb-dealer* "gw-rdb")
+  (zmq-connect *zmq-gw-rdb-dealer* (sprintf "tcp://127.0.0.1:%d" rdb-port))
+  (printf "zmq-gw: DEALER connected to RDB on port %d\n" rdb-port)
+
+  (setq *zmq-gw-hdb-dealer* (zmq-socket *zmq-gw-ctx* *zmq-dealer*))
+  (zmq-set-linger *zmq-gw-hdb-dealer* 0)
+  (zmq-set-identity *zmq-gw-hdb-dealer* "gw-hdb")
+  (zmq-connect *zmq-gw-hdb-dealer* (sprintf "tcp://127.0.0.1:%d" hdb-port))
+  (printf "zmq-gw: DEALER connected to HDB on port %d\n" hdb-port)
+
+  (setq *zmq-gw-ana-dealer* (zmq-socket *zmq-gw-ctx* *zmq-dealer*))
+  (zmq-set-linger *zmq-gw-ana-dealer* 0)
+  (zmq-set-identity *zmq-gw-ana-dealer* "gw-ana")
+  (zmq-connect *zmq-gw-ana-dealer* (sprintf "tcp://127.0.0.1:%d" ana-port))
+  (printf "zmq-gw: DEALER connected to Analytics on port %d\n" ana-port)
+
+  ;; HDB Writer DEALER (optional)
+  (setq *zmq-gw-hdbw-dealer* ())
+  (when hdbw-port
+    (setq *zmq-gw-hdbw-dealer* (zmq-socket *zmq-gw-ctx* *zmq-dealer*))
+    (zmq-set-linger *zmq-gw-hdbw-dealer* 0)
+    (zmq-set-identity *zmq-gw-hdbw-dealer* "gw-hdbw")
+    (zmq-connect *zmq-gw-hdbw-dealer* (sprintf "tcp://127.0.0.1:%d" hdbw-port))
+    (printf "zmq-gw: DEALER connected to HDB Writer on port %d\n" hdbw-port) )
+
+  ;; Verify backends
+  (printf "zmq-gw: pinging backends...\n")
+  (let ((rdb-pong (_zmq-gw-call *zmq-gw-rdb-dealer* "ping"))
+        (hdb-pong (_zmq-gw-call *zmq-gw-hdb-dealer* "ping"))
+        (ana-pong (_zmq-gw-call *zmq-gw-ana-dealer* "ping"))
+        (hdbw-pong (if *zmq-gw-hdbw-dealer*
+                     (_zmq-gw-call *zmq-gw-hdbw-dealer* "ping") "n/a")) )
+    (printf "zmq-gw: ping results: rdb=%l hdb=%l ana=%l hdbw=%l\n"
+            rdb-pong hdb-pong ana-pong hdbw-pong) )
+
+  ;; Configure poll for frontend ROUTER
+  (zmq-poll-set-socket 0 *zmq-gw-frontend* *zmq-pollin*)
+
+  (printf "zmq-gw: entering serve loop\n\n")
+
+  ;; Serve loop
+  (while *zmq-gw-running*
+    (let ((rc (zmq-poll 1 100)))
+      (when (and (> rc 0) (zmq-poll-ready 0))
+        ;; Receive query from client
+        (let ((query (zmq-router-recv-query *zmq-gw-frontend*)))
+          (when query
+            (let ((result (zmq-gw-handle-query query)))
+              (zmq-router-send-reply *zmq-gw-frontend* result) ) ) ) ) ) )
+
+  ;; Shutdown
+  (printf "\nzmq-gw: shutting down...\n")
+  (zmq-close *zmq-gw-rdb-dealer*)
+  (zmq-close *zmq-gw-hdb-dealer*)
+  (zmq-close *zmq-gw-ana-dealer*)
+  (when *zmq-gw-hdbw-dealer*
+    (zmq-close *zmq-gw-hdbw-dealer*) )
+  (zmq-close *zmq-gw-frontend*)
+  (zmq-ctx-term *zmq-gw-ctx*)
+  (printf "zmq-gw: stopped (%d queries served)\n" *zmq-gw-total-queries*) )

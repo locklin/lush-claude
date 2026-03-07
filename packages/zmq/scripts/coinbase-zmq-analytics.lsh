@@ -1,0 +1,11 @@
+;;; coinbase-zmq-analytics.lsh -- ZMQ Coinbase Analytics entry point
+;;;
+;;; Subscribes directly to FH PUB on port 19970 (ticker only),
+;;; serves analytics queries on port 19973.
+;;;
+;;; Usage (from lush-claude root):
+;;;   ./src/lush packages/zmq/scripts/coinbase-zmq-analytics.lsh
+
+(libload "zmq/zmq-analytics")
+
+(zmq-ana-start 19970 19973 20)

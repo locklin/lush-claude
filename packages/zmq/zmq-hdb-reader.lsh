@@ -1,0 +1,85 @@
+;;; zmq-hdb-reader.lsh -- ZMQ HDB Reader process
+;;;
+;;; Loads historical data from date-partitioned splayed format and
+;;; serves queries via a ZMQ ROUTER socket.  No subscriptions needed —
+;;; HDB Reader only reads from disk.
+;;;
+;;; Reuses hdbr-handle-query and hdbr-discover from libuv/hdb-reader.lsh.
+
+(libload "zmq/zmq-serde")
+(libload "wire/wire-serialize")
+(libload "datatable/datatable")
+(libload "columnardb/columnardb")
+
+;; Load HDB reader data functions without auto-starting
+(defvar *hdbr-no-autostart* t)
+(libload "libuv/hdb-reader")
+
+#? *** ZMQ HDB Reader: Historical Database
+;; ZMQ-based HDB Reader that serves historical data queries via
+;; a ROUTER socket.  Reads date-partitioned splayed format from disk.
+;;.PP
+;; Reuses {<b> hdbr-handle-query} and {<b> hdbr-discover} from the
+;; libuv HDB Reader.
+;;.SEE (zmq-hdbr-start <port> <hdb-root>)
+
+;; ============================================================
+;; ZMQ HDB Reader state
+;; ============================================================
+
+(defvar *zmq-hdbr-ctx* ())
+(defvar *zmq-hdbr-router* ())
+(defvar *zmq-hdbr-running* ())
+
+;; ============================================================
+;; Main entry point
+;; ============================================================
+
+#? (zmq-hdbr-start <port> <hdb-root>)
+;; Start the ZMQ HDB Reader.
+;; <port>: ROUTER socket port for serving queries (e.g. 19972).
+;; <hdb-root>: base directory containing date-partitioned data.
+;; Blocks until interrupted.
+(de zmq-hdbr-start (port hdb-root)
+  (printf "\n=== ZMQ HDB Reader starting ===\n")
+  (printf "HDB root: %s\n" hdb-root)
+  (printf "query server: tcp://*:%d\n\n" port)
+
+  ;; Set state
+  (setq *zmq-hdbr-running* t)
+  (setq *hdbr-root* hdb-root)
+  (setq *hdbr-cache* ())
+  (setq *hdbr-total-queries* 0)
+  (setq *hdbr-start-time* (_wire-time-seconds))
+
+  ;; Discover date partitions
+  (hdbr-discover)
+
+  ;; Create ZMQ context and socket
+  (setq *zmq-hdbr-ctx* (zmq-ctx-new))
+
+  ;; ROUTER socket: serve queries
+  (setq *zmq-hdbr-router* (zmq-socket *zmq-hdbr-ctx* *zmq-router*))
+  (zmq-set-linger *zmq-hdbr-router* 0)
+  (zmq-bind *zmq-hdbr-router* (sprintf "tcp://*:%d" port))
+  (printf "zmq-hdbr: query server listening on port %d\n" port)
+
+  ;; Configure poll item
+  (zmq-poll-set-socket 0 *zmq-hdbr-router* *zmq-pollin*)
+
+  (printf "zmq-hdbr: entering serve loop\n\n")
+
+  ;; Serve loop
+  (while *zmq-hdbr-running*
+    (let ((rc (zmq-poll 1 100)))
+      (when (and (> rc 0) (zmq-poll-ready 0))
+        (let ((query (zmq-router-recv-query *zmq-hdbr-router*)))
+          (when query
+            (let ((result (hdbr-handle-query query)))
+              (zmq-router-send-reply *zmq-hdbr-router* result) ) ) ) ) ) )
+
+  ;; Shutdown
+  (printf "\nzmq-hdbr: shutting down...\n")
+  (zmq-close *zmq-hdbr-router*)
+  (zmq-ctx-term *zmq-hdbr-ctx*)
+  (printf "zmq-hdbr: stopped (%d queries served)\n" *hdbr-total-queries*) )

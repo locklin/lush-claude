@@ -1,0 +1,124 @@
+;;; zmq-analytics.lsh -- ZMQ Analytics process
+;;;
+;;; Subscribes directly to the feed handler's PUB socket (topic: "ticker")
+;;; and computes per-product analytics in real-time.  Serves queries via
+;;; a ROUTER socket.
+;;;
+;;; Key improvement over libuv version: subscribes directly to FH
+;;; (not through RDB), eliminating polling latency.
+
+(libload "zmq/zmq-serde")
+(libload "wire/wire-serialize")
+(libload "datatable/datatable")
+
+;; Load analytics data functions without auto-starting
+(defvar *ana-no-autostart* t)
+(libload "libuv/analytics")
+
+#? *** ZMQ Analytics: Real-time CEP
+;; ZMQ-based analytics process that subscribes directly to the
+;; feed handler's PUB socket (topic: "ticker").  Computes per-product
+;; moving average, spread, volatility, TWAP, and VWAP in real-time.
+;;.PP
+;; Key improvement: subscribes directly to FH, not through RDB.
+;; This eliminates the polling interval and delivers lower-latency analytics.
+;;.SEE (zmq-ana-start <fh-pub-port> <ana-port> <window>)
+
+;; ============================================================
+;; ZMQ Analytics state
+;; ============================================================
+
+(defvar *zmq-ana-ctx* ())
+(defvar *zmq-ana-sub* ())
+(defvar *zmq-ana-router* ())
+(defvar *zmq-ana-running* ())
+(defvar *zmq-ana-ticker-count* 0)
+
+;; ============================================================
+;; Main entry point
+;; ============================================================
+
+#? (zmq-ana-start <fh-pub-port> <ana-port> <window>)
+;; Start the ZMQ analytics process.
+;; <fh-pub-port>: feed handler PUB socket port (e.g. 19970).
+;; <ana-port>: ROUTER socket port for serving analytics queries (e.g. 19973).
+;; <window>: moving average window size.
+;; Blocks until interrupted.
+(de zmq-ana-start (fh-pub-port ana-port window)
+  (printf "\n=== ZMQ Analytics starting ===\n")
+  (printf "feed handler PUB: tcp://127.0.0.1:%d\n" fh-pub-port)
+  (printf "analytics server: tcp://*:%d\n" ana-port)
+  (printf "window size: %d\n\n" window)
+
+  ;; Reset state
+  (setq *zmq-ana-running* t)
+  (setq *zmq-ana-ticker-count* 0)
+  (setq *ana-window* window)
+  (setq *ana-products* ())
+  (setq *ana-total-updates* 0)
+  (setq *ana-total-queries* 0)
+  (setq *ana-start-time* (_wire-time-seconds))
+
+  ;; Initialize analytics table
+  (ana-init-table)
+  (printf "zmq-ana: analytics table initialized\n")
+
+  ;; Create ZMQ context and sockets
+  (setq *zmq-ana-ctx* (zmq-ctx-new))
+
+  ;; SUB socket: subscribe to FH for ticker data only
+  (setq *zmq-ana-sub* (zmq-socket *zmq-ana-ctx* *zmq-sub*))
+  (zmq-set-linger *zmq-ana-sub* 0)
+  (zmq-connect *zmq-ana-sub* (sprintf "tcp://127.0.0.1:%d" fh-pub-port))
+  (zmq-subscribe *zmq-ana-sub* "ticker")
+  (printf "zmq-ana: subscribed to ticker\n")
+
+  ;; ROUTER socket: serve queries
+  (setq *zmq-ana-router* (zmq-socket *zmq-ana-ctx* *zmq-router*))
+  (zmq-set-linger *zmq-ana-router* 0)
+  (zmq-bind *zmq-ana-router* (sprintf "tcp://*:%d" ana-port))
+  (printf "zmq-ana: query server listening on port %d\n" ana-port)
+
+  ;; Configure poll items: 0=SUB, 1=ROUTER
+  (zmq-poll-set-socket 0 *zmq-ana-sub* *zmq-pollin*)
+  (zmq-poll-set-socket 1 *zmq-ana-router* *zmq-pollin*)
+
+  (printf "zmq-ana: entering main loop\n\n")
+
+  ;; Main event loop
+  (while *zmq-ana-running*
+    (let ((rc (zmq-poll 2 100)))
+      (when (> rc 0)
+        ;; Check SUB socket — ticker data from FH
+        (when (zmq-poll-ready 0)
+          (let ((msg (zmq-sub-recv *zmq-ana-sub*)))
+            (when (and msg (consp msg))
+              (let ((topic (car msg))
+                    (payload (cadr msg)) )
+                (when (and (= topic "ticker") (consp payload))
+                  (setq *zmq-ana-ticker-count* (1+ *zmq-ana-ticker-count*))
+                  ;; Extract fields from ticker alist
+                  (let ((product (cdr (assoc "product" payload)))
+                        (price (cdr (assoc "price" payload)))
+                        (bid (or (cdr (assoc "best_bid" payload)) 0))
+                        (ask (or (cdr (assoc "best_ask" payload)) 0))
+                        (volume (or (cdr (assoc "volume" payload)) 0))
+                        (time (or (cdr (assoc "time" payload)) (_wire-time-seconds))) )
+                    (when (and product price)
+                      (ana-update-product product price bid ask volume time) ) ) ) ) ) ) )
+
+        ;; Check ROUTER socket — client queries
+        (when (zmq-poll-ready 1)
+          (let ((query (zmq-router-recv-query *zmq-ana-router*)))
+            (when query
+              (let ((result (ana-handle-query query)))
+                (zmq-router-send-reply *zmq-ana-router* result) ) ) ) ) ) ) )
+
+  ;; Shutdown
+  (printf "\nzmq-ana: shutting down...\n")
+  (zmq-close *zmq-ana-sub*)
+  (zmq-close *zmq-ana-router*)
+  (zmq-ctx-term *zmq-ana-ctx*)
+  (printf "zmq-ana: stopped (%d tickers, %d updates, %d rows, %d queries)\n"
+          *zmq-ana-ticker-count* *ana-total-updates*
+          (==> *ana-table* num-rows) *ana-total-queries*) )

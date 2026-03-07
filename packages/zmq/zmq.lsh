@@ -1,0 +1,562 @@
+;;; zmq.lsh -- ZeroMQ bindings for Lush
+;;;
+;;; Two layers:
+;;;   1. DHC-compiled thin wrappers (_zmq-*) that bridge Lush types
+;;;      to the C functions in zmq-c.c.
+;;;   2. Interpreted high-level API (zmq-ctx-new, zmq-socket,
+;;;      zmq-bind, zmq-connect, zmq-send-bytes, zmq-recv-bytes, etc.)
+;;;
+;;; Follows the same pattern as libuv.lsh.
+
+(libload "zmq/zmq-config")
+
+#? *** ZeroMQ: Message Queue for Lush
+;; ZeroMQ (libzmq 4.x) bindings for Lush.  Provides PUB/SUB broadcast,
+;; ROUTER/DEALER request/reply, and {<b> zmq_poll} event multiplexing.
+;;.PP
+;; Two layers:
+;; {<ul>
+;; {<li> DHC-compiled thin wrappers ({<b> _zmq-*}) bridging Lush types to C.}
+;; {<li> Interpreted high-level API ({<b> zmq-*}) with error checking.}
+;; }
+;;.PP
+;; Quick example:
+;; {<code>
+;;  (libload "zmq/zmq")
+;;  (let ((ctx (zmq-ctx-new)))
+;;    (let ((pub (zmq-socket ctx *zmq-pub*)))
+;;      (zmq-bind pub "tcp://*:5555")
+;;      (zmq-send-string pub "hello world")
+;;      (zmq-close pub))
+;;    (zmq-ctx-term ctx))
+;; </code>}
+;;.SEE (zmq-ctx-new)
+;;.SEE (zmq-socket <ctx> <type>)
+;;.SEE (zmq-send-bytes <sock> <buf> <len> [<flags>])
+
+#? ** Constants
+
+#? *zmq-pub*
+;;.TYPE VAR
+;; PUB socket type.  Broadcasts messages to all connected SUB sockets.
+(defvar *zmq-pub*      1)
+
+#? *zmq-sub*
+;;.TYPE VAR
+;; SUB socket type.  Receives messages from a PUB socket.
+;; Must call {<b> zmq-subscribe} to set topic filter.
+(defvar *zmq-sub*      2)
+
+#? *zmq-dealer*
+;;.TYPE VAR
+;; DEALER socket type.  Sends requests to a ROUTER socket.
+(defvar *zmq-dealer*   5)
+
+#? *zmq-router*
+;;.TYPE VAR
+;; ROUTER socket type.  Receives requests with identity tracking.
+(defvar *zmq-router*   6)
+
+#? *zmq-pollin*
+;;.TYPE VAR
+;; Poll event: socket/fd is readable.
+(defvar *zmq-pollin*   1)
+
+#? *zmq-pollout*
+;;.TYPE VAR
+;; Poll event: socket/fd is writable.
+(defvar *zmq-pollout*  2)
+
+#? *zmq-sndmore*
+;;.TYPE VAR
+;; Send flag: more frames follow in this message.
+(defvar *zmq-sndmore*  2)
+
+#? *zmq-dontwait*
+;;.TYPE VAR
+;; Send/recv flag: non-blocking operation.
+(defvar *zmq-dontwait* 1)
+
+;; Socket option constants
+(defvar *zmq-opt-subscribe*     6)
+(defvar *zmq-opt-linger*       17)
+(defvar *zmq-opt-reconnect-ivl* 18)
+(defvar *zmq-opt-sndhwm*       23)
+(defvar *zmq-opt-rcvhwm*       24)
+(defvar *zmq-opt-identity*      5)
+
+
+#? ** Compiled Layer (DHC)
+
+;; ============================================================
+;; DHC-compiled wrappers (thin bridges to C)
+;; ============================================================
+
+;; ---- Context ----
+
+(de _zmq-ctx-new ()
+  (let ((rc 0))
+    ((-int-) rc)
+    #{ $rc = lush_zmq_ctx_new(); #}
+    rc ) )
+
+(de _zmq-ctx-term (ctx-id)
+  ((-int-) ctx-id)
+  (let ((rc 0))
+    ((-int-) rc)
+    #{ $rc = lush_zmq_ctx_term($ctx_id); #}
+    rc ) )
+
+;; ---- Socket ----
+
+(de _zmq-socket (ctx-id type)
+  ((-int-) ctx-id type)
+  (let ((rc 0))
+    ((-int-) rc)
+    #{ $rc = lush_zmq_socket($ctx_id, $type); #}
+    rc ) )
+
+(de _zmq-close (id)
+  ((-int-) id)
+  (let ((rc 0))
+    ((-int-) rc)
+    #{ $rc = lush_zmq_close($id); #}
+    rc ) )
+
+(de _zmq-bind (id endpoint)
+  ((-int-) id)
+  ((-str-) endpoint)
+  (let ((rc 0))
+    ((-int-) rc)
+    #{ $rc = lush_zmq_bind($id, $endpoint->data); #}
+    rc ) )
+
+(de _zmq-connect (id endpoint)
+  ((-int-) id)
+  ((-str-) endpoint)
+  (let ((rc 0))
+    ((-int-) rc)
+    #{ $rc = lush_zmq_connect($id, $endpoint->data); #}
+    rc ) )
+
+;; ---- Socket options ----
+
+(de _zmq-subscribe (id topic topiclen)
+  ((-int-) id topiclen)
+  ((-str-) topic)
+  (let ((rc 0))
+    ((-int-) rc)
+    #{ $rc = lush_zmq_subscribe($id, $topic->data, $topiclen); #}
+    rc ) )
+
+(de _zmq-unsubscribe (id topic topiclen)
+  ((-int-) id topiclen)
+  ((-str-) topic)
+  (let ((rc 0))
+    ((-int-) rc)
+    #{ $rc = lush_zmq_unsubscribe($id, $topic->data, $topiclen); #}
+    rc ) )
+
+(de _zmq-set-int-opt (id option val)
+  ((-int-) id option val)
+  (let ((rc 0))
+    ((-int-) rc)
+    #{ $rc = lush_zmq_set_int_opt($id, $option, $val); #}
+    rc ) )
+
+(de _zmq-set-identity (id identity idlen)
+  ((-int-) id idlen)
+  ((-str-) identity)
+  (let ((rc 0))
+    ((-int-) rc)
+    #{ $rc = lush_zmq_set_identity($id, $identity->data, $idlen); #}
+    rc ) )
+
+;; ---- I/O ----
+
+(de _zmq-send (id buf len flags)
+  ((-int-) id len flags)
+  ((-idx1- (-ubyte-)) buf)
+  (let ((rc 0))
+    ((-int-) rc)
+    #{ $rc = lush_zmq_send($id, IDX_PTR($buf, unsigned char), $len, $flags); #}
+    rc ) )
+
+(de _zmq-recv (id buf maxlen flags)
+  ((-int-) id maxlen flags)
+  ((-idx1- (-ubyte-)) buf)
+  (let ((rc 0))
+    ((-int-) rc)
+    #{ $rc = lush_zmq_recv($id, IDX_PTR($buf, unsigned char), $maxlen, $flags); #}
+    rc ) )
+
+(de _zmq-get-rcvmore (id)
+  ((-int-) id)
+  (let ((rc 0))
+    ((-int-) rc)
+    #{ $rc = lush_zmq_get_rcvmore($id); #}
+    rc ) )
+
+;; ---- ROUTER helpers ----
+
+(de _zmq-router-recv (id buf maxlen)
+  ((-int-) id maxlen)
+  ((-idx1- (-ubyte-)) buf)
+  (let ((rc 0))
+    ((-int-) rc)
+    #{ $rc = lush_zmq_router_recv($id, IDX_PTR($buf, unsigned char), $maxlen); #}
+    rc ) )
+
+(de _zmq-router-send (id buf len)
+  ((-int-) id len)
+  ((-idx1- (-ubyte-)) buf)
+  (let ((rc 0))
+    ((-int-) rc)
+    #{ $rc = lush_zmq_router_send($id, IDX_PTR($buf, unsigned char), $len); #}
+    rc ) )
+
+;; ---- Poll ----
+
+(de _zmq-poll-set-socket (idx sock-id events)
+  ((-int-) idx sock-id events)
+  (let ((rc 0))
+    ((-int-) rc)
+    #{ $rc = lush_zmq_poll_set_socket($idx, $sock_id, $events); #}
+    rc ) )
+
+(de _zmq-poll-set-fd (idx fd events)
+  ((-int-) idx fd events)
+  (let ((rc 0))
+    ((-int-) rc)
+    #{ $rc = lush_zmq_poll_set_fd($idx, $fd, $events); #}
+    rc ) )
+
+(de _zmq-poll-clear (idx)
+  ((-int-) idx)
+  (let ((rc 0))
+    ((-int-) rc)
+    #{ $rc = lush_zmq_poll_clear($idx); #}
+    rc ) )
+
+(de _zmq-poll-exec (nitems timeout-ms)
+  ((-int-) nitems timeout-ms)
+  (let ((rc 0))
+    ((-int-) rc)
+    #{ $rc = lush_zmq_poll_exec($nitems, $timeout_ms); #}
+    rc ) )
+
+(de _zmq-poll-revents (idx)
+  ((-int-) idx)
+  (let ((rc 0))
+    ((-int-) rc)
+    #{ $rc = lush_zmq_poll_revents($idx); #}
+    rc ) )
+
+;; ---- Error ----
+
+(de _zmq-errno ()
+  (let ((rc 0))
+    ((-int-) rc)
+    #{ $rc = lush_zmq_errno(); #}
+    rc ) )
+
+
+;; Compile all DHC wrappers
+(let ((dhc-make-lushflags
+       (concat dhc-make-lushflags " -I" (dirname file-being-loaded))))
+  (dhc-make-with-libs () t
+    #{ #include "zmq-c.h" #}
+    _zmq-ctx-new _zmq-ctx-term
+    _zmq-socket _zmq-close _zmq-bind _zmq-connect
+    _zmq-subscribe _zmq-unsubscribe _zmq-set-int-opt _zmq-set-identity
+    _zmq-send _zmq-recv _zmq-get-rcvmore
+    _zmq-router-recv _zmq-router-send
+    _zmq-poll-set-socket _zmq-poll-set-fd _zmq-poll-clear
+    _zmq-poll-exec _zmq-poll-revents
+    _zmq-errno ) )
+
+
+;; ============================================================
+;; Interpreted high-level API
+;; ============================================================
+
+;; Shared receive buffer (64KB — larger than typical messages)
+(defvar *zmq-recv-buf* (ubyte-matrix 65536))
+
+#? ** Context API
+
+#? (zmq-ctx-new)
+;; Create a new ZMQ context.
+;; Returns an integer context ID.
+;; Must be terminated with {<b> zmq-ctx-term} when done.
+;; {<see> (zmq-ctx-term <ctx>)}
+(de zmq-ctx-new ()
+  (let ((id (_zmq-ctx-new)))
+    (when (< id 0)
+      (error "zmq-ctx-new" "failed to create context" id) )
+    id ) )
+
+
+#? (zmq-ctx-term <ctx>)
+;; Terminate a ZMQ context and free resources.
+;; All sockets created from this context must be closed first.
+;; {<see> (zmq-close <sock>)}
+(de zmq-ctx-term (ctx)
+  (let ((rc (_zmq-ctx-term ctx)))
+    (when (< rc 0)
+      (error "zmq-ctx-term" "failed to terminate context" rc) )
+    () ) )
+
+
+#? ** Socket API
+
+#? (zmq-socket <ctx> <type>)
+;; Create a new ZMQ socket.
+;; <ctx>: context ID from {<b> zmq-ctx-new}.
+;; <type>: socket type constant ({<b> *zmq-pub*}, {<b> *zmq-sub*},
+;; {<b> *zmq-dealer*}, {<b> *zmq-router*}).
+;; Returns an integer socket ID.
+;; {<see> (zmq-close <sock>)}
+;; {<see> (zmq-bind <sock> <endpoint>)}
+;; {<see> (zmq-connect <sock> <endpoint>)}
+(de zmq-socket (ctx type)
+  (let ((id (_zmq-socket ctx type)))
+    (when (< id 0)
+      (error "zmq-socket" "failed to create socket" id) )
+    id ) )
+
+
+#? (zmq-close <sock>)
+;; Close a ZMQ socket.
+;; The socket ID is no longer valid after this call.
+(de zmq-close (sock)
+  (let ((rc (_zmq-close sock)))
+    (when (< rc 0)
+      (error "zmq-close" "failed to close socket" rc) )
+    () ) )
+
+
+#? (zmq-bind <sock> <endpoint>)
+;; Bind a socket to an endpoint.
+;; <endpoint>: address string, e.g. "tcp://*:5555" or "inproc://test".
+(de zmq-bind (sock endpoint)
+  (let ((rc (_zmq-bind sock endpoint)))
+    (when (< rc 0)
+      (error "zmq-bind" (concat "failed to bind: " endpoint) rc) )
+    () ) )
+
+
+#? (zmq-connect <sock> <endpoint>)
+;; Connect a socket to an endpoint.
+;; <endpoint>: address string, e.g. "tcp://localhost:5555".
+(de zmq-connect (sock endpoint)
+  (let ((rc (_zmq-connect sock endpoint)))
+    (when (< rc 0)
+      (error "zmq-connect" (concat "failed to connect: " endpoint) rc) )
+    () ) )
+
+
+#? ** Socket Options
+
+#? (zmq-subscribe <sock> <topic>)
+;; Subscribe a SUB socket to a topic.
+;; <topic>: topic prefix string.  Use "" to subscribe to all messages.
+;; {<see> (zmq-unsubscribe <sock> <topic>)}
+(de zmq-subscribe (sock topic)
+  (let ((rc (_zmq-subscribe sock topic (len topic))))
+    (when (< rc 0)
+      (error "zmq-subscribe" "failed to subscribe" rc) )
+    () ) )
+
+
+#? (zmq-unsubscribe <sock> <topic>)
+;; Unsubscribe a SUB socket from a topic.
+(de zmq-unsubscribe (sock topic)
+  (let ((rc (_zmq-unsubscribe sock topic (len topic))))
+    (when (< rc 0)
+      (error "zmq-unsubscribe" "failed to unsubscribe" rc) )
+    () ) )
+
+
+#? (zmq-set-linger <sock> <ms>)
+;; Set the linger period for socket shutdown.
+;; <ms>: milliseconds to wait for pending messages.  0 = discard immediately.
+(de zmq-set-linger (sock ms)
+  (let ((rc (_zmq-set-int-opt sock *zmq-opt-linger* ms)))
+    (when (< rc 0)
+      (error "zmq-set-linger" "failed to set linger" rc) )
+    () ) )
+
+
+#? (zmq-set-sndhwm <sock> <n>)
+;; Set the send high-water mark (max queued outbound messages).
+(de zmq-set-sndhwm (sock n)
+  (let ((rc (_zmq-set-int-opt sock *zmq-opt-sndhwm* n)))
+    (when (< rc 0)
+      (error "zmq-set-sndhwm" "failed to set sndhwm" rc) )
+    () ) )
+
+
+#? (zmq-set-rcvhwm <sock> <n>)
+;; Set the receive high-water mark (max queued inbound messages).
+(de zmq-set-rcvhwm (sock n)
+  (let ((rc (_zmq-set-int-opt sock *zmq-opt-rcvhwm* n)))
+    (when (< rc 0)
+      (error "zmq-set-rcvhwm" "failed to set rcvhwm" rc) )
+    () ) )
+
+
+#? (zmq-set-identity <sock> <identity>)
+;; Set the identity of a DEALER or ROUTER socket.
+;; <identity>: string identity (max 255 bytes).
+(de zmq-set-identity (sock identity)
+  (let ((rc (_zmq-set-identity sock identity (len identity))))
+    (when (< rc 0)
+      (error "zmq-set-identity" "failed to set identity" rc) )
+    () ) )
+
+
+#? ** Send/Receive API
+
+#? (zmq-send-bytes <sock> <buf> <len> [<flags>])
+;; Send raw bytes from a ubyte-matrix.
+;; <buf>: ubyte-matrix containing data to send.
+;; <len>: number of bytes to send.
+;; <flags>: optional flags (e.g. {<b> *zmq-sndmore*} for multipart).
+;; Returns number of bytes sent.
+(de zmq-send-bytes (sock buf len &optional flags)
+  (let ((f (if flags flags 0)))
+    (let ((rc (_zmq-send sock buf len f)))
+      (when (< rc 0)
+        (error "zmq-send-bytes" "send failed" rc) )
+      rc ) ) )
+
+
+#? (zmq-send-string <sock> <str> [<flags>])
+;; Send a string as a single ZMQ frame.
+;; <str>: string to send.
+;; <flags>: optional flags (e.g. {<b> *zmq-sndmore*}).
+(de zmq-send-string (sock str &optional flags)
+  (let ((slen (len str))
+        (f (if flags flags 0)) )
+    ;; Copy string bytes into a ubyte matrix
+    (let ((buf (ubyte-matrix slen)))
+      (for (i 0 (1- slen))
+        (buf i (asc (mid str (1+ i) 1))) )
+      (let ((rc (_zmq-send sock buf slen f)))
+        (when (< rc 0)
+          (error "zmq-send-string" "send failed" rc) )
+        rc ) ) ) )
+
+
+#? (zmq-recv-bytes <sock> [<flags>])
+;; Receive a ZMQ frame into the shared receive buffer.
+;; Returns the number of bytes received, or -1 on error/EAGAIN.
+;; The data is in {<b> *zmq-recv-buf*} (first N bytes).
+;; <flags>: optional flags (e.g. {<b> *zmq-dontwait*}).
+;; {<see> *zmq-recv-buf*}
+(de zmq-recv-bytes (sock &optional flags)
+  (let ((f (if flags flags 0)))
+    (_zmq-recv sock *zmq-recv-buf* 65536 f) ) )
+
+
+#? (zmq-recv-string <sock> [<flags>])
+;; Receive a ZMQ frame as a string.
+;; Returns the string, or () if EAGAIN/error.
+;; <flags>: optional flags (e.g. {<b> *zmq-dontwait*}).
+(de zmq-recv-string (sock &optional flags)
+  (let ((n (zmq-recv-bytes sock flags)))
+    (if (< n 0) ()
+      (let ((s ""))
+        (for (i 0 (1- n))
+          (setq s (concat s (chr (*zmq-recv-buf* i)))) )
+        s ) ) ) )
+
+
+#? (zmq-get-rcvmore <sock>)
+;; Check if more frames are available in the current multipart message.
+;; Returns <t> if more frames follow, <()> otherwise.
+(de zmq-get-rcvmore (sock)
+  (if (> (_zmq-get-rcvmore sock) 0) t ()) )
+
+
+#? ** ROUTER Helpers
+
+#? (zmq-router-recv <sock>)
+;; Receive a message on a ROUTER socket.
+;; The identity frame is stored in C; only the payload is returned.
+;; Returns the number of bytes received, or -1 on error.
+;; The data is in {<b> *zmq-recv-buf*}.
+;; Use {<b> zmq-router-send} to reply (identity is replayed automatically).
+;; {<see> (zmq-router-send <sock> <buf> <len>)}
+(de zmq-router-recv (sock)
+  (_zmq-router-recv sock *zmq-recv-buf* 65536) )
+
+
+#? (zmq-router-send <sock> <buf> <len>)
+;; Send a reply on a ROUTER socket.
+;; Uses the identity stored from the last {<b> zmq-router-recv}.
+;; <buf>: ubyte-matrix containing reply data.
+;; <len>: number of bytes to send.
+(de zmq-router-send (sock buf len)
+  (let ((rc (_zmq-router-send sock buf len)))
+    (when (< rc 0)
+      (error "zmq-router-send" "send failed" rc) )
+    rc ) )
+
+
+#? ** Poll API
+
+#? (zmq-poll-set-socket <idx> <sock> <events>)
+;; Configure a poll item to watch a ZMQ socket.
+;; <idx>: poll item index (0-15).
+;; <sock>: socket ID.
+;; <events>: event mask (e.g. {<b> *zmq-pollin*}).
+(de zmq-poll-set-socket (idx sock events)
+  (let ((rc (_zmq-poll-set-socket idx sock events)))
+    (when (< rc 0)
+      (error "zmq-poll-set-socket" "failed to set poll item" rc) )
+    () ) )
+
+
+#? (zmq-poll-set-fd <idx> <fd> <events>)
+;; Configure a poll item to watch a raw file descriptor.
+;; <idx>: poll item index (0-15).
+;; <fd>: file descriptor (integer).
+;; <events>: event mask.
+(de zmq-poll-set-fd (idx fd events)
+  (let ((rc (_zmq-poll-set-fd idx fd events)))
+    (when (< rc 0)
+      (error "zmq-poll-set-fd" "failed to set poll item" rc) )
+    () ) )
+
+
+#? (zmq-poll-clear <idx>)
+;; Clear a poll item.
+(de zmq-poll-clear (idx)
+  (_zmq-poll-clear idx) )
+
+
+#? (zmq-poll <nitems> <timeout-ms>)
+;; Poll for events on configured poll items.
+;; <nitems>: number of poll items to check (max 16).
+;; <timeout-ms>: timeout in milliseconds (-1 = block, 0 = immediate).
+;; Returns the number of items with events, or -1 on error.
+;; Use {<b> zmq-poll-revents} to check which items are ready.
+;; {<see> (zmq-poll-revents <idx>)}
+(de zmq-poll (nitems timeout-ms)
+  (_zmq-poll-exec nitems timeout-ms) )
+
+
+#? (zmq-poll-revents <idx>)
+;; Get the returned events for a poll item after {<b> zmq-poll}.
+;; Returns the event mask (check with {<b> *zmq-pollin*}, {<b> *zmq-pollout*}).
+(de zmq-poll-revents (idx)
+  (_zmq-poll-revents idx) )
+
+
+#? (zmq-poll-ready <idx>)
+;; Check if a poll item has POLLIN events after {<b> zmq-poll}.
+;; Returns <t> if ready for reading, <()> otherwise.
+(de zmq-poll-ready (idx)
+  (if (> (bitand (zmq-poll-revents idx) *zmq-pollin*) 0) t ()) )

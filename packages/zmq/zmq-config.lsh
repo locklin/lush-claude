@@ -1,0 +1,31 @@
+;;; zmq-config.lsh -- Compile ZMQ C wrapper into shared library
+;;;
+;;; Compiles zmq-c.c into a shared library linked against libzmq.so.5
+;;; (system-installed runtime library).  No dev headers needed — we
+;;; bundle our own minimal zmq-c.h.
+;;;
+;;; This file is loaded automatically by zmq.lsh and should not be
+;;; loaded directly.
+
+#? ** Build Configuration
+;; Compiles the Lush C wrapper layer into a shared library linked
+;; against libzmq.so.5 using {<b> lushmake}.
+;;
+;; The build produces a single shared library:
+;; {<ul>
+;; {<li> <zmq-c.so>: Lush-specific wrapper with handle table, ROUTER
+;; identity management, and static poll array, linked against
+;; libzmq.so.5.}
+;; }
+
+(libload "libc/make")
+
+(let ((dir (dirname file-being-loaded)))
+  (let ((lm (new lushmake))
+        (cc (or (getconf "CC") "gcc")))
+    (==> lm setflags " -O2 -fPIC")
+    (==> lm rule "zmq-c.o" '("zmq-c.c" "zmq-c.h"))
+    (==> lm rule "zmq-c.so" '("zmq-c.o")
+         (concat cc " -shared -o $OBJ $SOURCES -l:libzmq.so.5 -lpthread"))
+    (==> lm make)
+    (==> lm load "zmq-c.so") ) )

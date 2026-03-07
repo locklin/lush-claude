@@ -1,0 +1,160 @@
+;;; zmq-serde.lsh -- Serialization over ZMQ frames
+;;;
+;;; Bridges bwrite/bread with ZMQ multipart messages.
+;;; Uses _wire-bwrite-to-bytes / _wire-bread-from-bytes from wire.lsh
+;;; for payload serialization.
+;;;
+;;; PUB/SUB pattern:
+;;;   Publisher sends: topic frame (SNDMORE) + bwrite payload frame
+;;;   Subscriber receives: topic string + deserialized payload
+;;;
+;;; ROUTER/DEALER pattern:
+;;;   DEALER sends: bwrite query frame
+;;;   ROUTER receives: query (identity stored in C)
+;;;   ROUTER sends: bwrite reply (identity replayed from C)
+;;;   DEALER receives: reply
+
+(libload "zmq/zmq")
+(libload "wire/wire")
+
+#? *** ZMQ Serialization
+;; Bridges Lush bwrite/bread serialization with ZMQ multipart frames.
+;; Uses the same binary encoding as the wire protocol ({<b> bwrite/bread}),
+;; just over ZMQ transport instead of TCP.
+;;.PP
+;; Two patterns:
+;; {<ul>
+;; {<li> {<b> PUB/SUB}: topic frame + bwrite payload frame.}
+;; {<li> {<b> ROUTER/DEALER}: bwrite-serialized query/reply.}
+;; }
+;;.SEE (zmq-pub-send <sock> <topic> <payload>)
+;;.SEE (zmq-sub-recv <sock>)
+;;.SEE (zmq-query-send <sock> <query>)
+;;.SEE (zmq-query-recv <sock>)
+
+;; Shared send buffer for serialization
+(defvar *zmq-send-buf* (ubyte-matrix 65536))
+
+;; ============================================================
+;; PUB/SUB helpers
+;; ============================================================
+
+#? (zmq-pub-send <sock> <topic> <payload>)
+;; Publish a message: topic frame (SNDMORE) + bwrite payload frame.
+;; <sock>: PUB socket ID.
+;; <topic>: topic string (e.g. "ticker", "l2").
+;; <payload>: any Lush object (serialized via bwrite).
+(de zmq-pub-send (sock topic payload)
+  ;; Send topic frame with SNDMORE
+  (zmq-send-string sock topic *zmq-sndmore*)
+  ;; Serialize payload via bwrite
+  (let ((bytes (_wire-bwrite-to-bytes payload)))
+    (let ((nbytes (idx-dim bytes 0)))
+      (zmq-send-bytes sock bytes nbytes) ) ) )
+
+
+#? (zmq-sub-recv <sock> [<flags>])
+;; Receive a published message on a SUB socket.
+;; Returns a list <(topic payload)> where:
+;; {<ul>
+;; {<li> <topic>: the topic string.}
+;; {<li> <payload>: the deserialized Lush object.}
+;; }
+;; Returns <()> if no message available (non-blocking mode).
+;; <flags>: optional recv flags (e.g. {<b> *zmq-dontwait*}).
+(de zmq-sub-recv (sock &optional flags)
+  (let ((f (if flags flags 0)))
+    ;; Receive topic frame
+    (let ((n (_zmq-recv sock *zmq-recv-buf* 65536 f)))
+      (when (>= n 0)
+        (let ((topic ""))
+          (for (i 0 (1- n))
+            (setq topic (concat topic (chr (*zmq-recv-buf* i)))) )
+          ;; Check for more frames
+          (if (not (zmq-get-rcvmore sock))
+            (list topic ())
+            ;; Receive payload frame
+            (let ((pn (_zmq-recv sock *zmq-recv-buf* 65536 0)))
+              (if (< pn 0)
+                (list topic ())
+                ;; Deserialize via bread
+                (let ((payload-buf (ubyte-matrix pn)))
+                  (for (i 0 (1- pn))
+                    (payload-buf i (*zmq-recv-buf* i)) )
+                  (list topic (_wire-bread-from-bytes payload-buf pn)) ) ) ) ) ) ) ) ) )
+
+
+;; ============================================================
+;; DEALER/ROUTER query helpers
+;; ============================================================
+
+#? (zmq-query-send <sock> <query>)
+;; Send a query via a DEALER socket.
+;; <sock>: DEALER socket ID.
+;; <query>: any Lush object (serialized via bwrite).
+(de zmq-query-send (sock query)
+  (let ((bytes (_wire-bwrite-to-bytes query)))
+    (let ((nbytes (idx-dim bytes 0)))
+      ;; DEALER sends: empty delimiter (SNDMORE) + payload
+      (let ((empty (ubyte-matrix 1)))
+        (empty 0 0)
+        (zmq-send-bytes sock empty 0 *zmq-sndmore*) )
+      (zmq-send-bytes sock bytes nbytes) ) ) )
+
+
+#? (zmq-query-recv <sock> [<flags>])
+;; Receive a query reply on a DEALER socket.
+;; Returns the deserialized Lush object, or <()> if no message.
+;; <flags>: optional recv flags (e.g. {<b> *zmq-dontwait*}).
+(de zmq-query-recv (sock &optional flags)
+  (let ((f (if flags flags 0)))
+    ;; Receive empty delimiter frame
+    (let ((n (_zmq-recv sock *zmq-recv-buf* 65536 f)))
+      (when (>= n 0)
+        ;; Receive payload frame
+        (when (zmq-get-rcvmore sock)
+          (let ((pn (_zmq-recv sock *zmq-recv-buf* 65536 0)))
+            (when (>= pn 0)
+              (let ((payload-buf (ubyte-matrix pn)))
+                (for (i 0 (1- pn))
+                  (payload-buf i (*zmq-recv-buf* i)) )
+                (_wire-bread-from-bytes payload-buf pn) ) ) ) ) ) ) ) )
+
+
+#? (zmq-router-recv-query <sock>)
+;; Receive a query on a ROUTER socket.
+;; The client identity is stored in C for later reply.
+;; Returns the deserialized query, or <()> if no message.
+;; {<see> (zmq-router-send-reply <sock> <result>)}
+(de zmq-router-recv-query (sock)
+  (let ((n (zmq-router-recv sock)))
+    (when (> n 0)
+      (let ((payload-buf (ubyte-matrix n)))
+        (for (i 0 (1- n))
+          (payload-buf i (*zmq-recv-buf* i)) )
+        (_wire-bread-from-bytes payload-buf n) ) ) ) )
+
+
+#? (zmq-router-send-reply <sock> <result>)
+;; Send a reply on a ROUTER socket.
+;; Uses the identity stored from the last {<b> zmq-router-recv-query}.
+;; <result>: any Lush object (serialized via bwrite).
+;; {<see> (zmq-router-recv-query <sock>)}
+(de zmq-router-send-reply (sock result)
+  (let ((bytes (_wire-bwrite-to-bytes result)))
+    (let ((nbytes (idx-dim bytes 0)))
+      (zmq-router-send sock bytes nbytes) ) ) )
+
+
+;; ============================================================
+;; Synchronous query (DEALER helper)
+;; ============================================================
+
+#? (zmq-call <sock> <query>)
+;; Send a query and wait for the reply (synchronous).
+;; <sock>: DEALER socket ID (must be connected to a ROUTER).
+;; <query>: any Lush object.
+;; Returns the deserialized reply.
+(de zmq-call (sock query)
+  (zmq-query-send sock query)
+  (zmq-query-recv sock) )

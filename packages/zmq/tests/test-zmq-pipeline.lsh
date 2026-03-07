@@ -1,0 +1,304 @@
+;;; test-zmq-pipeline.lsh -- Integration tests for ZMQ pipeline
+;;;
+;;; Tests the pipeline components working together: FH PUB -> SUB consumers,
+;;; ROUTER/DEALER query path through the gateway.
+;;;
+;;; These tests simulate the pipeline in a single process by manually
+;;; driving the PUB side and verifying SUB and ROUTER behavior.
+;;;
+;;; Usage (from lush-claude root):
+;;;   ./src/lush packages/zmq/tests/test-zmq-pipeline.lsh
+
+(libload "lush-core-tests/framework")
+(libload "zmq/zmq-serde")
+(libload "wire/wire-serialize")
+(libload "datatable/datatable")
+
+(setq *test-pass-count* 0)
+(setq *test-fail-count* 0)
+(setq *test-skip-count* 0)
+
+(printf "\n=== ZMQ Pipeline Integration Tests ===\n")
+
+
+;; ============================================================
+;; PUB/SUB pipeline: FH -> RDB (simulated)
+;; ============================================================
+
+(test-suite "PUB/SUB ticker pipeline"
+  (let ((ctx (zmq-ctx-new)))
+    ;; Simulate feed handler PUB
+    (let ((pub (zmq-socket ctx *zmq-pub*))
+          (sub (zmq-socket ctx *zmq-sub*)) )
+      (zmq-set-linger pub 0)
+      (zmq-set-linger sub 0)
+      (zmq-bind pub "tcp://127.0.0.1:18970")
+      (zmq-connect sub "tcp://127.0.0.1:18970")
+      (zmq-subscribe sub "ticker")
+
+      ;; Publish a ticker message
+      (let ((recv-ok ()))
+        (for (attempt 0 19)
+          (let ((ticker-data (list (cons "product" "BTC-USD")
+                                   (cons "price" 67314.5)
+                                   (cons "best_bid" 67314.0)
+                                   (cons "best_ask" 67315.0)
+                                   (cons "side" "buy")
+                                   (cons "volume" 0.5)
+                                   (cons "time" 1709827200000000) )))
+            (zmq-pub-send pub "ticker" ticker-data) )
+
+          ;; Receive on SUB
+          (zmq-poll-set-socket 0 sub *zmq-pollin*)
+          (let ((rc (zmq-poll 1 100)))
+            (when (and (> rc 0) (zmq-poll-ready 0))
+              (let ((msg (zmq-sub-recv sub)))
+                (when (and msg (consp msg))
+                  (let ((topic (car msg))
+                        (payload (cadr msg)) )
+                    (when (and (= topic "ticker")
+                               (consp payload)
+                               (= (cdr (assoc "product" payload)) "BTC-USD")
+                               (> (cdr (assoc "price" payload)) 0) )
+                      (setq recv-ok t) ) ) ) ) ) ) )
+        (test-check "ticker data through PUB/SUB" recv-ok) )
+
+      (zmq-close sub)
+      (zmq-close pub) )
+    (zmq-ctx-term ctx) ) )
+
+
+;; ============================================================
+;; ROUTER/DEALER query pipeline
+;; ============================================================
+
+(test-suite "ROUTER/DEALER query pipeline"
+  (let ((ctx (zmq-ctx-new)))
+    ;; Simulate RDB ROUTER
+    (let ((router (zmq-socket ctx *zmq-router*))
+          (dealer (zmq-socket ctx *zmq-dealer*)) )
+      (zmq-set-linger router 0)
+      (zmq-set-linger dealer 0)
+      (zmq-set-identity dealer "test-client")
+      (zmq-bind router "tcp://127.0.0.1:18971")
+      (zmq-connect dealer "tcp://127.0.0.1:18971")
+
+      ;; Send query
+      (zmq-query-send dealer (list "count"))
+
+      ;; Receive and process on ROUTER
+      (zmq-poll-set-socket 0 router *zmq-pollin*)
+      (let ((rc (zmq-poll 1 1000)))
+        (test-check "query reaches ROUTER" (> rc 0))
+        (when (> rc 0)
+          (let ((query (zmq-router-recv-query router)))
+            (test-equal "query content" query '("count"))
+
+            ;; Simulate response
+            (zmq-router-send-reply router 42)
+
+            ;; Receive reply on DEALER
+            (zmq-poll-set-socket 0 dealer *zmq-pollin*)
+            (let ((rrc (zmq-poll 1 1000)))
+              (test-check "reply reaches DEALER" (> rrc 0))
+              (when (> rrc 0)
+                (let ((reply (zmq-query-recv dealer)))
+                  (test-equal "reply is correct" reply 42) ) ) ) ) ) )
+
+      (zmq-close dealer)
+      (zmq-close router) )
+    (zmq-ctx-term ctx) ) )
+
+
+;; ============================================================
+;; Gateway routing simulation
+;; ============================================================
+
+(test-suite "Gateway routing simulation"
+  (let ((ctx (zmq-ctx-new)))
+    ;; Backend ROUTER (simulated RDB)
+    (let ((backend-router (zmq-socket ctx *zmq-router*))
+          ;; Gateway: frontend ROUTER + backend DEALER
+          (gw-frontend (zmq-socket ctx *zmq-router*))
+          (gw-backend-dealer (zmq-socket ctx *zmq-dealer*))
+          ;; Client DEALER
+          (client (zmq-socket ctx *zmq-dealer*)) )
+
+      (zmq-set-linger backend-router 0)
+      (zmq-set-linger gw-frontend 0)
+      (zmq-set-linger gw-backend-dealer 0)
+      (zmq-set-linger client 0)
+
+      ;; Bind sockets
+      (zmq-bind backend-router "tcp://127.0.0.1:18981")
+      (zmq-bind gw-frontend "tcp://127.0.0.1:18980")
+      (zmq-set-identity gw-backend-dealer "gw-dealer")
+      (zmq-connect gw-backend-dealer "tcp://127.0.0.1:18981")
+      (zmq-set-identity client "my-client")
+      (zmq-connect client "tcp://127.0.0.1:18980")
+
+      ;; Client sends query to gateway frontend
+      (zmq-query-send client "ping")
+
+      ;; Gateway frontend receives query
+      (zmq-poll-set-socket 0 gw-frontend *zmq-pollin*)
+      (let ((rc (zmq-poll 1 1000)))
+        (test-check "gateway receives client query" (> rc 0))
+        (when (> rc 0)
+          (let ((query (zmq-router-recv-query gw-frontend)))
+            (test-equal "gateway sees ping" query "ping")
+
+            ;; Gateway routes to backend
+            (zmq-query-send gw-backend-dealer query)
+
+            ;; Backend receives and replies
+            (zmq-poll-set-socket 0 backend-router *zmq-pollin*)
+            (let ((brc (zmq-poll 1 1000)))
+              (when (> brc 0)
+                (let ((bq (zmq-router-recv-query backend-router)))
+                  (zmq-router-send-reply backend-router "pong") ) ) )
+
+            ;; Gateway receives backend reply
+            (zmq-poll-set-socket 0 gw-backend-dealer *zmq-pollin*)
+            (let ((grc (zmq-poll 1 1000)))
+              (when (> grc 0)
+                (let ((reply (zmq-query-recv gw-backend-dealer)))
+                  (test-equal "gateway gets pong from backend" reply "pong")
+
+                  ;; Gateway forwards reply to client
+                  (zmq-router-send-reply gw-frontend reply) ) ) )
+
+            ;; Client receives final reply
+            (zmq-poll-set-socket 0 client *zmq-pollin*)
+            (let ((crc (zmq-poll 1 1000)))
+              (test-check "client receives reply" (> crc 0))
+              (when (> crc 0)
+                (let ((final-reply (zmq-query-recv client)))
+                  (test-equal "client gets pong" final-reply "pong") ) ) ) ) ) )
+
+      (zmq-close client)
+      (zmq-close gw-backend-dealer)
+      (zmq-close gw-frontend)
+      (zmq-close backend-router) )
+    (zmq-ctx-term ctx) ) )
+
+
+;; ============================================================
+;; Multi-subscriber fan-out
+;; ============================================================
+
+(test-suite "PUB/SUB multi-subscriber fan-out"
+  (let ((ctx (zmq-ctx-new)))
+    (let ((pub (zmq-socket ctx *zmq-pub*))
+          (sub1 (zmq-socket ctx *zmq-sub*))
+          (sub2 (zmq-socket ctx *zmq-sub*)) )
+      (zmq-set-linger pub 0)
+      (zmq-set-linger sub1 0)
+      (zmq-set-linger sub2 0)
+      (zmq-bind pub "tcp://127.0.0.1:18990")
+      (zmq-connect sub1 "tcp://127.0.0.1:18990")
+      (zmq-connect sub2 "tcp://127.0.0.1:18990")
+      ;; sub1 subscribes to all, sub2 only to "ticker"
+      (zmq-subscribe sub1 "")
+      (zmq-subscribe sub2 "ticker")
+
+      (let ((sub1-ticker ())
+            (sub1-l2 ())
+            (sub2-ticker ())
+            (sub2-l2 ()) )
+        (for (attempt 0 19)
+          ;; Publish ticker and l2
+          (zmq-pub-send pub "ticker" (list "tick-data"))
+          (zmq-pub-send pub "l2" (list "l2-data"))
+
+          ;; Check sub1 (all topics)
+          (zmq-poll-set-socket 0 sub1 *zmq-pollin*)
+          (let ((rc (zmq-poll 1 50)))
+            (while (and (> rc 0) (zmq-poll-ready 0))
+              (let ((msg (zmq-sub-recv sub1)))
+                (when (and msg (consp msg))
+                  (cond
+                   ((= (car msg) "ticker") (setq sub1-ticker t))
+                   ((= (car msg) "l2") (setq sub1-l2 t)) ) ) )
+              (setq rc (zmq-poll 1 0)) ) )
+
+          ;; Check sub2 (ticker only)
+          (zmq-poll-set-socket 0 sub2 *zmq-pollin*)
+          (let ((rc (zmq-poll 1 50)))
+            (while (and (> rc 0) (zmq-poll-ready 0))
+              (let ((msg (zmq-sub-recv sub2)))
+                (when (and msg (consp msg))
+                  (cond
+                   ((= (car msg) "ticker") (setq sub2-ticker t))
+                   ((= (car msg) "l2") (setq sub2-l2 t)) ) ) )
+              (setq rc (zmq-poll 1 0)) ) ) )
+
+        (test-check "sub1 (all) receives ticker" sub1-ticker)
+        (test-check "sub1 (all) receives l2" sub1-l2)
+        (test-check "sub2 (ticker) receives ticker" sub2-ticker)
+        (test-check "sub2 (ticker) does NOT receive l2" (not sub2-l2)) )
+
+      (zmq-close sub2)
+      (zmq-close sub1)
+      (zmq-close pub) )
+    (zmq-ctx-term ctx) ) )
+
+
+;; ============================================================
+;; DataTable serialization through pipeline
+;; ============================================================
+
+(test-suite "DataTable serialization through pipeline"
+  (let ((ctx (zmq-ctx-new)))
+    (let ((router (zmq-socket ctx *zmq-router*))
+          (dealer (zmq-socket ctx *zmq-dealer*)) )
+      (zmq-set-linger router 0)
+      (zmq-set-linger dealer 0)
+      (zmq-set-identity dealer "dt-test")
+      (zmq-bind router "tcp://127.0.0.1:18995")
+      (zmq-connect dealer "tcp://127.0.0.1:18995")
+
+      ;; Create a DataTable
+      (let ((dt (new DataTable)))
+        (==> dt add-column "product" 'string)
+        (==> dt add-column "price" 'real)
+        (==> dt append-row (list "BTC-USD" 67314.5))
+        (==> dt append-row (list "ETH-USD" 3456.7))
+
+        ;; Pack and send via DEALER
+        (let ((packed (wire-pack-datatable dt)))
+          (zmq-query-send dealer packed) )
+
+        ;; Receive on ROUTER
+        (zmq-poll-set-socket 0 router *zmq-pollin*)
+        (let ((rc (zmq-poll 1 1000)))
+          (when (> rc 0)
+            (let ((received (zmq-router-recv-query router)))
+              (test-check "received packed datatable" (consp received))
+              (when (consp received)
+                (test-equal "datatable marker" (car received) 'datatable)
+                ;; Unpack and verify
+                (let ((dt2 (wire-unpack-datatable received)))
+                  (test-equal "row count" (==> dt2 num-rows) 2)
+                  (test-str-equal "first product" (==> dt2 get 0 "product") "BTC-USD")
+                  (test-approx "first price" (==> dt2 get 0 "price") 67314.5 0.01)
+                  (test-str-equal "second product" (==> dt2 get 1 "product") "ETH-USD") ) )
+              ;; Send reply
+              (zmq-router-send-reply router "ok") ) ) ) )
+
+      ;; Cleanup
+      (zmq-poll-set-socket 0 dealer *zmq-pollin*)
+      (zmq-poll 1 100)
+      (zmq-query-recv dealer *zmq-dontwait*)
+
+      (zmq-close dealer)
+      (zmq-close router) )
+    (zmq-ctx-term ctx) ) )
+
+
+;; ============================================================
+;; Summary
+;; ============================================================
+
+(test-summary)
+(when (> *test-fail-count* 0) (exit 1))

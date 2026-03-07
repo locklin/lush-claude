@@ -1,0 +1,122 @@
+;;; zmq-rdb.lsh -- ZMQ Real-time Database process
+;;;
+;;; Subscribes directly to the feed handler's PUB socket and accumulates
+;;; ticker and L2 data into DataTables.  Serves queries via a ROUTER socket.
+;;;
+;;; Architecture:
+;;;   - SUB socket connected to FH PUB (topic: "ticker", "l2")
+;;;   - ROUTER socket bound for query clients
+;;;   - zmq_poll loop over both sockets
+;;;
+;;; Reuses rdb-init-tables, rdb-insert-ticker, rdb-insert-l2,
+;;; rdb-handle-query from libuv/rdb.lsh (loaded with *rdb-no-autostart*).
+
+(libload "zmq/zmq-serde")
+(libload "wire/wire-serialize")
+(libload "datatable/datatable")
+(libload "timedate/timedate")
+
+;; Load RDB data functions without auto-starting
+(defvar *rdb-no-autostart* t)
+(libload "libuv/rdb")
+
+#? *** ZMQ RDB: Real-time Database
+;; ZMQ-based RDB that subscribes directly to the feed handler's PUB socket.
+;; Replaces the wire protocol with ZMQ PUB/SUB + ROUTER/DEALER.
+;;.PP
+;; Uses {<b> zmq_poll} to multiplex the SUB (feed data) and ROUTER
+;; (client queries) sockets in a single event loop.
+;;.SEE (zmq-rdb-start <fh-pub-port> <rdb-port>)
+
+;; ============================================================
+;; ZMQ RDB state
+;; ============================================================
+
+(defvar *zmq-rdb-ctx* ())
+(defvar *zmq-rdb-sub* ())
+(defvar *zmq-rdb-router* ())
+(defvar *zmq-rdb-running* ())
+
+;; ============================================================
+;; Main entry point
+;; ============================================================
+
+#? (zmq-rdb-start <fh-pub-port> <rdb-port>)
+;; Start the ZMQ RDB process.
+;; <fh-pub-port>: feed handler PUB socket port (e.g. 19970).
+;; <rdb-port>: ROUTER socket port for serving queries (e.g. 19971).
+;; Blocks until interrupted.
+(de zmq-rdb-start (fh-pub-port rdb-port)
+  (printf "\n=== ZMQ RDB starting ===\n")
+  (printf "feed handler PUB: tcp://127.0.0.1:%d\n" fh-pub-port)
+  (printf "query server: tcp://*:%d\n\n" rdb-port)
+
+  ;; Reset state
+  (setq *zmq-rdb-running* t)
+  (setq *rdb-total-tickers* 0)
+  (setq *rdb-total-l2* 0)
+  (setq *rdb-total-broadcasts* 0)
+  (setq *rdb-start-time* (_wire-time-seconds))
+
+  ;; Initialize tables
+  (rdb-init-tables)
+  (printf "zmq-rdb: tables initialized\n")
+
+  ;; Create ZMQ context and sockets
+  (setq *zmq-rdb-ctx* (zmq-ctx-new))
+
+  ;; SUB socket: subscribe to feed handler
+  (setq *zmq-rdb-sub* (zmq-socket *zmq-rdb-ctx* *zmq-sub*))
+  (zmq-set-linger *zmq-rdb-sub* 0)
+  (zmq-connect *zmq-rdb-sub* (sprintf "tcp://127.0.0.1:%d" fh-pub-port))
+  (zmq-subscribe *zmq-rdb-sub* "ticker")
+  (zmq-subscribe *zmq-rdb-sub* "l2")
+  (printf "zmq-rdb: subscribed to ticker + l2\n")
+
+  ;; ROUTER socket: serve queries
+  (setq *zmq-rdb-router* (zmq-socket *zmq-rdb-ctx* *zmq-router*))
+  (zmq-set-linger *zmq-rdb-router* 0)
+  (zmq-bind *zmq-rdb-router* (sprintf "tcp://*:%d" rdb-port))
+  (printf "zmq-rdb: query server listening on port %d\n" rdb-port)
+
+  ;; Configure poll items: 0=SUB, 1=ROUTER
+  (zmq-poll-set-socket 0 *zmq-rdb-sub* *zmq-pollin*)
+  (zmq-poll-set-socket 1 *zmq-rdb-router* *zmq-pollin*)
+
+  (printf "zmq-rdb: entering main loop\n\n")
+
+  ;; Main event loop
+  (while *zmq-rdb-running*
+    (let ((rc (zmq-poll 2 100)))
+      (when (> rc 0)
+        ;; Check SUB socket — feed data
+        (when (zmq-poll-ready 0)
+          (let ((msg (zmq-sub-recv *zmq-rdb-sub*)))
+            (when (and msg (consp msg))
+              (let ((topic (car msg))
+                    (payload (cadr msg)) )
+                (setq *rdb-total-broadcasts* (1+ *rdb-total-broadcasts*))
+                (cond
+                 ((= topic "ticker")
+                  (when (consp payload)
+                    (rdb-insert-ticker payload) ) )
+                 ((= topic "l2")
+                  (when (and (consp payload) (= (car payload) 'datatable))
+                    (rdb-insert-l2 (wire-unpack-datatable payload)) ) ) ) ) ) ) )
+
+        ;; Check ROUTER socket — client queries
+        (when (zmq-poll-ready 1)
+          (let ((query (zmq-router-recv-query *zmq-rdb-router*)))
+            (when query
+              (let ((result (rdb-handle-query query)))
+                (zmq-router-send-reply *zmq-rdb-router* result) ) ) ) ) ) ) )
+
+  ;; Shutdown
+  (printf "\nzmq-rdb: shutting down...\n")
+  (zmq-close *zmq-rdb-sub*)
+  (zmq-close *zmq-rdb-router*)
+  (zmq-ctx-term *zmq-rdb-ctx*)
+  (printf "zmq-rdb: stopped (%d tickers, %d l2, %d broadcasts)\n"
+          *rdb-total-tickers* *rdb-total-l2* *rdb-total-broadcasts*)
+  (printf "zmq-rdb: ticker table: %d rows\n" (==> *rdb-ticker-table* num-rows))
+  (printf "zmq-rdb: l2 table: %d rows\n" (==> *rdb-l2-table* num-rows)) )

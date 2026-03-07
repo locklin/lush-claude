@@ -1,0 +1,11 @@
+;;; coinbase-zmq-hdb-reader.lsh -- ZMQ Coinbase HDB Reader entry point
+;;;
+;;; Serves historical queries on port 19972, reading from
+;;; /datafast1/experiment/coinbasedata-zmq/.
+;;;
+;;; Usage (from lush-claude root):
+;;;   ./src/lush packages/zmq/scripts/coinbase-zmq-hdb-reader.lsh
+
+(libload "zmq/zmq-hdb-reader")
+
+(zmq-hdbr-start 19972 "/datafast1/experiment/coinbasedata-zmq")

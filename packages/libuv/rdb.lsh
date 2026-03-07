@@ -291,7 +291,13 @@
 ;; Connect to a feed handler wire server and start the RDB query server.
 ;; <fh-port>: feed handler wire server port to connect to.
 ;; <rdb-port>: port for the RDB's own wire server (query clients connect here).
-;; Blocks until connection is closed or interrupted.
+;;
+;; Uses a unified event loop (TorQ/kdb+ pattern): the feed handler
+;; connection fd is registered with the RDB's WireServer, so a single
+;; {<b> serve-once} call handles both incoming FH broadcasts (async)
+;; and client queries (sync) through one select().
+;;
+;; Blocks until feed handler disconnects or interrupted.
 (de rdb-start (fh-port rdb-port)
   (printf "\n=== RDB starting ===\n")
   (printf "feed handler: 127.0.0.1:%d\n" fh-port)
@@ -308,46 +314,65 @@
   (rdb-init-tables)
   (printf "rdb: tables initialized\n")
 
-  ;; Start RDB wire server for query clients
-  (setq *rdb-wire* (new WireServer rdb-port))
-  (==> *rdb-wire* start)
-  (printf "rdb: query server listening on port %d\n" rdb-port)
-
-  ;; Set up query handler
-  (setq :*rdb-wire*:on-sync
-    (lambda (fd expr encoding)
-      (rdb-handle-query expr) ) )
-  (setq :*rdb-wire*:on-connect
-    (lambda (fd)
-      (printf "rdb: query client connected (fd=%d)\n" fd) ) )
-  (setq :*rdb-wire*:on-disconnect
-    (lambda (fd)
-      (printf "rdb: query client disconnected (fd=%d)\n" fd) ) )
-
-  ;; Connect to feed handler
+  ;; Connect to feed handler FIRST (get the fd before setting up callbacks)
   (printf "rdb: connecting to feed handler...\n")
-  (let ((conn (wire-connect "127.0.0.1" fh-port)))
-    (let ((fd (conn "fd")))
-      (printf "rdb: connected to feed handler (fd=%d)\n\n" fd)
+  (let ((fh-conn (wire-connect "127.0.0.1" fh-port)))
+    (let ((fh-fd (fh-conn "fd")))
+      (printf "rdb: connected to feed handler (fd=%d)\n" fh-fd)
 
-      ;; Main receive loop
-      (while *rdb-running*
-        ;; Service query clients (non-blocking)
-        (when *rdb-wire*
-          (==> *rdb-wire* serve-once 5) )
+      ;; Start RDB wire server
+      (setq *rdb-wire* (new WireServer rdb-port))
+      (==> *rdb-wire* start)
+      (printf "rdb: query server listening on port %d\n" rdb-port)
 
-        ;; Receive from feed handler (blocking with short timeout)
-        (let ((raw-msg (_wire-recv-message fd)))
-          (if (not raw-msg)
-            ;; EOF or error — server disconnected
+      ;; Register feed handler fd with the WireServer.
+      ;; This is the TorQ/kdb+ pattern: all connections — both the
+      ;; tickerplant push channel and query clients — go through one
+      ;; select() loop.  FH broadcasts arrive as async messages and
+      ;; are dispatched via on-async; queries arrive as sync messages
+      ;; and are dispatched via on-sync.
+      (==> *rdb-wire* register-fd fh-fd)
+      (printf "rdb: feed handler fd registered with event loop\n")
+
+      ;; on-async: handle FH broadcasts (ticker and L2 data)
+      (setq :*rdb-wire*:on-async
+        (lambda (fd expr encoding)
+          (setq *rdb-total-broadcasts* (1+ *rdb-total-broadcasts*))
+          (when (consp expr)
+            (cond
+             ((= (car expr) 'ticker)
+              (rdb-insert-ticker (cadr expr)) )
+             ((= (car expr) 'l2update)
+              (let ((l2-data (cadr expr)))
+                (when (and (consp l2-data) (= (car l2-data) 'datatable))
+                  (rdb-insert-l2 (wire-unpack-datatable l2-data)) ) ) ) ) ) ) )
+
+      ;; on-sync: handle client queries (HDB writer, analytics, gateway)
+      (setq :*rdb-wire*:on-sync
+        (lambda (fd expr encoding)
+          (rdb-handle-query expr) ) )
+
+      ;; on-connect / on-disconnect
+      (setq :*rdb-wire*:on-connect
+        (lambda (fd)
+          (printf "rdb: client connected (fd=%d)\n" fd) ) )
+      (setq :*rdb-wire*:on-disconnect
+        (lambda (fd)
+          (if (= fd fh-fd)
             (progn
-              (printf "\nrdb: feed handler connection closed\n")
+              (printf "\nrdb: feed handler disconnected (fd=%d)\n" fd)
               (setq *rdb-running* ()) )
-            ;; Process message
-            (rdb-process-message raw-msg) ) ) )
+            (printf "rdb: client disconnected (fd=%d)\n" fd) ) ) )
 
-      ;; Cleanup
-      (wire-close conn) ) )
+      (printf "rdb: entering main loop\n\n")
+
+      ;; Main event loop — single serve-once handles everything.
+      ;; This is the kdb+ pattern: one select() over all fds.
+      (while *rdb-running*
+        (==> *rdb-wire* serve-once 100) )
+
+      ;; Cleanup — don't wire-close fh-conn; WireServer already closed the fd
+      ) )
 
   ;; Shutdown
   (when *rdb-wire*

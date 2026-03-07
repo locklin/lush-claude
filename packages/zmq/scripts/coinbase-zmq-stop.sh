@@ -1,22 +1,22 @@
 #!/bin/bash
-# coinbase-stop.sh -- Stop all Coinbase pipeline processes
+# coinbase-zmq-stop.sh -- Stop all ZMQ Coinbase pipeline processes
 #
 # Sends SIGTERM to all processes tracked in the control directory,
 # then verifies they've stopped.
 #
 # Usage:
-#   bash packages/libuv/scripts/coinbase-stop.sh
+#   bash packages/zmq/scripts/coinbase-zmq-stop.sh
 
-DATA_DIR=/datafast1/experiment/coinbasedata
+DATA_DIR=/datafast1/experiment/coinbasedata-zmq
 CTRL_DIR=$DATA_DIR/.ctrl
 
 if [ ! -d "$CTRL_DIR" ]; then
     echo "No control directory found at $CTRL_DIR"
-    echo "Pipeline may not be running."
+    echo "ZMQ pipeline may not be running."
     exit 0
 fi
 
-echo "=== Coinbase Pipeline Shutdown ==="
+echo "=== ZMQ Coinbase Pipeline Shutdown ==="
 echo ""
 
 # Stop in reverse order: gateway first, feed handler last
@@ -44,14 +44,7 @@ echo ""
 echo -n "Waiting for processes to exit..."
 sleep 2
 
-# Check for stragglers
-STRAGGLERS=0
-for proc in $PROCESSES; do
-    PID_FILE="$CTRL_DIR/$proc.pid.bak"
-    # Re-read from any remaining
-done
-
-# Verify all stopped
+# Check for stragglers and SIGKILL if needed
 for proc in $PROCESSES; do
     PID_FILE="$CTRL_DIR/$proc.pid"
     if [ -f "$PID_FILE" ]; then
@@ -59,11 +52,10 @@ for proc in $PROCESSES; do
         if kill -0 "$PID" 2>/dev/null; then
             echo "WARNING: $proc (PID=$PID) still running, sending SIGKILL"
             kill -9 "$PID"
-            STRAGGLERS=1
         fi
     fi
 done
 
 echo " done"
 echo ""
-echo "=== All processes stopped ==="
+echo "=== All ZMQ processes stopped ==="

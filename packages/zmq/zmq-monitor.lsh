@@ -1,0 +1,227 @@
+;;; zmq-monitor.lsh -- REPL convenience functions for the ZMQ Coinbase pipeline
+;;;
+;;; Provides simple query functions that connect to the ZMQ gateway
+;;; (port 19974) and return results for interactive monitoring.
+;;; Each function creates an ephemeral DEALER, sends a query, receives
+;;; the reply, and closes.
+;;;
+;;; Prefixed with zmq- to avoid collision with libuv monitor functions.
+
+(libload "zmq/zmq-serde")
+(libload "wire/wire-serialize")
+(libload "datatable/datatable")
+
+#? *** ZMQ Coinbase Monitor
+;; REPL convenience functions for monitoring the ZMQ-based Coinbase
+;; data pipeline.
+;;.PP
+;; These functions create ephemeral DEALER connections to the gateway
+;; (default port 19974) and return query results.
+;;.PP
+;; Quick start:
+;; {<code>
+;;  (libload "zmq/zmq-monitor")
+;;  (zmq-coinbase-status)               ;; check all processes
+;;  (zmq-coinbase-vwap "BTC-USD")       ;; current VWAP
+;;  (zmq-coinbase-last-trade "BTC-USD") ;; last trade details
+;;  (zmq-coinbase-hdb-count)            ;; historical data counts
+;; </code>}
+;;.SEE (zmq-coinbase-vwap <product>)
+;;.SEE (zmq-coinbase-status)
+;;.SEE (zmq-coinbase-last-trade <product>)
+
+;; ============================================================
+;; Configuration
+;; ============================================================
+
+(defvar *zmq-monitor-gw-port* 19974)
+(defvar *zmq-monitor-gw-host* "127.0.0.1")
+
+;; Shared context for monitor queries (created on first use)
+(defvar *zmq-monitor-ctx* ())
+
+
+;; ============================================================
+;; Internal: ephemeral query helper
+;; ============================================================
+
+(de _zmq-monitor-query (expr)
+  ;; Create shared context if needed
+  (when (not *zmq-monitor-ctx*)
+    (setq *zmq-monitor-ctx* (zmq-ctx-new)) )
+  ;; Create ephemeral DEALER, connect, query, close
+  (let ((dealer (zmq-socket *zmq-monitor-ctx* *zmq-dealer*)))
+    (zmq-set-linger dealer 0)
+    (zmq-set-identity dealer (sprintf "mon-%d" (mod (_wire-time-seconds) 100000)))
+    (zmq-connect dealer (sprintf "tcp://%s:%d"
+                                  *zmq-monitor-gw-host* *zmq-monitor-gw-port*))
+    ;; Send query
+    (zmq-query-send dealer expr)
+    ;; Poll for reply
+    (zmq-poll-set-socket 0 dealer *zmq-pollin*)
+    (let ((rc (zmq-poll 1 5000)))
+      (let ((result (if (and (> rc 0) (zmq-poll-ready 0))
+                      (zmq-query-recv dealer)
+                      "UNREACHABLE" )))
+        (zmq-close dealer)
+        result ) ) ) )
+
+
+;; ============================================================
+;; Public API
+;; ============================================================
+
+#? (zmq-coinbase-vwap <product>)
+;; Return the current VWAP for a product via the ZMQ pipeline.
+;;
+;; Example:
+;; {<code>
+;;  (zmq-coinbase-vwap "BTC-USD")
+;;    => 67314.50
+;; </code>}
+(de zmq-coinbase-vwap (product)
+  (_zmq-monitor-query (list "ana" (list "vwap" product))) )
+
+
+#? (zmq-coinbase-analytics <product>)
+;; Return all current analytics for a product as an alist.
+;;
+;; Example:
+;; {<code>
+;;  (zmq-coinbase-analytics "BTC-USD")
+;;    => (("mavg" . 67300) ("spread" . 1.0) ("vwap" . 67314.5) ...)
+;; </code>}
+(de zmq-coinbase-analytics (product)
+  (_zmq-monitor-query (list "ana" (list "analytics-all" product))) )
+
+
+#? (zmq-coinbase-last-trade <product>)
+;; Return details of the last ticker row for a product from the RDB.
+;;
+;; Example:
+;; {<code>
+;;  (zmq-coinbase-last-trade "BTC-USD")
+;;    => (("product" . "BTC-USD") ("price" . 67315.5) ...)
+;; </code>}
+(de zmq-coinbase-last-trade (product)
+  (let ((packed (_zmq-monitor-query
+                  (list "rdb" (list "where" "ticker" '= "product" product)))))
+    (if (and (consp packed) (= (car packed) 'datatable))
+      (let ((dt (wire-unpack-datatable packed)))
+        (let ((n (==> dt num-rows)))
+          (if (> n 0)
+            (let ((r (1- n))
+                  (cols (==> dt col-names)) )
+              (let ((result ()))
+                (let ((rest cols))
+                  (while rest
+                    (setq result (nconc1 result
+                      (cons (car rest) (==> dt get r (car rest)))))
+                    (setq rest (cdr rest)) ) )
+                result ) )
+            () ) ) )
+      packed ) ) )
+
+
+#? (zmq-coinbase-last-n <table> <n>)
+;; Return the last <n> rows from a table as a DataTable.
+;;
+;; Example:
+;; {<code>
+;;  (let ((dt (zmq-coinbase-last-n "ticker" 5)))
+;;    (==> dt print-table))
+;; </code>}
+(de zmq-coinbase-last-n (table n)
+  (let ((packed (_zmq-monitor-query (list "rdb" (list "last" table n)))))
+    (if (and (consp packed) (= (car packed) 'datatable))
+      (wire-unpack-datatable packed)
+      packed ) ) )
+
+
+#? (zmq-coinbase-hdb-count)
+;; Return dates and row counts from the HDB reader.
+(de zmq-coinbase-hdb-count ()
+  (let ((dates (_zmq-monitor-query (list "hdb" "dates")))
+        (tables (_zmq-monitor-query (list "hdb" "tables"))) )
+    (let ((result (list (cons "dates" dates) (cons "tables" tables))))
+      (when (consp dates)
+        (let ((rest dates))
+          (while rest
+            (let ((d (car rest)))
+              (let ((count (_zmq-monitor-query
+                             (list "hdb" (list "count" d "ticker")))))
+                (setq result (nconc1 result
+                  (cons (concat d "/ticker") count) )) ) )
+            (setq rest (cdr rest)) ) ) )
+      result ) ) )
+
+
+#? (zmq-coinbase-rdb-stats)
+;; Return RDB statistics: row counts, uptime, broadcast counts.
+(de zmq-coinbase-rdb-stats ()
+  (_zmq-monitor-query (list "rdb" "stats")) )
+
+
+#? (zmq-coinbase-status)
+;; Check the status of all ZMQ pipeline components.
+;; Returns an alist of process names to their ping status.
+;;
+;; Example:
+;; {<code>
+;;  (zmq-coinbase-status)
+;;    => (("gateway" . "pong") ("rdb" . "pong") ("analytics" . "pong") ...)
+;; </code>}
+(de zmq-coinbase-status ()
+  (let ((result ()))
+    ;; Gateway itself
+    (let ((r (on-error "UNREACHABLE" (_zmq-monitor-query "ping"))))
+      (setq result (nconc1 result (cons "gateway" r))) )
+    ;; Backend services via gateway
+    (let ((services '("rdb" "ana" "hdb")))
+      (let ((rest services))
+        (while rest
+          (let ((svc (car rest)))
+            (let ((r (on-error "UNREACHABLE"
+                       (_zmq-monitor-query (list svc "ping")))))
+              (setq result (nconc1 result (cons svc r))) ) )
+          (setq rest (cdr rest)) ) ) )
+    ;; RDB stats
+    (let ((stats (on-error () (_zmq-monitor-query (list "rdb" "stats")))))
+      (when stats
+        (setq result (nconc1 result (cons "rdb-stats" stats))) ) )
+    ;; Analytics stats
+    (let ((stats (on-error () (_zmq-monitor-query (list "ana" "stats")))))
+      (when stats
+        (setq result (nconc1 result (cons "ana-stats" stats))) ) )
+    result ) )
+
+
+#? (zmq-coinbase-print-status)
+;; Pretty-print the ZMQ pipeline status to stdout.
+(de zmq-coinbase-print-status ()
+  (printf "\n=== ZMQ Coinbase Pipeline Status ===\n\n")
+  (let ((status (zmq-coinbase-status)))
+    (let ((rest status))
+      (while rest
+        (let ((entry (car rest)))
+          (let ((name (car entry))
+                (val (cdr entry)) )
+            (cond
+             ((= name "rdb-stats")
+              (printf "RDB Stats:\n")
+              (when (consp val)
+                (let ((items val))
+                  (while items
+                    (printf "  %-15s %l\n" (car (car items)) (cdr (car items)))
+                    (setq items (cdr items)) ) ) ) )
+             ((= name "ana-stats")
+              (printf "Analytics Stats:\n")
+              (when (consp val)
+                (let ((items val))
+                  (while items
+                    (printf "  %-15s %l\n" (car (car items)) (cdr (car items)))
+                    (setq items (cdr items)) ) ) ) )
+             (t
+              (printf "%-12s %l\n" name val) ) ) ) )
+        (setq rest (cdr rest)) ) ) )
+  (printf "\n") )

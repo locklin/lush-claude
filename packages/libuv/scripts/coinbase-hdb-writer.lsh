@@ -1,7 +1,7 @@
 ;;; coinbase-hdb-writer.lsh -- Coinbase HDB Writer entry point
 ;;;
 ;;; Connects to the RDB on port 19961, periodically flushes data
-;;; to disk at /datafast/experiment/coinbasedata, and serves
+;;; to disk at /datafast1/experiment/coinbasedata, and serves
 ;;; status/control queries on port 19965.
 ;;;
 ;;; Usage (from lush-claude root):
@@ -10,4 +10,4 @@
 (defvar *hdb-no-autostart* t)
 (libload "libuv/hdb-writer")
 
-(hdb-start 19961 "/datafast/experiment/coinbasedata" 60 19965)
+(hdb-start 19961 "/datafast1/experiment/coinbasedata" 60 19965)

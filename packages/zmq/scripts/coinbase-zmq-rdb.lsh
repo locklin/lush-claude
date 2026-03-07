@@ -1,0 +1,10 @@
+;;; coinbase-zmq-rdb.lsh -- ZMQ Coinbase RDB entry point
+;;;
+;;; Subscribes to FH PUB on port 19970, serves queries on port 19971.
+;;;
+;;; Usage (from lush-claude root):
+;;;   ./src/lush packages/zmq/scripts/coinbase-zmq-rdb.lsh
+
+(libload "zmq/zmq-rdb")
+
+(zmq-rdb-start 19970 19971)

@@ -14,7 +14,7 @@
 set -e
 
 LUSH=./src/lush
-DATA_DIR=/datafast/experiment/coinbasedata
+DATA_DIR=/datafast1/experiment/coinbasedata
 CTRL_DIR=$DATA_DIR/.ctrl
 LOG_DIR=$DATA_DIR/logs
 SCRIPT_DIR=packages/libuv/scripts

@@ -714,6 +714,27 @@
   (when on-connect
     (on-connect fd) ) )
 
+#? (==> <server> register-fd <fd>)
+;; Register an external file descriptor with the server's event loop.
+;; The fd is treated like any accepted client: included in select(),
+;; read with non-blocking incremental reads, and dispatched through
+;; {<b> on-sync}/{<b> on-async} callbacks.
+;;
+;; This is the Lush equivalent of kdb+'s model where both incoming
+;; connections (from a tickerplant) and query clients are handled by
+;; a single event loop.  Register a wire-connect fd to receive async
+;; pushes alongside serving sync queries.
+;;
+;; Example:
+;; {<code>
+;;  (let ((conn (wire-connect "127.0.0.1" 19960)))
+;;    (==> my-server register-fd (conn "fd"))
+;;    ;; Now serve-once handles both TP pushes and client queries
+;;    (while running (==> my-server serve-once 100)))
+;; </code>}
+(defmethod WireServer register-fd (fd)
+  (==> this _add-client fd) )
+
 (defmethod WireServer _remove-client (fd)
   (_wire-close-fd fd)
   ;; Clean up per-client state

@@ -16,7 +16,7 @@ Coinbase WSS ──→ Feed Handler (19960) ──wire broadcast──→ RDB (1
                               Analytics (19963)        HDB Writer (19965)
                               (VWAP, MA, etc.)              │
                                    │                        ▼
-                                   │              /datafast/experiment/coinbasedata/
+                                   │              /datafast1/experiment/coinbasedata/
                                    │                YYYY.MM.DD/ticker/
                                    │
                               Gateway (19964) ◄──── HDB Reader (19962)
@@ -57,11 +57,11 @@ Coinbase WSS ──→ Feed Handler (19960) ──wire broadcast──→ RDB (1
 - Connects to RDB, periodically pulls new rows via high-water mark
 - Flushes ticker and L2 data to date-partitioned columnar files on disk
 - Flush interval: 60 seconds
-- Data directory: `/datafast/experiment/coinbasedata/`
+- Data directory: `/datafast1/experiment/coinbasedata/`
 - Entry point: `packages/libuv/scripts/coinbase-hdb-writer.lsh`
 
 ### HDB Reader (port 19962)
-- Reads date-partitioned data from `/datafast/experiment/coinbasedata/`
+- Reads date-partitioned data from `/datafast1/experiment/coinbasedata/`
 - Lazy-loads partitions into memory on first query
 - Supports range queries across multiple dates
 - Entry point: `packages/libuv/scripts/coinbase-hdb-reader.lsh`
@@ -100,7 +100,7 @@ Coinbase WSS ──→ Feed Handler (19960) ──wire broadcast──→ RDB (1
 ## HDB Disk Layout
 
 ```
-/datafast/experiment/coinbasedata/
+/datafast1/experiment/coinbasedata/
   .ctrl/
     feed-handler.pid
     rdb.pid

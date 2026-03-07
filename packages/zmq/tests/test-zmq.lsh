@@ -1,0 +1,420 @@
+;;; test-zmq.lsh -- Unit tests for ZMQ bindings
+;;;
+;;; Tests the ZMQ C bridge, Lush wrappers, and serialization layer.
+;;;
+;;; Usage (from lush-claude root):
+;;;   ./src/lush packages/zmq/tests/test-zmq.lsh
+
+(libload "lush-core-tests/framework")
+(libload "zmq/zmq-serde")
+(libload "datatable/datatable")
+
+(setq *test-pass-count* 0)
+(setq *test-fail-count* 0)
+(setq *test-skip-count* 0)
+
+(printf "\n=== ZMQ Binding Tests ===\n")
+
+;; ============================================================
+;; Context lifecycle
+;; ============================================================
+
+(test-suite "Context lifecycle"
+  ;; Create and terminate a context
+  (let ((ctx (zmq-ctx-new)))
+    (test-check "ctx-new returns non-negative ID" (>= ctx 0))
+    (zmq-ctx-term ctx)
+    (test-check "ctx-term succeeds" t) )
+
+  ;; Multiple contexts
+  (let ((ctx1 (zmq-ctx-new))
+        (ctx2 (zmq-ctx-new)) )
+    (test-check "two contexts have different IDs" (<> ctx1 ctx2))
+    (zmq-ctx-term ctx2)
+    (zmq-ctx-term ctx1)
+    (test-check "both contexts terminated" t) ) )
+
+
+;; ============================================================
+;; Socket create/close
+;; ============================================================
+
+(test-suite "Socket create/close"
+  (let ((ctx (zmq-ctx-new)))
+    ;; PUB socket
+    (let ((pub (zmq-socket ctx *zmq-pub*)))
+      (test-check "PUB socket create" (>= pub 0))
+      (zmq-close pub)
+      (test-check "PUB socket close" t) )
+
+    ;; SUB socket
+    (let ((sub (zmq-socket ctx *zmq-sub*)))
+      (test-check "SUB socket create" (>= sub 0))
+      (zmq-close sub)
+      (test-check "SUB socket close" t) )
+
+    ;; ROUTER socket
+    (let ((rtr (zmq-socket ctx *zmq-router*)))
+      (test-check "ROUTER socket create" (>= rtr 0))
+      (zmq-close rtr)
+      (test-check "ROUTER socket close" t) )
+
+    ;; DEALER socket
+    (let ((dlr (zmq-socket ctx *zmq-dealer*)))
+      (test-check "DEALER socket create" (>= dlr 0))
+      (zmq-close dlr)
+      (test-check "DEALER socket close" t) )
+
+    (zmq-ctx-term ctx) ) )
+
+
+;; ============================================================
+;; Bind and connect
+;; ============================================================
+
+(test-suite "Bind and connect"
+  (let ((ctx (zmq-ctx-new)))
+    ;; Bind PUB to TCP
+    (let ((pub (zmq-socket ctx *zmq-pub*)))
+      (zmq-bind pub "tcp://127.0.0.1:19990")
+      (test-check "PUB bind to TCP" t)
+      (zmq-close pub) )
+
+    ;; Connect SUB to TCP
+    (let ((sub (zmq-socket ctx *zmq-sub*)))
+      (zmq-connect sub "tcp://127.0.0.1:19990")
+      (test-check "SUB connect to TCP" t)
+      (zmq-close sub) )
+
+    ;; Bind ROUTER
+    (let ((rtr (zmq-socket ctx *zmq-router*)))
+      (zmq-bind rtr "tcp://127.0.0.1:19991")
+      (test-check "ROUTER bind" t)
+      (zmq-close rtr) )
+
+    (zmq-ctx-term ctx) ) )
+
+
+;; ============================================================
+;; Socket options
+;; ============================================================
+
+(test-suite "Socket options"
+  (let ((ctx (zmq-ctx-new)))
+    ;; SUB subscribe
+    (let ((sub (zmq-socket ctx *zmq-sub*)))
+      (zmq-subscribe sub "ticker")
+      (test-check "subscribe to topic" t)
+      (zmq-subscribe sub "")
+      (test-check "subscribe to all" t)
+      (zmq-close sub) )
+
+    ;; Linger
+    (let ((pub (zmq-socket ctx *zmq-pub*)))
+      (zmq-set-linger pub 0)
+      (test-check "set linger" t)
+      (zmq-close pub) )
+
+    ;; HWM
+    (let ((pub (zmq-socket ctx *zmq-pub*)))
+      (zmq-set-sndhwm pub 1000)
+      (test-check "set sndhwm" t)
+      (zmq-set-rcvhwm pub 500)
+      (test-check "set rcvhwm" t)
+      (zmq-close pub) )
+
+    ;; Identity
+    (let ((dlr (zmq-socket ctx *zmq-dealer*)))
+      (zmq-set-identity dlr "test-client")
+      (test-check "set identity" t)
+      (zmq-close dlr) )
+
+    (zmq-ctx-term ctx) ) )
+
+
+;; ============================================================
+;; PUB/SUB message round-trip
+;; ============================================================
+
+(test-suite "PUB/SUB round-trip"
+  (let ((ctx (zmq-ctx-new)))
+    (let ((pub (zmq-socket ctx *zmq-pub*))
+          (sub (zmq-socket ctx *zmq-sub*)) )
+      (zmq-set-linger pub 0)
+      (zmq-set-linger sub 0)
+      (zmq-bind pub "tcp://127.0.0.1:19992")
+      (zmq-connect sub "tcp://127.0.0.1:19992")
+      (zmq-subscribe sub "")
+
+      ;; Brief delay for connection to establish
+      ;; Send multiple messages (first may be lost during connect)
+      (let ((recv-ok ()))
+        (for (attempt 0 9)
+          (zmq-send-string pub "hello" *zmq-sndmore*)
+          (zmq-send-string pub "world")
+          ;; Poll for message
+          (zmq-poll-set-socket 0 sub *zmq-pollin*)
+          (let ((rc (zmq-poll 1 100)))
+            (when (and (> rc 0) (zmq-poll-ready 0))
+              ;; Receive topic
+              (let ((topic (zmq-recv-string sub)))
+                (when (= topic "hello")
+                  (let ((more (zmq-get-rcvmore sub)))
+                    (when more
+                      (let ((data (zmq-recv-string sub)))
+                        (when (= data "world")
+                          (setq recv-ok t) ) ) ) ) ) ) ) ) )
+        (test-check "PUB/SUB multipart round-trip" recv-ok) )
+
+      (zmq-close sub)
+      (zmq-close pub) )
+    (zmq-ctx-term ctx) ) )
+
+
+;; ============================================================
+;; PUB/SUB with topic filtering
+;; ============================================================
+
+(test-suite "PUB/SUB topic filtering"
+  (let ((ctx (zmq-ctx-new)))
+    (let ((pub (zmq-socket ctx *zmq-pub*))
+          (sub (zmq-socket ctx *zmq-sub*)) )
+      (zmq-set-linger pub 0)
+      (zmq-set-linger sub 0)
+      (zmq-bind pub "tcp://127.0.0.1:19993")
+      (zmq-connect sub "tcp://127.0.0.1:19993")
+      ;; Subscribe to "ticker" only, not "l2"
+      (zmq-subscribe sub "ticker")
+
+      (let ((got-ticker ())
+            (got-l2 ()) )
+        ;; Send enough to ensure subscription propagates
+        (for (attempt 0 19)
+          ;; Send an l2 message (should be filtered)
+          (zmq-send-string pub "l2data" *zmq-sndmore*)
+          (zmq-send-string pub "l2payload")
+          ;; Send a ticker message (should be received)
+          (zmq-send-string pub "ticker" *zmq-sndmore*)
+          (zmq-send-string pub "tickpayload")
+          ;; Poll
+          (zmq-poll-set-socket 0 sub *zmq-pollin*)
+          (let ((rc (zmq-poll 1 50)))
+            (while (and (> rc 0) (zmq-poll-ready 0))
+              (let ((topic (zmq-recv-string sub)))
+                ;; Consume remaining frames
+                (while (zmq-get-rcvmore sub)
+                  (zmq-recv-string sub) )
+                (cond
+                 ((and topic (>= (len topic) 6) (= (mid topic 1 6) "ticker"))
+                  (setq got-ticker t) )
+                 ((and topic (>= (len topic) 2) (= (mid topic 1 2) "l2"))
+                  (setq got-l2 t) ) ) )
+              (setq rc (zmq-poll 1 0)) ) ) )
+        (test-check "received ticker messages" got-ticker)
+        (test-check "l2 messages filtered out" (not got-l2)) )
+
+      (zmq-close sub)
+      (zmq-close pub) )
+    (zmq-ctx-term ctx) ) )
+
+
+;; ============================================================
+;; ROUTER/DEALER query round-trip
+;; ============================================================
+
+(test-suite "ROUTER/DEALER query round-trip"
+  (let ((ctx (zmq-ctx-new)))
+    (let ((router (zmq-socket ctx *zmq-router*))
+          (dealer (zmq-socket ctx *zmq-dealer*)) )
+      (zmq-set-linger router 0)
+      (zmq-set-linger dealer 0)
+      (zmq-set-identity dealer "test-dealer")
+      (zmq-bind router "tcp://127.0.0.1:19994")
+      (zmq-connect dealer "tcp://127.0.0.1:19994")
+
+      ;; Send query from dealer
+      (zmq-query-send dealer '("ping"))
+
+      ;; Receive on router
+      (zmq-poll-set-socket 0 router *zmq-pollin*)
+      (let ((rc (zmq-poll 1 1000)))
+        (test-check "router poll returns ready" (> rc 0))
+        (when (> rc 0)
+          (let ((query (zmq-router-recv-query router)))
+            (test-check "router receives query" (consp query))
+            (test-equal "query content" query '("ping"))
+
+            ;; Send reply
+            (zmq-router-send-reply router "pong")
+
+            ;; Receive reply on dealer
+            (zmq-poll-set-socket 0 dealer *zmq-pollin*)
+            (let ((rrc (zmq-poll 1 1000)))
+              (test-check "dealer poll returns ready" (> rrc 0))
+              (when (> rrc 0)
+                (let ((reply (zmq-query-recv dealer)))
+                  (test-equal "dealer receives reply" reply "pong") ) ) ) ) ) )
+
+      (zmq-close dealer)
+      (zmq-close router) )
+    (zmq-ctx-term ctx) ) )
+
+
+;; ============================================================
+;; zmq-call (synchronous query)
+;; ============================================================
+
+(test-suite "zmq-call (synchronous)"
+  (let ((ctx (zmq-ctx-new)))
+    (let ((router (zmq-socket ctx *zmq-router*))
+          (dealer (zmq-socket ctx *zmq-dealer*)) )
+      (zmq-set-linger router 0)
+      (zmq-set-linger dealer 0)
+      (zmq-set-identity dealer "sync-test")
+      (zmq-bind router "tcp://127.0.0.1:19995")
+      (zmq-connect dealer "tcp://127.0.0.1:19995")
+
+      ;; zmq-call sends and blocks for reply.
+      ;; But since we're single-threaded, we need to manually service the router.
+      ;; So we test the pieces separately.
+      (zmq-query-send dealer (list "stats"))
+
+      ;; Service router
+      (zmq-poll-set-socket 0 router *zmq-pollin*)
+      (let ((rc (zmq-poll 1 1000)))
+        (when (> rc 0)
+          (let ((q (zmq-router-recv-query router)))
+            (test-equal "zmq-call query arrives" q '("stats"))
+            (zmq-router-send-reply router (list (cons "uptime" 42))) ) ) )
+
+      ;; Receive reply on dealer
+      (let ((reply (zmq-query-recv dealer)))
+        (test-check "zmq-call reply received" (consp reply))
+        (when (consp reply)
+          (test-equal "zmq-call reply content" (cdr (assoc "uptime" reply)) 42) ) )
+
+      (zmq-close dealer)
+      (zmq-close router) )
+    (zmq-ctx-term ctx) ) )
+
+
+;; ============================================================
+;; bwrite/bread serialization over ZMQ (PUB/SUB)
+;; ============================================================
+
+(test-suite "bwrite/bread over PUB/SUB"
+  (let ((ctx (zmq-ctx-new)))
+    (let ((pub (zmq-socket ctx *zmq-pub*))
+          (sub (zmq-socket ctx *zmq-sub*)) )
+      (zmq-set-linger pub 0)
+      (zmq-set-linger sub 0)
+      (zmq-bind pub "tcp://127.0.0.1:19996")
+      (zmq-connect sub "tcp://127.0.0.1:19996")
+      (zmq-subscribe sub "")
+
+      ;; Test with various payload types
+      (let ((recv-ok ()))
+        (for (attempt 0 19)
+          ;; Send alist payload via zmq-pub-send
+          (zmq-pub-send pub "ticker" (list (cons "price" 67314.5)
+                                           (cons "product" "BTC-USD")))
+          ;; Poll and receive
+          (zmq-poll-set-socket 0 sub *zmq-pollin*)
+          (let ((rc (zmq-poll 1 100)))
+            (when (and (> rc 0) (zmq-poll-ready 0))
+              (let ((msg (zmq-sub-recv sub)))
+                (when (and msg (consp msg))
+                  (let ((topic (car msg))
+                        (payload (cadr msg)) )
+                    (when (and (= topic "ticker")
+                               (consp payload)
+                               (= (cdr (assoc "product" payload)) "BTC-USD") )
+                      (setq recv-ok t) ) ) ) ) ) ) )
+
+        (test-check "bwrite alist serialization over ZMQ" recv-ok) )
+
+      ;; Test with numeric matrix payload
+      (let ((recv-ok ()))
+        (for (attempt 0 19)
+          (let ((m (double-matrix 3)))
+            (m 0 1.1) (m 1 2.2) (m 2 3.3)
+            (zmq-pub-send pub "data" m) )
+          (zmq-poll-set-socket 0 sub *zmq-pollin*)
+          (let ((rc (zmq-poll 1 100)))
+            (when (and (> rc 0) (zmq-poll-ready 0))
+              (let ((msg (zmq-sub-recv sub)))
+                (when (and msg (consp msg))
+                  (let ((payload (cadr msg)))
+                    (when (and (indexp payload) (= (idx-dim payload 0) 3))
+                      (when (< (abs (- (payload 0) 1.1)) 0.001)
+                        (setq recv-ok t) ) ) ) ) ) ) ) )
+        (test-check "bwrite matrix serialization over ZMQ" recv-ok) )
+
+      (zmq-close sub)
+      (zmq-close pub) )
+    (zmq-ctx-term ctx) ) )
+
+
+;; ============================================================
+;; zmq-poll revents detection
+;; ============================================================
+
+(test-suite "zmq-poll revents"
+  (let ((ctx (zmq-ctx-new)))
+    (let ((pub (zmq-socket ctx *zmq-pub*))
+          (sub (zmq-socket ctx *zmq-sub*)) )
+      (zmq-set-linger pub 0)
+      (zmq-set-linger sub 0)
+      (zmq-bind pub "tcp://127.0.0.1:19997")
+      (zmq-connect sub "tcp://127.0.0.1:19997")
+      (zmq-subscribe sub "")
+
+      ;; Poll with nothing to receive — should timeout
+      (zmq-poll-set-socket 0 sub *zmq-pollin*)
+      (let ((rc (zmq-poll 1 10)))
+        (test-check "poll returns 0 on timeout" (= rc 0))
+        (test-check "revents is 0 on timeout" (= (zmq-poll-revents 0) 0)) )
+
+      ;; Now send something and poll again
+      (let ((polled-ok ()))
+        (for (attempt 0 9)
+          (zmq-send-string pub "test")
+          (let ((rc (zmq-poll 1 100)))
+            (when (and (> rc 0) (zmq-poll-ready 0))
+              (setq polled-ok t)
+              ;; Drain the message
+              (zmq-recv-string sub) ) ) )
+        (test-check "poll detects message" polled-ok) )
+
+      (zmq-close sub)
+      (zmq-close pub) )
+    (zmq-ctx-term ctx) ) )
+
+
+;; ============================================================
+;; Error handling
+;; ============================================================
+
+(test-suite "Error handling"
+  ;; Invalid socket ID
+  (test-check "recv on invalid ID returns -1"
+    (< (_zmq-recv -1 *zmq-recv-buf* 65536 0) 0) )
+
+  (test-check "send on invalid ID returns -1"
+    (< (_zmq-send -1 *zmq-recv-buf* 0 0) 0) )
+
+  ;; Bad endpoint
+  (let ((ctx (zmq-ctx-new)))
+    (let ((pub (zmq-socket ctx *zmq-pub*)))
+      (let ((rc (_zmq-bind pub "invalid://endpoint")))
+        (test-check "bind to bad endpoint returns error" (< rc 0)) )
+      (zmq-close pub) )
+    (zmq-ctx-term ctx) ) )
+
+
+;; ============================================================
+;; Summary
+;; ============================================================
+
+(test-summary)
+(when (> *test-fail-count* 0) (exit 1))

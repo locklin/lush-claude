@@ -1,0 +1,11 @@
+;;; coinbase-zmq-gateway.lsh -- ZMQ Coinbase Gateway entry point
+;;;
+;;; Starts the ZMQ gateway on port 19974, connecting to all backends:
+;;; RDB (19971), HDB Reader (19972), Analytics (19973), HDB Writer (19975).
+;;;
+;;; Usage (from lush-claude root):
+;;;   ./src/lush packages/zmq/scripts/coinbase-zmq-gateway.lsh
+
+(libload "zmq/zmq-gateway")
+
+(zmq-gw-start 19974 19971 19972 19973 19975)
