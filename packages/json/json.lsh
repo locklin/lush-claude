@@ -415,9 +415,9 @@
          (str-offsets (int-matrix max-entries)) )
     (let ((n (_json-parse-inner s slen type-tags num-vals str-buf str-offsets
                                 max-entries str-buf-size)))
-      (when (< n 0)
-        (error "json-parse" "failed to parse JSON" s) )
-      (car (_json-reconstruct type-tags num-vals str-buf str-offsets 0 n)) ) ) )
+      (if (< n 0)
+        (progn (printf "json-parse: parse failed (n=%d)\n" n) ())
+        (car (_json-reconstruct type-tags num-vals str-buf str-offsets 0 n)) ) ) ) )
 
 
 #? (json-parse-l2update <string> <side-codes> <prices> <quantities> <timestamps> <product-codes> <offset> <product-buf> <product-offsets> <n-products>)
@@ -463,7 +463,7 @@
               side-codes prices quantities timestamps product-codes
               offset product-buf product-offsets n-products)))
     (when (< rc 0)
-      (error "json-parse-l2update" "failed to parse l2update" s) )
+      (printf "json-parse-l2update: parse failed (rc=%d)\n" rc) )
     rc ) )
 
 
@@ -511,7 +511,7 @@
               prices best-bids best-asks side-codes timestamps product-codes
               volumes offset product-buf product-offsets n-products)))
     (when (< rc 0)
-      (error "json-parse-ticker" "failed to parse ticker" s) )
+      (printf "json-parse-ticker: parse failed (rc=%d)\n" rc) )
     rc ) )
 
 
