@@ -48,4 +48,5 @@ packages/mapper/NKI/
 packages/xgboost/xgboost-src-3.2.0/
 packages/xgboost/xgboost-src-3.2.0.tar.gz
 packages/xgboost/dist/
+local/
 bin/
