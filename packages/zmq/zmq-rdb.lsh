@@ -36,6 +36,9 @@
 (defvar *zmq-rdb-sub* ())
 (defvar *zmq-rdb-router* ())
 (defvar *zmq-rdb-running* ())
+(defvar *zmq-rdb-last-heartbeat* 0)
+(defvar *zmq-rdb-total-queries* 0)
+(defvar *zmq-rdb-max-rows* 100000)     ;; max ticker rows before trimming
 
 ;; ============================================================
 ;; Main entry point
@@ -57,10 +60,13 @@
   (setq *rdb-total-l2* 0)
   (setq *rdb-total-broadcasts* 0)
   (setq *rdb-start-time* (_wire-time-seconds))
+  (setq *zmq-rdb-last-heartbeat* (_wire-time-seconds))
+  (setq *zmq-rdb-total-queries* 0)
 
   ;; Initialize tables
   (rdb-init-tables)
-  (printf "zmq-rdb: tables initialized\n")
+  (printf "zmq-rdb: tables initialized (ticker=%l l2=%l)\n"
+          (not (not *rdb-ticker-table*)) (not (not *rdb-l2-table*)))
 
   ;; Create ZMQ context and sockets
   (setq *zmq-rdb-ctx* (zmq-ctx-new))
@@ -108,15 +114,47 @@
         (when (zmq-poll-ready 1)
           (let ((query (zmq-router-recv-query *zmq-rdb-router*)))
             (when query
+              (setq *zmq-rdb-total-queries* (1+ *zmq-rdb-total-queries*))
               (let ((result (rdb-handle-query query)))
-                (zmq-router-send-reply *zmq-rdb-router* result) ) ) ) ) ) ) )
+                (zmq-router-send-reply *zmq-rdb-router* result) ) ) ) ) ) )
+
+    ;; Periodic heartbeat (every 30s)
+    (let ((now (_wire-time-seconds)))
+      (when (>= (- now *zmq-rdb-last-heartbeat*) 30)
+        (let ((ticker-rows (==> *rdb-ticker-table* num-rows))
+              (l2-rows (==> *rdb-l2-table* num-rows))
+              (uptime (to-int (- now *rdb-start-time*))) )
+          (printf "zmq-rdb: heartbeat  tickers=%d l2=%d ticker-rows=%d l2-rows=%d queries=%d uptime=%ds\n"
+                  *rdb-total-tickers* *rdb-total-l2* ticker-rows l2-rows
+                  *zmq-rdb-total-queries* uptime)
+          ;; Trim ticker table if it exceeds max rows (keep newest half)
+          (when (> ticker-rows *zmq-rdb-max-rows*)
+            (let* ((keep (to-int (/ *zmq-rdb-max-rows* 2)))
+                   (start (- ticker-rows keep))
+                   (idx (int-matrix keep)) )
+              (for (i 0 (1- keep)) (idx i (+ start i)))
+              (printf "zmq-rdb: trimming ticker table from %d to %d rows\n"
+                      ticker-rows keep)
+              (setq *rdb-ticker-table* (==> *rdb-ticker-table* select-rows-idx idx)) ) )
+          ;; Trim L2 table similarly
+          (when (> l2-rows *zmq-rdb-max-rows*)
+            (let* ((keep (to-int (/ *zmq-rdb-max-rows* 2)))
+                   (start (- l2-rows keep))
+                   (idx (int-matrix keep)) )
+              (for (i 0 (1- keep)) (idx i (+ start i)))
+              (printf "zmq-rdb: trimming l2 table from %d to %d rows\n"
+                      l2-rows keep)
+              (setq *rdb-l2-table* (==> *rdb-l2-table* select-rows-idx idx)) ) ) )
+        (setq *zmq-rdb-last-heartbeat* now) ) ) ) )
 
   ;; Shutdown
   (printf "\nzmq-rdb: shutting down...\n")
-  (zmq-close *zmq-rdb-sub*)
-  (zmq-close *zmq-rdb-router*)
-  (zmq-ctx-term *zmq-rdb-ctx*)
+  (when *zmq-rdb-sub* (zmq-close *zmq-rdb-sub*))
+  (when *zmq-rdb-router* (zmq-close *zmq-rdb-router*))
+  (when *zmq-rdb-ctx* (zmq-ctx-term *zmq-rdb-ctx*))
   (printf "zmq-rdb: stopped (%d tickers, %d l2, %d broadcasts)\n"
           *rdb-total-tickers* *rdb-total-l2* *rdb-total-broadcasts*)
-  (printf "zmq-rdb: ticker table: %d rows\n" (==> *rdb-ticker-table* num-rows))
-  (printf "zmq-rdb: l2 table: %d rows\n" (==> *rdb-l2-table* num-rows)) )
+  (when *rdb-ticker-table*
+    (printf "zmq-rdb: ticker table: %d rows\n" (==> *rdb-ticker-table* num-rows)))
+  (when *rdb-l2-table*
+    (printf "zmq-rdb: l2 table: %d rows\n" (==> *rdb-l2-table* num-rows))) )

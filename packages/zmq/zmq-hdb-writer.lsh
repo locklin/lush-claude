@@ -53,6 +53,7 @@
 (defvar *zmq-hdbw-hdb-root* "/datafast1/experiment/coinbasedata-zmq")
 (defvar *zmq-hdbw-start-time* 0)
 (defvar *zmq-hdbw-total-queries* 0)
+(defvar *zmq-hdbw-last-heartbeat* 0)
 
 ;; ============================================================
 ;; Local table initialization
@@ -78,34 +79,111 @@
   (==> *zmq-hdbw-l2-table* add-column "time" 'stamp) )
 
 ;; ============================================================
+;; Date partitioning helpers
+;; ============================================================
+
+;; Convert epoch seconds (integer) to "YYYY.MM.DD" date string.
+;; Unlike hdb-date-string which uses wall-clock time, this takes
+;; an explicit epoch value from the data itself.
+(de _hdbw-epoch-to-date (epoch-sec)
+  (let ((days (to-int (/ epoch-sec 86400)))
+        (y 1970) (m 1) (d 0) (days-left 0) )
+    (setq days-left days)
+    ;; Advance years
+    (while (let ((yd (if (and (= 0 (mod y 4))
+                              (or (<> 0 (mod y 100))
+                                  (= 0 (mod y 400)) ))
+                       366 365)))
+             (>= days-left yd))
+      (let ((yd (if (and (= 0 (mod y 4))
+                         (or (<> 0 (mod y 100))
+                             (= 0 (mod y 400)) ))
+                  366 365)))
+        (setq days-left (- days-left yd))
+        (setq y (1+ y)) ) )
+    ;; Advance months
+    (let ((leap (if (and (= 0 (mod y 4))
+                         (or (<> 0 (mod y 100))
+                             (= 0 (mod y 400)) ))
+                  1 0)))
+      (let ((month-days (list 31 (+ 28 leap) 31 30 31 30 31 31 30 31 30 31)))
+        (while (and (<= m 12) (>= days-left (nth (1- m) month-days)))
+          (setq days-left (- days-left (nth (1- m) month-days)))
+          (setq m (1+ m)) ) ) )
+    (setq d (1+ days-left))
+    (sprintf "%04d.%02d.%02d" y m d) ) )
+
+
+;; Flush a DataTable to a specific date partition directory.
+(de _hdbw-flush-to-partition (tbl-name dt date-str)
+  (let ((path (concat *zmq-hdbw-hdb-root* "/" date-str "/" tbl-name)))
+    ;; Create date directory if it doesn't exist
+    (let ((date-dir (concat *zmq-hdbw-hdb-root* "/" date-str)))
+      (when (not (dirp date-dir))
+        (sys (concat "mkdir -p '" date-dir "'"))
+        (printf "zmq-hdbw: created new date partition: %s\n" date-dir) ) )
+    ;; Save or append
+    (if (dirp path)
+      (columnardb-append path dt)
+      (columnardb-save dt path) )
+    (printf "zmq-hdbw: flushed %d %s rows to %s\n" (==> dt num-rows) tbl-name path) ) )
+
+
+;; ============================================================
 ;; Local flush logic (reads from local tables, not RDB)
 ;; ============================================================
 
+;; Flush local-table rows to date-partitioned directories.
+;; Uses the data's own timestamps (not wall-clock) to determine the
+;; correct date partition.  Handles midnight boundary splits: if a
+;; batch contains rows from two dates, it splits and flushes each
+;; group to the correct partition.
 (de zmq-hdbw-flush-table (tbl-name local-table total-rows-sym)
   (let ((nrows (==> local-table num-rows)))
     (when (> nrows 0)
-      (let ((path (concat *zmq-hdbw-hdb-root* "/" (hdb-date-string) "/" tbl-name)))
-        ;; Create directories
-        (let ((date-dir (concat *zmq-hdbw-hdb-root* "/" (hdb-date-string))))
-          (when (not (dirp date-dir))
-            (sys (concat "mkdir -p '" date-dir "'")) ) )
-        ;; Save or append
-        (if (dirp path)
-          (columnardb-append path local-table)
-          (columnardb-save local-table path) )
-        ;; Update stats
-        (set total-rows-sym (+ (eval total-rows-sym) nrows))
-        (printf "zmq-hdbw: flushed %d %s rows to %s\n" nrows tbl-name path) )
+      ;; Use local_time for ticker (always set), time for l2
+      (let ((time-col (if (= tbl-name "ticker") "local_time" "time")))
+        ;; Check first and last row dates to detect midnight boundary
+        (let ((first-date (_hdbw-epoch-to-date (==> local-table get 0 time-col)))
+              (last-date  (_hdbw-epoch-to-date (==> local-table get (1- nrows) time-col))) )
+          (if (= first-date last-date)
+            ;; Fast path: all rows belong to the same date partition
+            (progn
+              (_hdbw-flush-to-partition tbl-name local-table first-date)
+              (set total-rows-sym (+ (eval total-rows-sym) nrows)) )
+            ;; Slow path: rows span a date boundary — split by date
+            (progn
+              (printf "zmq-hdbw: batch spans midnight (%s -> %s), splitting %d rows\n"
+                      first-date last-date nrows)
+              ;; Find the split point (first row belonging to the new date).
+              ;; Rows are chronologically ordered, so we just scan forward.
+              (let ((split-idx nrows))
+                (for (r 1 (1- nrows))
+                  (when (= split-idx nrows)
+                    (when (<> first-date (_hdbw-epoch-to-date
+                                           (==> local-table get r time-col)))
+                      (setq split-idx r) ) ) )
+                ;; Flush old-date rows (0 .. split-idx-1)
+                (let ((idx1 (int-matrix split-idx)))
+                  (for (i 0 (1- split-idx)) (idx1 i i))
+                  (let ((dt1 (==> local-table select-rows-idx idx1)))
+                    (_hdbw-flush-to-partition tbl-name dt1 first-date)
+                    (set total-rows-sym (+ (eval total-rows-sym) split-idx)) ) )
+                ;; Flush new-date rows (split-idx .. nrows-1)
+                (let ((n2 (- nrows split-idx)))
+                  (let ((idx2 (int-matrix n2)))
+                    (for (i 0 (1- n2)) (idx2 i (+ split-idx i)))
+                    (let ((dt2 (==> local-table select-rows-idx idx2)))
+                      (_hdbw-flush-to-partition tbl-name dt2 last-date)
+                      (set total-rows-sym (+ (eval total-rows-sym) n2)) ) ) ) ) ) ) ) )
       ;; Reset local table (create fresh with same schema)
       (let ((new-table (new DataTable))
-            (names (==> local-table col-names))
-            (types (==> local-table col-types)) )
-        (let ((rest-names (copy-list names))
-              (rest-types (copy-list types)) )
-          (while rest-names
-            (==> new-table add-column (car rest-names) (car rest-types))
-            (setq rest-names (cdr rest-names))
-            (setq rest-types (cdr rest-types)) ) )
+            (rest-names (==> local-table col-names))
+            (rest-types (==> local-table col-types)) )
+        (while rest-names
+          (==> new-table add-column (car rest-names) (car rest-types))
+          (setq rest-names (cdr rest-names))
+          (setq rest-types (cdr rest-types)) )
         new-table ) ) ) )
 
 
@@ -181,6 +259,7 @@
   (setq *zmq-hdbw-total-queries* 0)
   (setq *zmq-hdbw-start-time* (_wire-time-seconds))
   (setq *zmq-hdbw-last-flush-time* (_wire-time-seconds))
+  (setq *zmq-hdbw-last-heartbeat* (_wire-time-seconds))
 
   ;; Initialize local tables
   (zmq-hdbw-init-tables)
@@ -260,7 +339,18 @@
                 (zmq-router-send-reply *zmq-hdbw-router* result) ) ) ) ) ) )
 
     ;; Check flush timing
-    (zmq-hdbw-check-flush) )
+    (zmq-hdbw-check-flush)
+
+    ;; Periodic heartbeat (every 30s)
+    (let ((now (_wire-time-seconds)))
+      (when (>= (- now *zmq-hdbw-last-heartbeat*) 30)
+        (printf "zmq-hdbw: heartbeat  pending-tick=%d pending-l2=%d flushes=%d total-tick=%d total-l2=%d queries=%d uptime=%ds\n"
+                (==> *zmq-hdbw-ticker-table* num-rows)
+                (==> *zmq-hdbw-l2-table* num-rows)
+                *zmq-hdbw-total-flushes* *zmq-hdbw-total-ticker-rows*
+                *zmq-hdbw-total-l2-rows* *zmq-hdbw-total-queries*
+                (to-int (- now *zmq-hdbw-start-time*)))
+        (setq *zmq-hdbw-last-heartbeat* now) ) ) )
 
   ;; Final flush
   (printf "\nzmq-hdbw: final flush...\n")
@@ -268,9 +358,9 @@
 
   ;; Shutdown
   (printf "zmq-hdbw: shutting down...\n")
-  (zmq-close *zmq-hdbw-sub*)
-  (zmq-close *zmq-hdbw-router*)
-  (zmq-ctx-term *zmq-hdbw-ctx*)
+  (when *zmq-hdbw-sub* (zmq-close *zmq-hdbw-sub*))
+  (when *zmq-hdbw-router* (zmq-close *zmq-hdbw-router*))
+  (when *zmq-hdbw-ctx* (zmq-ctx-term *zmq-hdbw-ctx*))
   (printf "zmq-hdbw: stopped (%d flushes, %d ticker, %d l2 rows)\n"
           *zmq-hdbw-total-flushes* *zmq-hdbw-total-ticker-rows*
           *zmq-hdbw-total-l2-rows*) )

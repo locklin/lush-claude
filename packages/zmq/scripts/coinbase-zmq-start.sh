@@ -16,6 +16,11 @@
 
 set -e
 
+# lush-pkg stores built libraries under $HOME/.lush/local;
+# in sandboxed environments /home/scott is read-only, so point HOME
+# to the writable /tmp/claude tree where lush-pkg previously built libuv/curl.
+export HOME=${LUSH_HOME:-/tmp/claude}
+
 LUSH=./src/lush
 DATA_DIR=/datafast1/experiment/coinbasedata-zmq
 CTRL_DIR=$DATA_DIR/.ctrl

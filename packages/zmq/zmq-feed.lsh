@@ -33,12 +33,17 @@
 (defvar *zmq-fh-router* ())
 (defvar *zmq-fh-running* ())
 (defvar *zmq-fh-pub-count* 0)
+(defvar *zmq-fh-last-heartbeat* 0)
+(defvar *zmq-fh-start-time* 0)
+(defvar *zmq-fh-last-data-time* 0)  ;; last time we received any feed data
+(defvar *zmq-fh-stale-timeout* 60)  ;; seconds with no data before reconnect
 
 ;; ============================================================
 ;; ZMQ broadcast (replaces fh-broadcast)
 ;; ============================================================
 
 (de zmq-fh-broadcast (data)
+  (setq *zmq-fh-last-data-time* (_wire-time-seconds))
   (when *zmq-fh-pub*
     (cond
      ;; Ticker message: (ticker alist)
@@ -91,6 +96,9 @@
   ;; Reset state
   (setq *zmq-fh-running* t)
   (setq *zmq-fh-pub-count* 0)
+  (setq *zmq-fh-start-time* (_wire-time-seconds))
+  (setq *zmq-fh-last-heartbeat* (_wire-time-seconds))
+  (setq *zmq-fh-last-data-time* (_wire-time-seconds))
   (setq *fh-handles* ())
   (setq *fh-ws-client* ())
   (setq *fh-ws-poll-id* ())
@@ -163,7 +171,26 @@
             (let ((result (zmq-fh-handle-query query)))
               (zmq-router-send-reply *zmq-fh-router* result) ) ) ) ) )
 
-    (setq *fh-stats-ticks* (1+ *fh-stats-ticks*)) )
+    (setq *fh-stats-ticks* (1+ *fh-stats-ticks*))
+
+    ;; Periodic heartbeat (every 30s) — complements libuv's 5s heartbeat
+    (let ((now (_wire-time-seconds)))
+      (when (>= (- now *zmq-fh-last-heartbeat*) 30)
+        (printf "zmq-fh: heartbeat  pub=%d tickers=%d l2=%d events=%d hb=%d uptime=%ds\n"
+                *zmq-fh-pub-count* *fh-stats-tickers* *fh-stats-l2*
+                *fh-stats-events* *fh-stats-heartbeats*
+                (to-int (- now *zmq-fh-start-time*)))
+        (setq *zmq-fh-last-heartbeat* now) )
+
+      ;; Stale connection detection: if no data received for 60s,
+      ;; force a reconnect (handles half-dead TCP connections)
+      (when (and *fh-ws-client*
+                 (> *zmq-fh-last-data-time* 0)
+                 (>= (- now *zmq-fh-last-data-time*) *zmq-fh-stale-timeout*))
+        (printf "zmq-fh: no data for %ds, forcing reconnect\n"
+                (to-int (- now *zmq-fh-last-data-time*)))
+        (fh-schedule-reconnect)
+        (setq *zmq-fh-last-data-time* now) ) ) )
 
   ;; Shutdown
   (printf "\nzmq-fh: shutting down...\n")
@@ -186,9 +213,9 @@
   (uv-loop-close *fh-loop*)
 
   ;; Close ZMQ
-  (zmq-close *zmq-fh-pub*)
-  (zmq-close *zmq-fh-router*)
-  (zmq-ctx-term *zmq-fh-ctx*)
+  (when *zmq-fh-pub* (zmq-close *zmq-fh-pub*))
+  (when *zmq-fh-router* (zmq-close *zmq-fh-router*))
+  (when *zmq-fh-ctx* (zmq-ctx-term *zmq-fh-ctx*))
 
   (printf "zmq-fh: stopped (tickers=%d l2=%d pub=%d)\n"
           *fh-stats-tickers* *fh-stats-l2* *zmq-fh-pub-count*) )

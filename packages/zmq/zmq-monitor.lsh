@@ -40,6 +40,9 @@
 ;; Shared context for monitor queries (created on first use)
 (defvar *zmq-monitor-ctx* ())
 
+;; Sequence counter for unique DEALER identities
+(defvar *zmq-monitor-seq* 0)
+
 
 ;; ============================================================
 ;; Internal: ephemeral query helper
@@ -49,10 +52,12 @@
   ;; Create shared context if needed
   (when (not *zmq-monitor-ctx*)
     (setq *zmq-monitor-ctx* (zmq-ctx-new)) )
+  ;; Unique identity per query (avoids ZMQ ROUTER identity collisions)
+  (setq *zmq-monitor-seq* (1+ *zmq-monitor-seq*))
   ;; Create ephemeral DEALER, connect, query, close
   (let ((dealer (zmq-socket *zmq-monitor-ctx* *zmq-dealer*)))
     (zmq-set-linger dealer 0)
-    (zmq-set-identity dealer (sprintf "mon-%d" (mod (_wire-time-seconds) 100000)))
+    (zmq-set-identity dealer (sprintf "mon-%d" *zmq-monitor-seq*))
     (zmq-connect dealer (sprintf "tcp://%s:%d"
                                   *zmq-monitor-gw-host* *zmq-monitor-gw-port*))
     ;; Send query

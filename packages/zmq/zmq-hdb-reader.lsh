@@ -30,6 +30,8 @@
 (defvar *zmq-hdbr-ctx* ())
 (defvar *zmq-hdbr-router* ())
 (defvar *zmq-hdbr-running* ())
+(defvar *zmq-hdbr-last-discover* 0)
+(defvar *zmq-hdbr-last-heartbeat* 0)
 
 ;; ============================================================
 ;; Main entry point
@@ -54,6 +56,8 @@
 
   ;; Discover date partitions
   (hdbr-discover)
+  (setq *zmq-hdbr-last-discover* (_wire-time-seconds))
+  (setq *zmq-hdbr-last-heartbeat* (_wire-time-seconds))
 
   ;; Create ZMQ context and socket
   (setq *zmq-hdbr-ctx* (zmq-ctx-new))
@@ -76,10 +80,22 @@
         (let ((query (zmq-router-recv-query *zmq-hdbr-router*)))
           (when query
             (let ((result (hdbr-handle-query query)))
-              (zmq-router-send-reply *zmq-hdbr-router* result) ) ) ) ) ) )
+              (zmq-router-send-reply *zmq-hdbr-router* result) ) ) ) ) )
+    ;; Auto-refresh date partitions every 30s
+    (let ((now (_wire-time-seconds)))
+      (when (>= (- now *zmq-hdbr-last-discover*) 30)
+        (hdbr-discover)
+        (setq *zmq-hdbr-last-discover* now) )
+      ;; Periodic heartbeat (every 30s)
+      (when (>= (- now *zmq-hdbr-last-heartbeat*) 30)
+        (printf "zmq-hdbr: heartbeat  dates=%d tables=%d queries=%d uptime=%ds\n"
+                (length *hdbr-dates*) (length *hdbr-tables*)
+                *hdbr-total-queries*
+                (to-int (- now *hdbr-start-time*)))
+        (setq *zmq-hdbr-last-heartbeat* now) ) ) )
 
   ;; Shutdown
   (printf "\nzmq-hdbr: shutting down...\n")
-  (zmq-close *zmq-hdbr-router*)
-  (zmq-ctx-term *zmq-hdbr-ctx*)
+  (when *zmq-hdbr-router* (zmq-close *zmq-hdbr-router*))
+  (when *zmq-hdbr-ctx* (zmq-ctx-term *zmq-hdbr-ctx*))
   (printf "zmq-hdbr: stopped (%d queries served)\n" *hdbr-total-queries*) )

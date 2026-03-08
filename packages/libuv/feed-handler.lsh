@@ -223,8 +223,9 @@
 (de fh-on-feed-message (msg)
   (setq *fh-stats-events* (1+ *fh-stats-events*))
   (when (> (len msg) 0)
-    (let ((mtype (json-msg-type msg)))
-      (cond
+    (let ((dispatch-ok (on-error ()
+      (let ((mtype (json-msg-type msg)))
+        (cond
 
        ;; ---- L2 order book update ----
        ((= mtype 'l2update)
@@ -287,7 +288,10 @@
 
        ;; ---- Unknown message type ----
        (t
-        (fh-broadcast (list 'message (json-parse msg))) ) ) ) ) )
+        (fh-broadcast (list 'message (json-parse msg))) ) )
+        t ) )))
+      (when (not dispatch-ok)
+        (printf "feed-handler: message dispatch error (skipped)\n") ) ) ) )
 
 
 #? (fh-on-poll <handle-id> <status>)

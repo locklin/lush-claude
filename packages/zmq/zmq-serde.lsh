@@ -33,7 +33,7 @@
 ;;.SEE (zmq-query-recv <sock>)
 
 ;; Shared send buffer for serialization
-(defvar *zmq-send-buf* (ubyte-matrix 65536))
+(defvar *zmq-send-buf* (ubyte-matrix *zmq-recv-buf-size*))
 
 ;; ============================================================
 ;; PUB/SUB helpers
@@ -65,7 +65,7 @@
 (de zmq-sub-recv (sock &optional flags)
   (let ((f (if flags flags 0)))
     ;; Receive topic frame
-    (let ((n (_zmq-recv sock *zmq-recv-buf* 65536 f)))
+    (let ((n (_zmq-recv sock *zmq-recv-buf* *zmq-recv-buf-size* f)))
       (when (>= n 0)
         (let ((topic ""))
           (for (i 0 (1- n))
@@ -74,7 +74,7 @@
           (if (not (zmq-get-rcvmore sock))
             (list topic ())
             ;; Receive payload frame
-            (let ((pn (_zmq-recv sock *zmq-recv-buf* 65536 0)))
+            (let ((pn (_zmq-recv sock *zmq-recv-buf* *zmq-recv-buf-size* 0)))
               (if (< pn 0)
                 (list topic ())
                 ;; Deserialize via bread
@@ -109,11 +109,11 @@
 (de zmq-query-recv (sock &optional flags)
   (let ((f (if flags flags 0)))
     ;; Receive empty delimiter frame
-    (let ((n (_zmq-recv sock *zmq-recv-buf* 65536 f)))
+    (let ((n (_zmq-recv sock *zmq-recv-buf* *zmq-recv-buf-size* f)))
       (when (>= n 0)
         ;; Receive payload frame
         (when (zmq-get-rcvmore sock)
-          (let ((pn (_zmq-recv sock *zmq-recv-buf* 65536 0)))
+          (let ((pn (_zmq-recv sock *zmq-recv-buf* *zmq-recv-buf-size* 0)))
             (when (>= pn 0)
               (let ((payload-buf (ubyte-matrix pn)))
                 (for (i 0 (1- pn))

@@ -1,0 +1,86 @@
+;;; monitor-query.lsh -- One-shot monitor query for the ZMQ pipeline
+;;;
+;;; Runs a set of queries against the ZMQ gateway and prints results,
+;;; then exits.  Used by the monitoring loop in the pipeline launcher.
+;;; Uses efficient queries (last-n, not full where) to avoid buffer overflow.
+
+(libload "zmq/zmq-monitor")
+
+;; Helper: extract last row from a DataTable as an alist
+(de _mon-last-row (dt)
+  (let ((n (==> dt num-rows)))
+    (when (> n 0)
+      (let ((r (1- n))
+            (cols (==> dt col-names))
+            (result ()) )
+        (let ((rest cols))
+          (while rest
+            (setq result (nconc1 result
+              (cons (car rest) (==> dt get r (car rest)))))
+            (setq rest (cdr rest)) ) )
+        result ) ) ) )
+
+(printf "--- Status Ping ---\n")
+(let ((status (zmq-coinbase-status)))
+  (let ((rest status))
+    (while rest
+      (let ((entry (car rest)))
+        (let ((name (car entry))
+              (val (cdr entry)) )
+          (cond
+           ((= name "rdb-stats")
+            (printf "RDB: ")
+            (when (consp val)
+              (let ((rows (cdr (assoc "ticker_rows" val)))
+                    (queries (cdr (assoc "queries" val))) )
+                (printf "rows=%l queries=%l\n" rows queries) ) ) )
+           ((= name "ana-stats")
+            (printf "ANA: ")
+            (when (consp val)
+              (let ((products (cdr (assoc "products" val)))
+                    (updates (cdr (assoc "updates" val))) )
+                (printf "products=%l updates=%l\n" products updates) ) ) )
+           (t
+            (printf "%-8s %l\n" name val) ) ) ) )
+      (setq rest (cdr rest)) ) ) )
+
+;; Use last-n (returns only 1 row) instead of last-trade (returns ALL matching rows)
+(printf "\n--- Last Trade (ticker last 1) ---\n")
+(let ((dt (zmq-coinbase-last-n "ticker" 1)))
+  (if (and dt (not (stringp dt)))
+    (let ((row (_mon-last-row dt)))
+      (if (consp row)
+        (progn
+          (printf "  product: %l\n" (cdr (assoc "product" row)))
+          (printf "  price:   %l\n" (cdr (assoc "price" row)))
+          (printf "  bid:     %l\n" (cdr (assoc "bid" row)))
+          (printf "  ask:     %l\n" (cdr (assoc "ask" row)))
+          (printf "  side:    %l\n" (cdr (assoc "side" row)))
+          (printf "  vol:     %l\n" (cdr (assoc "volume" row))) )
+        (printf "  (no rows)\n") ) )
+    (printf "  result: %l\n" dt) ) )
+
+(printf "\n--- VWAP ---\n")
+(let ((btc-vwap (zmq-coinbase-vwap "BTC-USD"))
+      (eth-vwap (zmq-coinbase-vwap "ETH-USD")) )
+  (printf "  BTC-USD: %l\n" btc-vwap)
+  (printf "  ETH-USD: %l\n" eth-vwap) )
+
+(printf "\n--- Analytics (BTC-USD) ---\n")
+(let ((ana (zmq-coinbase-analytics "BTC-USD")))
+  (if (consp ana)
+    (let ((rest ana))
+      (while rest
+        (printf "  %s: %l\n" (car (car rest)) (cdr (car rest)))
+        (setq rest (cdr rest)) ) )
+    (printf "  result: %l\n" ana) ) )
+
+(printf "\n--- HDB Stats ---\n")
+(let ((hdb (zmq-coinbase-hdb-count)))
+  (let ((rest hdb))
+    (while rest
+      (printf "  %s: %l\n" (car (car rest)) (cdr (car rest)))
+      (setq rest (cdr rest)) ) ) )
+
+(printf "\n")
+(exit 0)

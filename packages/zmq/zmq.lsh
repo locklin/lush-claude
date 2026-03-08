@@ -280,8 +280,9 @@
 ;; Interpreted high-level API
 ;; ============================================================
 
-;; Shared receive buffer (64KB — larger than typical messages)
-(defvar *zmq-recv-buf* (ubyte-matrix 65536))
+;; Shared receive buffer (1MB — needs to handle large DataTable responses)
+(defvar *zmq-recv-buf* (ubyte-matrix 1048576))
+(defvar *zmq-recv-buf-size* 1048576)
 
 #? ** Context API
 
@@ -457,7 +458,7 @@
 ;; {<see> *zmq-recv-buf*}
 (de zmq-recv-bytes (sock &optional flags)
   (let ((f (if flags flags 0)))
-    (_zmq-recv sock *zmq-recv-buf* 65536 f) ) )
+    (_zmq-recv sock *zmq-recv-buf* *zmq-recv-buf-size* f) ) )
 
 
 #? (zmq-recv-string <sock> [<flags>])
@@ -490,7 +491,7 @@
 ;; Use {<b> zmq-router-send} to reply (identity is replayed automatically).
 ;; {<see> (zmq-router-send <sock> <buf> <len>)}
 (de zmq-router-recv (sock)
-  (_zmq-router-recv sock *zmq-recv-buf* 65536) )
+  (_zmq-router-recv sock *zmq-recv-buf* *zmq-recv-buf-size*) )
 
 
 #? (zmq-router-send <sock> <buf> <len>)

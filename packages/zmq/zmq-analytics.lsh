@@ -33,6 +33,7 @@
 (defvar *zmq-ana-router* ())
 (defvar *zmq-ana-running* ())
 (defvar *zmq-ana-ticker-count* 0)
+(defvar *zmq-ana-last-heartbeat* 0)
 
 ;; ============================================================
 ;; Main entry point
@@ -58,6 +59,7 @@
   (setq *ana-total-updates* 0)
   (setq *ana-total-queries* 0)
   (setq *ana-start-time* (_wire-time-seconds))
+  (setq *zmq-ana-last-heartbeat* (_wire-time-seconds))
 
   ;; Initialize analytics table
   (ana-init-table)
@@ -112,13 +114,23 @@
           (let ((query (zmq-router-recv-query *zmq-ana-router*)))
             (when query
               (let ((result (ana-handle-query query)))
-                (zmq-router-send-reply *zmq-ana-router* result) ) ) ) ) ) ) )
+                (zmq-router-send-reply *zmq-ana-router* result) ) ) ) ) ) )
+
+    ;; Periodic heartbeat (every 30s)
+    (let ((now (_wire-time-seconds)))
+      (when (>= (- now *zmq-ana-last-heartbeat*) 30)
+        (printf "zmq-ana: heartbeat  tickers=%d updates=%d products=%d queries=%d rows=%d uptime=%ds\n"
+                *zmq-ana-ticker-count* *ana-total-updates*
+                (length *ana-products*) *ana-total-queries*
+                (==> *ana-table* num-rows)
+                (to-int (- now *ana-start-time*)))
+        (setq *zmq-ana-last-heartbeat* now) ) ) )
 
   ;; Shutdown
   (printf "\nzmq-ana: shutting down...\n")
-  (zmq-close *zmq-ana-sub*)
-  (zmq-close *zmq-ana-router*)
-  (zmq-ctx-term *zmq-ana-ctx*)
+  (when *zmq-ana-sub* (zmq-close *zmq-ana-sub*))
+  (when *zmq-ana-router* (zmq-close *zmq-ana-router*))
+  (when *zmq-ana-ctx* (zmq-ctx-term *zmq-ana-ctx*))
   (printf "zmq-ana: stopped (%d tickers, %d updates, %d rows, %d queries)\n"
           *zmq-ana-ticker-count* *ana-total-updates*
           (==> *ana-table* num-rows) *ana-total-queries*) )
