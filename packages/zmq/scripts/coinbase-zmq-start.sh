@@ -61,9 +61,12 @@ echo "  HDB Writer:          19975"
 echo "  Feed Handler CTRL:   19976"
 echo ""
 
+TIMESTAMP=$(date '+%Y-%m-%d %H:%M:%S')
+
 # 1. Feed Handler (must start first — others subscribe to it)
 echo -n "Starting feed handler... "
-nohup $LUSH "$SCRIPT_DIR/coinbase-zmq-feed.lsh" > "$LOG_DIR/feed-handler.log" 2>&1 &
+echo "=== started $TIMESTAMP ===" >> "$LOG_DIR/feed-handler.log"
+nohup $LUSH "$SCRIPT_DIR/coinbase-zmq-feed.lsh" >> "$LOG_DIR/feed-handler.log" 2>&1 &
 echo $! > "$CTRL_DIR/feed-handler.pid"
 echo "PID=$! (pub=19970 ctrl=19976)"
 
@@ -72,25 +75,29 @@ sleep 2
 
 # 2. RDB (subscribes to feed handler)
 echo -n "Starting RDB... "
-nohup $LUSH "$SCRIPT_DIR/coinbase-zmq-rdb.lsh" > "$LOG_DIR/rdb.log" 2>&1 &
+echo "=== started $TIMESTAMP ===" >> "$LOG_DIR/rdb.log"
+nohup $LUSH "$SCRIPT_DIR/coinbase-zmq-rdb.lsh" >> "$LOG_DIR/rdb.log" 2>&1 &
 echo $! > "$CTRL_DIR/rdb.pid"
 echo "PID=$! (port 19971)"
 
 # 3. HDB Writer (subscribes directly to feed handler)
 echo -n "Starting HDB writer... "
-nohup $LUSH "$SCRIPT_DIR/coinbase-zmq-hdb-writer.lsh" > "$LOG_DIR/hdb-writer.log" 2>&1 &
+echo "=== started $TIMESTAMP ===" >> "$LOG_DIR/hdb-writer.log"
+nohup $LUSH "$SCRIPT_DIR/coinbase-zmq-hdb-writer.lsh" >> "$LOG_DIR/hdb-writer.log" 2>&1 &
 echo $! > "$CTRL_DIR/hdb-writer.pid"
 echo "PID=$! (port 19975)"
 
 # 4. HDB Reader (reads from disk, no upstream dependency)
 echo -n "Starting HDB reader... "
-nohup $LUSH "$SCRIPT_DIR/coinbase-zmq-hdb-reader.lsh" > "$LOG_DIR/hdb-reader.log" 2>&1 &
+echo "=== started $TIMESTAMP ===" >> "$LOG_DIR/hdb-reader.log"
+nohup $LUSH "$SCRIPT_DIR/coinbase-zmq-hdb-reader.lsh" >> "$LOG_DIR/hdb-reader.log" 2>&1 &
 echo $! > "$CTRL_DIR/hdb-reader.pid"
 echo "PID=$! (port 19972)"
 
 # 5. Analytics (subscribes directly to feed handler)
 echo -n "Starting analytics... "
-nohup $LUSH "$SCRIPT_DIR/coinbase-zmq-analytics.lsh" > "$LOG_DIR/analytics.log" 2>&1 &
+echo "=== started $TIMESTAMP ===" >> "$LOG_DIR/analytics.log"
+nohup $LUSH "$SCRIPT_DIR/coinbase-zmq-analytics.lsh" >> "$LOG_DIR/analytics.log" 2>&1 &
 echo $! > "$CTRL_DIR/analytics.pid"
 echo "PID=$! (port 19973)"
 
@@ -99,7 +106,8 @@ sleep 2
 
 # 6. Gateway (connects to all backends)
 echo -n "Starting gateway... "
-nohup $LUSH "$SCRIPT_DIR/coinbase-zmq-gateway.lsh" > "$LOG_DIR/gateway.log" 2>&1 &
+echo "=== started $TIMESTAMP ===" >> "$LOG_DIR/gateway.log"
+nohup $LUSH "$SCRIPT_DIR/coinbase-zmq-gateway.lsh" >> "$LOG_DIR/gateway.log" 2>&1 &
 echo $! > "$CTRL_DIR/gateway.pid"
 echo "PID=$! (port 19974)"
 

@@ -1,0 +1,240 @@
+;;; coinbase-rdb.lsh -- Coinbase RDB business logic (transport-agnostic)
+;;;
+;;; Table schemas, data insertion, and query handling for the real-time
+;;; database.  Used by zmq-rdb.lsh (and formerly libuv/rdb.lsh).
+;;;
+;;; This module contains only transport-agnostic logic: DataTable schemas,
+;;; row insertion, and query dispatch.  No wire protocol, no ZMQ, no
+;;; event loops.
+
+(libload "wire/wire-serialize")
+(libload "datatable/datatable")
+(libload "timedate/timedate")
+
+#? *** Coinbase RDB: Real-time Database Logic
+;; Transport-agnostic business logic for the Coinbase real-time database.
+;; Provides table schemas, data insertion, and query handling.
+;;
+;; The RDB accumulates ticker and L2 data into DataTables and serves
+;; queries (snapshot, where, select, count, last, rows-from, stats).
+;;
+;; Used by the ZMQ RDB process ({<b> zmq-rdb.lsh}).
+;;
+;; Example:
+;; {<code>
+;;  (libload "zmq/coinbase-rdb")
+;;  (rdb-init-tables)
+;;  (rdb-insert-ticker '(("product" . "BTC-USD") ("price" . 50000)))
+;;  (rdb-handle-query "stats")
+;; </code>}
+;; {<see> (rdb-init-tables)}
+;; {<see> (rdb-insert-ticker <data>)}
+;; {<see> (rdb-handle-query <expr>)}
+
+;; ============================================================
+;; RDB state
+;; ============================================================
+
+(defvar *rdb-ticker-table* ())       ;; DataTable accumulating ticker rows
+(defvar *rdb-l2-table* ())           ;; DataTable accumulating L2 rows
+(defvar *rdb-running* ())            ;; main loop flag
+(defvar *rdb-total-tickers* 0)       ;; count of ticker broadcasts processed
+(defvar *rdb-total-l2* 0)            ;; count of L2 broadcasts processed
+(defvar *rdb-total-broadcasts* 0)    ;; total broadcasts received
+(defvar *rdb-start-time* 0)          ;; start timestamp (seconds)
+
+
+;; ============================================================
+;; Table initialization
+;; ============================================================
+
+#? (rdb-init-tables)
+;; Create empty ticker and L2 DataTables with the correct schema.
+;; Ticker: product(string), price(real), bid(real), ask(real), side(string),
+;;         volume(real), time(stamp), local_time(stamp)
+;; L2: side(int), price(real), quantity(real), time(stamp), product(string)
+(de rdb-init-tables ()
+  ;; Ticker table
+  (setq *rdb-ticker-table* (new DataTable))
+  (==> *rdb-ticker-table* add-column "product" 'string)
+  (==> *rdb-ticker-table* add-column "price" 'real)
+  (==> *rdb-ticker-table* add-column "bid" 'real)
+  (==> *rdb-ticker-table* add-column "ask" 'real)
+  (==> *rdb-ticker-table* add-column "side" 'string)
+  (==> *rdb-ticker-table* add-column "volume" 'real)
+  (==> *rdb-ticker-table* add-column "time" 'stamp)
+  (==> *rdb-ticker-table* add-column "local_time" 'stamp)
+
+  ;; L2 table
+  (setq *rdb-l2-table* (new DataTable))
+  (==> *rdb-l2-table* add-column "side" 'int)
+  (==> *rdb-l2-table* add-column "price" 'real)
+  (==> *rdb-l2-table* add-column "quantity" 'real)
+  (==> *rdb-l2-table* add-column "time" 'stamp)
+  (==> *rdb-l2-table* add-column "product" 'string) )
+
+
+;; ============================================================
+;; Data insertion
+;; ============================================================
+
+#? (rdb-insert-ticker <data>)
+;; Append one ticker alist as a row in *rdb-ticker-table*.
+;; <data> is the ticker alist: (("product" . "BTC-USD") ("price" . 50050.5) ...)
+;; Stamps local_time with (timestamp-now) at receive time.
+(de rdb-insert-ticker (data)
+  (let ((product (cdr (assoc "product" data)))
+        (price (cdr (assoc "price" data)))
+        (bid (cdr (assoc "best_bid" data)))
+        (ask (cdr (assoc "best_ask" data)))
+        (side (cdr (assoc "side" data)))
+        (volume (cdr (assoc "volume" data)))
+        (time (cdr (assoc "time" data)))
+        (local-time (timestamp-now)) )
+    (==> *rdb-ticker-table* append-row
+         (list (or product "")
+               (or price 0)
+               (or bid 0)
+               (or ask 0)
+               (or side "")
+               (or volume 0)
+               (or time 0)
+               local-time ))
+    (setq *rdb-total-tickers* (1+ *rdb-total-tickers*)) ) )
+
+
+#? (rdb-insert-l2 <dt>)
+;; Append all rows from an L2 DataTable into *rdb-l2-table*.
+;; <dt> is the broadcast DataTable with columns: side, price, quantity, time, product.
+(de rdb-insert-l2 (dt)
+  (let ((nrows (==> dt num-rows)))
+    (when (> nrows 0)
+      (for (r 0 (1- nrows))
+        (==> *rdb-l2-table* append-row
+             (list (==> dt get r "side")
+                   (==> dt get r "price")
+                   (==> dt get r "quantity")
+                   (==> dt get r "time")
+                   (==> dt get r "product") )) )
+      (setq *rdb-total-l2* (1+ *rdb-total-l2*)) ) ) )
+
+
+;; ============================================================
+;; Query interface
+;; ============================================================
+
+#? (rdb-handle-query <expr>)
+;; Dispatch queries on the RDB tables.  Returns the query result.
+;;
+;; Supported queries:
+;; {<ul>
+;; {<li> {<b> "tables"} -- list of table names.}
+;; {<li> {<b> "ping"} -- health check (returns "pong").}
+;; {<li> {<b> "stats"} -- RDB statistics alist.}
+;; {<li> {<b> ("count" <tbl>)} -- row count for <tbl>.}
+;; {<li> {<b> ("last" <tbl> N)} -- last N rows.}
+;; {<li> {<b> ("select" <tbl> <cols>)} -- column projection.}
+;; {<li> {<b> ("where" <tbl> <op> <col> <val>)} -- filtered rows.}
+;; {<li> {<b> ("snapshot" <tbl>)} -- full table as packed DataTable.}
+;; {<li> {<b> ("rows-from" <tbl> N)} -- rows from index N onward.}
+;; }
+(de rdb-handle-query (expr)
+  (cond
+   ;; "tables" — list of table names
+   ((= expr "tables")
+    (list "ticker" "l2") )
+
+   ;; "ping" — health check
+   ((= expr "ping")
+    "pong" )
+
+   ;; "stats" — RDB statistics
+   ((= expr "stats")
+    (list (cons "tickers" *rdb-total-tickers*)
+          (cons "l2" *rdb-total-l2*)
+          (cons "broadcasts" *rdb-total-broadcasts*)
+          (cons "ticker_rows" (==> *rdb-ticker-table* num-rows))
+          (cons "l2_rows" (==> *rdb-l2-table* num-rows))
+          (cons "uptime" (- (_wire-time-seconds) *rdb-start-time*)) ) )
+
+   ;; ("count" "ticker") or ("count" "l2") — row count
+   ((and (consp expr) (= (car expr) "count"))
+    (let ((tbl (cadr expr)))
+      (cond
+       ((= tbl "ticker") (==> *rdb-ticker-table* num-rows))
+       ((= tbl "l2") (==> *rdb-l2-table* num-rows))
+       (t (sprintf "unknown table: %s" tbl)) ) ) )
+
+   ;; ("last" "ticker" N) or ("last" "l2" N) — last N rows
+   ((and (consp expr) (= (car expr) "last"))
+    (let ((tbl (cadr expr))
+          (n (caddr expr)) )
+      (let ((dt (cond ((= tbl "ticker") *rdb-ticker-table*)
+                      ((= tbl "l2") *rdb-l2-table*)
+                      (t ()) )))
+        (if (not dt)
+          (sprintf "unknown table: %s" tbl)
+          (let ((nrows (==> dt num-rows)))
+            (if (<= nrows 0)
+              (wire-pack-datatable dt)
+              (let ((start (max 0 (- nrows n)))
+                    (indices ()) )
+                (for (i start (1- nrows))
+                  (setq indices (nconc1 indices i)) )
+                (wire-pack-datatable (==> dt select-rows indices)) ) ) ) ) ) ) )
+
+   ;; ("select" "ticker" col-list) or ("select" "l2" col-list)
+   ((and (consp expr) (= (car expr) "select"))
+    (let ((tbl (cadr expr))
+          (col-list (caddr expr)) )
+      (let ((dt (cond ((= tbl "ticker") *rdb-ticker-table*)
+                      ((= tbl "l2") *rdb-l2-table*)
+                      (t ()) )))
+        (if (not dt)
+          (sprintf "unknown table: %s" tbl)
+          (wire-pack-datatable (==> dt select-columns col-list)) ) ) ) )
+
+   ;; ("where" "ticker" op col val) or ("where" "l2" op col val)
+   ((and (consp expr) (= (car expr) "where"))
+    (let ((tbl (cadr expr))
+          (op (caddr expr))
+          (col (cadddr expr))
+          (val (car (cddddr expr))) )
+      (let ((dt (cond ((= tbl "ticker") *rdb-ticker-table*)
+                      ((= tbl "l2") *rdb-l2-table*)
+                      (t ()) )))
+        (if (not dt)
+          (sprintf "unknown table: %s" tbl)
+          (wire-pack-datatable (==> dt where-rows op col val)) ) ) ) )
+
+   ;; ("snapshot" "ticker") or ("snapshot" "l2") — full table as packed DataTable
+   ((and (consp expr) (= (car expr) "snapshot"))
+    (let ((tbl (cadr expr)))
+      (let ((dt (cond ((= tbl "ticker") *rdb-ticker-table*)
+                      ((= tbl "l2") *rdb-l2-table*)
+                      (t ()) )))
+        (if (not dt)
+          (sprintf "unknown table: %s" tbl)
+          (wire-pack-datatable dt) ) ) ) )
+
+   ;; ("rows-from" "ticker" N) or ("rows-from" "l2" N) — rows from index N onward
+   ((and (consp expr) (= (car expr) "rows-from"))
+    (let ((tbl (cadr expr))
+          (n (caddr expr)) )
+      (let ((dt (cond ((= tbl "ticker") *rdb-ticker-table*)
+                      ((= tbl "l2") *rdb-l2-table*)
+                      (t ()) )))
+        (if (not dt)
+          (sprintf "unknown table: %s" tbl)
+          (let ((nrows (==> dt num-rows)))
+            (if (>= n nrows)
+              ;; No new rows — return empty table with same schema
+              (wire-pack-datatable (==> dt select-rows ()))
+              ;; Build index list from N to end
+              (let ((indices ()))
+                (for (i n (1- nrows))
+                  (setq indices (nconc1 indices i)) )
+                (wire-pack-datatable (==> dt select-rows indices)) ) ) ) ) ) ) )
+
+   ;; Unknown query
+   (t (sprintf "unknown query: %l" expr)) ) )

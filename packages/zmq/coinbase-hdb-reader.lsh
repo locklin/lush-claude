@@ -1,60 +1,38 @@
-;;; hdb-reader.lsh -- Historical Database Reader process
+;;; coinbase-hdb-reader.lsh -- Coinbase HDB Reader business logic (transport-agnostic)
 ;;;
-;;; Loads historical data from date-partitioned splayed format on disk
-;;; and serves queries over wire protocol.  This is the read-side
-;;; complement to the HDB Writer: it scans for date partitions,
-;;; lazy-loads tables via mmap, and answers the same query vocabulary
-;;; as the RDB (snapshot, where, select, count, meta, etc.) plus
-;;; multi-date range queries.
+;;; Date-partition discovery, table loading/caching, multi-date
+;;; concatenation, and query handling for the historical database reader.
+;;; Used by zmq-hdb-reader.lsh (and formerly libuv/hdb-reader.lsh).
 ;;;
-;;; Together with the RDB (today's in-memory data) and HDB Writer
-;;; (periodic flush to disk), the HDB Reader completes the data
-;;; lifecycle: collect → accumulate → persist → query.
-;;;
-;;; Disk layout (read by HDB Reader, written by HDB Writer):
-;;;   <hdb-root>/
-;;;     2024.06.15/
-;;;       ticker/   meta.lsh, col-0.col, ...
-;;;       l2/       meta.lsh, col-0.col, ...
-;;;     2024.06.16/
-;;;       ticker/   ...
-;;;       l2/       ...
-;;;
-;;; Usage:
-;;;   lush hdb-reader.lsh                         ;; standalone (port 19962, /tmp/hdb)
-;;;   lush -e '(libload "libuv/hdb-reader") (hdbr-start 19962 "/tmp/hdb")'
+;;; This module contains only transport-agnostic logic: disk I/O via
+;;; columnardb, date-partition scanning, table caching, and query dispatch.
+;;; No wire protocol, no ZMQ, no event loops.
 
-(libload "wire/wire")
 (libload "wire/wire-serialize")
 (libload "datatable/datatable")
 (libload "columnardb/columnardb")
 
-#? *** HDB Reader: Historical Database
-;; Loads historical data from date-partitioned splayed format on disk
-;; and serves queries over wire protocol.
+#? *** Coinbase HDB Reader: Historical Database Logic
+;; Transport-agnostic business logic for the Coinbase historical database
+;; reader.  Scans date-partitioned directories, lazy-loads tables via mmap,
+;; and answers queries (snapshot, where, select, count, meta, range).
 ;;
-;; Complements the HDB Writer: scans for date partitions, lazy-loads
-;; tables via mmap, and answers the same query vocabulary as the RDB
-;; (snapshot, where, select, count, meta) plus multi-date range queries.
+;; Disk layout (written by HDB Writer, read by this module):
+;; {<code>
+;;  <hdb-root>/YYYY.MM.DD/ticker/ (meta.lsh, col-*.col)
+;;  <hdb-root>/YYYY.MM.DD/l2/     (meta.lsh, col-*.col)
+;; </code>}
 ;;
-;; Disk layout (read by HDB Reader, written by HDB Writer):
-;;
-;;   <hdb-root>/YYYY.MM.DD/ticker/ (meta.lsh, col-*.col)
-;;   <hdb-root>/YYYY.MM.DD/l2/     (meta.lsh, col-*.col)
-;;
-;; Additional query types:
-;; {<ul>
-;; {<li> {<b> "dates"} -- list available date partitions.}
-;; {<li> {<b> ("range" <tbl> <from> <to>)} -- multi-date concatenation.}
-;; {<li> {<b> ("date" <date> <tbl>)} -- single-date table load.}
-;; }
+;; Used by the ZMQ HDB Reader process ({<b> zmq-hdb-reader.lsh}).
 ;;
 ;; Example:
 ;; {<code>
-;;  (libload "libuv/hdb-reader")
-;;  (hdbr-start 19962 "/tmp/hdb")
+;;  (libload "zmq/coinbase-hdb-reader")
+;;  (setq *hdbr-root* "/datafast1/experiment/coinbasedata-zmq")
+;;  (hdbr-discover)
+;;  (hdbr-handle-query "dates")
 ;; </code>}
-;; {<see> (hdbr-start <port> <hdb-root>)}
+;; {<see> (hdbr-discover)}
 ;; {<see> (hdbr-handle-query <expr>)}
 
 ;; ============================================================
@@ -63,7 +41,6 @@
 
 (defvar *hdbr-root* "/tmp/hdb")         ;; HDB root directory path
 (defvar *hdbr-running* ())              ;; main loop flag
-(defvar *hdbr-wire* ())                 ;; WireServer instance
 (defvar *hdbr-dates* ())               ;; sorted list of date strings ("2024.06.15" ...)
 (defvar *hdbr-tables* ())              ;; list of table names found ("ticker" "l2")
 (defvar *hdbr-cache* ())               ;; alist: (("date/tbl" . DataTable) ...) — lazy cache
@@ -76,9 +53,6 @@
 ;; ============================================================
 
 ;; Convert "YYYY.MM.DD" to integer YYYYMMDD for comparison.
-;; Lexicographic comparison on YYYY.MM.DD strings is equivalent to
-;; numeric comparison on YYYYMMDD, but this avoids needing string</>
-;; operators which Lush does not provide.
 (de _hdbr-date-to-int (d)
   (val (concat (mid d 1 4) (mid d 6 2) (mid d 9 2))) )
 
@@ -222,9 +196,25 @@
 ;; ============================================================
 
 #? (hdbr-handle-query <expr>)
-;; WireServer on-sync handler: dispatch queries on the HDB tables.
+;; Dispatch queries on the HDB tables.  Returns the query result.
 ;; Mirrors the RDB query interface for consistency.
-;; Returns the query result.
+;;
+;; Supported queries:
+;; {<ul>
+;; {<li> {<b> "ping"} -- health check.}
+;; {<li> {<b> "dates"} -- list date partitions.}
+;; {<li> {<b> "tables"} -- list table names.}
+;; {<li> {<b> "stats"} -- HDB reader statistics.}
+;; {<li> {<b> "refresh"} -- rescan disk for new partitions.}
+;; {<li> {<b> ("count" <date> <tbl>)} -- row count.}
+;; {<li> {<b> ("meta" <date> <tbl>)} -- table metadata.}
+;; {<li> {<b> ("snapshot" <date> <tbl>)} -- full table.}
+;; {<li> {<b> ("last" <date> <tbl> N)} -- last N rows.}
+;; {<li> {<b> ("select" <date> <tbl> <cols>)} -- column projection.}
+;; {<li> {<b> ("where" <date> <tbl> <op> <col> <val>)} -- filtered rows.}
+;; {<li> {<b> ("range" <tbl> <from> <to>)} -- multi-date concatenation.}
+;; {<li> {<b> ("range-where" <tbl> <from> <to> <op> <col> <val>)} -- filtered range.}
+;; }
 (de hdbr-handle-query (expr)
   (setq *hdbr-total-queries* (1+ *hdbr-total-queries*))
   (cond
@@ -383,69 +373,3 @@
     (when *hdbr-dates*
       (printf "hdbr: date range: %s to %s\n"
               (car *hdbr-dates*) (nth (1- (length *hdbr-dates*)) *hdbr-dates*)) ) ) )
-
-
-;; ============================================================
-;; Main entry point
-;; ============================================================
-
-#? (hdbr-start <port> <hdb-root>)
-;; Start the HDB Reader: discover dates, start WireServer, enter serve loop.
-;; <port>: wire server port for query clients.
-;; <hdb-root>: base directory containing date-partitioned data.
-;; Blocks until *hdbr-running* is set to ().
-(de hdbr-start (port hdb-root)
-  (printf "\n=== HDB Reader starting ===\n")
-  (printf "hdb root: %s\n" hdb-root)
-  (printf "query server: port %d\n\n" port)
-
-  ;; Set state
-  (setq *hdbr-root* hdb-root)
-  (setq *hdbr-running* t)
-  (setq *hdbr-cache* ())
-  (setq *hdbr-total-queries* 0)
-  (setq *hdbr-start-time* (_wire-time-seconds))
-
-  ;; Discover dates
-  (hdbr-discover)
-
-  ;; Start WireServer
-  (setq *hdbr-wire* (new WireServer port))
-  (==> *hdbr-wire* start)
-  (printf "hdbr: query server listening on port %d\n" port)
-
-  ;; Set up query handler
-  (setq :*hdbr-wire*:on-sync
-    (lambda (fd expr encoding)
-      (hdbr-handle-query expr) ) )
-  (setq :*hdbr-wire*:on-connect
-    (lambda (fd)
-      (printf "hdbr: query client connected (fd=%d)\n" fd) ) )
-  (setq :*hdbr-wire*:on-disconnect
-    (lambda (fd)
-      (printf "hdbr: query client disconnected (fd=%d)\n" fd) ) )
-
-  (printf "hdbr: entering serve loop\n\n")
-
-  ;; Serve loop
-  (while *hdbr-running*
-    (==> *hdbr-wire* serve-once 100) )
-
-  ;; Shutdown
-  (==> *hdbr-wire* shutdown)
-  (printf "\nhdbr: stopped (%d queries served)\n" *hdbr-total-queries*) )
-
-
-;; ============================================================
-;; Command-line entry point
-;; ============================================================
-
-;; When loaded as a library (e.g., by tests), set *hdbr-no-autostart*
-;; to t BEFORE loading to suppress auto-start:
-;;   (setq *hdbr-no-autostart* t)
-;;   (libload "libuv/hdb-reader")
-
-(defvar *hdbr-no-autostart* ())
-
-(when (not *hdbr-no-autostart*)
-  (hdbr-start 19962 "/tmp/hdb") )

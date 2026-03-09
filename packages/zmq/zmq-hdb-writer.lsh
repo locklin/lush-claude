@@ -13,20 +13,15 @@
 (libload "datatable/datatable")
 (libload "columnardb/columnardb")
 
-;; Load RDB init functions for table schema (but don't start RDB)
-(defvar *rdb-no-autostart* t)
-(libload "libuv/rdb")
-
-;; Load HDB writer for path helpers and date functions
-(defvar *hdb-no-autostart* t)
-(libload "libuv/hdb-writer")
+;; Load RDB table schema definitions (coinbase-rdb provides rdb-init-tables)
+(libload "zmq/coinbase-rdb")
 
 #? *** ZMQ HDB Writer: Periodic Disk Persistence
 ;; ZMQ-based HDB Writer that subscribes directly to the feed handler's
 ;; PUB socket.  Accumulates ticks in local DataTables and periodically
 ;; flushes to disk (TorQ WDB pattern).
-;;.PP
-;; Data is stored separately from the libuv pipeline:
+;;
+;; Data is stored in date-partitioned splayed format:
 ;; {<code>
 ;;  /datafast1/experiment/coinbasedata-zmq/YYYY.MM.DD/ticker/
 ;;  /datafast1/experiment/coinbasedata-zmq/YYYY.MM.DD/l2/

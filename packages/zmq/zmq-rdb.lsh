@@ -9,24 +9,21 @@
 ;;;   - zmq_poll loop over both sockets
 ;;;
 ;;; Reuses rdb-init-tables, rdb-insert-ticker, rdb-insert-l2,
-;;; rdb-handle-query from libuv/rdb.lsh (loaded with *rdb-no-autostart*).
+;;; rdb-handle-query from zmq/coinbase-rdb.lsh.
 
 (libload "zmq/zmq-serde")
-(libload "wire/wire-serialize")
-(libload "datatable/datatable")
-(libload "timedate/timedate")
-
-;; Load RDB data functions without auto-starting
-(defvar *rdb-no-autostart* t)
-(libload "libuv/rdb")
+(libload "zmq/coinbase-rdb")
 
 #? *** ZMQ RDB: Real-time Database
 ;; ZMQ-based RDB that subscribes directly to the feed handler's PUB socket.
 ;; Replaces the wire protocol with ZMQ PUB/SUB + ROUTER/DEALER.
-;;.PP
+;;
 ;; Uses {<b> zmq_poll} to multiplex the SUB (feed data) and ROUTER
 ;; (client queries) sockets in a single event loop.
-;;.SEE (zmq-rdb-start <fh-pub-port> <rdb-port>)
+;;
+;; Business logic (table schemas, insertion, query dispatch) is in
+;; {<b> zmq/coinbase-rdb}.
+;; {<see> (zmq-rdb-start <fh-pub-port> <rdb-port>)}
 
 ;; ============================================================
 ;; ZMQ RDB state

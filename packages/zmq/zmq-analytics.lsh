@@ -8,21 +8,19 @@
 ;;; (not through RDB), eliminating polling latency.
 
 (libload "zmq/zmq-serde")
-(libload "wire/wire-serialize")
-(libload "datatable/datatable")
-
-;; Load analytics data functions without auto-starting
-(defvar *ana-no-autostart* t)
-(libload "libuv/analytics")
+(libload "zmq/coinbase-analytics")
 
 #? *** ZMQ Analytics: Real-time CEP
 ;; ZMQ-based analytics process that subscribes directly to the
 ;; feed handler's PUB socket (topic: "ticker").  Computes per-product
 ;; moving average, spread, volatility, TWAP, and VWAP in real-time.
-;;.PP
+;;
 ;; Key improvement: subscribes directly to FH, not through RDB.
 ;; This eliminates the polling interval and delivers lower-latency analytics.
-;;.SEE (zmq-ana-start <fh-pub-port> <ana-port> <window>)
+;;
+;; Business logic (per-product state, analytics computation, query dispatch)
+;; is in {<b> zmq/coinbase-analytics}.
+;; {<see> (zmq-ana-start <fh-pub-port> <ana-port> <window>)}
 
 ;; ============================================================
 ;; ZMQ Analytics state

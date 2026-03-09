@@ -1,0 +1,150 @@
+;;; coinbase-hdb-writer.lsh -- Coinbase HDB Writer helpers (transport-agnostic)
+;;;
+;;; Date-string computation, path helpers, status reporting, and query
+;;; handling for the HDB Writer.  Used by zmq-hdb-writer.lsh (and formerly
+;;; libuv/hdb-writer.lsh).
+;;;
+;;; This module contains only transport-agnostic helpers.  The actual
+;;; flush logic (pulling data from RDB or local tables, writing to disk)
+;;; is transport-specific and lives in the respective process files.
+
+(libload "wire/wire-serialize")
+(libload "datatable/datatable")
+(libload "columnardb/columnardb")
+
+#? *** Coinbase HDB Writer: Disk Persistence Helpers
+;; Transport-agnostic helpers for the Coinbase HDB Writer process.
+;; Provides date-string computation, path helpers, query dispatch,
+;; and status reporting.
+;;
+;; Disk layout:
+;; {<code>
+;;  <hdb-root>/YYYY.MM.DD/ticker/ (meta.lsh, col-*.col)
+;;  <hdb-root>/YYYY.MM.DD/l2/     (meta.lsh, col-*.col)
+;; </code>}
+;;
+;; Used by the ZMQ HDB Writer process ({<b> zmq-hdb-writer.lsh}).
+;;
+;; Example:
+;; {<code>
+;;  (libload "zmq/coinbase-hdb-writer")
+;;  (setq *hdb-root* "/datafast1/experiment/coinbasedata-zmq")
+;;  (hdb-date-string)     ;; => "2026.03.09"
+;;  (hdb-table-path "ticker")  ;; => "/datafast1/.../2026.03.09/ticker"
+;; </code>}
+;; {<see> (hdb-date-string)}
+;; {<see> (hdb-table-path <tbl>)}
+;; {<see> (hdb-status)}
+
+;; ============================================================
+;; HDB Writer state
+;; ============================================================
+
+(defvar *hdb-root* "/tmp/hdb")           ;; base directory for HDB storage
+(defvar *hdb-running* ())                ;; main loop flag
+(defvar *hdb-ticker-hwm* 0)             ;; high-water mark: next ticker row to flush
+(defvar *hdb-l2-hwm* 0)                 ;; high-water mark: next L2 row to flush
+(defvar *hdb-total-flushes* 0)          ;; count of flush operations performed
+(defvar *hdb-total-ticker-rows* 0)      ;; total ticker rows written to disk
+(defvar *hdb-total-l2-rows* 0)          ;; total L2 rows written to disk
+(defvar *hdb-start-time* 0)             ;; start timestamp (seconds)
+(defvar *hdb-flush-interval* 60)        ;; seconds between flushes (default 60)
+(defvar *hdb-last-flush-time* 0)        ;; timestamp of last flush
+(defvar *hdb-total-queries* 0)         ;; query counter
+
+
+;; ============================================================
+;; Path helpers
+;; ============================================================
+
+#? (hdb-date-string)
+;; Return today's date as "YYYY.MM.DD" string.
+;; Computes from current wall-clock time (Unix epoch seconds).
+(de hdb-date-string ()
+  (let ((now (_wire-time-seconds)))
+    (let ((days (/ now 86400))
+          (y 1970) (m 1) (d 0)
+          (days-left 0) )
+      (setq days-left days)
+      ;; Advance years
+      (while (let ((yd (if (and (= 0 (mod y 4))
+                                (or (<> 0 (mod y 100))
+                                    (= 0 (mod y 400)) ))
+                         366 365)))
+               (>= days-left yd))
+        (let ((yd (if (and (= 0 (mod y 4))
+                           (or (<> 0 (mod y 100))
+                               (= 0 (mod y 400)) ))
+                    366 365)))
+          (setq days-left (- days-left yd))
+          (setq y (1+ y)) ) )
+      ;; Advance months
+      (let ((leap (if (and (= 0 (mod y 4))
+                           (or (<> 0 (mod y 100))
+                               (= 0 (mod y 400)) ))
+                    1 0)))
+        (let ((month-days (list 31 (+ 28 leap) 31 30 31 30 31 31 30 31 30 31)))
+          (while (and (<= m 12) (>= days-left (nth (1- m) month-days)))
+            (setq days-left (- days-left (nth (1- m) month-days)))
+            (setq m (1+ m)) ) ) )
+      (setq d (1+ days-left))
+      (sprintf "%04d.%02d.%02d" y m d) ) ) )
+
+
+#? (hdb-table-path <tbl>)
+;; Return the full path for a table's splayed directory.
+;; Path: <hdb-root>/<date>/<tbl>
+(de hdb-table-path (tbl)
+  (concat *hdb-root* "/" (hdb-date-string) "/" tbl) )
+
+
+;; ============================================================
+;; Query interface
+;; ============================================================
+
+#? (hdb-handle-query <expr>)
+;; Dispatch queries on HDB Writer state.
+;; Provides operational status — not data queries (those go through HDB Reader).
+;;
+;; Supported queries:
+;; {<ul>
+;; {<li> {<b> "ping"} -- health check.}
+;; {<li> {<b> "stats"} -- writer statistics alist.}
+;; }
+(de hdb-handle-query (expr)
+  (setq *hdb-total-queries* (1+ *hdb-total-queries*))
+  (cond
+
+   ;; "ping" — health check
+   ((= expr "ping")
+    "pong" )
+
+   ;; "stats" — writer statistics
+   ((= expr "stats")
+    (list (cons "flushes" *hdb-total-flushes*)
+          (cons "ticker_rows" *hdb-total-ticker-rows*)
+          (cons "l2_rows" *hdb-total-l2-rows*)
+          (cons "ticker_hwm" *hdb-ticker-hwm*)
+          (cons "l2_hwm" *hdb-l2-hwm*)
+          (cons "flush_interval" *hdb-flush-interval*)
+          (cons "root" *hdb-root*)
+          (cons "uptime" (- (_wire-time-seconds) *hdb-start-time*))
+          (cons "queries" *hdb-total-queries*) ) )
+
+   ;; Unknown query
+   (t (sprintf "unknown query: %l" expr)) ) )
+
+
+;; ============================================================
+;; Status
+;; ============================================================
+
+#? (hdb-status)
+;; Print current HDB writer statistics.
+(de hdb-status ()
+  (let ((uptime (- (_wire-time-seconds) *hdb-start-time*)))
+    (printf "hdb: flushes=%d ticker_rows=%d l2_rows=%d uptime=%.0fs interval=%ds\n"
+            *hdb-total-flushes* *hdb-total-ticker-rows* *hdb-total-l2-rows*
+            uptime *hdb-flush-interval*)
+    (printf "hdb: ticker_hwm=%d l2_hwm=%d root=%s\n"
+            *hdb-ticker-hwm* *hdb-l2-hwm* *hdb-root*) ) )

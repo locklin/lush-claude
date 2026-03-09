@@ -4,24 +4,18 @@
 ;;; serves queries via a ZMQ ROUTER socket.  No subscriptions needed —
 ;;; HDB Reader only reads from disk.
 ;;;
-;;; Reuses hdbr-handle-query and hdbr-discover from libuv/hdb-reader.lsh.
+;;; Reuses hdbr-handle-query and hdbr-discover from zmq/coinbase-hdb-reader.lsh.
 
 (libload "zmq/zmq-serde")
-(libload "wire/wire-serialize")
-(libload "datatable/datatable")
-(libload "columnardb/columnardb")
-
-;; Load HDB reader data functions without auto-starting
-(defvar *hdbr-no-autostart* t)
-(libload "libuv/hdb-reader")
+(libload "zmq/coinbase-hdb-reader")
 
 #? *** ZMQ HDB Reader: Historical Database
 ;; ZMQ-based HDB Reader that serves historical data queries via
 ;; a ROUTER socket.  Reads date-partitioned splayed format from disk.
-;;.PP
-;; Reuses {<b> hdbr-handle-query} and {<b> hdbr-discover} from the
-;; libuv HDB Reader.
-;;.SEE (zmq-hdbr-start <port> <hdb-root>)
+;;
+;; Business logic (discovery, loading, caching, query dispatch) is in
+;; {<b> zmq/coinbase-hdb-reader}.
+;; {<see> (zmq-hdbr-start <port> <hdb-root>)}
 
 ;; ============================================================
 ;; ZMQ HDB Reader state
