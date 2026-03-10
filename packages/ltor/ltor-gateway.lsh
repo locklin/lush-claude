@@ -10,14 +10,14 @@
 ;; LTOR gateway with a ROUTER frontend for client queries and
 ;; DEALER backend connections to RDB, HDB Reader, Analytics, and
 ;; HDB Writer.
-;;.PP
+;;
 ;; Features:
 ;; {<ul>
 ;; {<li> Explicit routing via {<b> ("rdb" ...)}, {<b> ("hdb" ...)},
 ;; {<b> ("hdbw" ...)}, {<b> ("ana" ...)} prefixes.}
 ;; {<li> Smart routing: auto-detects backend from query pattern.}
 ;; }
-;;.SEE (ltor-gw-start <gw-port> <rdb-port> <hdb-port> <ana-port> <hdbw-port>)
+;; {<see> (ltor-gw-start <gw-port> <rdb-port> <hdb-port> <ana-port> <hdbw-port>)}
 
 ;; ============================================================
 ;; LTOR Gateway state

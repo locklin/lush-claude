@@ -21,16 +21,16 @@
 ;; Bridges Lush bwrite/bread serialization with ZMQ multipart frames.
 ;; Uses the same binary encoding as the wire protocol ({<b> bwrite/bread}),
 ;; just over ZMQ transport instead of TCP.
-;;.PP
+;;
 ;; Two patterns:
 ;; {<ul>
 ;; {<li> {<b> PUB/SUB}: topic frame + bwrite payload frame.}
 ;; {<li> {<b> ROUTER/DEALER}: bwrite-serialized query/reply.}
 ;; }
-;;.SEE (zmq-pub-send <sock> <topic> <payload>)
-;;.SEE (zmq-sub-recv <sock>)
-;;.SEE (zmq-query-send <sock> <query>)
-;;.SEE (zmq-query-recv <sock>)
+;; {<see> (zmq-pub-send <sock> <topic> <payload>)}
+;; {<see> (zmq-sub-recv <sock>)}
+;; {<see> (zmq-query-send <sock> <query>)}
+;; {<see> (zmq-query-recv <sock>)}
 
 ;; Shared send buffer for serialization
 (defvar *zmq-send-buf* (ubyte-matrix *zmq-recv-buf-size*))

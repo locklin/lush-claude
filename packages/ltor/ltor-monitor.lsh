@@ -14,10 +14,10 @@
 #? *** LTOR Coinbase Monitor
 ;; REPL convenience functions for monitoring the LTOR-based Coinbase
 ;; data pipeline.
-;;.PP
+;;
 ;; These functions create ephemeral DEALER connections to the gateway
 ;; (default port 19974) and return query results.
-;;.PP
+;;
 ;; Quick start:
 ;; {<code>
 ;;  (libload "ltor/ltor-monitor")
@@ -26,9 +26,9 @@
 ;;  (ltor-coinbase-last-trade "BTC-USD") ;; last trade details
 ;;  (ltor-coinbase-hdb-count)            ;; historical data counts
 ;; </code>}
-;;.SEE (ltor-coinbase-vwap <product>)
-;;.SEE (ltor-coinbase-status)
-;;.SEE (ltor-coinbase-last-trade <product>)
+;; {<see> (ltor-coinbase-vwap <product>)}
+;; {<see> (ltor-coinbase-status)}
+;; {<see> (ltor-coinbase-last-trade <product>)}
 
 ;; ============================================================
 ;; Configuration

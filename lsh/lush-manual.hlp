@@ -310,9 +310,9 @@ and time/date utilities.
 
 #? ** << columnardb/columnardb-query.lsh
 
-#? ** << timedate/timedate.lsh
+#? ** << datatable/datatable-timedate.lsh
 
-#? ** << csvread/csvread.lsh
+#? ** << datatable/datatable-csvread.lsh
 
 #? ** << sqlite/sqlite.lsh
 
@@ -341,8 +341,9 @@ and compression.
 
 
 #? *** Real-Time Data Pipeline
-Event-driven feed handler, gateway, real-time
-and historical databases, analytics, and CLI.
+Event loop, WebSocket client, ZMQ transport,
+and LTOR database management (feed handler,
+RDB, analytics, HDB, gateway, monitor).
 
 #? ** << libuv/libuv.lsh
 
@@ -350,21 +351,31 @@ and historical databases, analytics, and CLI.
 
 #? ** << libuv/ws-client.lsh
 
-#? ** << libuv/gateway.lsh
+#? ** << zmq/zmq.lsh
 
-#? ** << libuv/rdb.lsh
+#? ** << zmq/zmq-serde.lsh
 
-#? ** << libuv/hdb-reader.lsh
+#? ** << ltor/ltor-feed.lsh
 
-#? ** << libuv/hdb-writer.lsh
+#? ** << ltor/ltor-rdb.lsh
 
-#? ** << libuv/analytics.lsh
+#? ** << ltor/ltor-analytics.lsh
 
-#? ** << libuv/consumer.lsh
+#? ** << ltor/ltor-hdb-writer.lsh
 
-#? ** << libuv/permissions.lsh
+#? ** << ltor/ltor-hdb-reader.lsh
 
-#? ** << libuv/gw-cli.lsh
+#? ** << ltor/ltor-gateway.lsh
+
+#? ** << ltor/ltor-monitor.lsh
+
+#? ** << ltor/coinbase-rdb.lsh
+
+#? ** << ltor/coinbase-analytics.lsh
+
+#? ** << ltor/coinbase-hdb-writer.lsh
+
+#? ** << ltor/coinbase-hdb-reader.lsh
 
 
 #? *** Topological Data Analysis

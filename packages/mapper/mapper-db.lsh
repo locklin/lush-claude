@@ -42,15 +42,20 @@
 
 #? (mapper-db-open <path>)
 ;; Open (or create) a mapper project database at <path>.
+;; If <path> is a directory, creates {<b> mapper.db} inside it.
 ;; Creates all required tables if they don't exist.
 ;; Enables WAL mode and sets a 5-second busy timeout.
 ;; Returns a database handle (gptr).
 (de mapper-db-open (path)
-  (let ((db (sqlite-open path)))
-    (sqlite-enable-wal db)
-    (sqlite-busy-timeout db 5000)
-    (_mapper-db-create-schema db)
-    db ) )
+  ;; If path is a directory, append default filename
+  (let ((dbpath (if (dirp path)
+                  (concat path "/mapper.db")
+                  path)))
+    (let ((db (sqlite-open dbpath)))
+      (sqlite-enable-wal db)
+      (sqlite-busy-timeout db 5000)
+      (_mapper-db-create-schema db)
+      db ) ) )
 
 
 #? (mapper-db-close <db>)

@@ -13,13 +13,13 @@
 #? *** ZeroMQ: Message Queue for Lush
 ;; ZeroMQ (libzmq 4.x) bindings for Lush.  Provides PUB/SUB broadcast,
 ;; ROUTER/DEALER request/reply, and {<b> zmq_poll} event multiplexing.
-;;.PP
+;;
 ;; Two layers:
 ;; {<ul>
 ;; {<li> DHC-compiled thin wrappers ({<b> _zmq-*}) bridging Lush types to C.}
 ;; {<li> Interpreted high-level API ({<b> zmq-*}) with error checking.}
 ;; }
-;;.PP
+;;
 ;; Quick example:
 ;; {<code>
 ;;  (libload "zmq/zmq")
@@ -30,9 +30,9 @@
 ;;      (zmq-close pub))
 ;;    (zmq-ctx-term ctx))
 ;; </code>}
-;;.SEE (zmq-ctx-new)
-;;.SEE (zmq-socket <ctx> <type>)
-;;.SEE (zmq-send-bytes <sock> <buf> <len> [<flags>])
+;; {<see> (zmq-ctx-new)}
+;; {<see> (zmq-socket <ctx> <type>)}
+;; {<see> (zmq-send-bytes <sock> <buf> <len> [<flags>])}
 
 #? ** Constants
 
@@ -42,7 +42,7 @@
 (defvar *zmq-pub*      1)
 
 #? *zmq-sub*
-;;.TYPE VAR
+;; {<type> VAR}
 ;; SUB socket type.  Receives messages from a PUB socket.
 ;; Must call {<b> zmq-subscribe} to set topic filter.
 (defvar *zmq-sub*      2)

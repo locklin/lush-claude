@@ -18,11 +18,11 @@
 #? *** LTOR Feed Handler
 ;; Feed handler that uses libuv for the Coinbase WebSocket connection
 ;; and ZMQ PUB/ROUTER for downstream communication.
-;;.PP
+;;
 ;; The libuv event loop drives the WebSocket.  Parsed ticker and L2
 ;; data is published via a ZMQ PUB socket.  A ROUTER socket serves
 ;; control queries (stats, ping).
-;;.SEE (ltor-fh-start <products> <channels> <pub-port> <ctrl-port>)
+;; {<see> (ltor-fh-start <products> <channels> <pub-port> <ctrl-port>)}
 
 ;; ============================================================
 ;; LTOR Feed Handler state

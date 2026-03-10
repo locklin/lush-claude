@@ -38,7 +38,10 @@
 (defvar *viz-root* (concat (dirname file-being-loaded) "/viz"))
 
 ;; Capture the lush binary path at load time (for spawning workers)
-(defvar *viz-lush-bin* (concat (dirname file-being-loaded) "/../../bin/lush"))
+;; Try bin/lush (build tree), fall back to "lush" on PATH (installed)
+(defvar *viz-lush-bin*
+  (let ((try1 (concat lushdir "/bin/lush")))
+    (if (filep try1) try1 "lush") ) )
 
 ;; Capture the packages directory at load time (for worker libload paths)
 (defvar *viz-packages-dir* (concat (dirname file-being-loaded) "/.."))
@@ -304,8 +307,8 @@
                   (let ((content ""))
                     (let ((fp (open-read filepath)))
                       (reading fp
-                        (let ((buf (read-string)))
-                          (setq content buf) ) ) )
+                        (while (<> (skip-char "") "\e")
+                          (setq content (concat content (read-string 4096))) ) ) )
                     (setq result (csvread-parse content)) ) )
                 (if (not result)
                   (list 400 "application/json" "{\"error\":\"failed to parse file\"}")
@@ -690,10 +693,12 @@
 ;;   (mapper-viz-start "/tmp/claude/my-project.db" 9000)
 (de mapper-viz-start (db-path . rest)
   (let ((port (if rest (car rest) 8765)))
-    ;; Open the database
-    (setq *viz-db* (mapper-db-open db-path))
-    (setq *viz-db-path* db-path)
-    (printf "Mapper-viz: database opened: %s\n" db-path)(flush)
+    ;; Resolve directory to file path (mapper-db-open appends mapper.db)
+    (let ((resolved (if (dirp db-path) (concat db-path "/mapper.db") db-path)))
+      ;; Open the database
+      (setq *viz-db* (mapper-db-open resolved))
+      (setq *viz-db-path* resolved)
+      (printf "Mapper-viz: database opened: %s\n" resolved)(flush)
 
     (printf "Mapper-viz: serving static files from %s\n" *viz-root*)(flush)
 
@@ -708,7 +713,7 @@
         (sys (concat "xdg-open " url " 2>/dev/null && exit 0 || open " url " 2>/dev/null &")) )
 
       ;; Start serving (blocks)
-      (httpd-serve server) ) ) )
+      (httpd-serve server) ) ) ) )
 
 
 #? (mapper-viz-setup <db-path> [<port>])
@@ -717,11 +722,13 @@
 ;; additional routes before calling (httpd-serve server).
 (de mapper-viz-setup (db-path . rest)
   (let ((port (if rest (car rest) 8765)))
-    ;; Open the database
-    (setq *viz-db* (mapper-db-open db-path))
-    (setq *viz-db-path* db-path)
+    ;; Resolve directory to file path (mapper-db-open appends mapper.db)
+    (let ((resolved (if (dirp db-path) (concat db-path "/mapper.db") db-path)))
+      ;; Open the database
+      (setq *viz-db* (mapper-db-open resolved))
+      (setq *viz-db-path* resolved)
 
-    ;; Create the HTTP server
-    (let ((server (httpd-new port)))
-      (_viz-setup-routes server)
-      server ) ) )
+      ;; Create the HTTP server
+      (let ((server (httpd-new port)))
+        (_viz-setup-routes server)
+        server ) ) ) )
