@@ -20,7 +20,7 @@
 (libload "datatable/tests/framework")
 (libload "json/json")
 (libload "datatable/datatable")
-(libload "timedate/timedate")
+(libload "datatable/datatable-timedate")
 
 ;; Reset counters in case of re-load
 (setq *test-pass-count* 0)

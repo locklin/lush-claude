@@ -1,4 +1,4 @@
-;;; test-timedate.lsh -- Tests for the timedate package
+;;; test-timedate.lsh -- Tests for datatable-timedate (timestamp functions)
 ;;;
 ;;; Tests: timestamp-now, timestamp-from-date, timestamp-from-datetime,
 ;;;        timestamp-parse, timestamp-to-string, timestamp-components,

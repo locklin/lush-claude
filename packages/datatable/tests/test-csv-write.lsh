@@ -6,7 +6,7 @@
 (addpath "packages")
 (libload "datatable/datatable-csv-write")
 (libload "datatable/datatable-csv")
-(libload "timedate/timedate")
+(libload "datatable/datatable-timedate")
 
 (defvar *csvw-pass* 0)
 (defvar *csvw-fail* 0)

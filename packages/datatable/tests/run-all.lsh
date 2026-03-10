@@ -1,4 +1,4 @@
-;;; run-all.lsh -- Run all tests: timedate, datatable, httpd, mapper, e2e
+;;; run-all.lsh -- Run all tests: datatable (incl. timedate, csvread), httpd, mapper, e2e
 ;;;
 ;;; Run with:
 ;;;   TMPDIR=/tmp/claude lush lush-claude/packages/datatable/tests/run-all.lsh
@@ -14,7 +14,7 @@
 (load (concat (dirname file-being-loaded) "/framework.lsh"))
 
 ;; Load the packages
-(libload "datatable/datatable-csv")      ;; datatable + timedate
+(libload "datatable/datatable-csv")      ;; datatable (incl. timedate)
 (libload "datatable/datatable-join")     ;; join operations + sorted check
 (libload "datatable/datatable-csvread")  ;; CSV/TSV text parser
 (libload "httpd/httpd")                  ;; web server

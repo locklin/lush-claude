@@ -1,17 +1,31 @@
-;;; timedate.lsh -- Microsecond-precision UTC timestamps for Lush
+;;; datatable-timedate.lsh -- Microsecond-precision UTC timestamps for Lush
 ;;;
 ;;; Timestamps are int64 (long) microseconds since Unix epoch
 ;;; (1970-01-01T00:00:00Z).  Column type symbol: 'stamp.
 ;;; Stored as longs, giving exact integer representation.
 ;;;
+;;; Originally the standalone timedate package; merged into datatable.
+;;;
 ;;; Usage:
-;;;   (libload "timedate/timedate")
+;;;   (libload "datatable/datatable-timedate")
 ;;;   (timestamp-now)                              ;; current time as long microseconds
 ;;;   (timestamp-to-string (timestamp-now))         ;; formatted string
 ;;;   (timestamp-parse "2024-01-15" "%Y-%m-%d")     ;; parse to microseconds
 ;;;   (timestamp-components (timestamp-now))         ;; (y m d H M S us)
 
-(libload "timedate/timedate-config")
+;; ============================================================
+;; C library compilation (formerly timedate-config.lsh)
+;; ============================================================
+
+(libload "libc/make")
+
+(let ((dir (dirname file-being-loaded)))
+  (let ((lm (new lushmake)))
+    (==> lm setflags (concat " -I" dir " -O2 -D_GNU_SOURCE -D_XOPEN_SOURCE=700"))
+    (==> lm rule "timedate-c.o" '("timedate-c.c" "timedate-c.h"))
+    (==> lm make)
+    (==> lm load) ) )
+
 
 #? *** TimeDate: UTC Timestamps for Lush (microsecond long integers)
 ;; Microsecond-precision UTC timestamp library for Lush.
@@ -47,7 +61,7 @@
 ;;
 ;; Example:
 ;; {<code>
-;;  (libload "timedate/timedate")
+;;  (libload "datatable/datatable-timedate")
 ;;  (let ((now (timestamp-now)))
 ;;    (printf "%s\n" (timestamp-to-string now))
 ;;    (let ((parts (timestamp-components now)))

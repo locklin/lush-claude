@@ -9,7 +9,7 @@
 
 (libload "wire/wire-serialize")
 (libload "datatable/datatable")
-(libload "timedate/timedate")
+(libload "datatable/datatable-timedate")
 
 #? *** Coinbase RDB: Real-time Database Logic
 ;; Transport-agnostic business logic for the Coinbase real-time database.

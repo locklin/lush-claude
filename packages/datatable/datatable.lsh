@@ -18,7 +18,7 @@
 
 (libload "datatable/stringcol")
 (libload "datatable/intcol")
-(libload "timedate/timedate")
+(libload "datatable/datatable-timedate")
 (libload "datatable/datatable-null")
 (libload "datatable/datatable-compiled")
 (libload "libidx/idx-sort")
