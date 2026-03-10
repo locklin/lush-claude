@@ -14,10 +14,11 @@
 (load (concat (dirname file-being-loaded) "/framework.lsh"))
 
 ;; Load the packages
-(libload "datatable/datatable-csv")   ;; datatable + timedate
-(libload "datatable/datatable-join")  ;; join operations + sorted check
-(libload "httpd/httpd")               ;; web server
-(libload "mapper/mapper")             ;; mapper + metrics + cluster + graph + lens + stats
+(libload "datatable/datatable-csv")      ;; datatable + timedate
+(libload "datatable/datatable-join")     ;; join operations + sorted check
+(libload "datatable/datatable-csvread")  ;; CSV/TSV text parser
+(libload "httpd/httpd")                  ;; web server
+(libload "mapper/mapper")                ;; mapper + metrics + cluster + graph + lens + stats
 
 (printf "=== Full Test Suite ===\n")
 (printf "Running all tests...\n")
@@ -31,6 +32,7 @@
 (load (concat (dirname file-being-loaded) "/test-httpd.lsh"))
 (load (concat (dirname file-being-loaded) "/test-mapper.lsh"))
 (load (concat (dirname file-being-loaded) "/test-e2e.lsh"))
+(load (concat (dirname file-being-loaded) "/test-csvread.lsh"))
 
 ;; Print summary
 (test-summary)

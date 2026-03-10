@@ -1,18 +1,6 @@
-;;; run-all.lsh -- Test harness for csvread package
+;;; test-csvread.lsh -- Tests for datatable-csvread (CSV/TSV text parser)
 ;;;
-;;; Run with:
-;;;   lush packages/csvread/tests/run-all.lsh
-
-;; Add packages path
-(let ((tests-dir (dirname file-being-loaded)))
-  (let ((pkg-dir (dirname (dirname tests-dir))))
-    (addpath pkg-dir) ) )
-
-;; Load test framework (reuse datatable's framework)
-(load (concat (dirname file-being-loaded) "/../../datatable/tests/framework.lsh"))
-
-;; Load csvread
-(libload "csvread/csvread")
+;;; Migrated from packages/csvread/tests/run-all.lsh plus new csv-parse tests.
 
 (printf "=== csvread Test Suite ===\n")
 
@@ -159,5 +147,62 @@
 )
 
 
-;; Summary
-(test-summary)
+;; ============================================================
+;; Semicolon delimiter
+;; ============================================================
+
+(test-suite "Semicolon delimiter"
+
+  (let ((result (csvread-parse "x;y;z\n1;2;3\n4;5;6")))
+    (test-check "semicolon parse returns non-nil" (not (not result)))
+    (let ((data (car result))
+          (names (cadr result)) )
+      (test-equal "semicolon row count" (idx-dim data 0) 2)
+      (test-equal "semicolon col count" (idx-dim data 1) 3)
+      (test-string-equal "semicolon col name 0" (car names) "x")
+      (test-approx "semicolon data[0,0]" (data 0 0) 1 0.001)
+      (test-approx "semicolon data[1,2]" (data 1 2) 6 0.001) ) )
+)
+
+
+;; ============================================================
+;; csv-parse (DataTable wrapper)
+;; ============================================================
+
+(test-suite "csv-parse DataTable wrapper"
+
+  ;; Basic csv-parse
+  (let ((dt (csv-parse "x,y,z\n1,2,3\n4,5,6")))
+    (test-check "csv-parse returns non-nil" (not (not dt)))
+    (test-equal "csv-parse row count" (==> dt num-rows) 2)
+    (let ((names (==> dt col-names)))
+      (test-equal "csv-parse col count" (length names) 3)
+      (test-string-equal "csv-parse col 0" (car names) "x")
+      (test-string-equal "csv-parse col 1" (cadr names) "y")
+      (test-string-equal "csv-parse col 2" (caddr names) "z") )
+    ;; Check data values via get-column
+    (let ((xdata (==> dt get-column "x")))
+      (test-approx "csv-parse x[0]" (xdata 0) 1 0.001)
+      (test-approx "csv-parse x[1]" (xdata 1) 4 0.001) )
+    (let ((zdata (==> dt get-column "z")))
+      (test-approx "csv-parse z[0]" (zdata 0) 3 0.001)
+      (test-approx "csv-parse z[1]" (zdata 1) 6 0.001) ) )
+
+  ;; csv-parse with TSV
+  (let ((dt (csv-parse "a\tb\n10\t20\n30\t40")))
+    (test-check "csv-parse TSV returns non-nil" (not (not dt)))
+    (test-equal "csv-parse TSV rows" (==> dt num-rows) 2)
+    (let ((adata (==> dt get-column "a")))
+      (test-approx "csv-parse TSV a[0]" (adata 0) 10 0.001)
+      (test-approx "csv-parse TSV a[1]" (adata 1) 30 0.001) ) )
+
+  ;; csv-parse empty returns nil
+  (let ((dt (csv-parse "")))
+    (test-check "csv-parse empty returns nil" (not dt)) )
+
+  ;; csv-parse column types are real
+  (let ((dt (csv-parse "val\n42\n99")))
+    (test-check "csv-parse single col" (not (not dt)))
+    (let ((types (==> dt col-types)))
+      (test-check "csv-parse type is real" (= (car types) 'real)) ) )
+)

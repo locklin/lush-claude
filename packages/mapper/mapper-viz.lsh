@@ -10,7 +10,7 @@
 
 (libload "mapper/mapper-db")
 (libload "httpd/httpd")
-(libload "csvread/csvread")
+(libload "datatable/datatable-csvread")
 
 #? *** Mapper: Visualization Server
 ;; HTTP-based interactive visualization server for Mapper graphs.

@@ -1,29 +1,39 @@
-;;; csvread.lsh -- CSV/TSV parser for Lush
+;;; datatable-csvread.lsh -- CSV/TSV text parser for datatable
 ;;;
 ;;; Parses CSV and TSV text into numeric matrices with column names.
 ;;; Auto-detects tab vs comma delimiter from the header line.
 ;;;
+;;; Originally the standalone csvread package; merged into datatable.
+;;;
 ;;; Usage:
-;;;   (libload "csvread/csvread")
+;;;   (libload "datatable/datatable-csvread")
 ;;;   (let ((result (csvread-parse "x,y,z\n1,2,3\n4,5,6")))
 ;;;     (print (car result))    ;; 2x3 double-matrix
 ;;;     (print (cadr result)))  ;; ("x" "y" "z")
 
-#? *** CSV/TSV Parser
-;; Simple CSV and TSV text parser for Lush.
-;; Parses delimited text into a numeric double-matrix with column names.
-;; The delimiter (tab or comma) is auto-detected from the header line.
-;;
-;; The first line is always treated as a column header.
+(libload "datatable/datatable")
+
+#? ** CSV/TSV Text Parser
+;; Parse delimited text into numeric matrices or DataTables.
+;; The delimiter (tab, semicolon, or comma) is auto-detected from
+;; the header line.  The first line is always treated as column headers.
 ;; All data values are parsed as doubles via {<b> val}.
+;;
+;; Two entry points:
+;; {<ul>
+;; {<li> {<b> csvread-parse} returns a raw {<c> (double-matrix col-names)} pair.}
+;; {<li> {<b> csv-parse} returns a {<b> DataTable} with {<c> 'real} columns.}
+;; }
 ;;
 ;; Example:
 ;; {<code>
-;;  (libload "csvread/csvread")
+;;  (libload "datatable/datatable-csvread")
 ;;  (let ((result (csvread-parse "x,y,z\n1,2,3\n4,5,6")))
 ;;    (print (car result))    ;; 2x3 double-matrix
 ;;    (print (cadr result)))  ;; ("x" "y" "z")
 ;; </code>}
+;; {<see> (csvread-parse <body>)}
+;; {<see> (csv-parse <body>)}
 
 ;; ============================================================
 ;; Internal helpers
@@ -102,11 +112,20 @@
 ;; ============================================================
 
 #? (csvread-parse <body>)
-;; Parse CSV/TSV text into (list <double-matrix> <col-names>).
-;; Auto-detects tab vs comma delimiter from the header line.
+;; Parse CSV/TSV text into {<c> (list <double-matrix> <col-names>)}.
+;; Auto-detects tab, semicolon, or comma delimiter from the header line.
 ;; The first line is treated as column names.
-;; Returns (data col-names) where data is an NxD double-matrix
-;; and col-names is a list of D strings, or () on parse failure.
+;; Returns {<c> (data col-names)} where {<b> data} is an NxD double-matrix
+;; and {<b> col-names} is a list of D strings, or {<c> ()} on parse failure.
+;;
+;; Non-numeric fields are stored as 0.
+;;
+;; Example:
+;; {<code>
+;;  (let ((r (csvread-parse "a,b\n1,2\n3,4")))
+;;    (car r))   ;; 2x2 double-matrix
+;; </code>}
+;; {<see> (csv-parse <body>)}
 (de csvread-parse (body)
   (let ((lines (_csvread-split-lines body)))
     ;; Skip empty leading lines
@@ -143,3 +162,41 @@
                           (setq col-idx (1+ col-idx)) ) )
                       (setq row-idx (1+ row-idx)) )
                     (list data header-fields) ) ) ) ) ) ) ) ) ) )
+
+
+#? (csv-parse <body>)
+;; Parse CSV/TSV text and return a {<b> DataTable} with {<c> 'real} columns.
+;; A convenience wrapper around {<b> csvread-parse} that builds a DataTable
+;; instead of a raw matrix.
+;;
+;; Returns a DataTable with one {<c> 'real} column per header field,
+;; or {<c> ()} if parsing fails.
+;;
+;; Example:
+;; {<code>
+;;  (let ((dt (csv-parse "x,y\n1,2\n3,4")))
+;;    (==> dt print-table 5))
+;; </code>}
+;; {<see> (csvread-parse <body>)}
+;; {<see> DataTable: Typed Columnar Table}
+(de csv-parse (body)
+  (let ((result (csvread-parse body)))
+    (when result
+      (let ((data (car result))
+            (col-names (cadr result))
+            (dt (new DataTable)) )
+        (let ((n-rows (idx-dim data 0))
+              (n-cols (idx-dim data 1))
+              (ci 0) )
+          ;; Add columns
+          (let ((rest col-names))
+            (while rest
+              (==> dt add-column (car rest) 'real)
+              (setq rest (cdr rest)) ) )
+          ;; Fill data row by row
+          (for (i 0 (1- n-rows))
+            (let ((row ()))
+              (for (j 0 (1- n-cols))
+                (setq row (nconc1 row (data i j))) )
+              (==> dt append-row row) ) )
+          dt ) ) ) ) )
