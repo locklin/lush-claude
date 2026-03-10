@@ -1,10 +1,10 @@
-;;; monitor-query.lsh -- One-shot monitor query for the ZMQ pipeline
+;;; monitor-query.lsh -- One-shot monitor query for the LTOR pipeline
 ;;;
-;;; Runs a set of queries against the ZMQ gateway and prints results,
+;;; Runs a set of queries against the LTOR gateway and prints results,
 ;;; then exits.  Used by the monitoring loop in the pipeline launcher.
 ;;; Uses efficient queries (last-n, not full where) to avoid buffer overflow.
 
-(libload "zmq/zmq-monitor")
+(libload "ltor/ltor-monitor")
 
 ;; Helper: extract last row from a DataTable as an alist
 (de _mon-last-row (dt)
@@ -21,7 +21,7 @@
         result ) ) ) )
 
 (printf "--- Status Ping ---\n")
-(let ((status (zmq-coinbase-status)))
+(let ((status (ltor-coinbase-status)))
   (let ((rest status))
     (while rest
       (let ((entry (car rest)))
@@ -46,7 +46,7 @@
 
 ;; Use last-n (returns only 1 row) instead of last-trade (returns ALL matching rows)
 (printf "\n--- Last Trade (ticker last 1) ---\n")
-(let ((dt (zmq-coinbase-last-n "ticker" 1)))
+(let ((dt (ltor-coinbase-last-n "ticker" 1)))
   (if (and dt (not (stringp dt)))
     (let ((row (_mon-last-row dt)))
       (if (consp row)
@@ -61,13 +61,13 @@
     (printf "  result: %l\n" dt) ) )
 
 (printf "\n--- VWAP ---\n")
-(let ((btc-vwap (zmq-coinbase-vwap "BTC-USD"))
-      (eth-vwap (zmq-coinbase-vwap "ETH-USD")) )
+(let ((btc-vwap (ltor-coinbase-vwap "BTC-USD"))
+      (eth-vwap (ltor-coinbase-vwap "ETH-USD")) )
   (printf "  BTC-USD: %l\n" btc-vwap)
   (printf "  ETH-USD: %l\n" eth-vwap) )
 
 (printf "\n--- Analytics (BTC-USD) ---\n")
-(let ((ana (zmq-coinbase-analytics "BTC-USD")))
+(let ((ana (ltor-coinbase-analytics "BTC-USD")))
   (if (consp ana)
     (let ((rest ana))
       (while rest
@@ -76,7 +76,7 @@
     (printf "  result: %l\n" ana) ) )
 
 (printf "\n--- HDB Stats ---\n")
-(let ((hdb (zmq-coinbase-hdb-count)))
+(let ((hdb (ltor-coinbase-hdb-count)))
   (let ((rest hdb))
     (while rest
       (printf "  %s: %l\n" (car (car rest)) (cdr (car rest)))

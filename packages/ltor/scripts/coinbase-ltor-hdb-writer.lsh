@@ -1,0 +1,12 @@
+;;; coinbase-ltor-hdb-writer.lsh -- LTOR Coinbase HDB Writer entry point
+;;;
+;;; Subscribes directly to FH PUB on port 19970, accumulates locally,
+;;; flushes to disk at /datafast1/experiment/coinbasedata-zmq/,
+;;; serves status queries on port 19975.
+;;;
+;;; Usage (from lush-claude root):
+;;;   ./src/lush packages/ltor/scripts/coinbase-ltor-hdb-writer.lsh
+
+(libload "ltor/ltor-hdb-writer")
+
+(ltor-hdbw-start 19970 19975 "/datafast1/experiment/coinbasedata-zmq" 60)

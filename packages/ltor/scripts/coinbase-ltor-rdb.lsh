@@ -1,0 +1,10 @@
+;;; coinbase-ltor-rdb.lsh -- LTOR Coinbase RDB entry point
+;;;
+;;; Subscribes to FH PUB on port 19970, serves queries on port 19971.
+;;;
+;;; Usage (from lush-claude root):
+;;;   ./src/lush packages/ltor/scripts/coinbase-ltor-rdb.lsh
+
+(libload "ltor/ltor-rdb")
+
+(ltor-rdb-start 19970 19971)

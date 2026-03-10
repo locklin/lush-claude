@@ -1,4 +1,4 @@
-;;; zmq-feed.lsh -- ZMQ Feed Handler process
+;;; ltor-feed.lsh -- LTOR Feed Handler process
 ;;;
 ;;; Uses libuv for the Coinbase WebSocket connection and ZMQ PUB socket
 ;;; for broadcasting parsed ticks to downstream subscribers.  Also provides
@@ -8,68 +8,68 @@
 ;;;   - libuv event loop for WebSocket (uv-run + drain events)
 ;;;   - ZMQ PUB socket for broadcast (replaces wire broadcast)
 ;;;   - ZMQ ROUTER socket for control queries (stats, ping)
-;;;   - Main loop: uv-run(nowait) → drain events → zmq_poll(ROUTER, 5ms)
+;;;   - Main loop: uv-run(nowait) -> drain events -> zmq_poll(ROUTER, 5ms)
 
 (libload "zmq/zmq-serde")
 
 ;; Load the full feed handler (provides libuv WS, JSON parsing, fh-* functions)
 (libload "libuv/feed-handler")
 
-#? *** ZMQ Feed Handler
+#? *** LTOR Feed Handler
 ;; Feed handler that uses libuv for the Coinbase WebSocket connection
 ;; and ZMQ PUB/ROUTER for downstream communication.
 ;;.PP
 ;; The libuv event loop drives the WebSocket.  Parsed ticker and L2
 ;; data is published via a ZMQ PUB socket.  A ROUTER socket serves
 ;; control queries (stats, ping).
-;;.SEE (zmq-fh-start <products> <channels> <pub-port> <ctrl-port>)
+;;.SEE (ltor-fh-start <products> <channels> <pub-port> <ctrl-port>)
 
 ;; ============================================================
-;; ZMQ Feed Handler state
+;; LTOR Feed Handler state
 ;; ============================================================
 
-(defvar *zmq-fh-ctx* ())
-(defvar *zmq-fh-pub* ())
-(defvar *zmq-fh-router* ())
-(defvar *zmq-fh-running* ())
-(defvar *zmq-fh-pub-count* 0)
-(defvar *zmq-fh-last-heartbeat* 0)
-(defvar *zmq-fh-start-time* 0)
-(defvar *zmq-fh-last-data-time* 0)  ;; last time we received any feed data
-(defvar *zmq-fh-stale-timeout* 60)  ;; seconds with no data before reconnect
+(defvar *ltor-fh-ctx* ())
+(defvar *ltor-fh-pub* ())
+(defvar *ltor-fh-router* ())
+(defvar *ltor-fh-running* ())
+(defvar *ltor-fh-pub-count* 0)
+(defvar *ltor-fh-last-heartbeat* 0)
+(defvar *ltor-fh-start-time* 0)
+(defvar *ltor-fh-last-data-time* 0)  ;; last time we received any feed data
+(defvar *ltor-fh-stale-timeout* 60)  ;; seconds with no data before reconnect
 
 ;; ============================================================
-;; ZMQ broadcast (replaces fh-broadcast)
+;; LTOR broadcast (replaces fh-broadcast)
 ;; ============================================================
 
-(de zmq-fh-broadcast (data)
-  (setq *zmq-fh-last-data-time* (_wire-time-seconds))
-  (when *zmq-fh-pub*
+(de ltor-fh-broadcast (data)
+  (setq *ltor-fh-last-data-time* (_wire-time-seconds))
+  (when *ltor-fh-pub*
     (cond
      ;; Ticker message: (ticker alist)
      ((and (consp data) (= (car data) 'ticker))
-      (zmq-pub-send *zmq-fh-pub* "ticker" (cadr data))
-      (setq *zmq-fh-pub-count* (1+ *zmq-fh-pub-count*)) )
+      (zmq-pub-send *ltor-fh-pub* "ticker" (cadr data))
+      (setq *ltor-fh-pub-count* (1+ *ltor-fh-pub-count*)) )
      ;; L2 update: (l2update datatable)
      ((and (consp data) (= (car data) 'l2update))
-      (zmq-pub-send *zmq-fh-pub* "l2" (wire-pack-datatable (cadr data)))
-      (setq *zmq-fh-pub-count* (1+ *zmq-fh-pub-count*)) )
+      (zmq-pub-send *ltor-fh-pub* "l2" (wire-pack-datatable (cadr data)))
+      (setq *ltor-fh-pub-count* (1+ *ltor-fh-pub-count*)) )
      ;; Other messages
      (t
-      (zmq-pub-send *zmq-fh-pub* "other" data)
-      (setq *zmq-fh-pub-count* (1+ *zmq-fh-pub-count*)) ) ) ) )
+      (zmq-pub-send *ltor-fh-pub* "other" data)
+      (setq *ltor-fh-pub-count* (1+ *ltor-fh-pub-count*)) ) ) ) )
 
 ;; ============================================================
 ;; Control query handler
 ;; ============================================================
 
-(de zmq-fh-handle-query (expr)
+(de ltor-fh-handle-query (expr)
   (cond
    ((= expr "ping") "pong")
    ((= expr "stats")
     (list (cons "ticks" *fh-stats-ticks*)
           (cons "events" *fh-stats-events*)
-          (cons "pub_count" *zmq-fh-pub-count*)
+          (cons "pub_count" *ltor-fh-pub-count*)
           (cons "tickers" *fh-stats-tickers*)
           (cons "l2" *fh-stats-l2*)
           (cons "heartbeats" *fh-stats-heartbeats*)) )
@@ -79,26 +79,26 @@
 ;; Main entry point
 ;; ============================================================
 
-#? (zmq-fh-start <products> <channels> <pub-port> <ctrl-port>)
-;; Start the ZMQ feed handler.
+#? (ltor-fh-start <products> <channels> <pub-port> <ctrl-port>)
+;; Start the LTOR feed handler.
 ;; <products>: list of product IDs, e.g. ("BTC-USD" "ETH-USD").
 ;; <channels>: list of channel names, e.g. ("ticker" "level2" "heartbeat").
 ;; <pub-port>: ZMQ PUB socket port for broadcasting ticks (e.g. 19970).
 ;; <ctrl-port>: ZMQ ROUTER socket port for control queries (e.g. 19976).
 ;; Blocks until interrupted.
-(de zmq-fh-start (products channels pub-port ctrl-port)
-  (printf "\n=== ZMQ Feed Handler starting ===\n")
+(de ltor-fh-start (products channels pub-port ctrl-port)
+  (printf "\n=== LTOR Feed Handler starting ===\n")
   (printf "products: %l\n" products)
   (printf "channels: %l\n" channels)
   (printf "PUB port: %d\n" pub-port)
   (printf "control port: %d\n\n" ctrl-port)
 
   ;; Reset state
-  (setq *zmq-fh-running* t)
-  (setq *zmq-fh-pub-count* 0)
-  (setq *zmq-fh-start-time* (_wire-time-seconds))
-  (setq *zmq-fh-last-heartbeat* (_wire-time-seconds))
-  (setq *zmq-fh-last-data-time* (_wire-time-seconds))
+  (setq *ltor-fh-running* t)
+  (setq *ltor-fh-pub-count* 0)
+  (setq *ltor-fh-start-time* (_wire-time-seconds))
+  (setq *ltor-fh-last-heartbeat* (_wire-time-seconds))
+  (setq *ltor-fh-last-data-time* (_wire-time-seconds))
   (setq *fh-handles* ())
   (setq *fh-ws-client* ())
   (setq *fh-ws-poll-id* ())
@@ -113,23 +113,23 @@
   (setq *fh-stats-heartbeats* 0)
 
   ;; Override fh-broadcast to use ZMQ PUB
-  (setq fh-broadcast zmq-fh-broadcast)
+  (setq fh-broadcast ltor-fh-broadcast)
 
   ;; Create ZMQ context and sockets
-  (setq *zmq-fh-ctx* (zmq-ctx-new))
+  (setq *ltor-fh-ctx* (zmq-ctx-new))
 
   ;; PUB socket for broadcasting ticks
-  (setq *zmq-fh-pub* (zmq-socket *zmq-fh-ctx* *zmq-pub*))
-  (zmq-set-linger *zmq-fh-pub* 0)
-  (zmq-set-sndhwm *zmq-fh-pub* 10000)
-  (zmq-bind *zmq-fh-pub* (sprintf "tcp://*:%d" pub-port))
-  (printf "zmq-fh: PUB socket bound on port %d\n" pub-port)
+  (setq *ltor-fh-pub* (zmq-socket *ltor-fh-ctx* *zmq-pub*))
+  (zmq-set-linger *ltor-fh-pub* 0)
+  (zmq-set-sndhwm *ltor-fh-pub* 10000)
+  (zmq-bind *ltor-fh-pub* (sprintf "tcp://*:%d" pub-port))
+  (printf "ltor-fh: PUB socket bound on port %d\n" pub-port)
 
   ;; ROUTER socket for control queries
-  (setq *zmq-fh-router* (zmq-socket *zmq-fh-ctx* *zmq-router*))
-  (zmq-set-linger *zmq-fh-router* 0)
-  (zmq-bind *zmq-fh-router* (sprintf "tcp://*:%d" ctrl-port))
-  (printf "zmq-fh: control ROUTER bound on port %d\n" ctrl-port)
+  (setq *ltor-fh-router* (zmq-socket *ltor-fh-ctx* *zmq-router*))
+  (zmq-set-linger *ltor-fh-router* 0)
+  (zmq-bind *ltor-fh-router* (sprintf "tcp://*:%d" ctrl-port))
+  (printf "ltor-fh: control ROUTER bound on port %d\n" ctrl-port)
 
   ;; Initialize column buffers for hot-path parsing
   (fh-init-feed-columns products)
@@ -152,48 +152,48 @@
     (fh-connect-feed "wss://ws-feed.exchange.coinbase.com" sub-msg) )
 
   ;; Configure ZMQ poll for ROUTER
-  (zmq-poll-set-socket 0 *zmq-fh-router* *zmq-pollin*)
+  (zmq-poll-set-socket 0 *ltor-fh-router* *zmq-pollin*)
 
-  (printf "zmq-fh: entering main loop\n\n")
+  (printf "ltor-fh: entering main loop\n\n")
 
   ;; Main loop: libuv (WS) + ZMQ (ROUTER queries)
   (setq *fh-running* t)
-  (while (and *fh-running* *zmq-fh-running*)
-    ;; 1. Poll libuv (non-blocking) — drives WebSocket
+  (while (and *fh-running* *ltor-fh-running*)
+    ;; 1. Poll libuv (non-blocking) -- drives WebSocket
     (uv-run *fh-loop* 'nowait)
     (uv-drain-events fh-dispatch-event)
 
     ;; 2. Poll ZMQ ROUTER for control queries (5ms timeout)
     (let ((rc (zmq-poll 1 5)))
       (when (and (> rc 0) (zmq-poll-ready 0))
-        (let ((query (zmq-router-recv-query *zmq-fh-router*)))
+        (let ((query (zmq-router-recv-query *ltor-fh-router*)))
           (when query
-            (let ((result (zmq-fh-handle-query query)))
-              (zmq-router-send-reply *zmq-fh-router* result) ) ) ) ) )
+            (let ((result (ltor-fh-handle-query query)))
+              (zmq-router-send-reply *ltor-fh-router* result) ) ) ) ) )
 
     (setq *fh-stats-ticks* (1+ *fh-stats-ticks*))
 
-    ;; Periodic heartbeat (every 30s) — complements libuv's 5s heartbeat
+    ;; Periodic heartbeat (every 30s) -- complements libuv's 5s heartbeat
     (let ((now (_wire-time-seconds)))
-      (when (>= (- now *zmq-fh-last-heartbeat*) 30)
-        (printf "zmq-fh: heartbeat  pub=%d tickers=%d l2=%d events=%d hb=%d uptime=%ds\n"
-                *zmq-fh-pub-count* *fh-stats-tickers* *fh-stats-l2*
+      (when (>= (- now *ltor-fh-last-heartbeat*) 30)
+        (printf "ltor-fh: heartbeat  pub=%d tickers=%d l2=%d events=%d hb=%d uptime=%ds\n"
+                *ltor-fh-pub-count* *fh-stats-tickers* *fh-stats-l2*
                 *fh-stats-events* *fh-stats-heartbeats*
-                (to-int (- now *zmq-fh-start-time*)))
-        (setq *zmq-fh-last-heartbeat* now) )
+                (to-int (- now *ltor-fh-start-time*)))
+        (setq *ltor-fh-last-heartbeat* now) )
 
       ;; Stale connection detection: if no data received for 60s,
       ;; force a reconnect (handles half-dead TCP connections)
       (when (and *fh-ws-client*
-                 (> *zmq-fh-last-data-time* 0)
-                 (>= (- now *zmq-fh-last-data-time*) *zmq-fh-stale-timeout*))
-        (printf "zmq-fh: no data for %ds, forcing reconnect\n"
-                (to-int (- now *zmq-fh-last-data-time*)))
+                 (> *ltor-fh-last-data-time* 0)
+                 (>= (- now *ltor-fh-last-data-time*) *ltor-fh-stale-timeout*))
+        (printf "ltor-fh: no data for %ds, forcing reconnect\n"
+                (to-int (- now *ltor-fh-last-data-time*)))
         (fh-schedule-reconnect)
-        (setq *zmq-fh-last-data-time* now) ) ) )
+        (setq *ltor-fh-last-data-time* now) ) ) )
 
   ;; Shutdown
-  (printf "\nzmq-fh: shutting down...\n")
+  (printf "\nltor-fh: shutting down...\n")
 
   ;; Close WebSocket
   (when *fh-ws-client*
@@ -213,9 +213,9 @@
   (uv-loop-close *fh-loop*)
 
   ;; Close ZMQ
-  (when *zmq-fh-pub* (zmq-close *zmq-fh-pub*))
-  (when *zmq-fh-router* (zmq-close *zmq-fh-router*))
-  (when *zmq-fh-ctx* (zmq-ctx-term *zmq-fh-ctx*))
+  (when *ltor-fh-pub* (zmq-close *ltor-fh-pub*))
+  (when *ltor-fh-router* (zmq-close *ltor-fh-router*))
+  (when *ltor-fh-ctx* (zmq-ctx-term *ltor-fh-ctx*))
 
-  (printf "zmq-fh: stopped (tickers=%d l2=%d pub=%d)\n"
-          *fh-stats-tickers* *fh-stats-l2* *zmq-fh-pub-count*) )
+  (printf "ltor-fh: stopped (tickers=%d l2=%d pub=%d)\n"
+          *fh-stats-tickers* *fh-stats-l2* *ltor-fh-pub-count*) )

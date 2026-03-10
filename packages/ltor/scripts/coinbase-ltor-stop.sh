@@ -1,22 +1,22 @@
 #!/bin/bash
-# coinbase-zmq-stop.sh -- Stop all ZMQ Coinbase pipeline processes
+# coinbase-ltor-stop.sh -- Stop all LTOR Coinbase pipeline processes
 #
 # Sends SIGTERM to all processes tracked in the control directory,
 # then verifies they've stopped.
 #
 # Usage:
-#   bash packages/zmq/scripts/coinbase-zmq-stop.sh
+#   bash packages/ltor/scripts/coinbase-ltor-stop.sh
 
 DATA_DIR=/datafast1/experiment/coinbasedata-zmq
 CTRL_DIR=$DATA_DIR/.ctrl
 
 if [ ! -d "$CTRL_DIR" ]; then
     echo "No control directory found at $CTRL_DIR"
-    echo "ZMQ pipeline may not be running."
+    echo "LTOR pipeline may not be running."
     exit 0
 fi
 
-echo "=== ZMQ Coinbase Pipeline Shutdown ==="
+echo "=== LTOR Coinbase Pipeline Shutdown ==="
 echo ""
 
 # Stop in reverse order: gateway first, feed handler last
@@ -58,4 +58,4 @@ done
 
 echo " done"
 echo ""
-echo "=== All ZMQ processes stopped ==="
+echo "=== All LTOR processes stopped ==="

@@ -1,8 +1,8 @@
 ;;; coinbase-analytics.lsh -- Coinbase Analytics business logic (transport-agnostic)
 ;;;
 ;;; Per-product analytics computation: moving average, spread, volatility,
-;;; rolling min/max, TWAP, VWAP.  Used by zmq-analytics.lsh (and formerly
-;;; libuv/analytics.lsh).
+;;; rolling min/max, TWAP, VWAP.  Used by ltor-analytics.lsh (and formerly
+;;; zmq-analytics.lsh / libuv/analytics.lsh).
 ;;;
 ;;; This module contains only transport-agnostic logic: per-product state
 ;;; management, O(1) running-sum analytics, and query dispatch.  No wire
@@ -25,11 +25,11 @@
 ;;
 ;; Results are stored in a DataTable queryable via {<b> ana-handle-query}.
 ;;
-;; Used by the ZMQ Analytics process ({<b> zmq-analytics.lsh}).
+;; Used by the LTOR Analytics process ({<b> ltor-analytics.lsh}).
 ;;
 ;; Example:
 ;; {<code>
-;;  (libload "zmq/coinbase-analytics")
+;;  (libload "ltor/coinbase-analytics")
 ;;  (ana-init-table)
 ;;  (ana-update-product "BTC-USD" 50000 49999 50001 1.5 1709500000)
 ;;  (ana-handle-query "stats")

@@ -1,7 +1,7 @@
 ;;; coinbase-rdb.lsh -- Coinbase RDB business logic (transport-agnostic)
 ;;;
 ;;; Table schemas, data insertion, and query handling for the real-time
-;;; database.  Used by zmq-rdb.lsh (and formerly libuv/rdb.lsh).
+;;; database.  Used by ltor-rdb.lsh (and formerly zmq-rdb.lsh / libuv/rdb.lsh).
 ;;;
 ;;; This module contains only transport-agnostic logic: DataTable schemas,
 ;;; row insertion, and query dispatch.  No wire protocol, no ZMQ, no
@@ -18,11 +18,11 @@
 ;; The RDB accumulates ticker and L2 data into DataTables and serves
 ;; queries (snapshot, where, select, count, last, rows-from, stats).
 ;;
-;; Used by the ZMQ RDB process ({<b> zmq-rdb.lsh}).
+;; Used by the LTOR RDB process ({<b> ltor-rdb.lsh}).
 ;;
 ;; Example:
 ;; {<code>
-;;  (libload "zmq/coinbase-rdb")
+;;  (libload "ltor/coinbase-rdb")
 ;;  (rdb-init-tables)
 ;;  (rdb-insert-ticker '(("product" . "BTC-USD") ("price" . 50000)))
 ;;  (rdb-handle-query "stats")

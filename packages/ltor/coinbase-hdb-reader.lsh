@@ -2,7 +2,8 @@
 ;;;
 ;;; Date-partition discovery, table loading/caching, multi-date
 ;;; concatenation, and query handling for the historical database reader.
-;;; Used by zmq-hdb-reader.lsh (and formerly libuv/hdb-reader.lsh).
+;;; Used by ltor-hdb-reader.lsh (and formerly zmq-hdb-reader.lsh /
+;;; libuv/hdb-reader.lsh).
 ;;;
 ;;; This module contains only transport-agnostic logic: disk I/O via
 ;;; columnardb, date-partition scanning, table caching, and query dispatch.
@@ -23,11 +24,11 @@
 ;;  <hdb-root>/YYYY.MM.DD/l2/     (meta.lsh, col-*.col)
 ;; </code>}
 ;;
-;; Used by the ZMQ HDB Reader process ({<b> zmq-hdb-reader.lsh}).
+;; Used by the LTOR HDB Reader process ({<b> ltor-hdb-reader.lsh}).
 ;;
 ;; Example:
 ;; {<code>
-;;  (libload "zmq/coinbase-hdb-reader")
+;;  (libload "ltor/coinbase-hdb-reader")
 ;;  (setq *hdbr-root* "/datafast1/experiment/coinbasedata-zmq")
 ;;  (hdbr-discover)
 ;;  (hdbr-handle-query "dates")

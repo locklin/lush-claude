@@ -1,0 +1,95 @@
+;;; ltor-hdb-reader.lsh -- LTOR HDB Reader process
+;;;
+;;; Loads historical data from date-partitioned splayed format and
+;;; serves queries via a ZMQ ROUTER socket.  No subscriptions needed —
+;;; HDB Reader only reads from disk.
+;;;
+;;; Reuses hdbr-handle-query and hdbr-discover from ltor/coinbase-hdb-reader.lsh.
+
+(libload "zmq/zmq-serde")
+(libload "ltor/coinbase-hdb-reader")
+
+#? *** LTOR HDB Reader: Historical Database
+;; LTOR HDB Reader that serves historical data queries via
+;; a ROUTER socket.  Reads date-partitioned splayed format from disk.
+;;
+;; Business logic (discovery, loading, caching, query dispatch) is in
+;; {<b> ltor/coinbase-hdb-reader}.
+;; {<see> (ltor-hdbr-start <port> <hdb-root>)}
+
+;; ============================================================
+;; LTOR HDB Reader state
+;; ============================================================
+
+(defvar *ltor-hdbr-ctx* ())
+(defvar *ltor-hdbr-router* ())
+(defvar *ltor-hdbr-running* ())
+(defvar *ltor-hdbr-last-discover* 0)
+(defvar *ltor-hdbr-last-heartbeat* 0)
+
+;; ============================================================
+;; Main entry point
+;; ============================================================
+
+#? (ltor-hdbr-start <port> <hdb-root>)
+;; Start the LTOR HDB Reader.
+;; <port>: ROUTER socket port for serving queries (e.g. 19972).
+;; <hdb-root>: base directory containing date-partitioned data.
+;; Blocks until interrupted.
+(de ltor-hdbr-start (port hdb-root)
+  (printf "\n=== LTOR HDB Reader starting ===\n")
+  (printf "HDB root: %s\n" hdb-root)
+  (printf "query server: tcp://*:%d\n\n" port)
+
+  ;; Set state
+  (setq *ltor-hdbr-running* t)
+  (setq *hdbr-root* hdb-root)
+  (setq *hdbr-cache* ())
+  (setq *hdbr-total-queries* 0)
+  (setq *hdbr-start-time* (_wire-time-seconds))
+
+  ;; Discover date partitions
+  (hdbr-discover)
+  (setq *ltor-hdbr-last-discover* (_wire-time-seconds))
+  (setq *ltor-hdbr-last-heartbeat* (_wire-time-seconds))
+
+  ;; Create ZMQ context and socket
+  (setq *ltor-hdbr-ctx* (zmq-ctx-new))
+
+  ;; ROUTER socket: serve queries
+  (setq *ltor-hdbr-router* (zmq-socket *ltor-hdbr-ctx* *zmq-router*))
+  (zmq-set-linger *ltor-hdbr-router* 0)
+  (zmq-bind *ltor-hdbr-router* (sprintf "tcp://*:%d" port))
+  (printf "ltor-hdbr: query server listening on port %d\n" port)
+
+  ;; Configure poll item
+  (zmq-poll-set-socket 0 *ltor-hdbr-router* *zmq-pollin*)
+
+  (printf "ltor-hdbr: entering serve loop\n\n")
+
+  ;; Serve loop
+  (while *ltor-hdbr-running*
+    (let ((rc (zmq-poll 1 100)))
+      (when (and (> rc 0) (zmq-poll-ready 0))
+        (let ((query (zmq-router-recv-query *ltor-hdbr-router*)))
+          (when query
+            (let ((result (hdbr-handle-query query)))
+              (zmq-router-send-reply *ltor-hdbr-router* result) ) ) ) ) )
+    ;; Auto-refresh date partitions every 30s
+    (let ((now (_wire-time-seconds)))
+      (when (>= (- now *ltor-hdbr-last-discover*) 30)
+        (hdbr-discover)
+        (setq *ltor-hdbr-last-discover* now) )
+      ;; Periodic heartbeat (every 30s)
+      (when (>= (- now *ltor-hdbr-last-heartbeat*) 30)
+        (printf "ltor-hdbr: heartbeat  dates=%d tables=%d queries=%d uptime=%ds\n"
+                (length *hdbr-dates*) (length *hdbr-tables*)
+                *hdbr-total-queries*
+                (to-int (- now *hdbr-start-time*)))
+        (setq *ltor-hdbr-last-heartbeat* now) ) ) )
+
+  ;; Shutdown
+  (printf "\nltor-hdbr: shutting down...\n")
+  (when *ltor-hdbr-router* (zmq-close *ltor-hdbr-router*))
+  (when *ltor-hdbr-ctx* (zmq-ctx-term *ltor-hdbr-ctx*))
+  (printf "ltor-hdbr: stopped (%d queries served)\n" *hdbr-total-queries*) )

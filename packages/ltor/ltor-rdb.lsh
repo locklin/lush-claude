@@ -1,4 +1,4 @@
-;;; zmq-rdb.lsh -- ZMQ Real-time Database process
+;;; ltor-rdb.lsh -- LTOR Real-time Database process
 ;;;
 ;;; Subscribes directly to the feed handler's PUB socket and accumulates
 ;;; ticker and L2 data into DataTables.  Serves queries via a ROUTER socket.
@@ -9,12 +9,12 @@
 ;;;   - zmq_poll loop over both sockets
 ;;;
 ;;; Reuses rdb-init-tables, rdb-insert-ticker, rdb-insert-l2,
-;;; rdb-handle-query from zmq/coinbase-rdb.lsh.
+;;; rdb-handle-query from ltor/coinbase-rdb.lsh.
 
 (libload "zmq/zmq-serde")
-(libload "zmq/coinbase-rdb")
+(libload "ltor/coinbase-rdb")
 
-#? *** ZMQ RDB: Real-time Database
+#? *** LTOR RDB: Real-time Database
 ;; ZMQ-based RDB that subscribes directly to the feed handler's PUB socket.
 ;; Replaces the wire protocol with ZMQ PUB/SUB + ROUTER/DEALER.
 ;;
@@ -22,79 +22,79 @@
 ;; (client queries) sockets in a single event loop.
 ;;
 ;; Business logic (table schemas, insertion, query dispatch) is in
-;; {<b> zmq/coinbase-rdb}.
-;; {<see> (zmq-rdb-start <fh-pub-port> <rdb-port>)}
+;; {<b> ltor/coinbase-rdb}.
+;; {<see> (ltor-rdb-start <fh-pub-port> <rdb-port>)}
 
 ;; ============================================================
-;; ZMQ RDB state
+;; LTOR RDB state
 ;; ============================================================
 
-(defvar *zmq-rdb-ctx* ())
-(defvar *zmq-rdb-sub* ())
-(defvar *zmq-rdb-router* ())
-(defvar *zmq-rdb-running* ())
-(defvar *zmq-rdb-last-heartbeat* 0)
-(defvar *zmq-rdb-total-queries* 0)
-(defvar *zmq-rdb-max-rows* 100000)     ;; max ticker rows before trimming
+(defvar *ltor-rdb-ctx* ())
+(defvar *ltor-rdb-sub* ())
+(defvar *ltor-rdb-router* ())
+(defvar *ltor-rdb-running* ())
+(defvar *ltor-rdb-last-heartbeat* 0)
+(defvar *ltor-rdb-total-queries* 0)
+(defvar *ltor-rdb-max-rows* 100000)     ;; max ticker rows before trimming
 
 ;; ============================================================
 ;; Main entry point
 ;; ============================================================
 
-#? (zmq-rdb-start <fh-pub-port> <rdb-port>)
-;; Start the ZMQ RDB process.
+#? (ltor-rdb-start <fh-pub-port> <rdb-port>)
+;; Start the LTOR RDB process.
 ;; <fh-pub-port>: feed handler PUB socket port (e.g. 19970).
 ;; <rdb-port>: ROUTER socket port for serving queries (e.g. 19971).
 ;; Blocks until interrupted.
-(de zmq-rdb-start (fh-pub-port rdb-port)
-  (printf "\n=== ZMQ RDB starting ===\n")
+(de ltor-rdb-start (fh-pub-port rdb-port)
+  (printf "\n=== LTOR RDB starting ===\n")
   (printf "feed handler PUB: tcp://127.0.0.1:%d\n" fh-pub-port)
   (printf "query server: tcp://*:%d\n\n" rdb-port)
 
   ;; Reset state
-  (setq *zmq-rdb-running* t)
+  (setq *ltor-rdb-running* t)
   (setq *rdb-total-tickers* 0)
   (setq *rdb-total-l2* 0)
   (setq *rdb-total-broadcasts* 0)
   (setq *rdb-start-time* (_wire-time-seconds))
-  (setq *zmq-rdb-last-heartbeat* (_wire-time-seconds))
-  (setq *zmq-rdb-total-queries* 0)
+  (setq *ltor-rdb-last-heartbeat* (_wire-time-seconds))
+  (setq *ltor-rdb-total-queries* 0)
 
   ;; Initialize tables
   (rdb-init-tables)
-  (printf "zmq-rdb: tables initialized (ticker=%l l2=%l)\n"
+  (printf "ltor-rdb: tables initialized (ticker=%l l2=%l)\n"
           (not (not *rdb-ticker-table*)) (not (not *rdb-l2-table*)))
 
   ;; Create ZMQ context and sockets
-  (setq *zmq-rdb-ctx* (zmq-ctx-new))
+  (setq *ltor-rdb-ctx* (zmq-ctx-new))
 
   ;; SUB socket: subscribe to feed handler
-  (setq *zmq-rdb-sub* (zmq-socket *zmq-rdb-ctx* *zmq-sub*))
-  (zmq-set-linger *zmq-rdb-sub* 0)
-  (zmq-connect *zmq-rdb-sub* (sprintf "tcp://127.0.0.1:%d" fh-pub-port))
-  (zmq-subscribe *zmq-rdb-sub* "ticker")
-  (zmq-subscribe *zmq-rdb-sub* "l2")
-  (printf "zmq-rdb: subscribed to ticker + l2\n")
+  (setq *ltor-rdb-sub* (zmq-socket *ltor-rdb-ctx* *zmq-sub*))
+  (zmq-set-linger *ltor-rdb-sub* 0)
+  (zmq-connect *ltor-rdb-sub* (sprintf "tcp://127.0.0.1:%d" fh-pub-port))
+  (zmq-subscribe *ltor-rdb-sub* "ticker")
+  (zmq-subscribe *ltor-rdb-sub* "l2")
+  (printf "ltor-rdb: subscribed to ticker + l2\n")
 
   ;; ROUTER socket: serve queries
-  (setq *zmq-rdb-router* (zmq-socket *zmq-rdb-ctx* *zmq-router*))
-  (zmq-set-linger *zmq-rdb-router* 0)
-  (zmq-bind *zmq-rdb-router* (sprintf "tcp://*:%d" rdb-port))
-  (printf "zmq-rdb: query server listening on port %d\n" rdb-port)
+  (setq *ltor-rdb-router* (zmq-socket *ltor-rdb-ctx* *zmq-router*))
+  (zmq-set-linger *ltor-rdb-router* 0)
+  (zmq-bind *ltor-rdb-router* (sprintf "tcp://*:%d" rdb-port))
+  (printf "ltor-rdb: query server listening on port %d\n" rdb-port)
 
   ;; Configure poll items: 0=SUB, 1=ROUTER
-  (zmq-poll-set-socket 0 *zmq-rdb-sub* *zmq-pollin*)
-  (zmq-poll-set-socket 1 *zmq-rdb-router* *zmq-pollin*)
+  (zmq-poll-set-socket 0 *ltor-rdb-sub* *zmq-pollin*)
+  (zmq-poll-set-socket 1 *ltor-rdb-router* *zmq-pollin*)
 
-  (printf "zmq-rdb: entering main loop\n\n")
+  (printf "ltor-rdb: entering main loop\n\n")
 
   ;; Main event loop
-  (while *zmq-rdb-running*
+  (while *ltor-rdb-running*
     (let ((rc (zmq-poll 2 100)))
       (when (> rc 0)
         ;; Check SUB socket — feed data
         (when (zmq-poll-ready 0)
-          (let ((msg (zmq-sub-recv *zmq-rdb-sub*)))
+          (let ((msg (zmq-sub-recv *ltor-rdb-sub*)))
             (when (and msg (consp msg))
               (let ((topic (car msg))
                     (payload (cadr msg)) )
@@ -109,49 +109,49 @@
 
         ;; Check ROUTER socket — client queries
         (when (zmq-poll-ready 1)
-          (let ((query (zmq-router-recv-query *zmq-rdb-router*)))
+          (let ((query (zmq-router-recv-query *ltor-rdb-router*)))
             (when query
-              (setq *zmq-rdb-total-queries* (1+ *zmq-rdb-total-queries*))
+              (setq *ltor-rdb-total-queries* (1+ *ltor-rdb-total-queries*))
               (let ((result (rdb-handle-query query)))
-                (zmq-router-send-reply *zmq-rdb-router* result) ) ) ) ) ) )
+                (zmq-router-send-reply *ltor-rdb-router* result) ) ) ) ) ) )
 
     ;; Periodic heartbeat (every 30s)
     (let ((now (_wire-time-seconds)))
-      (when (>= (- now *zmq-rdb-last-heartbeat*) 30)
+      (when (>= (- now *ltor-rdb-last-heartbeat*) 30)
         (let ((ticker-rows (==> *rdb-ticker-table* num-rows))
               (l2-rows (==> *rdb-l2-table* num-rows))
               (uptime (to-int (- now *rdb-start-time*))) )
-          (printf "zmq-rdb: heartbeat  tickers=%d l2=%d ticker-rows=%d l2-rows=%d queries=%d uptime=%ds\n"
+          (printf "ltor-rdb: heartbeat  tickers=%d l2=%d ticker-rows=%d l2-rows=%d queries=%d uptime=%ds\n"
                   *rdb-total-tickers* *rdb-total-l2* ticker-rows l2-rows
-                  *zmq-rdb-total-queries* uptime)
+                  *ltor-rdb-total-queries* uptime)
           ;; Trim ticker table if it exceeds max rows (keep newest half)
-          (when (> ticker-rows *zmq-rdb-max-rows*)
-            (let* ((keep (to-int (/ *zmq-rdb-max-rows* 2)))
+          (when (> ticker-rows *ltor-rdb-max-rows*)
+            (let* ((keep (to-int (/ *ltor-rdb-max-rows* 2)))
                    (start (- ticker-rows keep))
                    (idx (int-matrix keep)) )
               (for (i 0 (1- keep)) (idx i (+ start i)))
-              (printf "zmq-rdb: trimming ticker table from %d to %d rows\n"
+              (printf "ltor-rdb: trimming ticker table from %d to %d rows\n"
                       ticker-rows keep)
               (setq *rdb-ticker-table* (==> *rdb-ticker-table* select-rows-idx idx)) ) )
           ;; Trim L2 table similarly
-          (when (> l2-rows *zmq-rdb-max-rows*)
-            (let* ((keep (to-int (/ *zmq-rdb-max-rows* 2)))
+          (when (> l2-rows *ltor-rdb-max-rows*)
+            (let* ((keep (to-int (/ *ltor-rdb-max-rows* 2)))
                    (start (- l2-rows keep))
                    (idx (int-matrix keep)) )
               (for (i 0 (1- keep)) (idx i (+ start i)))
-              (printf "zmq-rdb: trimming l2 table from %d to %d rows\n"
+              (printf "ltor-rdb: trimming l2 table from %d to %d rows\n"
                       l2-rows keep)
               (setq *rdb-l2-table* (==> *rdb-l2-table* select-rows-idx idx)) ) ) )
-        (setq *zmq-rdb-last-heartbeat* now) ) ) ) )
+        (setq *ltor-rdb-last-heartbeat* now) ) ) ) )
 
   ;; Shutdown
-  (printf "\nzmq-rdb: shutting down...\n")
-  (when *zmq-rdb-sub* (zmq-close *zmq-rdb-sub*))
-  (when *zmq-rdb-router* (zmq-close *zmq-rdb-router*))
-  (when *zmq-rdb-ctx* (zmq-ctx-term *zmq-rdb-ctx*))
-  (printf "zmq-rdb: stopped (%d tickers, %d l2, %d broadcasts)\n"
+  (printf "\nltor-rdb: shutting down...\n")
+  (when *ltor-rdb-sub* (zmq-close *ltor-rdb-sub*))
+  (when *ltor-rdb-router* (zmq-close *ltor-rdb-router*))
+  (when *ltor-rdb-ctx* (zmq-ctx-term *ltor-rdb-ctx*))
+  (printf "ltor-rdb: stopped (%d tickers, %d l2, %d broadcasts)\n"
           *rdb-total-tickers* *rdb-total-l2* *rdb-total-broadcasts*)
   (when *rdb-ticker-table*
-    (printf "zmq-rdb: ticker table: %d rows\n" (==> *rdb-ticker-table* num-rows)))
+    (printf "ltor-rdb: ticker table: %d rows\n" (==> *rdb-ticker-table* num-rows)))
   (when *rdb-l2-table*
-    (printf "zmq-rdb: l2 table: %d rows\n" (==> *rdb-l2-table* num-rows))) )
+    (printf "ltor-rdb: l2 table: %d rows\n" (==> *rdb-l2-table* num-rows))) )

@@ -1,0 +1,244 @@
+;;; ltor-gateway.lsh -- LTOR Gateway process
+;;;
+;;; Unified query gateway: ROUTER frontend for REPL clients, 4 DEALER
+;;; backend connections to RDB, HDB Reader, Analytics, and HDB Writer.
+;;; Routes queries based on content (smart routing) or explicit prefix.
+
+(libload "zmq/zmq-serde")
+
+#? *** LTOR Gateway: Unified Query Router
+;; LTOR gateway with a ROUTER frontend for client queries and
+;; DEALER backend connections to RDB, HDB Reader, Analytics, and
+;; HDB Writer.
+;;.PP
+;; Features:
+;; {<ul>
+;; {<li> Explicit routing via {<b> ("rdb" ...)}, {<b> ("hdb" ...)},
+;; {<b> ("hdbw" ...)}, {<b> ("ana" ...)} prefixes.}
+;; {<li> Smart routing: auto-detects backend from query pattern.}
+;; }
+;;.SEE (ltor-gw-start <gw-port> <rdb-port> <hdb-port> <ana-port> <hdbw-port>)
+
+;; ============================================================
+;; LTOR Gateway state
+;; ============================================================
+
+(defvar *ltor-gw-ctx* ())
+(defvar *ltor-gw-frontend* ())      ;; ROUTER socket for clients
+(defvar *ltor-gw-rdb-dealer* ())    ;; DEALER to RDB
+(defvar *ltor-gw-hdb-dealer* ())    ;; DEALER to HDB Reader
+(defvar *ltor-gw-ana-dealer* ())    ;; DEALER to Analytics
+(defvar *ltor-gw-hdbw-dealer* ())   ;; DEALER to HDB Writer
+(defvar *ltor-gw-running* ())
+(defvar *ltor-gw-total-queries* 0)
+(defvar *ltor-gw-start-time* 0)
+(defvar *ltor-gw-last-heartbeat* 0)
+(defvar *ltor-gw-total-timeouts* 0)
+
+
+;; ============================================================
+;; Smart routing
+;; ============================================================
+
+(de _ltor-gw-smart-route (expr)
+  (let ((cmd (if (stringp expr) expr
+               (if (consp expr) (car expr) ()) )))
+    (cond
+     ;; HDB Reader-specific
+     ((= cmd "dates") "hdb")
+     ((= cmd "refresh") "hdb")
+     ((= cmd "range") "hdb")
+     ((= cmd "range-where") "hdb")
+     ((and (consp expr) (= cmd "meta")) "hdb")
+     ;; HDB Writer-specific
+     ((= cmd "flush") "hdbw")
+     ;; Analytics-specific
+     ((= cmd "mavg") "ana")
+     ((= cmd "mavg-all") "ana")
+     ((= cmd "analytics-all") "ana")
+     ((= cmd "vwap") "ana")
+     ((= cmd "vwap-all") "ana")
+     ;; Default to RDB for common queries
+     ((= cmd "tables") "rdb")
+     ((= cmd "count") "rdb")
+     ((= cmd "snapshot") "rdb")
+     ((= cmd "last") "rdb")
+     ((= cmd "where") "rdb")
+     ((= cmd "rows-from") "rdb")
+     ;; No match
+     (t ()) ) ) )
+
+
+;; ============================================================
+;; Backend call (DEALER round-trip)
+;; ============================================================
+
+(de _ltor-gw-call (dealer query)
+  (zmq-query-send dealer query)
+  ;; Poll for reply (3s timeout, leaves 2s margin for monitor's 5s timeout)
+  (zmq-poll-set-socket 0 dealer *zmq-pollin*)
+  (let ((rc (zmq-poll 1 3000)))
+    (if (and (> rc 0) (zmq-poll-ready 0))
+      (zmq-query-recv dealer)
+      (progn
+        (setq *ltor-gw-total-timeouts* (1+ *ltor-gw-total-timeouts*))
+        "timeout: backend did not respond" ) ) ) )
+
+
+;; ============================================================
+;; Query dispatch
+;; ============================================================
+
+(de ltor-gw-handle-query (expr)
+  (setq *ltor-gw-total-queries* (1+ *ltor-gw-total-queries*))
+  (cond
+   ;; Gateway health check
+   ((= expr "ping") "pong")
+
+   ;; Backend status
+   ((= expr "backends")
+    (let ((check (lambda (name dealer)
+            (if dealer
+              (cons name
+                (let ((r (_ltor-gw-call dealer "ping")))
+                  (if (= r "pong") "connected" "unreachable") ) )
+              (cons name "not configured") ) )))
+      (list (check "rdb" *ltor-gw-rdb-dealer*)
+            (check "hdb" *ltor-gw-hdb-dealer*)
+            (check "ana" *ltor-gw-ana-dealer*)
+            (check "hdbw" *ltor-gw-hdbw-dealer*) ) ) )
+
+   ;; Gateway stats
+   ((= expr "stats")
+    (list (cons "queries" *ltor-gw-total-queries*)
+          (cons "uptime" (- (_wire-time-seconds) *ltor-gw-start-time*))) )
+
+   ;; Explicit routing
+   ((and (consp expr) (= (car expr) "rdb"))
+    (_ltor-gw-call *ltor-gw-rdb-dealer* (cadr expr)) )
+   ((and (consp expr) (= (car expr) "hdb"))
+    (_ltor-gw-call *ltor-gw-hdb-dealer* (cadr expr)) )
+   ((and (consp expr) (= (car expr) "ana"))
+    (_ltor-gw-call *ltor-gw-ana-dealer* (cadr expr)) )
+   ((and (consp expr) (= (car expr) "hdbw"))
+    (_ltor-gw-call *ltor-gw-hdbw-dealer* (cadr expr)) )
+
+   ;; Smart routing
+   (t
+    (let ((backend (_ltor-gw-smart-route expr)))
+      (if backend
+        (let ((dealer (cond ((= backend "rdb") *ltor-gw-rdb-dealer*)
+                            ((= backend "hdb") *ltor-gw-hdb-dealer*)
+                            ((= backend "ana") *ltor-gw-ana-dealer*)
+                            ((= backend "hdbw") *ltor-gw-hdbw-dealer*)
+                            (t ()) )))
+          (if dealer
+            (_ltor-gw-call dealer expr)
+            (sprintf "no dealer for backend: %s" backend) ) )
+        (sprintf "unknown query: %l" expr) ) ) ) ) )
+
+
+;; ============================================================
+;; Main entry point
+;; ============================================================
+
+#? (ltor-gw-start <gw-port> <rdb-port> <hdb-port> <ana-port> <hdbw-port>)
+;; Start the LTOR gateway.
+;; <gw-port>: ROUTER socket port for client queries (e.g. 19974).
+;; <rdb-port>: RDB ROUTER port to connect DEALER (e.g. 19971).
+;; <hdb-port>: HDB Reader ROUTER port (e.g. 19972).
+;; <ana-port>: Analytics ROUTER port (e.g. 19973).
+;; <hdbw-port>: HDB Writer ROUTER port (e.g. 19975), or () to skip.
+;; Blocks until interrupted.
+(de ltor-gw-start (gw-port rdb-port hdb-port ana-port hdbw-port)
+  (printf "\n=== LTOR Gateway starting ===\n")
+  (printf "frontend: tcp://*:%d\n" gw-port)
+  (printf "backends: rdb=%d hdb=%d ana=%d hdbw=%l\n\n"
+          rdb-port hdb-port ana-port hdbw-port)
+
+  ;; Reset state
+  (setq *ltor-gw-running* t)
+  (setq *ltor-gw-total-queries* 0)
+  (setq *ltor-gw-start-time* (_wire-time-seconds))
+  (setq *ltor-gw-last-heartbeat* (_wire-time-seconds))
+  (setq *ltor-gw-total-timeouts* 0)
+
+  ;; Create ZMQ context
+  (setq *ltor-gw-ctx* (zmq-ctx-new))
+
+  ;; Frontend ROUTER for client queries
+  (setq *ltor-gw-frontend* (zmq-socket *ltor-gw-ctx* *zmq-router*))
+  (zmq-set-linger *ltor-gw-frontend* 0)
+  (zmq-bind *ltor-gw-frontend* (sprintf "tcp://*:%d" gw-port))
+  (printf "ltor-gw: frontend ROUTER on port %d\n" gw-port)
+
+  ;; Backend DEALER connections
+  (setq *ltor-gw-rdb-dealer* (zmq-socket *ltor-gw-ctx* *zmq-dealer*))
+  (zmq-set-linger *ltor-gw-rdb-dealer* 0)
+  (zmq-set-identity *ltor-gw-rdb-dealer* "gw-rdb")
+  (zmq-connect *ltor-gw-rdb-dealer* (sprintf "tcp://127.0.0.1:%d" rdb-port))
+  (printf "ltor-gw: DEALER connected to RDB on port %d\n" rdb-port)
+
+  (setq *ltor-gw-hdb-dealer* (zmq-socket *ltor-gw-ctx* *zmq-dealer*))
+  (zmq-set-linger *ltor-gw-hdb-dealer* 0)
+  (zmq-set-identity *ltor-gw-hdb-dealer* "gw-hdb")
+  (zmq-connect *ltor-gw-hdb-dealer* (sprintf "tcp://127.0.0.1:%d" hdb-port))
+  (printf "ltor-gw: DEALER connected to HDB on port %d\n" hdb-port)
+
+  (setq *ltor-gw-ana-dealer* (zmq-socket *ltor-gw-ctx* *zmq-dealer*))
+  (zmq-set-linger *ltor-gw-ana-dealer* 0)
+  (zmq-set-identity *ltor-gw-ana-dealer* "gw-ana")
+  (zmq-connect *ltor-gw-ana-dealer* (sprintf "tcp://127.0.0.1:%d" ana-port))
+  (printf "ltor-gw: DEALER connected to Analytics on port %d\n" ana-port)
+
+  ;; HDB Writer DEALER (optional)
+  (setq *ltor-gw-hdbw-dealer* ())
+  (when hdbw-port
+    (setq *ltor-gw-hdbw-dealer* (zmq-socket *ltor-gw-ctx* *zmq-dealer*))
+    (zmq-set-linger *ltor-gw-hdbw-dealer* 0)
+    (zmq-set-identity *ltor-gw-hdbw-dealer* "gw-hdbw")
+    (zmq-connect *ltor-gw-hdbw-dealer* (sprintf "tcp://127.0.0.1:%d" hdbw-port))
+    (printf "ltor-gw: DEALER connected to HDB Writer on port %d\n" hdbw-port) )
+
+  ;; Verify backends
+  (printf "ltor-gw: pinging backends...\n")
+  (let ((rdb-pong (_ltor-gw-call *ltor-gw-rdb-dealer* "ping"))
+        (hdb-pong (_ltor-gw-call *ltor-gw-hdb-dealer* "ping"))
+        (ana-pong (_ltor-gw-call *ltor-gw-ana-dealer* "ping"))
+        (hdbw-pong (if *ltor-gw-hdbw-dealer*
+                     (_ltor-gw-call *ltor-gw-hdbw-dealer* "ping") "n/a")) )
+    (printf "ltor-gw: ping results: rdb=%l hdb=%l ana=%l hdbw=%l\n"
+            rdb-pong hdb-pong ana-pong hdbw-pong) )
+
+  (printf "ltor-gw: entering serve loop\n\n")
+
+  ;; Serve loop
+  (while *ltor-gw-running*
+    ;; Restore poll slot 0 for frontend each iteration
+    ;; (_ltor-gw-call overwrites slot 0 with backend dealers)
+    (zmq-poll-set-socket 0 *ltor-gw-frontend* *zmq-pollin*)
+    (let ((rc (zmq-poll 1 100)))
+      (when (and (> rc 0) (zmq-poll-ready 0))
+        ;; Receive query from client
+        (let ((query (zmq-router-recv-query *ltor-gw-frontend*)))
+          (when query
+            (let ((result (ltor-gw-handle-query query)))
+              (zmq-router-send-reply *ltor-gw-frontend* result) ) ) ) ) )
+
+    ;; Periodic heartbeat (every 30s)
+    (let ((now (_wire-time-seconds)))
+      (when (>= (- now *ltor-gw-last-heartbeat*) 30)
+        (printf "ltor-gw: heartbeat  queries=%d timeouts=%d uptime=%ds\n"
+                *ltor-gw-total-queries* *ltor-gw-total-timeouts*
+                (to-int (- now *ltor-gw-start-time*)))
+        (setq *ltor-gw-last-heartbeat* now) ) ) )
+
+  ;; Shutdown
+  (printf "\nltor-gw: shutting down...\n")
+  (when *ltor-gw-rdb-dealer* (zmq-close *ltor-gw-rdb-dealer*))
+  (when *ltor-gw-hdb-dealer* (zmq-close *ltor-gw-hdb-dealer*))
+  (when *ltor-gw-ana-dealer* (zmq-close *ltor-gw-ana-dealer*))
+  (when *ltor-gw-hdbw-dealer* (zmq-close *ltor-gw-hdbw-dealer*))
+  (when *ltor-gw-frontend* (zmq-close *ltor-gw-frontend*))
+  (when *ltor-gw-ctx* (zmq-ctx-term *ltor-gw-ctx*))
+  (printf "ltor-gw: stopped (%d queries served)\n" *ltor-gw-total-queries*) )

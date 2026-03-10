@@ -1,0 +1,11 @@
+;;; coinbase-ltor-analytics.lsh -- LTOR Coinbase Analytics entry point
+;;;
+;;; Subscribes directly to FH PUB on port 19970 (ticker only),
+;;; serves analytics queries on port 19973.
+;;;
+;;; Usage (from lush-claude root):
+;;;   ./src/lush packages/ltor/scripts/coinbase-ltor-analytics.lsh
+
+(libload "ltor/ltor-analytics")
+
+(ltor-ana-start 19970 19973 20)

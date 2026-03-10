@@ -1,8 +1,8 @@
 ;;; coinbase-hdb-writer.lsh -- Coinbase HDB Writer helpers (transport-agnostic)
 ;;;
 ;;; Date-string computation, path helpers, status reporting, and query
-;;; handling for the HDB Writer.  Used by zmq-hdb-writer.lsh (and formerly
-;;; libuv/hdb-writer.lsh).
+;;; handling for the HDB Writer.  Used by ltor-hdb-writer.lsh (and formerly
+;;; zmq-hdb-writer.lsh / libuv/hdb-writer.lsh).
 ;;;
 ;;; This module contains only transport-agnostic helpers.  The actual
 ;;; flush logic (pulling data from RDB or local tables, writing to disk)
@@ -23,11 +23,11 @@
 ;;  <hdb-root>/YYYY.MM.DD/l2/     (meta.lsh, col-*.col)
 ;; </code>}
 ;;
-;; Used by the ZMQ HDB Writer process ({<b> zmq-hdb-writer.lsh}).
+;; Used by the LTOR HDB Writer process ({<b> ltor-hdb-writer.lsh}).
 ;;
 ;; Example:
 ;; {<code>
-;;  (libload "zmq/coinbase-hdb-writer")
+;;  (libload "ltor/coinbase-hdb-writer")
 ;;  (setq *hdb-root* "/datafast1/experiment/coinbasedata-zmq")
 ;;  (hdb-date-string)     ;; => "2026.03.09"
 ;;  (hdb-table-path "ticker")  ;; => "/datafast1/.../2026.03.09/ticker"

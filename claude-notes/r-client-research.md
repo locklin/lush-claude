@@ -127,7 +127,7 @@ but requires parsing Lush's bwrite format.
 ## Server-Side Requirement
 
 The HDB Reader business logic is now transport-agnostic in
-`packages/zmq/coinbase-hdb-reader.lsh`. To serve wire clients, need one of:
+`packages/ltor/coinbase-hdb-reader.lsh`. To serve wire clients, need one of:
 
 1. **Standalone wire HDB server** — new .lsh file that creates a WireServer,
    sets on-sync callback to `hdbr-handle-query`, enters serve loop.
@@ -143,7 +143,7 @@ port, using the same `coinbase-hdb-reader.lsh` business logic.
 
 - Wire protocol: `packages/wire/wire.lsh` (header format, client/server API)
 - Wire serialization: `packages/wire/wire-serialize.lsh` (pack/unpack/sexp)
-- HDB query logic: `packages/zmq/coinbase-hdb-reader.lsh` (transport-agnostic)
+- HDB query logic: `packages/ltor/coinbase-hdb-reader.lsh` (transport-agnostic)
 - ZMQ serde: `packages/zmq/zmq-serde.lsh` (for comparison)
 - rkdb source: https://github.com/KxSystems/rkdb (3-function API, C type dispatch)
 - kdb+ IPC docs: https://code.kx.com/q/basics/ipc/ (8-byte header, self-describing)

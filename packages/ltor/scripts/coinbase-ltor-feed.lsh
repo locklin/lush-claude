@@ -1,0 +1,14 @@
+;;; coinbase-ltor-feed.lsh -- LTOR Coinbase feed handler entry point
+;;;
+;;; Starts the LTOR feed handler: connects to Coinbase WebSocket,
+;;; publishes parsed data via ZMQ PUB on port 19970, serves control
+;;; queries on port 19976.
+;;;
+;;; Usage (from lush-claude root):
+;;;   ./src/lush packages/ltor/scripts/coinbase-ltor-feed.lsh
+
+(libload "ltor/ltor-feed")
+
+(ltor-fh-start '("BTC-USD" "ETH-USD")
+              '("ticker" "level2" "heartbeat")
+              19970 19976)
