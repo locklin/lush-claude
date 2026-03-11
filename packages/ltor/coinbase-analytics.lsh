@@ -375,7 +375,7 @@
    ((and (consp expr) (= (car expr) "where"))
     (let ((op (cadr expr))
           (col (caddr expr))
-          (val (cadddr expr)) )
+          (val (nth 3 expr)) )
       (wire-pack-datatable (==> *ana-table* where-rows op col val)) ) )
 
    ;; ("rows-from" N) -- rows from index N onward (for incremental consumers)

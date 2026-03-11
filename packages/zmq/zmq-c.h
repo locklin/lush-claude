@@ -14,6 +14,8 @@
 #ifndef LUSH_ZMQ_C_H
 #define LUSH_ZMQ_C_H
 
+#include <stddef.h>  /* size_t */
+
 /* ---- Socket type constants ---- */
 #define ZMQ_PUB      1
 #define ZMQ_SUB      2

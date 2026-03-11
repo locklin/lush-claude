@@ -56,6 +56,15 @@ for proc in $PROCESSES; do
     fi
 done
 
+# Also kill any remaining lush processes on LTOR ports
+# (handles the case where PIDs are stale but processes restarted)
+for pid in $(pgrep -f "ltor-" 2>/dev/null); do
+    if kill -0 "$pid" 2>/dev/null; then
+        echo "Killing remaining LTOR process PID=$pid"
+        kill "$pid" 2>/dev/null
+    fi
+done
+
 echo " done"
 echo ""
 echo "=== All LTOR processes stopped ==="

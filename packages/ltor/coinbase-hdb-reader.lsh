@@ -272,7 +272,7 @@
 
    ;; ("last" date tbl N) — last N rows from a single date's table
    ((and (consp expr) (= (car expr) "last"))
-    (let ((date (cadr expr)) (tbl (caddr expr)) (n (cadddr expr)))
+    (let ((date (cadr expr)) (tbl (caddr expr)) (n (nth 3 expr)))
       (let ((dt (hdbr-get-table date tbl)))
         (if (not dt)
           (sprintf "table not found: %s/%s" date tbl)
@@ -287,7 +287,7 @@
 
    ;; ("select" date tbl col-list) — selected columns from a single date
    ((and (consp expr) (= (car expr) "select"))
-    (let ((date (cadr expr)) (tbl (caddr expr)) (col-list (cadddr expr)))
+    (let ((date (cadr expr)) (tbl (caddr expr)) (col-list (nth 3 expr)))
       (let ((dt (hdbr-get-table date tbl)))
         (if (not dt)
           (sprintf "table not found: %s/%s" date tbl)
@@ -297,9 +297,9 @@
    ((and (consp expr) (= (car expr) "where"))
     (let ((date (cadr expr))
           (tbl (caddr expr))
-          (op (cadddr expr))
-          (col (car (cddddr expr)))
-          (val (cadr (cddddr expr))) )
+          (op (nth 3 expr))
+          (col (nth 4 expr))
+          (val (nth 5 expr)) )
       (let ((dt (hdbr-get-table date tbl)))
         (if (not dt)
           (sprintf "table not found: %s/%s" date tbl)
@@ -309,7 +309,7 @@
    ((and (consp expr) (= (car expr) "range"))
     (let ((tbl (cadr expr))
           (d-from (caddr expr))
-          (d-to (cadddr expr)) )
+          (d-to (nth 3 expr)) )
       ;; Filter *hdbr-dates* to [d-from, d-to] using integer comparison
       (let ((from-int (_hdbr-date-to-int d-from))
             (to-int (_hdbr-date-to-int d-to))
@@ -324,10 +324,10 @@
    ((and (consp expr) (= (car expr) "range-where"))
     (let ((tbl (cadr expr))
           (d-from (caddr expr))
-          (d-to (cadddr expr))
-          (op (car (cddddr expr)))
-          (col (cadr (cddddr expr)))
-          (val (caddr (cddddr expr))) )
+          (d-to (nth 3 expr))
+          (op (nth 4 expr))
+          (col (nth 5 expr))
+          (val (nth 6 expr)) )
       ;; Get concatenated table for range
       (let ((from-int (_hdbr-date-to-int d-from))
             (to-int (_hdbr-date-to-int d-to))
