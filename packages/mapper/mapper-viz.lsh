@@ -686,11 +686,23 @@
 ;; Start the mapper visualization server.
 ;; Opens the SQLite database at <db-path>, starts the HTTP server
 ;; on <port> (default 8765), and opens the system browser.
+;; If <db-path> is a directory, creates {<b> mapper.db} inside it.
 ;; Blocks, handling one request at a time.
 ;;
+;; {<b> Stopping the server:} Press Ctrl-C to return to the REPL.
+;; This is safe -- SQLite WAL mode is crash-proof.  Uncommitted
+;; writes (e.g. a dataset upload in progress) are rolled back
+;; automatically on next open.  The WAL and SHM files left on
+;; disk are checkpointed and cleaned up the next time the database
+;; is opened.  You may optionally run {<c> (sqlite-close *viz-db*)}
+;; after Ctrl-C to force an immediate checkpoint.
+;;
 ;; Example:
+;; {<code>
 ;;   (mapper-viz-start "/tmp/claude/my-project.db")
 ;;   (mapper-viz-start "/tmp/claude/my-project.db" 9000)
+;;   (mapper-viz-start "/dataslow/sqlite/mapper")  ;; uses mapper.db in dir
+;; </code>}
 (de mapper-viz-start (db-path . rest)
   (let ((port (if rest (car rest) 8765)))
     ;; Resolve directory to file path (mapper-db-open appends mapper.db)

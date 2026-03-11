@@ -68,7 +68,20 @@ Using any of these produces:
 list tag — use `{<ul>}` instead.  (Bug found and fixed in
 `packages/datatable/datatable-csv.lsh:238`.)
 
-## CRITICAL RULE: Do Not Mix Tag Styles
+## CRITICAL RULE: Dot-Tags Are DEPRECATED — Use Brace-Tags Only
+
+**NEVER generate new dot-tags** (`;;.PP`, `;;.SEE`, `;;.TYPE`, `;;.CODE`,
+etc.) in any new or modified documentation.  Dot-tags are a legacy syntax
+from early Lush.  **All new `#?` entries MUST use brace-tag syntax
+exclusively.**
+
+Many existing Lush packages (pre-dating Claude's work) use dot-tags
+throughout.  Those entries are fine as-is — do not bulk-convert legacy
+code.  But when writing NEW entries, or editing existing entries to add
+brace-tag features (like `{<b>}`, `{<ul>}`, `{<see>}`), you MUST ensure
+the entire entry uses brace-tags only.
+
+### The Mixing Rule
 
 **Within a single entry body, you must use EITHER dot-tags OR brace-tags,
 NEVER both.**  The parser (`ldoc.lsh:read-help-body`) scans each entry:
@@ -77,11 +90,18 @@ NEVER both.**  The parser (`ldoc.lsh:read-help-body`) scans each entry:
 - Sets `newstylep` if ANY line contains `{<` (a brace-tag)
 - If BOTH are set → error: "document uses a mixture of dot-tags and brace-tags"
 
-**Use brace-tags for all new code.**  They are more expressive and allow
-inline formatting like `{<b> bold}` which dot-tags cannot do.
-
 Different entries in the same file CAN use different styles — the check
-is per-entry, not per-file.
+is per-entry, not per-file.  But in practice, use brace-tags for every
+new entry.
+
+### Checklist Before Committing Documentation
+
+1. **New entries**: Verify zero dot-tags.  Use `;;` for paragraph breaks
+   (not `;;.PP`), `{<see>}` for cross-refs (not `;;.SEE`), etc.
+2. **Edited entries**: If you added any `{<...>}` brace-tag, grep the
+   entry for `;;.` lines and convert them per the table below.
+3. **Quick test**: `grep -n '^\;\;\.PP\|^\;\;\.SEE\|^\;\;\.TYPE' file.lsh`
+   in files you touched — there should be zero hits in new entries.
 
 ## Brace-Tag Syntax (Preferred)
 
@@ -151,9 +171,14 @@ In comment form:
 A blank `;;` line (just `;;` with nothing after it) produces a paragraph
 break in brace mode.  Do NOT use `;;.PP` or `;;.P` — those are dot-tags.
 
-## Dot-Tag Syntax (Legacy — Do Not Mix With Brace-Tags)
+## Dot-Tag Syntax (DEPRECATED — Reference Only)
 
-For reference only.  These work ONLY in entries with NO `{<` brace-tags.
+**Do NOT use dot-tags in new code.**  This section exists solely so you
+can READ and UNDERSTAND legacy Lush documentation that predates brace-tags.
+If you need to edit a legacy entry and add brace-tag features, convert
+the entire entry to brace-tags using the conversion table below.
+
+Dot-tags work ONLY in entries with NO `{<` brace-tags.
 
 ```
 ;;.PP  or  ;;.P           Paragraph break
@@ -172,8 +197,9 @@ For reference only.  These work ONLY in entries with NO `{<` brace-tags.
 
 ## Converting Dot-Tags to Brace-Tags
 
-When an entry body already uses `{<b>}` or other brace-tags, convert
-ALL dot-tags in that same entry:
+When editing a legacy entry that uses dot-tags and you need to add any
+brace-tag feature, you MUST convert ALL dot-tags in that entry.
+Conversion reference:
 
 | Dot-Tag | Brace Equivalent |
 |---------|-----------------|
