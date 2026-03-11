@@ -1,0 +1,222 @@
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;;
+;;; LUSH Lisp Universal Shell
+;;;   Copyright (C) 2002 Leon Bottou, Yann Le Cun, AT&T Corp, NECI.
+;;; Includes parts of TL3:
+;;;   Copyright (C) 1987-1999 Leon Bottou and Neuristique.
+;;; Includes selected parts of SN3.2:
+;;;   Copyright (C) 1991-2001 AT&T Corp.
+;;;
+;;; This program is free software; you can redistribute it and/or modify
+;;; it under the terms of the GNU General Public License as published by
+;;; the Free Software Foundation; either version 2 of the License, or
+;;; (at your option) any later version.
+;;;
+;;; This program is distributed in the hope that it will be useful,
+;;; but WITHOUT ANY WARRANTY; without even the implied warranty of
+;;; MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+;;; GNU General Public License for more details.
+;;;
+;;; You should have received a copy of the GNU General Public License
+;;; along with this program; if not, write to the Free Software
+;;; Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111, USA
+;;;
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(libload "htk/htk-config")
+
+
+
+#? *** htk_lat
+;; Lush bindings for the HTK 3.4.1 HLat module.
+;; Provides lattice operations: pruning, sorting, scoring, expansion.
+
+;; dummy function that adds HTK C header files in C file
+(eval `(de dummy_htk_lat () ,htk-cpheader-cmd ()))
+
+#? * (dummy_htk_lat)
+#? * (initlat)
+#? * (latfindbest <heap> <lat> <n>)
+#? * (latsetscores <lat>)
+#? * (latprune <heap> <lat> <thresh> <arcspersec>)
+#? * (calcstats <lat>)
+#? * (latstartnode <lat>)
+#? * (latendnode <lat>)
+#? * (latsetboundarywords <start> <end> <startlm> <endlm>)
+#? * (latcheck <lat>)
+#? * (fixbadlat <lat>)
+#? * (fixpronprobs <lat> <voc>)
+#? * (lattopsort <lat> <toporder>)
+#? * (latattachinfo <heap> <size> <lat>)
+#? * (latdetachinfo <heap> <lat>)
+#? * (latforwbackw <lat> <type>)
+#? * (getlattice <fn> <path> <ext> <heap> <voc> <shortarc> <add2dict>)
+#? * (mergelatnodesarcs <lat> <heap> <mergefwd>)
+#? * (applywpnet2lablat <lat> <wdnet>)
+
+;; ********************************************************
+
+
+(de InitLat ()
+    #{ InitLat(); #}
+    ()
+)
+
+
+(de LatFindBest (heap lat n)
+    ((-gptr- "MemHeap *") heap)
+    ((-gptr- "Lattice *") lat)
+    ((-int-) n)
+    (gptr #{ LatFindBest($heap, $lat, $n) #} )
+)
+
+
+(de LatSetScores (lat)
+    ((-gptr- "Lattice *") lat)
+    #{ LatSetScores($lat); #}
+    ()
+)
+
+
+(de LatPrune (heap lat thresh arcspersec)
+    ((-gptr- "MemHeap *") heap)
+    ((-gptr- "Lattice *") lat)
+    ((-double-) thresh)
+    ((-float-) arcspersec)
+    (gptr #{ LatPrune($heap, $lat, $thresh, $arcspersec) #} )
+)
+
+
+(de CalcStats (lat)
+    ((-gptr- "Lattice *") lat)
+    #{ CalcStats($lat); #}
+    ()
+)
+
+
+(de LatStartNode (lat)
+    ((-gptr- "Lattice *") lat)
+    (gptr #{ LatStartNode($lat) #} )
+)
+
+
+(de LatEndNode (lat)
+    ((-gptr- "Lattice *") lat)
+    (gptr #{ LatEndNode($lat) #} )
+)
+
+
+(de LatSetBoundaryWords (start end startlm endlm)
+    ((-gptr- "char *") start)
+    ((-gptr- "char *") end)
+    ((-gptr- "char *") startlm)
+    ((-gptr- "char *") endlm)
+    #{ LatSetBoundaryWords($start, $end, $startlm, $endlm); #}
+    ()
+)
+
+
+(de LatCheck (lat)
+    ((-gptr- "Lattice *") lat)
+    #{ LatCheck($lat); #}
+    ()
+)
+
+
+(de FixBadLat (lat)
+    ((-gptr- "Lattice *") lat)
+    #{ FixBadLat($lat); #}
+    ()
+)
+
+
+(de FixPronProbs (lat voc)
+    ((-gptr- "Lattice *") lat)
+    ((-gptr- "Vocab *") voc)
+    #{ FixPronProbs($lat, $voc); #}
+    ()
+)
+
+
+(de LatTopSort (lat toporder)
+    ((-gptr- "Lattice *") lat)
+    ((-gptr- "LNode **") toporder)
+    (int #{ LatTopSort($lat, $toporder) #} )
+)
+
+
+(de LatAttachInfo (heap size lat)
+    ((-gptr- "MemHeap *") heap)
+    ((-int-) size)                     ;; size_t -> int
+    ((-gptr- "Lattice *") lat)
+    #{ LatAttachInfo($heap, $size, $lat); #}
+    ()
+)
+
+
+(de LatDetachInfo (heap lat)
+    ((-gptr- "MemHeap *") heap)
+    ((-gptr- "Lattice *") lat)
+    #{ LatDetachInfo($heap, $lat); #}
+    ()
+)
+
+
+(de LatForwBackw (lat type)
+    ((-gptr- "Lattice *") lat)
+    ((-int-) type)                     ;; LatFBType (enum) -> int
+    (double #{ LatForwBackw($lat, $type) #} )
+)
+
+
+(de GetLattice (fn path ext heap voc shortarc add2dict)
+    ((-gptr- "char *") fn)
+    ((-gptr- "char *") path)
+    ((-gptr- "char *") ext)
+    ((-gptr- "MemHeap *") heap)
+    ((-gptr- "Vocab *") voc)
+    ((-int-) shortarc)
+    ((-int-) add2dict)
+    (gptr #{ GetLattice($fn, $path, $ext, $heap, $voc, $shortarc, $add2dict) #} )
+)
+
+
+(de MergeLatNodesArcs (lat heap mergefwd)
+    ((-gptr- "Lattice *") lat)
+    ((-gptr- "MemHeap *") heap)
+    ((-int-) mergefwd)
+    (gptr #{ MergeLatNodesArcs($lat, $heap, $mergefwd) #} )
+)
+
+
+(de ApplyWPNet2LabLat (lat wdnet)
+    ((-gptr- "Lattice *") lat)
+    ((-gptr- "Lattice *") wdnet)
+    #{ ApplyWPNet2LabLat($lat, $wdnet); #}
+    ()
+)
+
+
+;; ********************************************************
+
+(dhc-make-with-libs () (list htk-libhtk)
+  dummy_htk_lat
+  initlat
+  latfindbest
+  latsetscores
+  latprune
+  calcstats
+  latstartnode
+  latendnode
+  latsetboundarywords
+  latcheck
+  fixbadlat
+  fixpronprobs
+  lattopsort
+  latattachinfo
+  latdetachinfo
+  latforwbackw
+  getlattice
+  mergelatnodesarcs
+  applywpnet2lablat
+)

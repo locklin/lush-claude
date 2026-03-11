@@ -43,6 +43,7 @@
 #? * (freelattice <lat>)
 #? * (writelattice <lat> <file> <form>)
 #? * (readlattice <file> <heap> <voc> <shortarc> <add2dict>)
+#? * (readonelattice <src> <heap> <voc> <shortarc> <add2dict>)
 #? * (adjsublist <lat> <sublatid> <sublat> <adj>)
 #? * (sublatlist <lat> <tail> <depth>)
 #? * (expandmultilevellattice <heap> <lat> <voc>)
@@ -106,6 +107,16 @@
     ((-int-) shortarc) 
     ((-int-) add2dict)  
     (gptr #{ ReadLattice(  $file   ,$heap   ,$voc   ,$shortarc   ,$add2dict  )  #} )            ;; Lattice *   -> gptr
+)
+
+
+(de ReadOneLattice (src heap voc shortarc add2dict)
+    ((-gptr- "Source *") src)
+    ((-gptr- "MemHeap *") heap)
+    ((-gptr- "Vocab *") voc)
+    ((-int-) shortarc)
+    ((-int-) add2dict)
+    (gptr #{ ReadOneLattice($src, $heap, $voc, $shortarc, $add2dict) #} )
 )
 
 
@@ -222,6 +233,7 @@
   freelattice
   writelattice
   readlattice
+  readonelattice
   adjsublist
   sublatlist
   expandmultilevellattice

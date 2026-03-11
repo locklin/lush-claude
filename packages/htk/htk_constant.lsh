@@ -365,6 +365,28 @@
 (setq NNODE                 0)
 
 
+;;; HTK 3.4.1 XForm-related enums
+
+;; XFormKind
+(setq   MLLRMEAN            1)
+(setq   MLLRCOV             2)
+(setq   MLLRVAR             2)
+(setq   CMLLR               3)
+(setq   SEMIT               4)
+
+;; AdaptKind
+(setq   BASE                1)
+(setq   TREE                2)
+
+;; BaseClassKind
+(setq   MIXBASE             1)
+(setq   REGBASE             2)
+
+;; LatFBType (for HLat)
+(setq   LATFB_SUM           0)
+(setq   LATFB_MAX           1)
+
+
 (setq BASEMASK              077)
 (setq MAX_TOKS              24)
 (setq MAXSTRLEN             256)

@@ -37,7 +37,9 @@
   (when (not (member incdir c-include-path))
     (setq c-include-path (cons incdir c-include-path)))
   (when (not (member libdir shared-library-path))
-    (setq shared-library-path (cons libdir shared-library-path))))
+    (setq shared-library-path (cons libdir shared-library-path)))
+  (when (not (member libdir static-library-path))
+    (setq static-library-path (cons libdir static-library-path))))
 
 ;; ============================================================
 ;; Public API
@@ -78,6 +80,12 @@
 ;;     (e.g. "lib/libcurl.so")}
 ;;   {<li> {<b> srcdir} -- (optional) name of extracted directory if
 ;;     it differs from the tarball name minus .tar.gz}
+;;   {<li> {<b> pre-build} -- (optional) shell command run after extraction,
+;;     before configure/cmake.  Runs in the source directory.  Use for
+;;     patching configure scripts or source files.}
+;;   {<li> {<b> post-build} -- (optional) shell command run after make install.
+;;     Runs in the source directory.  Use for installing headers or renaming
+;;     libraries that the build system doesn't install automatically.}
 ;; }
 ;; }
 ;; {<p>
@@ -119,6 +127,11 @@
         ;; Extract
         (printf "[lush-pkg] Extracting...\n")
         (_lush-pkg-run (concat "tar xzf " tarball-path " -C " srcparent))
+        ;; Pre-build hook (patching, etc.)
+        (let ((pre-build (alist-get 'pre-build spec)))
+          (when pre-build
+            (printf "[lush-pkg] Running pre-build hook...\n")
+            (_lush-pkg-run (concat "cd " srcdir " && " pre-build))))
         ;; Build
         (printf "[lush-pkg] Building with %s (this may take a few minutes)...\n"
                 (pname build-type))
@@ -131,6 +144,11 @@
                                       (alist-get 'configure-args spec)))
           (t (error "lush-pkg"
                     (concat "Unknown build type: " (pname build-type)))))
+        ;; Post-build hook (header install, library rename, etc.)
+        (let ((post-build (alist-get 'post-build spec)))
+          (when post-build
+            (printf "[lush-pkg] Running post-build hook...\n")
+            (_lush-pkg-run (concat "cd " srcdir " && " post-build))))
         ;; Verify installation
         (when (not (lush-pkg-installed-p check))
           (error "lush-pkg"

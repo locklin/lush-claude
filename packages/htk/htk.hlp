@@ -1,26 +1,35 @@
 #? **** HTK: HMM ToolKit
 {<author> Fu Jie Huang}
 
-This is an interface to Cambridge University's Hidden Markov Model ToolKit. It's built on <HTK version 3.1>, but also works with the current version 3.2.
+This is an interface to Cambridge University's Hidden Markov Model ToolKit.
+Updated for {<b> HTK version 3.4.1}, which adds discriminative training
+(MMI/MPE/MWE), lattice-based forward-backward, MAP estimation, and
+a rewritten speaker adaptation framework (XForms).
 
-HTK can be downloaded from {<hlink> http://htk.eng.cam.ac.uk}.
+HTK source is available from {<hlink> https://github.com/open-speech/HTK}.
 
 #? *** Installation
 
-The Lush interface to HTK needs the library file <HTKLib.xxx.a> (xxx means the system, eg. linux), and associated header files. HTK is available in source code form. To compile and install it on Linux, follow the steps:
+The Lush interface needs {<c> libhtk.a} (static library) and header files
+installed under {<c> ~/.lush/local/}. To build from source:
 {<code>
-1. unpack the file HTK-3.1.tar.gz, and change directory into it
-2. change to C-shell, and type "source ./env/env.linux"
-3. change directory into HTKLib
-4. type "make", a library file named "HTKLib.linux.a" will be generated
-5. copy this library file into places like /usr/local/lib
-5. copy the header files into places like /usr/local/include/htk/
-</code>}	
+1. Download: wget -O HTK.tar.gz https://github.com/open-speech/HTK/archive/master.tar.gz
+2. Extract: tar xzf HTK.tar.gz && cd HTK-master
+3. Patch for 64-bit: sed -i 's/-m32 -ansi/-fPIC -ansi/g' configure
+4. Configure: ./configure --prefix=~/.lush/local --disable-hslab --without-x
+5. Build: cd HTKLib && make
+6. Install library: cp HTKLiblv.a ~/.lush/local/lib/libhtk.a
+7. Install headers: cp *.h ~/.lush/local/include/htk/
+</code>}
 
-Start Lush, and type:
+Start Lush and type:
 {<code>
 	? (libload "htk/htk")
 </code>}
+
+#? *** Modules
+
+Modules carried forward from HTK 3.1 (updated for 3.4.1 API changes):
 
 #? *** << htk/aux_structure.lsh
 #? *** << htk/esignal.lsh
@@ -48,3 +57,11 @@ Start Lush, and type:
 #? *** << htk/htk_vq.lsh
 #? *** << htk/htk_wave.lsh
 #? *** << htk/strarr.lsh
+
+New modules added in 3.4.1:
+
+#? *** << htk/htk_arc.lsh
+#? *** << htk/htk_lat.lsh
+#? *** << htk/htk_fblat.lsh
+#? *** << htk/htk_map.lsh
+#? *** << htk/htk_exactmpe.lsh

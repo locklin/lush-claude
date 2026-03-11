@@ -55,7 +55,7 @@
 #? * (loadhmmset <hset> <hmmdir> <hmmext>)
 #? * (resethmmset <hset>)
 #? * (saveinonefile <hset> <fname>)
-#? * (savehmmset <hset> <hmmdir> <hmmext> <binary>)
+#? * (savehmmset <hset> <hmmdir> <hmmext> <macroext> <binary>)
 #? * (savehmmlist <hset> <fname>)
 #? * (isseen <flag>)
 #? * (touch <flag>)
@@ -81,6 +81,26 @@
 #? * (fixdiaggconst <mp>)
 #? * (fixgconsts <hmm>)
 #? * (fixallgconsts <hset>)
+#? * (mixlogweight <hset> <weight>)
+#? * (mixweight <hset> <weight>)
+#? * (applyvfloor <hset>)
+#? * (addinxformdir <hset> <dirname>)
+#? * (loadinputxform <hset> <macroname> <fname>)
+#? * (saveinputxform <hset> <xf> <fname> <binary>)
+#? * (loadonexform <hset> <macroname> <fname>)
+#? * (saveonexform <hset> <xform> <fname> <binary>)
+#? * (saveallxforms <hset> <fname> <binary>)
+#? * (loadbaseclass <hset> <macroname> <fname>)
+#? * (loadregtree <hset> <macroname> <fname>)
+#? * (createxformmacro <hset> <xform> <macroname>)
+#? * (xformkind2str <xkind> <buf>)
+#? * (adaptkind2str <akind> <buf>)
+#? * (baseclasskind2str <bkind> <buf>)
+#? * (str2baseclasskind <str>)
+#? * (str2xformkind <str>)
+#? * (str2adaptkind <str>)
+#? * (pdemoutp <otvs> <mp> <mixp> <xwtdet>)
+#? * (idoutp <x> <vecsize> <mp>)
 
 ;; ********************************************************
 
@@ -229,12 +249,13 @@
 )
 
 
-(de SaveHMMSet (  hset  hmmdir  hmmext  binary )
-    ((-gptr- "HMMSet *") hset) 
-    ((-gptr- "char *") hmmdir) 
-    ((-gptr- "char *") hmmext) 
-    ((-int-) binary)  
-    (int   #{ SaveHMMSet(  $hset   ,$hmmdir   ,$hmmext   ,$binary  )  #} )       ;; ReturnStatus -> int
+(de SaveHMMSet (hset hmmdir hmmext macroext binary)
+    ((-gptr- "HMMSet *") hset)
+    ((-gptr- "char *") hmmdir)
+    ((-gptr- "char *") hmmext)
+    ((-gptr- "char *") macroext)
+    ((-int-) binary)
+    (int #{ SaveHMMSet($hset, $hmmdir, $hmmext, $macroext, $binary) #} )
 )
 
 
@@ -416,6 +437,161 @@
 )
 
 
+(de MixLogWeight (hset weight)
+    ((-gptr- "HMMSet *") hset)
+    ((-float-) weight)
+    (double #{ MixLogWeight($hset, $weight) #} )
+)
+
+
+(de MixWeight (hset weight)
+    ((-gptr- "HMMSet *") hset)
+    ((-float-) weight)
+    (double #{ MixWeight($hset, $weight) #} )
+)
+
+
+(de ApplyVFloor (hset)
+    ((-gptr- "HMMSet *") hset)
+    #{ ApplyVFloor($hset); #}
+    ()
+)
+
+
+(de AddInXFormDir (hset dirname)
+    ((-gptr- "HMMSet *") hset)
+    ((-gptr- "char *") dirname)
+    #{ AddInXFormDir($hset, $dirname); #}
+    ()
+)
+
+
+(de LoadInputXForm (hset macroname fname)
+    ((-gptr- "HMMSet *") hset)
+    ((-gptr- "char *") macroname)
+    ((-gptr- "char *") fname)
+    (gptr #{ LoadInputXForm($hset, $macroname, $fname) #} )
+)
+
+
+(de SaveInputXForm (hset xf fname binary)
+    ((-gptr- "HMMSet *") hset)
+    ((-gptr- "InputXForm *") xf)
+    ((-gptr- "char *") fname)
+    ((-int-) binary)
+    #{ SaveInputXForm($hset, $xf, $fname, $binary); #}
+    ()
+)
+
+
+(de LoadOneXForm (hset macroname fname)
+    ((-gptr- "HMMSet *") hset)
+    ((-gptr- "char *") macroname)
+    ((-gptr- "char *") fname)
+    (gptr #{ LoadOneXForm($hset, $macroname, $fname) #} )
+)
+
+
+(de SaveOneXForm (hset xform fname binary)
+    ((-gptr- "HMMSet *") hset)
+    ((-gptr- "AdaptXForm *") xform)
+    ((-gptr- "char *") fname)
+    ((-int-) binary)
+    #{ SaveOneXForm($hset, $xform, $fname, $binary); #}
+    ()
+)
+
+
+(de SaveAllXForms (hset fname binary)
+    ((-gptr- "HMMSet *") hset)
+    ((-gptr- "char *") fname)
+    ((-int-) binary)
+    #{ SaveAllXForms($hset, $fname, $binary); #}
+    ()
+)
+
+
+(de LoadBaseClass (hset macroname fname)
+    ((-gptr- "HMMSet *") hset)
+    ((-gptr- "char *") macroname)
+    ((-gptr- "char *") fname)
+    (gptr #{ LoadBaseClass($hset, $macroname, $fname) #} )
+)
+
+
+(de LoadRegTree (hset macroname fname)
+    ((-gptr- "HMMSet *") hset)
+    ((-gptr- "char *") macroname)
+    ((-gptr- "char *") fname)
+    (gptr #{ LoadRegTree($hset, $macroname, $fname) #} )
+)
+
+
+(de CreateXFormMacro (hset xform macroname)
+    ((-gptr- "HMMSet *") hset)
+    ((-gptr- "AdaptXForm *") xform)
+    ((-gptr- "char *") macroname)
+    #{ CreateXFormMacro($hset, $xform, $macroname); #}
+    ()
+)
+
+
+(de XFormKind2Str (xkind buf)
+    ((-int-) xkind)
+    ((-gptr- "char *") buf)
+    (gptr #{ XFormKind2Str($xkind, $buf) #} )
+)
+
+
+(de AdaptKind2Str (akind buf)
+    ((-int-) akind)
+    ((-gptr- "char *") buf)
+    (gptr #{ AdaptKind2Str($akind, $buf) #} )
+)
+
+
+(de BaseClassKind2Str (bkind buf)
+    ((-int-) bkind)
+    ((-gptr- "char *") buf)
+    (gptr #{ BaseClassKind2Str($bkind, $buf) #} )
+)
+
+
+(de Str2BaseClassKind (str)
+    ((-gptr- "char *") str)
+    (int #{ Str2BaseClassKind($str) #} )
+)
+
+
+(de Str2XFormKind (str)
+    ((-gptr- "char *") str)
+    (int #{ Str2XFormKind($str) #} )
+)
+
+
+(de Str2AdaptKind (str)
+    ((-gptr- "char *") str)
+    (int #{ Str2AdaptKind($str) #} )
+)
+
+
+(de PDEMOutP (otvs mp mixp xwtdet)
+    ((-gptr- "float *") otvs)
+    ((-gptr- "MixPDF *") mp)
+    ((-gptr- "float *") mixp)
+    ((-float-) xwtdet)
+    (int #{ PDEMOutP($otvs, $mp, $mixp, $xwtdet) #} )
+)
+
+
+(de IDOutP (x vecsize mp)
+    ((-gptr- "float *") x)
+    ((-int-) vecsize)
+    ((-gptr- "MixPDF *") mp)
+    (double #{ IDOutP($x, $vecsize, $mp) #} )
+)
+
+
 ;; ********************************************************
 
 (dhc-make-with-libs () (list htk-libhtk)
@@ -463,7 +639,24 @@
   fixdiaggconst
   fixgconsts
   fixallgconsts
+  mixlogweight
+  mixweight
+  applyvfloor
+  addinxformdir
+  loadinputxform
+  saveinputxform
+  loadonexform
+  saveonexform
+  saveallxforms
+  loadbaseclass
+  loadregtree
+  createxformmacro
+  xformkind2str
+  adaptkind2str
+  baseclasskind2str
+  str2baseclasskind
+  str2xformkind
+  str2adaptkind
+  pdemoutp
+  idoutp
 )
-
-
-;;  quantiseobservation

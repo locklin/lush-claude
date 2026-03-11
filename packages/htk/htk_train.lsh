@@ -53,13 +53,13 @@
 #? * (treecluster <x> <vpool> <nc> <dck> <cck> <dcov>)
 #? * (freeclusterset <cs>)
 #? * (showclusterset <cs>)
-#? * (attachaccs <hset> <x>)
-#? * (zeroaccs <hset>)
-#? * (showaccs <hset>)
+#? * (attachaccs <hset> <x> <uflags>)
+#? * (zeroaccs <hset> <uflags>)
+#? * (showaccs <hset> <uflags>)
 #? * (resetprecomps <hset>)
 #? * (resethmmprecomps <hmm> <nstreams>)
-#? * (dumpaccs <hset> <fname> <n>)
-#? * (loadaccs <hset> <fname> <result>)
+#? * (dumpaccs <hset> <fname> <uflags> <n>)
+#? * (loadaccs <hset> <fname> <uflags> <result>)
 
 ;; ********************************************************
 
@@ -205,24 +205,27 @@
 )
 
 
-(de AttachAccs (  hset  x )
-    ((-gptr- "HMMSet *") hset) 
-    ((-gptr- "MemHeap *") x)  
-    #{ AttachAccs(  $hset   ,$x  );  #} 
+(de AttachAccs (  hset  x  uflags )
+    ((-gptr- "HMMSet *") hset)
+    ((-gptr- "MemHeap *") x)
+    ((-int-) uflags)                   ;; UPDSet (enum) -> int
+    #{ AttachAccs(  $hset   ,$x   ,$uflags  );  #}
     ()
 )
 
 
-(de ZeroAccs (  hset )
-    ((-gptr- "HMMSet *") hset)  
-    #{ ZeroAccs(  $hset  );  #} 
+(de ZeroAccs (  hset  uflags )
+    ((-gptr- "HMMSet *") hset)
+    ((-int-) uflags)                   ;; UPDSet (enum) -> int
+    #{ ZeroAccs(  $hset   ,$uflags  );  #}
     ()
 )
 
 
-(de ShowAccs (  hset )
-    ((-gptr- "HMMSet *") hset)  
-    #{ ShowAccs(  $hset  );  #} 
+(de ShowAccs (  hset  uflags )
+    ((-gptr- "HMMSet *") hset)
+    ((-int-) uflags)                   ;; UPDSet (enum) -> int
+    #{ ShowAccs(  $hset   ,$uflags  );  #}
     ()
 )
 
@@ -242,21 +245,23 @@
 )
 
 
-(de DumpAccs (  hset  fname  n )
-    ((-gptr- "HMMSet *") hset) 
-    ((-gptr- "char *") fname) 
-    ((-int-) n)  
-    (gptr   #{ DumpAccs(  $hset   ,$fname   ,$n  )  #} )          ;; FILE * -> gptr
+(de DumpAccs (  hset  fname  uflags  n )
+    ((-gptr- "HMMSet *") hset)
+    ((-gptr- "char *") fname)
+    ((-int-) uflags)                   ;; UPDSet (enum) -> int
+    ((-int-) n)
+    (gptr   #{ DumpAccs(  $hset   ,$fname   ,$uflags   ,$n  )  #} )          ;; FILE * -> gptr
 )
 
 
-(de LoadAccs (  hset  fname result )
-    ((-gptr- "HMMSet *") hset) 
-    ((-gptr- "char *") fname)  
-    ((-gptr- "Source *") result)                       ;; return struct -> pointer 
+(de LoadAccs (  hset  fname  uflags  result )
+    ((-gptr- "HMMSet *") hset)
+    ((-gptr- "char *") fname)
+    ((-int-) uflags)                   ;; UPDSet (enum) -> int
+    ((-gptr- "Source *") result)                       ;; return struct -> pointer
     #{ {
     Source tmp;
-    tmp = LoadAccs(  $hset   ,$fname  );
+    tmp = LoadAccs(  $hset   ,$fname   ,$uflags  );
     memcpy($result, &tmp, sizeof(Source));
     } #}
     ()

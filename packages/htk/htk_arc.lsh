@@ -1,0 +1,101 @@
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;;
+;;; LUSH Lisp Universal Shell
+;;;   Copyright (C) 2002 Leon Bottou, Yann Le Cun, AT&T Corp, NECI.
+;;; Includes parts of TL3:
+;;;   Copyright (C) 1987-1999 Leon Bottou and Neuristique.
+;;; Includes selected parts of SN3.2:
+;;;   Copyright (C) 1991-2001 AT&T Corp.
+;;;
+;;; This program is free software; you can redistribute it and/or modify
+;;; it under the terms of the GNU General Public License as published by
+;;; the Free Software Foundation; either version 2 of the License, or
+;;; (at your option) any later version.
+;;;
+;;; This program is distributed in the hope that it will be useful,
+;;; but WITHOUT ANY WARRANTY; without even the implied warranty of
+;;; MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+;;; GNU General Public License for more details.
+;;;
+;;; You should have received a copy of the GNU General Public License
+;;; along with this program; if not, write to the Free Software
+;;; Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111, USA
+;;;
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(libload "htk/htk-config")
+
+
+
+#? *** htk_arc
+;; Lush bindings for the HTK 3.4.1 HArc module.
+;; Provides lattice arc management for discriminative training.
+
+;; dummy function that adds HTK C header files in C file
+(eval `(de dummy_htk_arc () ,htk-cpheader-cmd ()))
+
+#? * (dummy_htk_arc)
+#? * (initarc)
+#? * (arcfromlat <ainfo> <hset>)
+#? * (printarcinfo <f> <ainfo>)
+#? * (timetonframes <time> <ainfo>)
+#? * (attachmpeinfo <ainfo>)
+#? * (latinlat <numlat> <denlat>)
+
+;; ********************************************************
+
+
+(de InitArc ()
+    #{ InitArc(); #}
+    ()
+)
+
+
+(de ArcFromLat (ainfo hset)
+    ((-gptr- "ArcInfo *") ainfo)
+    ((-gptr- "HMMSet *") hset)
+    #{ ArcFromLat($ainfo, $hset); #}
+    ()
+)
+
+
+(de PrintArcInfo (f ainfo)
+    ((-gptr- "FILE *") f)
+    ((-gptr- "ArcInfo *") ainfo)
+    #{ PrintArcInfo($f, $ainfo); #}
+    ()
+)
+
+
+(de TimeToNFrames (time ainfo)
+    ((-float-) time)
+    ((-gptr- "ArcInfo *") ainfo)
+    (int #{ TimeToNFrames($time, $ainfo) #} )
+)
+
+
+(de AttachMPEInfo (ainfo)
+    ((-gptr- "ArcInfo *") ainfo)
+    #{ AttachMPEInfo($ainfo); #}
+    ()
+)
+
+
+(de LatInLat (numlat denlat)
+    ((-gptr- "Lattice *") numlat)
+    ((-gptr- "Lattice *") denlat)
+    (int #{ LatInLat($numlat, $denlat) #} )
+)
+
+
+;; ********************************************************
+
+(dhc-make-with-libs () (list htk-libhtk)
+  dummy_htk_arc
+  initarc
+  arcfromlat
+  printarcinfo
+  timetonframes
+  attachmpeinfo
+  latinlat
+)

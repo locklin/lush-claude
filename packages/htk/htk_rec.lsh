@@ -43,7 +43,7 @@
 #? * (initvrecinfo <psi> <ntoks> <models> <states>)
 #? * (deletevrecinfo <vri>)
 #? * (startrecognition <vri> <net> <scale> <wordpen> <pscale>)
-#? * (processobservation <vri> <obs> <id>)
+#? * (processobservation <vri> <obs> <id> <xform>)
 #? * (completerecognition <vri> <framedur> <heap>)
 #? * (setpruninglevels <vri> <maxbeam> <genbeam> <wordbeam> <nbeam> <tmbeam>)
 #? * (transcriptionfromlattice <heap> <lat> <n>)
@@ -99,11 +99,12 @@
 )
 
 
-(de ProcessObservation (  vri  obs  id )
-    ((-gptr- "VRecInfo *") vri) 
-    ((-gptr- "Observation *") obs) 
-    ((-int-) id)  
-    #{ ProcessObservation(  $vri   ,$obs   ,$id  );  #} 
+(de ProcessObservation (vri obs id xform)
+    ((-gptr- "VRecInfo *") vri)
+    ((-gptr- "Observation *") obs)
+    ((-int-) id)
+    ((-gptr- "AdaptXForm *") xform)
+    #{ ProcessObservation($vri, $obs, $id, $xform); #}
     ()
 )
 

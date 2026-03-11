@@ -34,11 +34,13 @@
 #? *** htk_fb
 
 ;; dummy function that adds HTK C header files in C file
-(eval `(de dummy_htk_fb () ,htk-cpheader-cmd  (cpheader "Boolean traceHFB=FALSE;") ()))
+(eval `(de dummy_htk_fb () ,htk-cpheader-cmd ()))
 
 #? * (dummy_htk_fb)
 #? * (initfb)
-#? * (initialiseforback <fbinfo> <x> <set> <rt> <uset> <pruneinit> <pruneinc> <prunelim> <minfrwdp>)
+#? * (settracefb)
+#? * (initialiseforback <fbinfo> <x> <set> <uset> <pruneinit> <pruneinc> <prunelim> <minfrwdp>)
+#? * (usealignhmmset <fbinfo> <x> <al_hset>)
 #? * (inituttinfo <utt> <twofiles>)
 #? * (getinputobs <utt> <t> <hskind>)
 #? * (loadlabs <utt> <lff> <datafn> <labdir> <labext>)
@@ -50,23 +52,37 @@
 ;; ********************************************************
 
 
-(de InitFB (  )
-    #{ InitFB(  );   #} 
+(de InitFB ()
+    #{ InitFB(); #}
     ()
 )
 
 
-(de InitialiseForBack (  fbinfo  x  set  rt  uset  pruneinit  pruneinc  prunelim  minfrwdp )
-    ((-gptr- "FBInfo *") fbinfo) 
-    ((-gptr- "MemHeap *") x) 
-    ((-gptr- "HMMSet *") set) 
-    ((-gptr- "RegTransInfo *") rt) 
+(de SetTraceFB ()
+    #{ SetTraceFB(); #}
+    ()
+)
+
+
+(de InitialiseForBack (fbinfo x set uset pruneinit pruneinc prunelim minfrwdp)
+    ((-gptr- "FBInfo *") fbinfo)
+    ((-gptr- "MemHeap *") x)
+    ((-gptr- "HMMSet *") set)
     ((-int-) uset)                       ;; UPDSet (enum) -> int
-    ((-double-) pruneinit) 
-    ((-double-) pruneinc) 
-    ((-double-) prunelim) 
-    ((-float-) minfrwdp)  
-    #{ InitialiseForBack(  $fbinfo   ,$x   ,$set   ,$rt   ,$uset   ,$pruneinit   ,$pruneinc   ,$prunelim   ,$minfrwdp  );  #} 
+    ((-double-) pruneinit)
+    ((-double-) pruneinc)
+    ((-double-) prunelim)
+    ((-float-) minfrwdp)
+    #{ InitialiseForBack($fbinfo, $x, $set, $uset, $pruneinit, $pruneinc, $prunelim, $minfrwdp); #}
+    ()
+)
+
+
+(de UseAlignHMMSet (fbinfo x al_hset)
+    ((-gptr- "FBInfo *") fbinfo)
+    ((-gptr- "MemHeap *") x)
+    ((-gptr- "HMMSet *") al_hset)
+    #{ UseAlignHMMSet($fbinfo, $x, $al_hset); #}
     ()
 )
 
@@ -139,7 +155,9 @@
 (dhc-make-with-libs () (list htk-libhtk)
   dummy_htk_fb
   initfb
+  settracefb
   initialiseforback
+  usealignhmmset
   inituttinfo
   getinputobs
   loadlabs

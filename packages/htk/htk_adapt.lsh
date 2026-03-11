@@ -7,10 +7,6 @@
 ;;; Includes selected parts of SN3.2:
 ;;;   Copyright (C) 1991-2001 AT&T Corp.
 ;;;
-;;; Includes information derived from the GSL (Gnu Scientific Library)
-;;;   header files which are copyrighted and distributed under the GPL
-;;;   by their respective authors.
-;;;
 ;;; This program is free software; you can redistribute it and/or modify
 ;;; it under the terms of the GNU General Public License as published by
 ;;; the Free Software Foundation; either version 2 of the License, or
@@ -32,193 +28,201 @@
 
 
 #? *** htk_adapt
+;; Lush bindings for the HTK 3.4.1 HAdapt module.
+;; The 3.4.1 API replaces the old RegTransInfo-based adaptation
+;; with a new XForm framework (XFInfo, AdaptXForm, LinXForm, etc.).
 
 ;; dummy function that adds HTK C header files in C file
 (eval `(de dummy_htk_adapt () ,htk-cpheader-cmd ()))
 
 #? * (dummy_htk_adapt)
-#? * (initadapt)
-#? * (initialisetransform <hset> <x> <rt> <adapt>)
-#? * (initialiseadapt <hset> <x> <rt>)
-#? * (savetransformset <hset> <rt> <savefile> <transpath> <uid> <uname> <chan> <desc> <savestats> <global> <savebinary>)
-#? * (loadtransformset <hset> <tfile> <uid> <rt> <usestats>)
-#? * (accadaptframe <lr> <speechvec> <mp> <rt>)
-#? * (clearregcompstats <hset> <rt>)
-#? * (clearbaseclassstats <rt>)
-#? * (applymeantransforms <rt> <s>)
-#? * (applycovartransforms <rt> <s>)
-#? * (applymeanglobaltransform <rt>)
-#? * (applycovarglobaltransform <rt>)
-#? * (applytransforms <rt>)
-#? * (applybackwardglobaltransform <rt>)
-#? * (applybackwardtransforms <rt>)
-#? * (calcmeantransforms <rt>)
-#? * (calccovartransforms <rt>)
-#? * (getbackwardtransforms <rt>)
-#? * (updatemap <rt> <tau>)
-#? * (doadaptation <rt> <global>)
+#? * (initadapt <xfinfo>)
+#? * (getmllrdiagcov <xform>)
+#? * (setbaseaccstime <t>)
+#? * (tidybaseaccs)
+#? * (accadaptframe <hset> <lr> <svec> <mp> <t>)
+#? * (zeroadaptaccs <hset> <xform>)
+#? * (setxform <hset> <xform>)
+#? * (setparentxform <hset> <xform>)
+#? * (applyhmmsetxform <hset> <xform>)
+#? * (applycompxform <mp> <xform>)
+#? * (applycompfxform <mp> <svec> <xform> <det> <t>)
+#? * (resetobscache)
+#? * (resetxformhmmset <hset>)
+#? * (copylinxform <x> <xf>)
+#? * (copyxformset <x> <xfset>)
+#? * (copyadaptxform <x> <xform>)
+#? * (createadaptxform <hset> <xformname>)
+#? * (genadaptxform <hset> <xform>)
+#? * (updatespkrstats <hset> <xfinfo> <datafn>)
+#? * (hardassign <xform>)
+#? * (updatesemitiedmodels <hset> <xfinfo>)
+#? * (updateprojectmodels <hset> <dir>)
 
 ;; ********************************************************
 
 
-(de InitAdapt (  )
-    #{ InitAdapt(  );  #} 
+(de InitAdapt (xfinfo)
+    ((-gptr- "XFInfo *") xfinfo)
+    #{ InitAdapt($xfinfo); #}
     ()
 )
 
 
-(de InitialiseTransform (  hset  x  rt  adapt )
-    ((-gptr- "HMMSet *") hset) 
-    ((-gptr- "MemHeap *") x) 
-    ((-gptr- "RegTransInfo *") rt) 
-    ((-int-) adapt)  
-    #{ InitialiseTransform(  $hset   ,$x   ,$rt   ,$adapt  );  #} 
+(de GetMLLRDiagCov (xform)
+    ((-gptr- "AdaptXForm *") xform)
+    (gptr #{ GetMLLRDiagCov($xform) #} )
+)
+
+
+(de SetBaseAccsTime (t)
+    ((-int-) t)
+    #{ SetBaseAccsTime($t); #}
     ()
 )
 
 
-(de InitialiseAdapt (  hset  x  rt )
-    ((-gptr- "HMMSet *") hset) 
-    ((-gptr- "MemHeap *") x) 
-    ((-gptr- "RegTransInfo *") rt)  
-    #{ InitialiseAdapt(  $hset   ,$x   ,$rt  );  #} 
+(de TidyBaseAccs ()
+    #{ TidyBaseAccs(); #}
     ()
 )
 
 
-(de SaveTransformSet (  hset  rt  savefile  transpath  uid  uname  chan  desc  savestats  global  savebinary )
-    ((-gptr- "HMMSet *") hset) 
-    ((-gptr- "RegTransInfo *") rt) 
-    ((-gptr- "char *") savefile) 
-    ((-gptr- "char *") transpath) 
-    ((-gptr- "char *") uid) 
-    ((-gptr- "char *") uname) 
-    ((-gptr- "char *") chan) 
-    ((-gptr- "char *") desc) 
-    ((-int-) savestats) 
-    ((-int-) global) 
-    ((-int-) savebinary)  
-    #{ SaveTransformSet(  $hset   ,$rt   ,$savefile   ,$transpath   ,$uid   ,$uname   ,$chan   ,$desc   ,$savestats   ,$global   ,$savebinary  );  #} 
+(de AccAdaptFrame (hset lr svec mp t)
+    ((-gptr- "HMMSet *") hset)
+    ((-double-) lr)
+    ((-gptr- "float *") svec)
+    ((-gptr- "MixPDF *") mp)
+    ((-int-) t)
+    #{ AccAdaptFrame($hset, $lr, $svec, $mp, $t); #}
     ()
 )
 
 
-(de LoadTransformSet (  hset  tfile  uid  rt  usestats )
-    ((-gptr- "HMMSet *") hset) 
-    ((-gptr- "char *") tfile) 
-    ((-gptr- "char *") uid) 
-    ((-gptr- "RegTransInfo *") rt) 
-    ((-gptr- "Boolean *") usestats)  
-    (int   #{ LoadTransformSet(  $hset   ,$tfile   ,$uid   ,$rt   ,$usestats  )  #} )
-)
-
-
-(de AccAdaptFrame (  lr  speechvec  mp  rt )
-    ((-double-) lr) 
-    ((-gptr- "float *") speechvec) 
-    ((-gptr- "MixPDF *") mp) 
-    ((-gptr- "RegTransInfo *") rt)  
-    #{ AccAdaptFrame(  $lr   ,$speechvec   ,$mp   ,$rt  );  #} 
+(de ZeroAdaptAccs (hset xform)
+    ((-gptr- "HMMSet *") hset)
+    ((-gptr- "AdaptXForm *") xform)
+    #{ ZeroAdaptAccs($hset, $xform); #}
     ()
 )
 
 
-(de ClearRegCompStats (  hset  rt )
-    ((-gptr- "HMMSet *") hset) 
-    ((-gptr- "RegTransInfo *") rt)  
-    #{ ClearRegCompStats(  $hset   ,$rt  );  #} 
+(de SetXForm (hset xform)
+    ((-gptr- "HMMSet *") hset)
+    ((-gptr- "AdaptXForm *") xform)
+    #{ SetXForm($hset, $xform); #}
     ()
 )
 
 
-(de ClearBaseClassStats (  rt )
-    ((-gptr- "RegTransInfo *") rt)  
-    #{ ClearBaseClassStats(  $rt  );  #} 
+(de SetParentXForm (hset xform)
+    ((-gptr- "HMMSet *") hset)
+    ((-gptr- "AdaptXForm *") xform)
+    #{ SetParentXForm($hset, $xform); #}
     ()
 )
 
 
-(de ApplyMeanTransforms (  rt  s )
-    ((-gptr- "RegTransInfo *") rt) 
-    ((-gptr- "RegTree *") s)  
-    #{ ApplyMeanTransforms(  $rt   ,$s  );  #} 
+(de ApplyHMMSetXForm (hset xform)
+    ((-gptr- "HMMSet *") hset)
+    ((-gptr- "AdaptXForm *") xform)
+    #{ ApplyHMMSetXForm($hset, $xform); #}
     ()
 )
 
 
-(de ApplyCovarTransforms (  rt  s )
-    ((-gptr- "RegTransInfo *") rt) 
-    ((-gptr- "RegTree *") s)  
-    #{ ApplyCovarTransforms(  $rt   ,$s  );  #} 
+(de ApplyCompXForm (mp xform)
+    ((-gptr- "MixPDF *") mp)
+    ((-gptr- "AdaptXForm *") xform)
+    #{ ApplyCompXForm($mp, $xform); #}
     ()
 )
 
 
-(de ApplyMeanGlobalTransform (  rt )
-    ((-gptr- "RegTransInfo *") rt)  
-    (int   #{ ApplyMeanGlobalTransform(  $rt  )  #} )
+(de ApplyCompFXForm (mp svec xform det t)
+    ((-gptr- "MixPDF *") mp)
+    ((-gptr- "float *") svec)
+    ((-gptr- "AdaptXForm *") xform)
+    ((-gptr- "float *") det)
+    ((-int-) t)
+    (gptr #{ ApplyCompFXForm($mp, $svec, $xform, $det, $t) #} )
 )
 
 
-(de ApplyCovarGlobalTransform (  rt )
-    ((-gptr- "RegTransInfo *") rt)  
-    (int   #{ ApplyCovarGlobalTransform(  $rt  )  #} )
-)
-
-
-(de ApplyTransforms (  rt )
-    ((-gptr- "RegTransInfo *") rt)  
-    #{ ApplyTransforms(  $rt  );  #} 
+(de ResetObsCache ()
+    #{ ResetObsCache(); #}
     ()
 )
 
 
-(de ApplyBackwardGlobalTransform (  rt )
-    ((-gptr- "RegTransInfo *") rt)  
-    (int   #{ ApplyBackwardGlobalTransform(  $rt  )  #} )
-)
-
-
-(de ApplyBackwardTransforms (  rt )
-    ((-gptr- "RegTransInfo *") rt)  
-    #{ ApplyBackwardTransforms(  $rt  );  #} 
+(de ResetXFormHMMSet (hset)
+    ((-gptr- "HMMSet *") hset)
+    #{ ResetXFormHMMSet($hset); #}
     ()
 )
 
 
-(de CalcMeanTransforms (  rt )
-    ((-gptr- "RegTransInfo *") rt)  
-    #{ CalcMeanTransforms(  $rt  );  #} 
+(de CopyLinXForm (x xf)
+    ((-gptr- "MemHeap *") x)
+    ((-gptr- "LinXForm *") xf)
+    (gptr #{ CopyLinXForm($x, $xf) #} )
+)
+
+
+(de CopyXFormSet (x xfset)
+    ((-gptr- "MemHeap *") x)
+    ((-gptr- "XFormSet *") xfset)
+    (gptr #{ CopyXFormSet($x, $xfset) #} )
+)
+
+
+(de CopyAdaptXForm (x xform)
+    ((-gptr- "MemHeap *") x)
+    ((-gptr- "AdaptXForm *") xform)
+    (gptr #{ CopyAdaptXForm($x, $xform) #} )
+)
+
+
+(de CreateAdaptXForm (hset xformname)
+    ((-gptr- "HMMSet *") hset)
+    ((-gptr- "char *") xformname)
+    (gptr #{ CreateAdaptXForm($hset, $xformname) #} )
+)
+
+
+(de GenAdaptXForm (hset xform)
+    ((-gptr- "HMMSet *") hset)
+    ((-gptr- "AdaptXForm *") xform)
+    (int #{ GenAdaptXForm($hset, $xform) #} )
+)
+
+
+(de UpdateSpkrStats (hset xfinfo datafn)
+    ((-gptr- "HMMSet *") hset)
+    ((-gptr- "XFInfo *") xfinfo)
+    ((-gptr- "char *") datafn)
+    (int #{ UpdateSpkrStats($hset, $xfinfo, $datafn) #} )
+)
+
+
+(de HardAssign (xform)
+    ((-gptr- "AdaptXForm *") xform)
+    (int #{ HardAssign($xform) #} )
+)
+
+
+(de UpdateSemiTiedModels (hset xfinfo)
+    ((-gptr- "HMMSet *") hset)
+    ((-gptr- "XFInfo *") xfinfo)
+    #{ UpdateSemiTiedModels($hset, $xfinfo); #}
     ()
 )
 
 
-(de CalcCovarTransforms (  rt )
-    ((-gptr- "RegTransInfo *") rt)  
-    #{ CalcCovarTransforms(  $rt  );  #} 
-    ()
-)
-
-
-(de GetBackwardTransforms (  rt )
-    ((-gptr- "RegTransInfo *") rt)  
-    #{ GetBackwardTransforms(  $rt  );  #} 
-    ()
-)
-
-
-(de UpdateMAP (  rt  tau )
-    ((-gptr- "RegTransInfo *") rt) 
-    ((-float-) tau)  
-    #{ UpdateMAP(  $rt   ,$tau  );  #} 
-    ()
-)
-
-
-(de DoAdaptation (  rt  global )
-    ((-gptr- "RegTransInfo *") rt) 
-    ((-int-) global)  
-    #{ DoAdaptation(  $rt   ,$global  );  #} 
+(de UpdateProjectModels (hset dir)
+    ((-gptr- "HMMSet *") hset)
+    ((-gptr- "char *") dir)
+    #{ UpdateProjectModels($hset, $dir); #}
     ()
 )
 
@@ -227,24 +231,25 @@
 (dhc-make-with-libs () (list htk-libhtk)
   dummy_htk_adapt
   initadapt
-  initialisetransform
-  initialiseadapt
-  savetransformset
-  loadtransformset
+  getmllrdiagcov
+  setbaseaccstime
+  tidybaseaccs
   accadaptframe
-  clearregcompstats
-  clearbaseclassstats
-  applymeantransforms
-  applycovartransforms
-  applymeanglobaltransform
-  applycovarglobaltransform
-  applytransforms
-  applybackwardglobaltransform
-  applybackwardtransforms
-  calcmeantransforms
-  calccovartransforms
-  updatemap
-  doadaptation
+  zeroadaptaccs
+  setxform
+  setparentxform
+  applyhmmsetxform
+  applycompxform
+  applycompfxform
+  resetobscache
+  resetxformhmmset
+  copylinxform
+  copyxformset
+  copyadaptxform
+  createadaptxform
+  genadaptxform
+  updatespkrstats
+  hardassign
+  updatesemitiedmodels
+  updateprojectmodels
 )
-
-;;  getbackwardtransforms

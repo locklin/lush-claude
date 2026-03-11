@@ -38,6 +38,7 @@
 
 #? * (dummy_htk_shell)
 #? * (exithtk <exitcode>)
+#? * (setscriptfile <fn>)
 #? * (initshell <argc> <argv> <ver> <sccs>)
 #? * (register <ver> <sccs>)
 #? * (infoprinted)
@@ -70,6 +71,7 @@
 #? * (getch <src>)
 #? * (ungetch <c> <src>)
 #? * (readstring <src> <s>)
+#? * (readstringwithlen <src> <s> <buflen>)
 #? * (parsestring <src> <s>)
 #? * (readrawstring <src> <s>)
 #? * (writestring <f> <s> <q>)
@@ -112,9 +114,14 @@
 
 
 (de ExitHTK (  exitcode )
-    ((-int-) exitcode)  
-    #{ Exit(  $exitcode  );  #} 
+    ((-int-) exitcode)
+    #{ Exit(  $exitcode  );  #}
     ()
+)
+
+(de SetScriptFile (fn)
+    ((-gptr- "char *") fn)
+    (int #{ SetScriptFile($fn) #} )
 )
 
 (de InitShell ( argc  argv  ver  sccs ) 
@@ -341,9 +348,17 @@
 
 
 (de ReadString (  src  s )
-    ((-gptr- "Source *") src) 
-    ((-gptr- "char *") s)  
+    ((-gptr- "Source *") src)
+    ((-gptr- "char *") s)
     (int   #{ ReadString(  $src   ,$s  )  #} )
+)
+
+
+(de ReadStringWithLen (src s buflen)
+    ((-gptr- "Source *") src)
+    ((-gptr- "char *") s)
+    ((-int-) buflen)
+    (int #{ ReadStringWithLen($src, $s, $buflen) #} )
 )
 
 
@@ -599,6 +614,7 @@
 (dhc-make-with-libs () (list htk-libhtk)
   dummy_htk_shell
   exithtk
+  setscriptfile
   initshell
   register
   infoprinted
@@ -631,6 +647,7 @@
   getch
   ungetch
   readstring
+  readstringwithlen
   parsestring
   readrawstring
   writestring

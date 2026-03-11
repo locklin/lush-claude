@@ -41,8 +41,6 @@
 #? * (memsize_alphabeta)
 #? * (alloc_annot)
 #? * (memsize_annot)
-#? * (alloc_baseformacc)
-#? * (memsize_baseformacc)
 #? * (alloc_block)
 #? * (memsize_block)
 #? * (alloc_bufferinfo)
@@ -137,10 +135,6 @@
 #? * (memsize_network)
 #? * (alloc_observation)
 #? * (memsize_observation)
-#? * (alloc_offsetbmat)
-#? * (memsize_offsetbmat)
-#? * (alloc_offsettribmat)
-#? * (memsize_offsettribmat)
 #? * (alloc_path)
 #? * (memsize_path)
 #? * (alloc_precomp)
@@ -149,12 +143,8 @@
 #? * (memsize_pruneinfo)
 #? * (alloc_ptrmap)
 #? * (memsize_ptrmap)
-#? * (alloc_regacc)
-#? * (memsize_regacc)
 #? * (alloc_regnode)
 #? * (memsize_regnode)
-#? * (alloc_regtransinfo)
-#? * (memsize_regtransinfo)
 #? * (alloc_regtree)
 #? * (memsize_regtree)
 #? * (alloc_sentry)
@@ -187,8 +177,6 @@
 #? * (memsize_tracc)
 #? * (alloc_transcription)
 #? * (memsize_transcription)
-#? * (alloc_transformid)
-#? * (memsize_transformid)
 #? * (alloc_uttinfo)
 #? * (memsize_uttinfo)
 #? * (alloc_vqnoderec)
@@ -213,6 +201,22 @@
 #? * (memsize_covariance)
 #? * (alloc_mixturevector)
 #? * (memsize_mixturevector)
+#? * (alloc_xfinfo)
+#? * (memsize_xfinfo)
+#? * (alloc_adaptxform)
+#? * (memsize_adaptxform)
+#? * (alloc_inputxform)
+#? * (memsize_inputxform)
+#? * (alloc_linxform)
+#? * (memsize_linxform)
+#? * (alloc_xformset)
+#? * (memsize_xformset)
+#? * (alloc_baseclass)
+#? * (memsize_baseclass)
+#? * (alloc_arcinfo)
+#? * (memsize_arcinfo)
+#? * (alloc_fblatinfo)
+#? * (memsize_fblatinfo)
 
 ;; ********************************************************
 
@@ -230,13 +234,6 @@
 
 (de memsize_Annot ()
     (int #{ sizeof(Annot) #} ))
-
-(de alloc_BaseformAcc ()
-    (gptr #{ malloc(sizeof(BaseformAcc)) #} ))
-
-(de memsize_BaseformAcc ()
-    (int #{ sizeof(BaseformAcc) #} ))
-
 
 (de alloc_Block ()
     (gptr #{ malloc(sizeof(Block)) #} ))
@@ -567,20 +564,6 @@
     (int #{ sizeof(Observation) #} ))
 
 
-(de alloc_OffsetBMat ()
-    (gptr #{ malloc(sizeof(OffsetBMat)) #} ))
-
-(de memsize_OffsetBMat ()
-    (int #{ sizeof(OffsetBMat) #} ))
-
-
-(de alloc_OffsetTriBMat ()
-    (gptr #{ malloc(sizeof(OffsetTriBMat)) #} ))
-
-(de memsize_OffsetTriBMat ()
-    (int #{ sizeof(OffsetTriBMat) #} ))
-
-
 (de alloc_Path ()
     (gptr #{ malloc(sizeof(Path)) #} ))
 
@@ -609,25 +592,11 @@
     (int #{ sizeof(PtrMap) #} ))
 
 
-(de alloc_RegAcc ()
-    (gptr #{ malloc(sizeof(RegAcc)) #} ))
-
-(de memsize_RegAcc ()
-    (int #{ sizeof(RegAcc) #} ))
-
-
 (de alloc_RegNode ()
     (gptr #{ malloc(sizeof(RegNode)) #} ))
 
 (de memsize_RegNode ()
     (int #{ sizeof(RegNode) #} ))
-
-
-(de alloc_RegTransInfo ()
-    (gptr #{ malloc(sizeof(RegTransInfo)) #} ))
-
-(de memsize_RegTransInfo ()
-    (int #{ sizeof(RegTransInfo) #} ))
 
 
 (de alloc_RegTree ()
@@ -742,13 +711,6 @@
     (int #{ sizeof(Transcription) #} ))
 
 
-(de alloc_TransformId ()
-    (gptr #{ malloc(sizeof(TransformId)) #} ))
-
-(de memsize_TransformId ()
-    (int #{ sizeof(TransformId) #} ))
-
-
 (de alloc_UttInfo ()
     (gptr #{ malloc(sizeof(UttInfo)) #} ))
 
@@ -837,6 +799,62 @@
     (int #{ sizeof(MixtureVector) #} ))
 
 
+;; --- HTK 3.4.1 new struct types ---
+
+(de alloc_XFInfo ()
+    (gptr #{ malloc(sizeof(XFInfo)) #} ))
+
+(de memsize_XFInfo ()
+    (int #{ sizeof(XFInfo) #} ))
+
+
+(de alloc_AdaptXForm ()
+    (gptr #{ malloc(sizeof(AdaptXForm)) #} ))
+
+(de memsize_AdaptXForm ()
+    (int #{ sizeof(AdaptXForm) #} ))
+
+
+(de alloc_InputXForm ()
+    (gptr #{ malloc(sizeof(InputXForm)) #} ))
+
+(de memsize_InputXForm ()
+    (int #{ sizeof(InputXForm) #} ))
+
+
+(de alloc_LinXForm ()
+    (gptr #{ malloc(sizeof(LinXForm)) #} ))
+
+(de memsize_LinXForm ()
+    (int #{ sizeof(LinXForm) #} ))
+
+
+(de alloc_XFormSet ()
+    (gptr #{ malloc(sizeof(XFormSet)) #} ))
+
+(de memsize_XFormSet ()
+    (int #{ sizeof(XFormSet) #} ))
+
+
+(de alloc_BaseClass ()
+    (gptr #{ malloc(sizeof(BaseClass)) #} ))
+
+(de memsize_BaseClass ()
+    (int #{ sizeof(BaseClass) #} ))
+
+
+(de alloc_ArcInfo ()
+    (gptr #{ malloc(sizeof(ArcInfo)) #} ))
+
+(de memsize_ArcInfo ()
+    (int #{ sizeof(ArcInfo) #} ))
+
+
+(de alloc_FBLatInfo ()
+    (gptr #{ malloc(sizeof(FBLatInfo)) #} ))
+
+(de memsize_FBLatInfo ()
+    (int #{ sizeof(FBLatInfo) #} ))
 
 
 
@@ -849,8 +867,6 @@
   memsize_alphabeta
   alloc_annot
   memsize_annot
-  alloc_baseformacc
-  memsize_baseformacc
   alloc_block
   memsize_block
   alloc_bufferinfo
@@ -945,10 +961,6 @@
   memsize_network
   alloc_observation
   memsize_observation
-  alloc_offsetbmat
-  memsize_offsetbmat
-  alloc_offsettribmat
-  memsize_offsettribmat
   alloc_path
   memsize_path
   alloc_precomp
@@ -957,12 +969,8 @@
   memsize_pruneinfo
   alloc_ptrmap
   memsize_ptrmap
-  alloc_regacc
-  memsize_regacc
   alloc_regnode
   memsize_regnode
-  alloc_regtransinfo
-  memsize_regtransinfo
   alloc_regtree
   memsize_regtree
   alloc_sentry
@@ -995,8 +1003,6 @@
   memsize_tracc
   alloc_transcription
   memsize_transcription
-  alloc_transformid
-  memsize_transformid
   alloc_uttinfo
   memsize_uttinfo
   alloc_vqnoderec
@@ -1021,4 +1027,20 @@
   memsize_covariance
   alloc_mixturevector
   memsize_mixturevector
+  alloc_xfinfo
+  memsize_xfinfo
+  alloc_adaptxform
+  memsize_adaptxform
+  alloc_inputxform
+  memsize_inputxform
+  alloc_linxform
+  memsize_linxform
+  alloc_xformset
+  memsize_xformset
+  alloc_baseclass
+  memsize_baseclass
+  alloc_arcinfo
+  memsize_arcinfo
+  alloc_fblatinfo
+  memsize_fblatinfo
 )

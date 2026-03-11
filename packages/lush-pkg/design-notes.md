@@ -44,6 +44,8 @@ dependencies. Inspired by R's package management model:
 - **xgboost** -- cmake build, no system package available (v3.2.0)
 - **curl** -- autotools build, system version too old for WebSocket (v8.12.1)
 - **libuv** -- cmake build, system version far too old (v1.49.2 vs system 1.0.0)
+- **htk** -- autotools build with pre-build/post-build hooks for patching and
+  header installation (v3.4.1, static library)
 
 **Self-contained** (source checked into git, no lush-pkg needed):
 - **json** -- yyjson source (2 files) checked in
@@ -83,7 +85,7 @@ SHA-256, extract, build, install. Idempotent.
 
 Spec is an alist with keys: `version`, `url`, `sha256`, `build` (cmake or
 autotools), `check` (relative path to verify), and optional `cmake-args`,
-`configure-args`, `srcdir`.
+`configure-args`, `srcdir`, `pre-build`, `post-build`.
 
 ```
 (lush-pkg-installed-p <check>)
@@ -123,6 +125,21 @@ Returns the current prefix path (default `~/.lush/local`).
 
 Both executed via `(sys ...)` from Lush. Non-zero exit codes raise errors.
 
+### Pre-build and Post-build Hooks
+
+Two optional spec keys allow customizing the build process:
+
+- **`pre-build`** -- Shell command run after extraction, before configure/cmake.
+  Executed in the source directory. Useful for patching configure scripts or
+  source files that don't work on modern systems. Example: HTK's configure forces
+  `-m32` on x86_64 and lacks `-fPIC`; the pre-build hook patches this.
+
+- **`post-build`** -- Shell command run after `make install`. Executed in the
+  source directory. Useful for installing artifacts that the build system's
+  `make install` doesn't handle, such as headers or renamed libraries. Example:
+  HTK's `make install` only installs tools, not the library or headers; the
+  post-build hook copies `HTKLiblv.a` as `libhtk.a` and installs headers.
+
 ### Internal Helpers
 
 - `_lush-pkg-run` -- run shell command via `(sys ...)`, error on non-zero exit
@@ -146,10 +163,11 @@ vendored `include/`/`src/` directories are no longer needed.
 
 ### Converted Packages
 
-All three target packages have been converted:
+All four target packages have been converted:
 - `packages/xgboost/xgboost-config.lsh` -- uses lush-pkg with cmake
 - `packages/curl/curl-config.lsh` -- uses lush-pkg with autotools
 - `packages/libuv/libuv-config.lsh` -- uses lush-pkg with cmake (replacing 131-line vendor build)
+- `packages/htk/htk-config.lsh` -- uses lush-pkg with autotools + pre-build/post-build hooks (static library, 3.4.1)
 
 ## Known Issues / Limitations
 
