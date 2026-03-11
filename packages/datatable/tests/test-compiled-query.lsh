@@ -121,16 +121,16 @@
     ;; data: 10 20 30 40 50 60 70 80 90 100
 
     ;; bsearch-left: first >= val
-    (test-equal "d1bsearch-left exact" (_cdb-d1bsearch-left sorted-data 10 50.0) 4)
-    (test-equal "d1bsearch-left between" (_cdb-d1bsearch-left sorted-data 10 55.0) 5)
-    (test-equal "d1bsearch-left below" (_cdb-d1bsearch-left sorted-data 10 5.0) 0)
-    (test-equal "d1bsearch-left above" (_cdb-d1bsearch-left sorted-data 10 105.0) 10)
+    (test-equal "d1bsearch-left exact" (_dt-d1bsearch-left sorted-data 10 50.0) 4)
+    (test-equal "d1bsearch-left between" (_dt-d1bsearch-left sorted-data 10 55.0) 5)
+    (test-equal "d1bsearch-left below" (_dt-d1bsearch-left sorted-data 10 5.0) 0)
+    (test-equal "d1bsearch-left above" (_dt-d1bsearch-left sorted-data 10 105.0) 10)
 
     ;; bsearch-right: last <= val
-    (test-equal "d1bsearch-right exact" (_cdb-d1bsearch-right sorted-data 10 50.0) 4)
-    (test-equal "d1bsearch-right between" (_cdb-d1bsearch-right sorted-data 10 55.0) 4)
-    (test-equal "d1bsearch-right below" (_cdb-d1bsearch-right sorted-data 10 5.0) -1)
-    (test-equal "d1bsearch-right above" (_cdb-d1bsearch-right sorted-data 10 105.0) 9) ) )
+    (test-equal "d1bsearch-right exact" (_dt-d1bsearch-right sorted-data 10 50.0) 4)
+    (test-equal "d1bsearch-right between" (_dt-d1bsearch-right sorted-data 10 55.0) 4)
+    (test-equal "d1bsearch-right below" (_dt-d1bsearch-right sorted-data 10 5.0) -1)
+    (test-equal "d1bsearch-right above" (_dt-d1bsearch-right sorted-data 10 105.0) 9) ) )
 
 
 ;; ============================================================
@@ -143,21 +143,21 @@
     ;; data: 5 10 15 20 25 30 35 40
 
     ;; bsearch-left
-    (test-equal "i1bsearch-left exact" (_cdb-i1bsearch-left sorted-data 8 20) 3)
-    (test-equal "i1bsearch-left between" (_cdb-i1bsearch-left sorted-data 8 22) 4)
-    (test-equal "i1bsearch-left first" (_cdb-i1bsearch-left sorted-data 8 5) 0)
-    (test-equal "i1bsearch-left past-end" (_cdb-i1bsearch-left sorted-data 8 50) 8)
+    (test-equal "i1bsearch-left exact" (_dt-i1bsearch-left sorted-data 8 20) 3)
+    (test-equal "i1bsearch-left between" (_dt-i1bsearch-left sorted-data 8 22) 4)
+    (test-equal "i1bsearch-left first" (_dt-i1bsearch-left sorted-data 8 5) 0)
+    (test-equal "i1bsearch-left past-end" (_dt-i1bsearch-left sorted-data 8 50) 8)
 
     ;; bsearch-right
-    (test-equal "i1bsearch-right exact" (_cdb-i1bsearch-right sorted-data 8 20) 3)
-    (test-equal "i1bsearch-right between" (_cdb-i1bsearch-right sorted-data 8 22) 3)
-    (test-equal "i1bsearch-right last" (_cdb-i1bsearch-right sorted-data 8 40) 7)
-    (test-equal "i1bsearch-right before" (_cdb-i1bsearch-right sorted-data 8 3) -1)
+    (test-equal "i1bsearch-right exact" (_dt-i1bsearch-right sorted-data 8 20) 3)
+    (test-equal "i1bsearch-right between" (_dt-i1bsearch-right sorted-data 8 22) 3)
+    (test-equal "i1bsearch-right last" (_dt-i1bsearch-right sorted-data 8 40) 7)
+    (test-equal "i1bsearch-right before" (_dt-i1bsearch-right sorted-data 8 3) -1)
 
     ;; Sorted check
-    (test-equal "i1sortedp yes" (_cdb-i1sortedp sorted-data 8) 1)
+    (test-equal "i1sortedp yes" (_dt-i1sortedp sorted-data 8) 1)
     (sorted-data 3 1)  ;; break sort order
-    (test-equal "i1sortedp no" (_cdb-i1sortedp sorted-data 8) 0) ) )
+    (test-equal "i1sortedp no" (_dt-i1sortedp sorted-data 8) 0) ) )
 
 
 ;; ============================================================
@@ -167,7 +167,7 @@
 (test-suite "Compiled: iota fill"
   ;; Basic iota
   (let ((result (int-matrix 5)))
-    (_cdb-i1iota result 10 5)
+    (_dt-i1iota result 10 5)
     (test-equal "iota[0]" (result 0) 10)
     (test-equal "iota[1]" (result 1) 11)
     (test-equal "iota[4]" (result 4) 14) )
@@ -175,7 +175,7 @@
   ;; Zero-length iota (should not crash)
   (let ((result (int-matrix 1)))
     (result 0 99)
-    (_cdb-i1iota result 0 0)
+    (_dt-i1iota result 0 0)
     (test-equal "iota zero-len" (result 0) 99) ) )
 
 
@@ -188,7 +188,7 @@
   (let ((a (int-matrix 3)) (b (int-matrix 3)) (dest (int-matrix 6)))
     (a 0 1) (a 1 3) (a 2 5)
     (b 0 2) (b 1 3) (b 2 4)
-    (let ((n (_cdb-i1union-sorted a 3 b 3 dest)))
+    (let ((n (_dt-i1union-sorted a 3 b 3 dest)))
       (test-equal "union count" n 5)
       (test-equal "union[0]" (dest 0) 1)
       (test-equal "union[1]" (dest 1) 2)
@@ -203,8 +203,8 @@
 
 (test-suite "Compiled: idx1 pipeline"
   ;; Single condition — compare with list-based
-  (let ((idx1 (columnardb-where-multi-idx1 dt '((> "price" 200.0))))
-        (lst  (columnardb-where-multi dt '((> "price" 200.0)))) )
+  (let ((idx1 (datatable-where-multi-idx1 dt '((> "price" 200.0))))
+        (lst  (datatable-where-multi dt '((> "price" 200.0)))) )
     (test-equal "idx1 single count" (idx-dim idx1 0) (length lst))
     ;; Verify same values
     (let ((ok t) (i 0))
@@ -214,14 +214,14 @@
       (test-check "idx1 single match" ok) ) )
 
   ;; Multi condition — AND
-  (let ((idx1 (columnardb-where-multi-idx1 dt
+  (let ((idx1 (datatable-where-multi-idx1 dt
                 '((= "symbol" "AAPL") (> "price" 148.0))))
-        (lst  (columnardb-where-multi dt
+        (lst  (datatable-where-multi dt
                 '((= "symbol" "AAPL") (> "price" 148.0)))) )
     (test-equal "idx1 AND count" (idx-dim idx1 0) (length lst)) )
 
   ;; Empty result
-  (let ((idx1 (columnardb-where-multi-idx1 dt '((> "price" 999.0)))))
+  (let ((idx1 (datatable-where-multi-idx1 dt '((> "price" 999.0)))))
     (test-check "idx1 empty" (not idx1)) ) )
 
 

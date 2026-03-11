@@ -4,7 +4,7 @@
 ;;; for improving compression ratios on typed columnar data, and raw
 ;;; memcpy helpers for double/int arrays.
 ;;;
-;;; Used by: wire/wire.lsh, wire/wire-serialize.lsh, columnardb
+;;; Used by: wire/wire.lsh, wire/wire-serialize.lsh, datatable/columnardb
 ;;;
 ;;; LZ4 source (lz4.c/lz4.h) is BSD-2-Clause, Yann Collet.
 

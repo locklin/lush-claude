@@ -10,18 +10,33 @@ table type and pandas' CSV parser, adapted to Lush's idx/storage system.
 ### Files
 
 ```
+-- In-memory core --
+datatable.lsh              DataTable class + loads in-memory modules
+datatable-compiled.lsh     All compiled C hot-paths (sort, gather, CSR, filter, bsearch, LIKE, IN)
+datatable-null.lsh         Null sentinel handling
+datatable-join.lsh         Left join, right join, as-of join
+datatable-groupby.lsh      Grouped aggregation (count, sum, mean, min, max)
+datatable-multiindex.lsh   Multi-condition filter + range queries
+datatable-query.lsh        SQL-like db-select/db-count query macros
+stringcol.lsh              StringColumn (dictionary-encoded strings)
+intcol.lsh                 IntColumn (dictionary-encoded integers)
+
+-- CSV I/O --
 datatable-config.lsh       Compiles C code via lushmake
 datatable-csv-c.h          C header: function prototypes, constants
 datatable-csv-c.c          C implementation: CSV scanner + readers
 datatable-csv.lsh          Lush bridge: csv-read public API
 datatable-csv-write.lsh    Lush bridge: csv-write public API
-datatable.lsh              DataTable class definition
-datatable-compiled.lsh     Compiled (dhc) DataTable operations
-datatable-null.lsh         Null sentinel handling
-datatable-join.lsh         Join operations
-stringcol.lsh              StringColumn (dictionary-encoded strings)
-intcol.lsh                 IntColumn (dictionary-encoded integers)
-C/datatable_csv.c          Auto-generated DH stubs (from dhc-make)
+
+-- Persistence layer (loaded via datatable/columnardb) --
+columnardb.lsh             Entry point: save, load, mmap, append, range, locking
+columnardb-io.lsh          LCDB binary I/O (read/write/append/mmap)
+columnardb-compress.lsh    Column compression (delta, RLE, LZ4)
+columnardb-database.lsh    Database catalog class
+columnardb-mutate.lsh      Delete/update on persisted tables
+columnardb-partition.lsh   Partitioned table support
+
+C/                         Auto-generated DH stubs (from dhc-make)
 ```
 
 ### Column Storage

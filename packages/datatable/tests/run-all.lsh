@@ -1,4 +1,4 @@
-;;; run-all.lsh -- Run all tests: datatable (incl. timedate, csvread), httpd, mapper, e2e
+;;; run-all.lsh -- Run all tests: datatable, columnardb persistence, httpd, mapper, e2e
 ;;;
 ;;; Run with:
 ;;;   TMPDIR=/tmp/claude lush lush-claude/packages/datatable/tests/run-all.lsh
@@ -14,9 +14,9 @@
 (load (concat (dirname file-being-loaded) "/framework.lsh"))
 
 ;; Load the packages
-(libload "datatable/datatable-csv")      ;; datatable (incl. timedate)
-(libload "datatable/datatable-join")     ;; join operations + sorted check
+(libload "datatable/datatable-csv")      ;; datatable (incl. timedate, query, groupby, multiindex, join)
 (libload "datatable/datatable-csvread")  ;; CSV/TSV text parser
+(libload "datatable/columnardb")         ;; persistence layer
 (libload "httpd/httpd")                  ;; web server
 (libload "mapper/mapper")                ;; mapper + metrics + cluster + graph + lens + stats
 
@@ -29,6 +29,7 @@
 (load (concat (dirname file-being-loaded) "/test-datatable.lsh"))
 (load (concat (dirname file-being-loaded) "/test-csv.lsh"))
 (load (concat (dirname file-being-loaded) "/test-join.lsh"))
+(load (concat (dirname file-being-loaded) "/test-columnardb.lsh"))
 (load (concat (dirname file-being-loaded) "/test-httpd.lsh"))
 (load (concat (dirname file-being-loaded) "/test-mapper.lsh"))
 (load (concat (dirname file-being-loaded) "/test-e2e.lsh"))

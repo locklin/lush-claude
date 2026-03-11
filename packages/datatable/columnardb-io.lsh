@@ -49,7 +49,7 @@
 
 ;; Write an idx1 of doubles to a file as native-endian binary.
 ;; Returns 0 on success, -1 on failure.
-(de _cdb-write-doubles (filename data nrows)
+(de _dt-write-doubles (filename data nrows)
   ((-str-) filename)
   ((-idx1- (-double-)) data)
   ((-int-) nrows)
@@ -83,7 +83,7 @@
 
 ;; Write an idx1 of ints to a file as native-endian binary.
 ;; Returns 0 on success, -1 on failure.
-(de _cdb-write-ints (filename data nrows)
+(de _dt-write-ints (filename data nrows)
   ((-str-) filename)
   ((-idx1- (-int-)) data)
   ((-int-) nrows)
@@ -117,7 +117,7 @@
 
 ;; Read the header of a .col file.  Returns element count, or -1 on error.
 ;; Also writes the type code into type-out[0].
-(de _cdb-read-header (filename count-out type-out)
+(de _dt-read-header (filename count-out type-out)
   ((-str-) filename)
   ((-idx1- (-double-)) count-out)
   ((-idx1- (-int-)) type-out)
@@ -150,7 +150,7 @@
 
 ;; Read raw doubles from a .col file into a pre-allocated idx1.
 ;; Seeks past the 24-byte header, reads nrows doubles.
-(de _cdb-read-doubles (filename data nrows)
+(de _dt-read-doubles (filename data nrows)
   ((-str-) filename)
   ((-idx1- (-double-)) data)
   ((-int-) nrows)
@@ -172,7 +172,7 @@
 
 
 ;; Read raw ints from a .col file into a pre-allocated idx1.
-(de _cdb-read-ints (filename data nrows)
+(de _dt-read-ints (filename data nrows)
   ((-str-) filename)
   ((-idx1- (-int-)) data)
   ((-int-) nrows)
@@ -196,7 +196,7 @@
 ;; Append doubles to an existing .col file.
 ;; Opens the file in "r+b" mode, updates the count in the header,
 ;; then seeks to end and writes the new data.
-(de _cdb-append-doubles (filename data nrows new-total)
+(de _dt-append-doubles (filename data nrows new-total)
   ((-str-) filename)
   ((-idx1- (-double-)) data)
   ((-int-) nrows new-total)
@@ -223,7 +223,7 @@
 
 
 ;; Append ints to an existing .col file.
-(de _cdb-append-ints (filename data nrows new-total)
+(de _dt-append-ints (filename data nrows new-total)
   ((-str-) filename)
   ((-idx1- (-int-)) data)
   ((-int-) nrows new-total)
@@ -251,7 +251,7 @@
 
 ;; Write an idx1 of floats to a file as native-endian binary.
 ;; Returns 0 on success, -1 on failure.
-(de _cdb-write-floats (filename data nrows)
+(de _dt-write-floats (filename data nrows)
   ((-str-) filename)
   ((-idx1- (-float-)) data)
   ((-int-) nrows)
@@ -285,7 +285,7 @@
 
 ;; Read raw floats from a .col file into a pre-allocated idx1.
 ;; Seeks past the 24-byte header, reads nrows floats.
-(de _cdb-read-floats (filename data nrows)
+(de _dt-read-floats (filename data nrows)
   ((-str-) filename)
   ((-idx1- (-float-)) data)
   ((-int-) nrows)
@@ -307,7 +307,7 @@
 
 
 ;; Append floats to an existing .col file.
-(de _cdb-append-floats (filename data nrows new-total)
+(de _dt-append-floats (filename data nrows new-total)
   ((-str-) filename)
   ((-idx1- (-float-)) data)
   ((-int-) nrows new-total)
@@ -335,7 +335,7 @@
 
 ;; Write an idx1 of longs (int64) to a file as native-endian binary.
 ;; Returns 0 on success, -1 on failure.
-(de _cdb-write-longs (filename data nrows)
+(de _dt-write-longs (filename data nrows)
   ((-str-) filename)
   ((-idx1- (-long-)) data)
   ((-int-) nrows)
@@ -369,7 +369,7 @@
 
 ;; Read raw longs (int64) from a .col file into a pre-allocated idx1.
 ;; Seeks past the 24-byte header, reads nrows int64s.
-(de _cdb-read-longs (filename data nrows)
+(de _dt-read-longs (filename data nrows)
   ((-str-) filename)
   ((-idx1- (-long-)) data)
   ((-int-) nrows)
@@ -391,7 +391,7 @@
 
 
 ;; Append longs (int64) to an existing .col file.
-(de _cdb-append-longs (filename data nrows new-total)
+(de _dt-append-longs (filename data nrows new-total)
   ((-str-) filename)
   ((-idx1- (-long-)) data)
   ((-int-) nrows new-total)
@@ -420,7 +420,7 @@
 ;; Advisory file locking via flock(2).
 ;; operation: LOCK_SH, LOCK_EX, LOCK_UN, or LOCK_EX|LOCK_NB etc.
 ;; Returns 0 on success, -1 on failure (e.g. LOCK_NB and lock held).
-(de _cdb-flock (fd operation)
+(de _dt-flock (fd operation)
   ((-int-) fd operation)
   (let ((rc 0))
     ((-int-) rc)
@@ -435,7 +435,7 @@
 ;; Write raw bytes to a file (no header).
 ;; Used for binary string pool data (packed null-terminated strings).
 ;; Returns 0 on success, -1 on failure.
-(de _cdb-write-bytes (filename data nbytes)
+(de _dt-write-bytes (filename data nbytes)
   ((-str-) filename)
   ((-idx1- (-ubyte-)) data)
   ((-int-) nbytes)
@@ -462,8 +462,8 @@
   #include <stdint.h>
   #include <sys/file.h>
   #}
-  _cdb-write-doubles _cdb-write-ints _cdb-write-floats _cdb-write-longs
-  _cdb-read-header _cdb-read-doubles _cdb-read-ints _cdb-read-floats _cdb-read-longs
-  _cdb-append-doubles _cdb-append-ints _cdb-append-floats _cdb-append-longs
-  _cdb-write-bytes
-  _cdb-flock )
+  _dt-write-doubles _dt-write-ints _dt-write-floats _dt-write-longs
+  _dt-read-header _dt-read-doubles _dt-read-ints _dt-read-floats _dt-read-longs
+  _dt-append-doubles _dt-append-ints _dt-append-floats _dt-append-longs
+  _dt-write-bytes
+  _dt-flock )

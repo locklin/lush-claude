@@ -21,13 +21,13 @@
 ;;;   - Binary search on sorted columns for range queries
 ;;;
 ;;; Usage:
-;;;   (libload "columnardb/columnardb")
+;;;   (libload "datatable/columnardb")
 ;;;   (columnardb-save dt "/path/to/tabledir")
 ;;;   (setq dt2 (columnardb-load "/path/to/tabledir"))
 ;;;   (columnardb-append "/path/to/tabledir" new-dt)
 
 (libload "datatable/datatable")
-(libload "columnardb/columnardb-io")
+(libload "datatable/columnardb-io")
 (libload "libidx/idx-sort")
 (libload "libc/files")
 
@@ -65,18 +65,18 @@
 ;; ============================================================
 
 ;; Make a directory if it doesn't exist
-(de _cdb-mkdir (path)
+(de _dt-mkdir (path)
   (when (not (filep path))
     (sys (concat "mkdir -p '" path "'")) ) )
 
 ;; Write an S-expression to a file
-(de _cdb-write-sexp (filename sexp)
+(de _dt-write-sexp (filename sexp)
   (let ((f (open-write filename)))
     (writing f (print sexp))
     (writing f (printf "\n")) ) )
 
 ;; Read an S-expression from a file
-(de _cdb-read-sexp (filename)
+(de _dt-read-sexp (filename)
   (let ((f (open-read filename)))
     (reading f (read)) ) )
 
@@ -93,7 +93,7 @@
 ;;
 ;; The column files use native byte order for direct mmap support.
 (de columnardb-save (dt path)
-  (_cdb-mkdir path)
+  (_dt-mkdir path)
   (let ((names (==> dt col-names))
         (types (==> dt col-types))
         (nrows (==> dt num-rows))
@@ -112,11 +112,11 @@
                     (data (double-matrix nrows)) )
                 ;; Copy valid rows (column may have extra capacity)
                 (for (i 0 (1- nrows)) (data i (col i)))
-                (let ((rc (_cdb-write-doubles fname data nrows)))
+                (let ((rc (_dt-write-doubles fname data nrows)))
                   (when (< rc 0)
                     (error "columnardb-save" "failed to write column" name) ) )
                 ;; Check if sorted (compiled C)
-                (when (= 1 (_cdb-d1sortedp-safe data nrows))
+                (when (= 1 (_dt-d1sortedp-safe data nrows))
                   (setq sorted-cols (nconc1 sorted-cols ci)) ) ) )
 
              ;; Integer column
@@ -124,7 +124,7 @@
               (let ((fname (concat path "/col-" (str ci) ".col"))
                     (data (int-matrix nrows)) )
                 (for (i 0 (1- nrows)) (data i (col i)))
-                (let ((rc (_cdb-write-ints fname data nrows)))
+                (let ((rc (_dt-write-ints fname data nrows)))
                   (when (< rc 0)
                     (error "columnardb-save" "failed to write column" name) ) )
                 (when (= 1 (idx-i1sortedp data))
@@ -135,10 +135,10 @@
               (let ((fname (concat path "/col-" (str ci) ".col"))
                     (data (float-matrix nrows)) )
                 (for (i 0 (1- nrows)) (data i (col i)))
-                (let ((rc (_cdb-write-floats fname data nrows)))
+                (let ((rc (_dt-write-floats fname data nrows)))
                   (when (< rc 0)
                     (error "columnardb-save" "failed to write column" name) ) )
-                (when (= 1 (_cdb-f1sortedp data nrows))
+                (when (= 1 (_dt-f1sortedp data nrows))
                   (setq sorted-cols (nconc1 sorted-cols ci)) ) ) )
 
              ;; Stamp (long/int64) column -- microseconds since epoch
@@ -146,11 +146,11 @@
               (let ((fname (concat path "/col-" (str ci) ".col"))
                     (data (long-matrix nrows)) )
                 (for (i 0 (1- nrows)) (data i (col i)))
-                (let ((rc (_cdb-write-longs fname data nrows)))
+                (let ((rc (_dt-write-longs fname data nrows)))
                   (when (< rc 0)
                     (error "columnardb-save" "failed to write column" name) ) )
                 ;; Check if sorted (stamps are often the sort key, compiled C)
-                (when (= 1 (_cdb-l1sortedp data nrows))
+                (when (= 1 (_dt-l1sortedp data nrows))
                   (setq sorted-cols (nconc1 sorted-cols ci)) ) ) )
 
              ;; String column (dictionary-encoded)
@@ -165,11 +165,11 @@
                 ;; Write codes (only the valid rows)
                 (let ((data (int-matrix nrows)))
                   (for (i 0 (1- nrows)) (data i (codes i)))
-                  (let ((rc (_cdb-write-ints codes-fname data nrows)))
+                  (let ((rc (_dt-write-ints codes-fname data nrows)))
                     (when (< rc 0)
                       (error "columnardb-save" "failed to write string codes" name) ) ) )
                 ;; Write string pool as S-expression (backward compat)
-                (_cdb-write-sexp pool-fname pool)
+                (_dt-write-sexp pool-fname pool)
                 ;; Write binary pool files (mmap-friendly)
                 (let ((nu (length pool)))
                   (when (> nu 0)
@@ -193,11 +193,11 @@
                           (str-data pos 0)
                           (setq pos (1+ pos)) )
                         ;; Write offsets with LCDB header
-                        (let ((rc (_cdb-write-ints pool-idx-fname offsets nu)))
+                        (let ((rc (_dt-write-ints pool-idx-fname offsets nu)))
                           (when (< rc 0)
                             (error "columnardb-save" "failed to write pool offsets" name) ) )
                         ;; Write raw string data (no header)
-                        (let ((rc (_cdb-write-bytes pool-str-fname str-data total-bytes)))
+                        (let ((rc (_dt-write-bytes pool-str-fname str-data total-bytes)))
                           (when (< rc 0)
                             (error "columnardb-save" "failed to write pool strings" name) ) ) ) ) ) )
                 ;; Build and write CSR index for string column
@@ -209,10 +209,10 @@
                           (idx-row-fname (concat path "/col-" (str ci) "-idx-rows.col"))
                           (ioff (==> col get-idx-offsets))
                           (irow (==> col get-idx-rows)) )
-                      (let ((rc (_cdb-write-ints idx-off-fname ioff (idx-dim ioff 0))))
+                      (let ((rc (_dt-write-ints idx-off-fname ioff (idx-dim ioff 0))))
                         (when (< rc 0)
                           (error "columnardb-save" "failed to write index offsets" name) ) )
-                      (let ((rc (_cdb-write-ints idx-row-fname irow (idx-dim irow 0))))
+                      (let ((rc (_dt-write-ints idx-row-fname irow (idx-dim irow 0))))
                         (when (< rc 0)
                           (error "columnardb-save" "failed to write index rows" name) ) ) ) ) ) ) )
 
@@ -227,13 +227,13 @@
                 ;; Write codes (only the valid rows)
                 (let ((data (int-matrix nrows)))
                   (for (i 0 (1- nrows)) (data i (codes i)))
-                  (let ((rc (_cdb-write-ints codes-fname data nrows)))
+                  (let ((rc (_dt-write-ints codes-fname data nrows)))
                     (when (< rc 0)
                       (error "columnardb-save" "failed to write intcol codes" name) ) ) )
                 ;; Write pool as LCDB int32
                 (let ((pool-data (int-matrix nu)))
                   (for (i 0 (1- nu)) (pool-data i (pdata i)))
-                  (let ((rc (_cdb-write-ints pool-fname pool-data nu)))
+                  (let ((rc (_dt-write-ints pool-fname pool-data nu)))
                     (when (< rc 0)
                       (error "columnardb-save" "failed to write intcol pool" name) ) ) )
                 ;; Build and write CSR index
@@ -245,10 +245,10 @@
                           (idx-row-fname (concat path "/col-" (str ci) "-idx-rows.col"))
                           (ioff (==> col get-idx-offsets))
                           (irow (==> col get-idx-rows)) )
-                      (let ((rc (_cdb-write-ints idx-off-fname ioff (idx-dim ioff 0))))
+                      (let ((rc (_dt-write-ints idx-off-fname ioff (idx-dim ioff 0))))
                         (when (< rc 0)
                           (error "columnardb-save" "failed to write index offsets" name) ) )
-                      (let ((rc (_cdb-write-ints idx-row-fname irow (idx-dim irow 0))))
+                      (let ((rc (_dt-write-ints idx-row-fname irow (idx-dim irow 0))))
                         (when (< rc 0)
                           (error "columnardb-save" "failed to write index rows" name) ) ) ) ) ) ) )
 
@@ -263,7 +263,7 @@
                  (list 'names names)
                  (list 'types types)
                  (list 'sorted sorted-cols) )))
-      (_cdb-write-sexp (concat path "/meta.lsh") meta) )
+      (_dt-write-sexp (concat path "/meta.lsh") meta) )
 
     (printf "columnardb-save: %s -> %d rows x %d cols" path nrows ncols)
     (when sorted-cols
@@ -283,7 +283,7 @@
 ;; All column data is read into newly allocated arrays.
 ;; This is the safe, always-works loading method.
 (de columnardb-load-mem (path)
-  (let ((meta (_cdb-read-sexp (concat path "/meta.lsh"))))
+  (let ((meta (_dt-read-sexp (concat path "/meta.lsh"))))
     (let ((nrows  (cadr (assoc 'nrows meta)))
           (ncols  (cadr (assoc 'ncols meta)))
           (names  (cadr (assoc 'names meta)))
@@ -319,19 +319,19 @@
                 ;; Check typecode for compression
                 (let ((cnt-chk (double-matrix 1))
                       (typ-chk (int-matrix 1)) )
-                  (_cdb-read-header fname cnt-chk typ-chk)
+                  (_dt-read-header fname cnt-chk typ-chk)
                   (cond
                    ((= (typ-chk 0) *cdb-type-delta-double*)
                     ;; Delta-encoded: read deltas then decode
                     (let ((deltas (double-matrix nrows)))
-                      (_cdb-read-doubles fname deltas nrows)
-                      (_cdb-d1delta-decode deltas data nrows) ) )
+                      (_dt-read-doubles fname deltas nrows)
+                      (_dt-d1delta-decode deltas data nrows) ) )
                    ((= (typ-chk 0) *cdb-type-lz4-double*)
                     ;; LZ4+byte-transpose
-                    (_cdb-read-lz4-doubles fname data nrows) )
+                    (_dt-read-lz4-doubles fname data nrows) )
                    (t
                     ;; Raw doubles
-                    (let ((rc (_cdb-read-doubles fname data nrows)))
+                    (let ((rc (_dt-read-doubles fname data nrows)))
                       (when (< rc 0)
                         (error "columnardb-load-mem" "failed to read column" name) ) ) ) ) )
                 (setq column-list (nconc1 column-list data)) ) )
@@ -343,19 +343,19 @@
                 ;; Check typecode for compression
                 (let ((cnt-chk (double-matrix 1))
                       (typ-chk (int-matrix 1)) )
-                  (_cdb-read-header fname cnt-chk typ-chk)
+                  (_dt-read-header fname cnt-chk typ-chk)
                   (cond
                    ((= (typ-chk 0) *cdb-type-delta-long*)
                     ;; Delta-encoded: read deltas then decode
                     (let ((deltas (long-matrix nrows)))
-                      (_cdb-read-longs fname deltas nrows)
-                      (_cdb-l1delta-decode deltas data nrows) ) )
+                      (_dt-read-longs fname deltas nrows)
+                      (_dt-l1delta-decode deltas data nrows) ) )
                    ((= (typ-chk 0) *cdb-type-lz4-long*)
                     ;; LZ4+byte-transpose
-                    (_cdb-read-lz4-longs fname data nrows) )
+                    (_dt-read-lz4-longs fname data nrows) )
                    (t
                     ;; Raw longs
-                    (let ((rc (_cdb-read-longs fname data nrows)))
+                    (let ((rc (_dt-read-longs fname data nrows)))
                       (when (< rc 0)
                         (error "columnardb-load-mem" "failed to read column" name) ) ) ) ) )
                 (setq column-list (nconc1 column-list data)) ) )
@@ -367,19 +367,19 @@
                 ;; Check typecode for compression
                 (let ((cnt-chk (double-matrix 1))
                       (typ-chk (int-matrix 1)) )
-                  (_cdb-read-header fname cnt-chk typ-chk)
+                  (_dt-read-header fname cnt-chk typ-chk)
                   (cond
                    ((= (typ-chk 0) *cdb-type-delta-float*)
                     ;; Delta-encoded: read deltas then decode
                     (let ((deltas (float-matrix nrows)))
-                      (_cdb-read-floats fname deltas nrows)
-                      (_cdb-f1delta-decode deltas data nrows) ) )
+                      (_dt-read-floats fname deltas nrows)
+                      (_dt-f1delta-decode deltas data nrows) ) )
                    ((= (typ-chk 0) *cdb-type-lz4-float*)
                     ;; LZ4+byte-transpose
-                    (_cdb-read-lz4-floats fname data nrows) )
+                    (_dt-read-lz4-floats fname data nrows) )
                    (t
                     ;; Raw floats
-                    (let ((rc (_cdb-read-floats fname data nrows)))
+                    (let ((rc (_dt-read-floats fname data nrows)))
                       (when (< rc 0)
                         (error "columnardb-load-mem" "failed to read column" name) ) ) ) ) )
                 (setq column-list (nconc1 column-list data)) ) )
@@ -391,17 +391,17 @@
                 ;; Check typecode for compression
                 (let ((cnt-chk (double-matrix 1))
                       (typ-chk (int-matrix 1)) )
-                  (_cdb-read-header fname cnt-chk typ-chk)
+                  (_dt-read-header fname cnt-chk typ-chk)
                   (cond
                    ((= (typ-chk 0) *cdb-type-rle-int32*)
                     ;; RLE-encoded: read and decode
-                    (_cdb-read-rle-ints fname data nrows) )
+                    (_dt-read-rle-ints fname data nrows) )
                    ((= (typ-chk 0) *cdb-type-lz4-int32*)
                     ;; LZ4+byte-transpose
-                    (_cdb-read-lz4-ints fname data nrows) )
+                    (_dt-read-lz4-ints fname data nrows) )
                    (t
                     ;; Raw ints
-                    (let ((rc (_cdb-read-ints fname data nrows)))
+                    (let ((rc (_dt-read-ints fname data nrows)))
                       (when (< rc 0)
                         (error "columnardb-load-mem" "failed to read column" name) ) ) ) ) )
                 (setq column-list (nconc1 column-list data)) ) )
@@ -411,18 +411,18 @@
               (let ((codes-fname (concat path "/col-" (str ci) "-codes.col"))
                     (pool-fname (concat path "/col-" (str ci) "-pool.lsh")) )
                 (let ((codes (int-matrix nrows))
-                      (pool (_cdb-read-sexp pool-fname)) )
+                      (pool (_dt-read-sexp pool-fname)) )
                   ;; Check typecode for compression on codes
                   (let ((cnt-chk (double-matrix 1))
                         (typ-chk (int-matrix 1)) )
-                    (_cdb-read-header codes-fname cnt-chk typ-chk)
+                    (_dt-read-header codes-fname cnt-chk typ-chk)
                     (cond
                      ((= (typ-chk 0) *cdb-type-rle-int32*)
-                      (_cdb-read-rle-ints codes-fname codes nrows) )
+                      (_dt-read-rle-ints codes-fname codes nrows) )
                      ((= (typ-chk 0) *cdb-type-lz4-int32*)
-                      (_cdb-read-lz4-ints codes-fname codes nrows) )
+                      (_dt-read-lz4-ints codes-fname codes nrows) )
                      (t
-                      (let ((rc (_cdb-read-ints codes-fname codes nrows)))
+                      (let ((rc (_dt-read-ints codes-fname codes nrows)))
                         (when (< rc 0)
                           (error "columnardb-load-mem" "failed to read string codes" name) ) ) ) ) )
                   ;; Build StringColumn from codes and pool
@@ -434,14 +434,14 @@
                       (when (and (filep idx-off-fname) (filep idx-row-fname))
                         (let ((cnt-out (double-matrix 1))
                               (typ-out (int-matrix 1)) )
-                          (_cdb-read-header idx-off-fname cnt-out typ-out)
+                          (_dt-read-header idx-off-fname cnt-out typ-out)
                           (let ((noff (int (cnt-out 0))))
                             (let ((off-data (int-matrix noff)))
-                              (_cdb-read-ints idx-off-fname off-data noff)
-                              (_cdb-read-header idx-row-fname cnt-out typ-out)
+                              (_dt-read-ints idx-off-fname off-data noff)
+                              (_dt-read-header idx-row-fname cnt-out typ-out)
                               (let ((nidxr (int (cnt-out 0))))
                                 (let ((row-data (int-matrix nidxr)))
-                                  (_cdb-read-ints idx-row-fname row-data nidxr)
+                                  (_dt-read-ints idx-row-fname row-data nidxr)
                                   (==> sc build-from-index-mmap off-data row-data) ) ) ) ) ) ) )
                     (setq column-list (nconc1 column-list sc)) ) ) ) )
 
@@ -453,23 +453,23 @@
                   ;; Check typecode for compression on codes
                   (let ((cnt-chk (double-matrix 1))
                         (typ-chk (int-matrix 1)) )
-                    (_cdb-read-header codes-fname cnt-chk typ-chk)
+                    (_dt-read-header codes-fname cnt-chk typ-chk)
                     (cond
                      ((= (typ-chk 0) *cdb-type-rle-int32*)
-                      (_cdb-read-rle-ints codes-fname codes nrows) )
+                      (_dt-read-rle-ints codes-fname codes nrows) )
                      ((= (typ-chk 0) *cdb-type-lz4-int32*)
-                      (_cdb-read-lz4-ints codes-fname codes nrows) )
+                      (_dt-read-lz4-ints codes-fname codes nrows) )
                      (t
-                      (let ((rc (_cdb-read-ints codes-fname codes nrows)))
+                      (let ((rc (_dt-read-ints codes-fname codes nrows)))
                         (when (< rc 0)
                           (error "columnardb-load-mem" "failed to read intcol codes" name) ) ) ) ) )
                   ;; Read pool
                   (let ((pool-cnt (double-matrix 1))
                         (pool-typ (int-matrix 1)) )
-                    (_cdb-read-header pool-fname pool-cnt pool-typ)
+                    (_dt-read-header pool-fname pool-cnt pool-typ)
                     (let* ((nu (int (pool-cnt 0)))
                            (pool-data (int-matrix nu)) )
-                      (let ((rc (_cdb-read-ints pool-fname pool-data nu)))
+                      (let ((rc (_dt-read-ints pool-fname pool-data nu)))
                         (when (< rc 0)
                           (error "columnardb-load-mem" "failed to read intcol pool" name) ) )
                       ;; Build IntColumn from codes and pool
@@ -481,14 +481,14 @@
                           (when (and (filep idx-off-fname) (filep idx-row-fname))
                             (let ((cnt-out (double-matrix 1))
                                   (typ-out (int-matrix 1)) )
-                              (_cdb-read-header idx-off-fname cnt-out typ-out)
+                              (_dt-read-header idx-off-fname cnt-out typ-out)
                               (let ((noff (int (cnt-out 0))))
                                 (let ((off-data (int-matrix noff)))
-                                  (_cdb-read-ints idx-off-fname off-data noff)
-                                  (_cdb-read-header idx-row-fname cnt-out typ-out)
+                                  (_dt-read-ints idx-off-fname off-data noff)
+                                  (_dt-read-header idx-row-fname cnt-out typ-out)
                                   (let ((nidxr (int (cnt-out 0))))
                                     (let ((row-data (int-matrix nidxr)))
-                                      (_cdb-read-ints idx-row-fname row-data nidxr)
+                                      (_dt-read-ints idx-row-fname row-data nidxr)
                                       (==> ic build-from-index-mmap off-data row-data) ) ) ) ) ) ) )
                         (setq column-list (nconc1 column-list ic)) ) ) ) ) ) )
 
@@ -514,7 +514,7 @@
 ;; mmap'd columns will fail).  Use columnardb-load-mem if you
 ;; need a mutable copy.
 (de columnardb-load (path)
-  (let ((meta (_cdb-read-sexp (concat path "/meta.lsh"))))
+  (let ((meta (_dt-read-sexp (concat path "/meta.lsh"))))
     (let ((nrows  (cadr (assoc 'nrows meta)))
           (ncols  (cadr (assoc 'ncols meta)))
           (names  (cadr (assoc 'names meta)))
@@ -549,19 +549,19 @@
                 ;; Check typecode
                 (let ((cnt-chk (double-matrix 1))
                       (typ-chk (int-matrix 1)) )
-                  (_cdb-read-header fname cnt-chk typ-chk)
+                  (_dt-read-header fname cnt-chk typ-chk)
                   (cond
                    ((= (typ-chk 0) *cdb-type-delta-double*)
                     ;; Compressed: read and decode (cannot mmap deltas)
                     (let ((data (double-matrix nrows))
                           (deltas (double-matrix nrows)) )
-                      (_cdb-read-doubles fname deltas nrows)
-                      (_cdb-d1delta-decode deltas data nrows)
+                      (_dt-read-doubles fname deltas nrows)
+                      (_dt-d1delta-decode deltas data nrows)
                       (setq column-list (nconc1 column-list data)) ) )
                    ((= (typ-chk 0) *cdb-type-lz4-double*)
                     ;; LZ4: decompress into memory
                     (let ((data (double-matrix nrows)))
-                      (_cdb-read-lz4-doubles fname data nrows)
+                      (_dt-read-lz4-doubles fname data nrows)
                       (setq column-list (nconc1 column-list data)) ) )
                    (t
                     ;; Raw: mmap
@@ -575,19 +575,19 @@
               (let ((fname (concat path "/col-" (str ci) ".col")))
                 (let ((cnt-chk (double-matrix 1))
                       (typ-chk (int-matrix 1)) )
-                  (_cdb-read-header fname cnt-chk typ-chk)
+                  (_dt-read-header fname cnt-chk typ-chk)
                   (cond
                    ((= (typ-chk 0) *cdb-type-delta-long*)
                     ;; Compressed: read and decode
                     (let ((data (long-matrix nrows))
                           (deltas (long-matrix nrows)) )
-                      (_cdb-read-longs fname deltas nrows)
-                      (_cdb-l1delta-decode deltas data nrows)
+                      (_dt-read-longs fname deltas nrows)
+                      (_dt-l1delta-decode deltas data nrows)
                       (setq column-list (nconc1 column-list data)) ) )
                    ((= (typ-chk 0) *cdb-type-lz4-long*)
                     ;; LZ4: decompress into memory
                     (let ((data (long-matrix nrows)))
-                      (_cdb-read-lz4-longs fname data nrows)
+                      (_dt-read-lz4-longs fname data nrows)
                       (setq column-list (nconc1 column-list data)) ) )
                    (t
                     ;; Raw: mmap
@@ -601,19 +601,19 @@
               (let ((fname (concat path "/col-" (str ci) ".col")))
                 (let ((cnt-chk (double-matrix 1))
                       (typ-chk (int-matrix 1)) )
-                  (_cdb-read-header fname cnt-chk typ-chk)
+                  (_dt-read-header fname cnt-chk typ-chk)
                   (cond
                    ((= (typ-chk 0) *cdb-type-delta-float*)
                     ;; Compressed: decode
                     (let ((data (float-matrix nrows))
                           (deltas (float-matrix nrows)) )
-                      (_cdb-read-floats fname deltas nrows)
-                      (_cdb-f1delta-decode deltas data nrows)
+                      (_dt-read-floats fname deltas nrows)
+                      (_dt-f1delta-decode deltas data nrows)
                       (setq column-list (nconc1 column-list data)) ) )
                    ((= (typ-chk 0) *cdb-type-lz4-float*)
                     ;; LZ4: decompress into memory
                     (let ((data (float-matrix nrows)))
-                      (_cdb-read-lz4-floats fname data nrows)
+                      (_dt-read-lz4-floats fname data nrows)
                       (setq column-list (nconc1 column-list data)) ) )
                    (t
                     ;; Raw: mmap
@@ -628,17 +628,17 @@
                 ;; Check typecode
                 (let ((cnt-chk (double-matrix 1))
                       (typ-chk (int-matrix 1)) )
-                  (_cdb-read-header fname cnt-chk typ-chk)
+                  (_dt-read-header fname cnt-chk typ-chk)
                   (cond
                    ((= (typ-chk 0) *cdb-type-rle-int32*)
                     ;; Compressed: read and decode
                     (let ((data (int-matrix nrows)))
-                      (_cdb-read-rle-ints fname data nrows)
+                      (_dt-read-rle-ints fname data nrows)
                       (setq column-list (nconc1 column-list data)) ) )
                    ((= (typ-chk 0) *cdb-type-lz4-int32*)
                     ;; LZ4: decompress into memory
                     (let ((data (int-matrix nrows)))
-                      (_cdb-read-lz4-ints fname data nrows)
+                      (_dt-read-lz4-ints fname data nrows)
                       (setq column-list (nconc1 column-list data)) ) )
                    (t
                     ;; Raw: mmap
@@ -656,17 +656,17 @@
                 ;; Check typecode on codes file
                 (let ((cnt-chk (double-matrix 1))
                       (typ-chk (int-matrix 1)) )
-                  (_cdb-read-header codes-fname cnt-chk typ-chk)
+                  (_dt-read-header codes-fname cnt-chk typ-chk)
                   (let ((codes
                          (cond
                           ((= (typ-chk 0) *cdb-type-rle-int32*)
                            ;; RLE compressed codes: read and decode
                            (let ((c (int-matrix nrows)))
-                             (_cdb-read-rle-ints codes-fname c nrows) c) )
+                             (_dt-read-rle-ints codes-fname c nrows) c) )
                           ((= (typ-chk 0) *cdb-type-lz4-int32*)
                            ;; LZ4 compressed codes: decompress
                            (let ((c (int-matrix nrows)))
-                             (_cdb-read-lz4-ints codes-fname c nrows) c) )
+                             (_dt-read-lz4-ints codes-fname c nrows) c) )
                           (t
                            ;; Raw codes: mmap
                            (let ((stor (int-storage)))
@@ -677,7 +677,7 @@
                         ;; Binary pool exists: mmap offsets and string data
                         (let ((count-out (double-matrix 1))
                               (type-out (int-matrix 1)) )
-                          (_cdb-read-header pool-idx-fname count-out type-out)
+                          (_dt-read-header pool-idx-fname count-out type-out)
                           (let ((nstrings (int (count-out 0))))
                             (let ((off-stor (int-storage)))
                               (storage-mmap off-stor pool-idx-fname *cdb-header-size*)
@@ -696,9 +696,9 @@
                         (when (and (filep idx-off-fname) (filep idx-row-fname))
                           (let ((cnt-out (double-matrix 1))
                                 (typ-out (int-matrix 1)) )
-                            (_cdb-read-header idx-off-fname cnt-out typ-out)
+                            (_dt-read-header idx-off-fname cnt-out typ-out)
                             (let ((noff (int (cnt-out 0))))
-                              (_cdb-read-header idx-row-fname cnt-out typ-out)
+                              (_dt-read-header idx-row-fname cnt-out typ-out)
                               (let ((nidxr (int (cnt-out 0))))
                                 (let ((off-s (int-storage)))
                                   (storage-mmap off-s idx-off-fname *cdb-header-size*)
@@ -716,15 +716,15 @@
                 ;; Check typecode on codes file
                 (let ((cnt-chk (double-matrix 1))
                       (typ-chk (int-matrix 1)) )
-                  (_cdb-read-header codes-fname cnt-chk typ-chk)
+                  (_dt-read-header codes-fname cnt-chk typ-chk)
                   (let ((codes
                          (cond
                           ((= (typ-chk 0) *cdb-type-rle-int32*)
                            (let ((c (int-matrix nrows)))
-                             (_cdb-read-rle-ints codes-fname c nrows) c) )
+                             (_dt-read-rle-ints codes-fname c nrows) c) )
                           ((= (typ-chk 0) *cdb-type-lz4-int32*)
                            (let ((c (int-matrix nrows)))
-                             (_cdb-read-lz4-ints codes-fname c nrows) c) )
+                             (_dt-read-lz4-ints codes-fname c nrows) c) )
                           (t
                            ;; Raw codes: mmap
                            (let ((stor (int-storage)))
@@ -733,7 +733,7 @@
                     ;; Read pool: mmap as int
                     (let ((pool-cnt (double-matrix 1))
                           (pool-typ (int-matrix 1)) )
-                      (_cdb-read-header pool-fname pool-cnt pool-typ)
+                      (_dt-read-header pool-fname pool-cnt pool-typ)
                       (let ((nu (int (pool-cnt 0))))
                         (let ((pool-stor (int-storage)))
                           (storage-mmap pool-stor pool-fname *cdb-header-size*)
@@ -746,9 +746,9 @@
                                 (when (and (filep idx-off-fname) (filep idx-row-fname))
                                   (let ((cnt-out (double-matrix 1))
                                         (typ-out (int-matrix 1)) )
-                                    (_cdb-read-header idx-off-fname cnt-out typ-out)
+                                    (_dt-read-header idx-off-fname cnt-out typ-out)
                                     (let ((noff (int (cnt-out 0))))
-                                      (_cdb-read-header idx-row-fname cnt-out typ-out)
+                                      (_dt-read-header idx-row-fname cnt-out typ-out)
                                       (let ((nidxr (int (cnt-out 0))))
                                         (let ((off-s (int-storage)))
                                           (storage-mmap off-s idx-off-fname *cdb-header-size*)
@@ -778,7 +778,7 @@
 ;; Writes go to private copy-on-write pages -- the OS handles page-level
 ;; COW so _ensure-writable becomes a no-op.  Disk files are never modified.
 (de columnardb-load-rw (path)
-  (let ((meta (_cdb-read-sexp (concat path "/meta.lsh"))))
+  (let ((meta (_dt-read-sexp (concat path "/meta.lsh"))))
     (let ((nrows  (cadr (assoc 'nrows meta)))
           (ncols  (cadr (assoc 'ncols meta)))
           (names  (cadr (assoc 'names meta)))
@@ -853,7 +853,7 @@
                         ;; Binary pool exists: mmap-rw offsets and string data
                         (let ((count-out (double-matrix 1))
                               (type-out (int-matrix 1)) )
-                          (_cdb-read-header pool-idx-fname count-out type-out)
+                          (_dt-read-header pool-idx-fname count-out type-out)
                           (let ((nstrings (int (count-out 0))))
                             (let ((off-stor (int-storage)))
                               (storage-mmap-rw off-stor pool-idx-fname *cdb-header-size*)
@@ -872,9 +872,9 @@
                         (when (and (filep idx-off-fname) (filep idx-row-fname))
                           (let ((cnt-out (double-matrix 1))
                                 (typ-out (int-matrix 1)) )
-                            (_cdb-read-header idx-off-fname cnt-out typ-out)
+                            (_dt-read-header idx-off-fname cnt-out typ-out)
                             (let ((noff (int (cnt-out 0))))
-                              (_cdb-read-header idx-row-fname cnt-out typ-out)
+                              (_dt-read-header idx-row-fname cnt-out typ-out)
                               (let ((nidxr (int (cnt-out 0))))
                                 (let ((off-s (int-storage)))
                                   (storage-mmap-rw off-s idx-off-fname *cdb-header-size*)
@@ -895,7 +895,7 @@
                     ;; Read pool
                     (let ((pool-cnt (double-matrix 1))
                           (pool-typ (int-matrix 1)) )
-                      (_cdb-read-header pool-fname pool-cnt pool-typ)
+                      (_dt-read-header pool-fname pool-cnt pool-typ)
                       (let ((nu (int (pool-cnt 0))))
                         (let ((pool-stor (int-storage)))
                           (storage-mmap-rw pool-stor pool-fname *cdb-header-size*)
@@ -908,9 +908,9 @@
                                 (when (and (filep idx-off-fname) (filep idx-row-fname))
                                   (let ((cnt-out (double-matrix 1))
                                         (typ-out (int-matrix 1)) )
-                                    (_cdb-read-header idx-off-fname cnt-out typ-out)
+                                    (_dt-read-header idx-off-fname cnt-out typ-out)
                                     (let ((noff (int (cnt-out 0))))
-                                      (_cdb-read-header idx-row-fname cnt-out typ-out)
+                                      (_dt-read-header idx-row-fname cnt-out typ-out)
                                       (let ((nidxr (int (cnt-out 0))))
                                         (let ((off-s (int-storage)))
                                           (storage-mmap-rw off-s idx-off-fname *cdb-header-size*)
@@ -945,7 +945,7 @@
 ;; >= the existing data's last value, the column stays sorted.
 (de columnardb-append (path dt)
   ;; Read existing metadata
-  (let ((meta (_cdb-read-sexp (concat path "/meta.lsh"))))
+  (let ((meta (_dt-read-sexp (concat path "/meta.lsh"))))
     (let ((old-nrows (cadr (assoc 'nrows meta)))
           (old-ncols (cadr (assoc 'ncols meta)))
           (old-names (cadr (assoc 'names meta)))
@@ -983,18 +983,18 @@
                   (let ((fname (concat path "/col-" (str ci) ".col"))
                         (data (double-matrix new-nrows)) )
                     (for (i 0 (1- new-nrows)) (data i (col i)))
-                    (let ((rc (_cdb-append-doubles fname data new-nrows total-rows)))
+                    (let ((rc (_dt-append-doubles fname data new-nrows total-rows)))
                       (when (< rc 0)
                         (error "columnardb-append" "failed to append column" name) ) )
                     (when (member ci old-sorted)
                       (let ((still-sorted t))
                         (when (> old-nrows 0)
                           (let ((old-data (double-matrix old-nrows)))
-                            (_cdb-read-doubles fname old-data old-nrows)
+                            (_dt-read-doubles fname old-data old-nrows)
                             (when (< (data 0) (old-data (1- old-nrows)))
                               (setq still-sorted ()) ) ) )
                         (when (and still-sorted
-                                   (<> 1 (_cdb-d1sortedp-safe data new-nrows)))
+                                   (<> 1 (_dt-d1sortedp-safe data new-nrows)))
                           (setq still-sorted ()) )
                         (when still-sorted
                           (setq new-sorted (nconc1 new-sorted ci)) ) ) ) ) )
@@ -1004,18 +1004,18 @@
                   (let ((fname (concat path "/col-" (str ci) ".col"))
                         (data (long-matrix new-nrows)) )
                     (for (i 0 (1- new-nrows)) (data i (col i)))
-                    (let ((rc (_cdb-append-longs fname data new-nrows total-rows)))
+                    (let ((rc (_dt-append-longs fname data new-nrows total-rows)))
                       (when (< rc 0)
                         (error "columnardb-append" "failed to append column" name) ) )
                     (when (member ci old-sorted)
                       (let ((still-sorted t))
                         (when (> old-nrows 0)
                           (let ((old-data (long-matrix old-nrows)))
-                            (_cdb-read-longs fname old-data old-nrows)
+                            (_dt-read-longs fname old-data old-nrows)
                             (when (< (data 0) (old-data (1- old-nrows)))
                               (setq still-sorted ()) ) ) )
                         (when (and still-sorted
-                                   (<> 1 (_cdb-l1sortedp data new-nrows)))
+                                   (<> 1 (_dt-l1sortedp data new-nrows)))
                           (setq still-sorted ()) )
                         (when still-sorted
                           (setq new-sorted (nconc1 new-sorted ci)) ) ) ) ) )
@@ -1025,7 +1025,7 @@
                   (let ((fname (concat path "/col-" (str ci) ".col"))
                         (data (float-matrix new-nrows)) )
                     (for (i 0 (1- new-nrows)) (data i (col i)))
-                    (let ((rc (_cdb-append-floats fname data new-nrows total-rows)))
+                    (let ((rc (_dt-append-floats fname data new-nrows total-rows)))
                       (when (< rc 0)
                         (error "columnardb-append" "failed to append column" name) ) )
                     ;; Check if this column stays sorted
@@ -1033,11 +1033,11 @@
                       (let ((still-sorted t))
                         (when (> old-nrows 0)
                           (let ((old-data (float-matrix old-nrows)))
-                            (_cdb-read-floats fname old-data old-nrows)
+                            (_dt-read-floats fname old-data old-nrows)
                             (when (< (data 0) (old-data (1- old-nrows)))
                               (setq still-sorted ()) ) ) )
                         (when (and still-sorted
-                                   (<> 1 (_cdb-f1sortedp data new-nrows)))
+                                   (<> 1 (_dt-f1sortedp data new-nrows)))
                           (setq still-sorted ()) )
                         (when still-sorted
                           (setq new-sorted (nconc1 new-sorted ci)) ) ) ) ) )
@@ -1047,7 +1047,7 @@
                   (let ((fname (concat path "/col-" (str ci) ".col"))
                         (data (int-matrix new-nrows)) )
                     (for (i 0 (1- new-nrows)) (data i (col i)))
-                    (let ((rc (_cdb-append-ints fname data new-nrows total-rows)))
+                    (let ((rc (_dt-append-ints fname data new-nrows total-rows)))
                       (when (< rc 0)
                         (error "columnardb-append" "failed to append column" name) ) )
                     ;; Check sort status (compiled C)
@@ -1078,7 +1078,7 @@
                       (when (filep idx-row-fname)
                         (sys (concat "rm -f '" idx-row-fname "'")) ) )
                     ;; Read existing pool
-                    (let ((old-pool (_cdb-read-sexp pool-fname))
+                    (let ((old-pool (_dt-read-sexp pool-fname))
                           (new-codes (int-matrix new-nrows))
                           (pool-changed ()) )
                       ;; Build lookup from old pool
@@ -1103,12 +1103,12 @@
                                   (setq next-code (1+ next-code))
                                   (setq pool-changed t) ) ) ) ) )
                         ;; Append codes
-                        (let ((rc (_cdb-append-ints codes-fname new-codes new-nrows total-rows)))
+                        (let ((rc (_dt-append-ints codes-fname new-codes new-nrows total-rows)))
                           (when (< rc 0)
                             (error "columnardb-append" "failed to append string codes" name) ) )
                         ;; Update pool if needed
                         (when pool-changed
-                          (_cdb-write-sexp pool-fname pool-list) ) ) ) ) )
+                          (_dt-write-sexp pool-fname pool-list) ) ) ) ) )
 
                  ;; IntColumn: re-encode against existing pool, extend codes+pool
                  ((= type 'intcol)
@@ -1124,10 +1124,10 @@
                     ;; Read existing pool
                     (let ((pool-cnt (double-matrix 1))
                           (pool-typ (int-matrix 1)) )
-                      (_cdb-read-header pool-fname pool-cnt pool-typ)
+                      (_dt-read-header pool-fname pool-cnt pool-typ)
                       (let* ((old-nu (int (pool-cnt 0)))
                              (old-pool (int-matrix old-nu)) )
-                        (let ((rc (_cdb-read-ints pool-fname old-pool old-nu)))
+                        (let ((rc (_dt-read-ints pool-fname old-pool old-nu)))
                           (when (< rc 0)
                             (error "columnardb-append" "failed to read intcol pool" name) ) )
                         ;; Build lookup from old pool
@@ -1156,7 +1156,7 @@
                                   (setq next-code (1+ next-code))
                                   (setq pool-changed t) ) ) ) )
                           ;; Append codes
-                          (let ((rc (_cdb-append-ints codes-fname new-codes new-nrows total-rows)))
+                          (let ((rc (_dt-append-ints codes-fname new-codes new-nrows total-rows)))
                             (when (< rc 0)
                               (error "columnardb-append" "failed to append intcol codes" name) ) )
                           ;; Update pool if needed
@@ -1166,7 +1166,7 @@
                                 (each ((v pool-vals))
                                   (new-pool idx v)
                                   (setq idx (1+ idx)) ) )
-                              (let ((rc (_cdb-write-ints pool-fname new-pool next-code)))
+                              (let ((rc (_dt-write-ints pool-fname new-pool next-code)))
                                 (when (< rc 0)
                                   (error "columnardb-append" "failed to write intcol pool" name) ) ) ) ) ) ) ) ) )
 
@@ -1181,7 +1181,7 @@
                        (list 'names old-names)
                        (list 'types old-types)
                        (list 'sorted new-sorted) )))
-            (_cdb-write-sexp (concat path "/meta.lsh") meta) )
+            (_dt-write-sexp (concat path "/meta.lsh") meta) )
 
           (printf "columnardb-append: %s -> %d + %d = %d rows\n"
                   path old-nrows new-nrows total-rows) ) ) ) ) )
@@ -1195,7 +1195,7 @@
 ;; Read and return the metadata for a persisted table.
 ;; Returns an alist with keys: version, nrows, ncols, names, types, sorted.
 (de columnardb-meta (path)
-  (_cdb-read-sexp (concat path "/meta.lsh")) )
+  (_dt-read-sexp (concat path "/meta.lsh")) )
 
 
 ;; ============================================================
@@ -1203,72 +1203,16 @@
 ;; ============================================================
 
 #? (columnardb-range <dt> <col-name> <lo> <hi> <meta>)
-;; Query a DataTable for rows where <lo> <= col <= <hi>.
-;; If <meta> indicates the column is sorted, uses binary search (O(log n)).
-;; Otherwise falls back to linear scan (O(n)).
-;; Returns a list of row indices.
-;;
-;; This is optimized for the common pattern of querying by timedate range.
+;; Backward-compatible wrapper for datatable-range.
+;; {<see> (datatable-range <dt> <col-name> <lo> <hi> <meta>)}
 (de columnardb-range (dt col-name lo hi meta)
-  (let* ((col-idx (==> dt col-index col-name))
-         (col (==> dt get-column col-idx))
-         (type (==> dt col-type col-idx))
-         (nrows (==> dt num-rows))
-         (sorted-cols (if meta (cadr (assoc 'sorted meta)) ())) )
-
-    (when (= type 'string)
-      (error "columnardb-range" "range queries not supported on string columns" col-name) )
-
-    (if (member col-idx sorted-cols)
-      ;; Fast path: compiled C binary search on sorted column
-      (cond
-       ((= type 'float)
-        ;; Float column: use float bsearch
-        (let* ((view (narrow col 0 nrows 0))
-               (left (_cdb-f1bsearch-left view nrows (to-float lo)))
-               (right (_cdb-f1bsearch-right view nrows (to-float hi))) )
-          (if (> left right)
-            ()
-            (let ((result ()))
-              (for (i left right)
-                (setq result (nconc1 result i)) )
-              result ) ) ) )
-       ((= type 'stamp)
-        ;; Stamp column (long): use long bsearch
-        (let* ((view (narrow col 0 nrows 0))
-               (left (_cdb-l1bsearch-left view nrows lo))
-               (right (_cdb-l1bsearch-right view nrows hi)) )
-          (if (> left right)
-            ()
-            (let ((result ()))
-              (for (i left right)
-                (setq result (nconc1 result i)) )
-              result ) ) ) )
-       (t
-        ;; Double/int column: use double bsearch
-        (let* ((view (narrow col 0 nrows 0))
-               (left (idx-d1bsearch-left view lo))
-               (right (idx-d1bsearch-right view hi)) )
-          (if (> left right)
-            ()
-            (let ((result ()))
-              (for (i left right)
-                (setq result (nconc1 result i)) )
-              result ) ) ) ) )
-      ;; Slow path: linear scan
-      (let ((result ()))
-        (for (i 0 (1- nrows))
-          (let ((v (col i)))
-            (when (and (>= v lo) (<= v hi))
-              (setq result (nconc1 result i)) ) ) )
-        result ) ) ) )
+  (datatable-range dt col-name lo hi meta) )
 
 
 #? (columnardb-range-rows <dt> <col-name> <lo> <hi> <meta>)
-;; Like columnardb-range but returns a new DataTable with the matching rows.
+;; Backward-compatible wrapper for datatable-range-rows.
 (de columnardb-range-rows (dt col-name lo hi meta)
-  (let ((indices (columnardb-range dt col-name lo hi meta)))
-    (==> dt select-rows indices) ) )
+  (datatable-range-rows dt col-name lo hi meta) )
 
 
 ;; ============================================================
@@ -1321,14 +1265,14 @@
 ;; GC safety net: release lock if object is collected
 (defmethod columnardb-lock -destructor ()
   (when (and fd (>= fd 0))
-    (_cdb-flock fd @LOCK_UN)
+    (_dt-flock fd @LOCK_UN)
     (fd-close fd)
     (setq fd ()) ) )
 
 
 ;; Internal: ensure the lock file exists for a table directory.
-(de _cdb-ensure-lock-file (path)
-  (_cdb-mkdir path)
+(de _dt-ensure-lock-file (path)
+  (_dt-mkdir path)
   (let ((lock-file (concat path "/.lock")))
     (when (not (filep lock-file))
       (sys (concat "touch '" lock-file "'")) )
@@ -1340,11 +1284,11 @@
 ;; Blocks until the lock is available.
 ;; Returns a columnardb-lock object.
 (de columnardb-lock-shared (path)
-  (let ((lock-file (_cdb-ensure-lock-file path)))
+  (let ((lock-file (_dt-ensure-lock-file path)))
     (let ((fdes (fd-open lock-file @O_RDWR)))
       (when (< fdes 0)
         (error "columnardb-lock-shared" "failed to open lock file" lock-file) )
-      (let ((rc (_cdb-flock fdes @LOCK_SH)))
+      (let ((rc (_dt-flock fdes @LOCK_SH)))
         (when (< rc 0)
           (fd-close fdes)
           (error "columnardb-lock-shared" "failed to acquire shared lock" lock-file) ) )
@@ -1356,11 +1300,11 @@
 ;; Blocks until the lock is available.
 ;; Returns a columnardb-lock object.
 (de columnardb-lock-exclusive (path)
-  (let ((lock-file (_cdb-ensure-lock-file path)))
+  (let ((lock-file (_dt-ensure-lock-file path)))
     (let ((fdes (fd-open lock-file @O_RDWR)))
       (when (< fdes 0)
         (error "columnardb-lock-exclusive" "failed to open lock file" lock-file) )
-      (let ((rc (_cdb-flock fdes @LOCK_EX)))
+      (let ((rc (_dt-flock fdes @LOCK_EX)))
         (when (< rc 0)
           (fd-close fdes)
           (error "columnardb-lock-exclusive" "failed to acquire exclusive lock" lock-file) ) )
@@ -1371,11 +1315,11 @@
 ;; Try to acquire an exclusive lock without blocking.
 ;; Returns a columnardb-lock object on success, or () if the lock is held.
 (de columnardb-lock-try-exclusive (path)
-  (let ((lock-file (_cdb-ensure-lock-file path)))
+  (let ((lock-file (_dt-ensure-lock-file path)))
     (let ((fdes (fd-open lock-file @O_RDWR)))
       (when (< fdes 0)
         (error "columnardb-lock-try-exclusive" "failed to open lock file" lock-file) )
-      (let ((rc (_cdb-flock fdes (+ @LOCK_EX @LOCK_NB))))
+      (let ((rc (_dt-flock fdes (+ @LOCK_EX @LOCK_NB))))
         (if (< rc 0)
           (progn (fd-close fdes) ())
           (new columnardb-lock fdes lock-file @LOCK_EX) ) ) ) ) )
@@ -1387,17 +1331,17 @@
   (when lock
     (let ((fdes :lock:fd))
       (when (and fdes (>= fdes 0))
-        (_cdb-flock fdes @LOCK_UN)
+        (_dt-flock fdes @LOCK_UN)
         (fd-close fdes)
         (setq :lock:fd ()) ) ) ) )
 
 
-(libload "columnardb/columnardb-partition")
-(libload "columnardb/columnardb-compiled")
-(libload "columnardb/columnardb-groupby")
-(libload "columnardb/columnardb-mutate")
-(libload "columnardb/columnardb-multiindex")
-(libload "columnardb/columnardb-compress")
-(libload "columnardb/columnardb-database")
-(libload "datatable/datatable-join")
-(libload "columnardb/columnardb-query")
+;; datatable.lsh already loads the in-memory modules:
+;;   datatable-compiled, datatable-join, datatable-groupby,
+;;   datatable-multiindex, datatable-query
+;; Here we load persistence-specific modules:
+;; (columnardb-io already loaded above)
+(libload "datatable/columnardb-partition")
+(libload "datatable/columnardb-mutate")
+(libload "datatable/columnardb-compress")
+(libload "datatable/columnardb-database")

@@ -604,8 +604,8 @@
            ((= type 'stamp)
             ;; Long stamp: use compiled gather if available
             (let ((dst (long-matrix nr)))
-              (if (functionp _cdb-l1gather)
-                (_cdb-l1gather dst col idx-perm nr)
+              (if (functionp _dt-l1gather)
+                (_dt-l1gather dst col idx-perm nr)
                 (for (i 0 (1- nr)) (dst i (col (idx-perm i)))) )
               (setq new-cols (nconc1 new-cols dst)) ) )
            (t
@@ -613,15 +613,15 @@
             (let ((dst (cond ((= type 'real)  (double-matrix nr))
                              ((= type 'float) (float-matrix nr))
                              ((= type 'int)   (int-matrix nr)) )))
-              (if (and (functionp _cdb-d1gather) (functionp _cdb-i1gather))
+              (if (and (functionp _dt-d1gather) (functionp _dt-i1gather))
                 ;; Compiled gather path
                 (cond ((= type 'int)
-                       (_cdb-i1gather dst col idx-perm nr))
+                       (_dt-i1gather dst col idx-perm nr))
                       ((= type 'float)
-                       (if (functionp _cdb-f1gather)
-                         (_cdb-f1gather dst col idx-perm nr)
+                       (if (functionp _dt-f1gather)
+                         (_dt-f1gather dst col idx-perm nr)
                          (for (i 0 (1- nr)) (dst i (col (idx-perm i))))))
-                      (t (_cdb-d1gather dst col idx-perm nr)))
+                      (t (_dt-d1gather dst col idx-perm nr)))
                 ;; Interpreted fallback
                 (for (i 0 (1- nr))
                   (dst i (col (idx-perm i))) ) )
@@ -799,3 +799,13 @@
         (setq i (1+ i)) )
       (setq :dt:col-names-ht ht) )
     dt ) )
+
+
+;; ============================================================
+;; Load in-memory extension modules
+;; ============================================================
+
+(libload "datatable/datatable-join")
+(libload "datatable/datatable-groupby")
+(libload "datatable/datatable-multiindex")
+(libload "datatable/datatable-query")

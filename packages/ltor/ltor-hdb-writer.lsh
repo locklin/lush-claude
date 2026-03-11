@@ -11,7 +11,7 @@
 (libload "zmq/zmq-serde")
 (libload "wire/wire-serialize")
 (libload "datatable/datatable")
-(libload "columnardb/columnardb")
+(libload "datatable/columnardb")
 
 ;; Load RDB table schema definitions (coinbase-rdb provides rdb-init-tables)
 (libload "ltor/coinbase-rdb")

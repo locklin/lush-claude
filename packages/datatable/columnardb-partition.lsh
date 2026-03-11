@@ -18,8 +18,8 @@
 
 ;;; Dependencies: loaded via columnardb.lsh (which libloads this file)
 ;;; Requires: columnardb-save, columnardb-load, columnardb-append,
-;;;           columnardb-meta, columnardb-range-rows, _cdb-mkdir,
-;;;           _cdb-write-sexp, _cdb-read-sexp, DataTable, StringColumn
+;;;           columnardb-meta, datatable-range-rows, _dt-mkdir,
+;;;           _dt-write-sexp, _dt-read-sexp, DataTable, StringColumn
 
 #? *** ColumnarDB: Partitioned Tables
 ;; Row-count-based table partitioning for large time-series datasets.
@@ -232,7 +232,7 @@
 ;; standard columnardb directory under p-N/ subdirectories.
 ;; Records partition boundaries in partition-meta.lsh.
 (de columnardb-partition-save (dt path col-name max-rows)
-  (_cdb-mkdir path)
+  (_dt-mkdir path)
   (let* ((nrows (==> dt num-rows))
          (col-idx (==> dt col-index col-name))
          (col (==> dt get-column col-idx))
@@ -270,7 +270,7 @@
                   (list 'total-rows nrows)
                   (list 'nparts nparts)
                   (list 'partitions partitions) )))
-      (_cdb-write-sexp (concat path "/partition-meta.lsh") pmeta) )
+      (_dt-write-sexp (concat path "/partition-meta.lsh") pmeta) )
 
     (printf "columnardb-partition-save: %s -> %d rows in %d partitions (by %s, max %d)\n"
             path nrows nparts col-name max-rows) ) )
@@ -283,7 +283,7 @@
 #? (columnardb-partition-meta <path>)
 ;; Read partition metadata from a partitioned table directory.
 (de columnardb-partition-meta (path)
-  (_cdb-read-sexp (concat path "/partition-meta.lsh")) )
+  (_dt-read-sexp (concat path "/partition-meta.lsh")) )
 
 #? (columnardb-partition-load <path>)
 ;; Alias for columnardb-partition-meta -- returns the metadata handle.
@@ -315,7 +315,7 @@
           ;; Load this partition and apply range query
           (let* ((dt (columnardb-load pdir))
                  (meta (columnardb-meta pdir))
-                 (sub (columnardb-range-rows dt col-name lo hi meta)) )
+                 (sub (datatable-range-rows dt col-name lo hi meta)) )
             (when (> (==> sub num-rows) 0)
               (setq results (nconc1 results sub)) ) ) ) ) )
 
@@ -424,7 +424,7 @@
                     (list 'total-rows new-total)
                     (list 'nparts new-nparts)
                     (list 'partitions new-partitions) )))
-        (_cdb-write-sexp (concat path "/partition-meta.lsh") pmeta) )
+        (_dt-write-sexp (concat path "/partition-meta.lsh") pmeta) )
 
       (printf "columnardb-partition-append: %s -> +%d rows = %d total (%d partitions)\n"
               path new-nrows new-total new-nparts) ) ) )
@@ -544,7 +544,7 @@
                             (list 'total-rows new-total)
                             (list 'nparts new-nparts)
                             (list 'partitions result-partitions) )))
-            (_cdb-write-sexp (concat path "/partition-meta.lsh") new-pmeta) )
+            (_dt-write-sexp (concat path "/partition-meta.lsh") new-pmeta) )
 
           (printf "columnardb-partition-sorted-insert: %s -> +%d rows = %d total (%d partitions)\n"
                   path new-nrows new-total new-nparts) ) ) ) ) )

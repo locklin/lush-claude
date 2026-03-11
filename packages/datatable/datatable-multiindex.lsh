@@ -1,4 +1,4 @@
-;;; columnardb-multiindex.lsh -- Multi-column index intersection
+;;; datatable-multiindex.lsh -- Multi-column index and range queries
 ;;;
 ;;; Provides multi-condition filtering by processing each condition
 ;;; independently (using CSR index for strings, binary search for
@@ -6,10 +6,10 @@
 ;;; row-index arrays via compiled C merge-intersect.
 ;;;
 ;;; Usage:
-;;;   (columnardb-where-multi dt '((= "symbol" "AAPL") (> "price" 100.0)))
-;;;   (columnardb-where-multi-rows dt '((= "symbol" "AAPL") (> "price" 100.0)))
+;;;   (datatable-where-multi dt '((= "symbol" "AAPL") (> "price" 100.0)))
+;;;   (datatable-where-multi-rows dt '((= "symbol" "AAPL") (> "price" 100.0)))
 
-#? *** ColumnarDB Multi-Column Index
+#? *** DataTable Multi-Column Index
 ;; Multi-condition filtering by intersecting per-condition row-index
 ;; arrays.  Each condition is resolved independently using the best
 ;; available method (CSR index for string equality, binary search
@@ -18,8 +18,8 @@
 ;;
 ;; Two API variants:
 ;; {<ul>
-;; {<li> {<b> columnardb-where-multi} -- returns a Lush list of row indices}
-;; {<li> {<b> columnardb-where-multi-idx1} -- returns a sorted idx1 array (faster, no list allocation)}
+;; {<li> {<b> datatable-where-multi} -- returns a Lush list of row indices}
+;; {<li> {<b> datatable-where-multi-idx1} -- returns a sorted idx1 array (faster, no list allocation)}
 ;; }
 ;;
 ;; Supported condition operators:
@@ -37,13 +37,13 @@
 ;;
 ;; Example:
 ;; {<code>
-;;   (columnardb-where-multi dt '((= "symbol" "AAPL") (> "price" 100.0)))
-;;   (columnardb-where-multi-idx1 dt '((in "symbol" ("AAPL" "GOOG"))))
-;;   (columnardb-where-multi-idx1 dt '((like "symbol" "A%")))
+;;   (datatable-where-multi dt '((= "symbol" "AAPL") (> "price" 100.0)))
+;;   (datatable-where-multi-idx1 dt '((in "symbol" ("AAPL" "GOOG"))))
+;;   (datatable-where-multi-idx1 dt '((like "symbol" "A%")))
 ;; </code>}
-;; {<see> (columnardb-where-multi <dt> <conditions> [<meta>])}
-;; {<see> (columnardb-where-multi-idx1 <dt> <conditions> [<meta>])}
-;; {<see> ColumnarDB Compiled Hot Paths}
+;; {<see> (datatable-where-multi <dt> <conditions> [<meta>])}
+;; {<see> (datatable-where-multi-idx1 <dt> <conditions> [<meta>])}
+;; {<see> DataTable Compiled Utilities}
 
 
 ;; ============================================================
@@ -80,8 +80,8 @@
      ((= op 'range)
       (let ((lo val)
             (hi (nth 3 cond)) )
-        ;; Use columnardb-range if sorted, else linear scan
-        (let ((indices (columnardb-range dt col-name lo hi meta)))
+        ;; Use datatable-range if sorted, else linear scan
+        (let ((indices (datatable-range dt col-name lo hi meta)))
           (_list-to-sorted-idx1 indices) ) ) )
 
      ;; String equality: use CSR index if available
@@ -113,7 +113,7 @@
     (let ((na (idx-dim a 0))
           (nb (idx-dim b 0)) )
       (let ((dest (int-matrix (min na nb))))
-        (let ((count (_cdb-i1intersect-sorted a na b nb dest)))
+        (let ((count (_dt-i1intersect-sorted a na b nb dest)))
           (if (= count 0)
             ()
             (narrow dest 0 count 0) ) ) ) ) ) )
@@ -161,19 +161,19 @@
              ((= type 'real)
               (let ((view (narrow col 0 nrows 0))
                     (result (int-matrix nrows)) )
-                (let ((count (_cdb-d1range-filter view nrows
+                (let ((count (_dt-d1range-filter view nrows
                                (to-double lo) (to-double hi) result)))
                   (if (= count 0) ()
                     (narrow result 0 count 0) ) ) ) )
              ((or (= type 'int) (= type 'intcol))
               (let ((view (narrow col 0 nrows 0))
                     (result (int-matrix nrows)) )
-                (let ((count (_cdb-i1range-filter view nrows
+                (let ((count (_dt-i1range-filter view nrows
                                (to-int lo) (to-int hi) result)))
                   (if (= count 0) ()
                     (narrow result 0 count 0) ) ) ) )
              ;; Float/stamp/other: fall back to interpreted
-             (t (let ((indices (columnardb-range dt col-name lo hi meta)))
+             (t (let ((indices (datatable-range dt col-name lo hi meta)))
                   (_list-to-sorted-idx1 indices) ))) ))))
 
      ;; String equality: use CSR index
@@ -227,25 +227,25 @@
            ((= type 'real)
             (let ((view (narrow col 0 nrows 0))
                   (result (int-matrix nrows)) )
-              (let ((count (_cdb-d1filter view nrows opcode (to-double val) result)))
+              (let ((count (_dt-d1filter view nrows opcode (to-double val) result)))
                 (if (= count 0) ()
                   (narrow result 0 count 0) ) ) ) )
            ((= type 'float)
             (let ((view (narrow col 0 nrows 0))
                   (result (int-matrix nrows)) )
-              (let ((count (_cdb-f1filter view nrows opcode (to-float val) result)))
+              (let ((count (_dt-f1filter view nrows opcode (to-float val) result)))
                 (if (= count 0) ()
                   (narrow result 0 count 0) ) ) ) )
            ((= type 'int)
             (let ((view (narrow col 0 nrows 0))
                   (result (int-matrix nrows)) )
-              (let ((count (_cdb-i1filter view nrows opcode (to-int val) result)))
+              (let ((count (_dt-i1filter view nrows opcode (to-int val) result)))
                 (if (= count 0) ()
                   (narrow result 0 count 0) ) ) ) )
            ((= type 'stamp)
             (let ((view (narrow col 0 nrows 0))
                   (result (int-matrix nrows)) )
-              (let ((count (_cdb-l1filter view nrows opcode val result)))
+              (let ((count (_dt-l1filter view nrows opcode val result)))
                 (if (= count 0) ()
                   (narrow result 0 count 0) ) ) ) )
            ;; Fallback
@@ -258,39 +258,39 @@
   (cond
    ((= type 'real)
     (let* ((view (narrow col 0 nrows 0))
-           (left (_cdb-d1bsearch-left view nrows (to-double lo)))
-           (right (_cdb-d1bsearch-right view nrows (to-double hi))) )
+           (left (_dt-d1bsearch-left view nrows (to-double lo)))
+           (right (_dt-d1bsearch-right view nrows (to-double hi))) )
       (if (> left right) ()
         (let* ((count (1+ (- right left)))
                (result (int-matrix count)) )
-          (_cdb-i1iota result left count)
+          (_dt-i1iota result left count)
           result ) ) ) )
    ((= type 'float)
     (let* ((view (narrow col 0 nrows 0))
-           (left (_cdb-f1bsearch-left view nrows (to-float lo)))
-           (right (_cdb-f1bsearch-right view nrows (to-float hi))) )
+           (left (_dt-f1bsearch-left view nrows (to-float lo)))
+           (right (_dt-f1bsearch-right view nrows (to-float hi))) )
       (if (> left right) ()
         (let* ((count (1+ (- right left)))
                (result (int-matrix count)) )
-          (_cdb-i1iota result left count)
+          (_dt-i1iota result left count)
           result ) ) ) )
    ((= type 'int)
     (let* ((view (narrow col 0 nrows 0))
-           (left (_cdb-i1bsearch-left view nrows (to-int lo)))
-           (right (_cdb-i1bsearch-right view nrows (to-int hi))) )
+           (left (_dt-i1bsearch-left view nrows (to-int lo)))
+           (right (_dt-i1bsearch-right view nrows (to-int hi))) )
       (if (> left right) ()
         (let* ((count (1+ (- right left)))
                (result (int-matrix count)) )
-          (_cdb-i1iota result left count)
+          (_dt-i1iota result left count)
           result ) ) ) )
    ((= type 'stamp)
     (let* ((view (narrow col 0 nrows 0))
-           (left (_cdb-l1bsearch-left view nrows lo))
-           (right (_cdb-l1bsearch-right view nrows hi)) )
+           (left (_dt-l1bsearch-left view nrows lo))
+           (right (_dt-l1bsearch-right view nrows hi)) )
       (if (> left right) ()
         (let* ((count (1+ (- right left)))
                (result (int-matrix count)) )
-          (_cdb-i1iota result left count)
+          (_dt-i1iota result left count)
           result ) ) ) )
    (t (error "_sorted-range-idx1" "unsupported column type" type)) ) )
 
@@ -308,22 +308,22 @@
      ((= type 'real)
       (let ((view (narrow col 0 nrows 0))
             (dval (to-double val)) )
-        (setq left (_cdb-d1bsearch-left view nrows dval))
-        (setq right (_cdb-d1bsearch-right view nrows dval)) ) )
+        (setq left (_dt-d1bsearch-left view nrows dval))
+        (setq right (_dt-d1bsearch-right view nrows dval)) ) )
      ((= type 'float)
       (let ((view (narrow col 0 nrows 0))
             (fval (to-float val)) )
-        (setq left (_cdb-f1bsearch-left view nrows fval))
-        (setq right (_cdb-f1bsearch-right view nrows fval)) ) )
+        (setq left (_dt-f1bsearch-left view nrows fval))
+        (setq right (_dt-f1bsearch-right view nrows fval)) ) )
      ((= type 'int)
       (let ((view (narrow col 0 nrows 0))
             (ival (to-int val)) )
-        (setq left (_cdb-i1bsearch-left view nrows ival))
-        (setq right (_cdb-i1bsearch-right view nrows ival)) ) )
+        (setq left (_dt-i1bsearch-left view nrows ival))
+        (setq right (_dt-i1bsearch-right view nrows ival)) ) )
      ((= type 'stamp)
       (let ((view (narrow col 0 nrows 0)))
-        (setq left (_cdb-l1bsearch-left view nrows val))
-        (setq right (_cdb-l1bsearch-right view nrows val)) ) )
+        (setq left (_dt-l1bsearch-left view nrows val))
+        (setq right (_dt-l1bsearch-right view nrows val)) ) )
      (t (error "_sorted-filter-idx1" "unsupported type" type)) )
 
     ;; Handle <> specially (non-contiguous result)
@@ -333,9 +333,9 @@
             (n2 (max 0 (- (1- nrows) right))) )
         (if (= (+ n1 n2) 0) ()
           (let ((result (int-matrix (+ n1 n2))))
-            (when (> n1 0) (_cdb-i1iota result 0 n1))
+            (when (> n1 0) (_dt-i1iota result 0 n1))
             (when (> n2 0)
-              (_cdb-i1iota (narrow result 0 n2 n1) (1+ right) n2))
+              (_dt-i1iota (narrow result 0 n2 n1) (1+ right) n2))
             result ) ) )
 
       ;; All other ops: map to contiguous index range [lo, hi]
@@ -351,7 +351,7 @@
         (if (> lo hi) ()
           (let* ((count (1+ (- hi lo)))
                  (result (int-matrix count)) )
-            (_cdb-i1iota result lo count)
+            (_dt-i1iota result lo count)
             result ) ) ) ) ) )
 
 
@@ -395,7 +395,7 @@
           (each ((v vals))
             (setvals i (to-double v))
             (setq i (1+ i)) )
-          (let ((count (_cdb-d1in-filter view nrows setvals nset result)))
+          (let ((count (_dt-d1in-filter view nrows setvals nset result)))
             (if (= count 0) ()
               (let ((out (narrow result 0 count 0)))
                 ;; Result is already in ascending order (scan order)
@@ -413,7 +413,7 @@
           (each ((v vals))
             (setvals i (to-int v))
             (setq i (1+ i)) )
-          (let ((count (_cdb-i1in-filter view nrows setvals nset result)))
+          (let ((count (_dt-i1in-filter view nrows setvals nset result)))
             (if (= count 0) ()
               (narrow result 0 count 0) ) ) ) )
 
@@ -438,14 +438,14 @@
     (if (= (length vals) 0)
       ;; Empty exclusion set -> all rows match
       (let ((result (int-matrix nrows)))
-        (_cdb-i1iota result 0 nrows)
+        (_dt-i1iota result 0 nrows)
         result )
       ;; Get IN result and compute complement
       (let ((in-idx (_multi-index-in-compiled dt col-name vals)))
         (if (not in-idx)
           ;; Nothing matched IN -> all rows match NOT IN
           (let ((result (int-matrix nrows)))
-            (_cdb-i1iota result 0 nrows)
+            (_dt-i1iota result 0 nrows)
             result )
           ;; Complement: all rows minus IN rows
           (let* ((n-in (idx-dim in-idx 0))
@@ -485,7 +485,7 @@
       (each ((s pool))
         (let ((s-bytes (_str-to-ubyte s))
               (slen (len s)) )
-          (when (= 1 (_cdb-s1like s-bytes slen pat-bytes plen))
+          (when (= 1 (_dt-s1like s-bytes slen pat-bytes plen))
             ;; This pool entry matches; gather all its rows
             (let ((rows (==> sc where-eq s)))
               (when rows
@@ -509,17 +509,17 @@
 ;; Public API
 ;; ============================================================
 
-#? (columnardb-where-multi <dt> <conditions> [<meta>])
+#? (datatable-where-multi <dt> <conditions> [<meta>])
 ;; Return a list of row indices satisfying ALL conditions.
 ;; <conditions>: list of (op col-name value) triples.
 ;;   e.g. ((= "symbol" "AAPL") (> "price" 100.0))
 ;;   Special form for range: (range "time" lo hi)
 ;; <meta>: optional metadata (for sorted column detection in range queries).
 ;; Returns list of matching row indices.
-(de columnardb-where-multi (dt conditions &optional meta)
+(de datatable-where-multi (dt conditions &optional meta)
   (when (not meta) (setq meta ()))
   (when (not conditions)
-    (error "columnardb-where-multi" "no conditions provided" ()) )
+    (error "datatable-where-multi" "no conditions provided" ()) )
 
   ;; Process all conditions to sorted idx1 arrays (or () for empty)
   (let ((idx-arrays ()))
@@ -548,10 +548,10 @@
               lst ) ) ) ) ) ) )
 
 
-#? (columnardb-where-multi-idx1 <dt> <conditions> [<meta>])
+#? (datatable-where-multi-idx1 <dt> <conditions> [<meta>])
 ;; Return a sorted idx1 of row indices satisfying ALL conditions,
 ;; using compiled C filter functions.
-;; Like {<b> columnardb-where-multi} but returns an idx1 array
+;; Like {<b> datatable-where-multi} but returns an idx1 array
 ;; instead of a list, avoiding list allocation overhead.
 ;; Returns {<c> ()} for no matches, otherwise a sorted idx1.
 ;;
@@ -564,15 +564,15 @@
 ;;
 ;; Example:
 ;; {<code>
-;;   (columnardb-where-multi-idx1 dt
+;;   (datatable-where-multi-idx1 dt
 ;;     '((= "symbol" "AAPL") (> "price" 100.0))
 ;;     meta)
 ;; </code>}
-;; {<see> (columnardb-where-multi <dt> <conditions> [<meta>])}
-(de columnardb-where-multi-idx1 (dt conditions &optional meta)
+;; {<see> (datatable-where-multi <dt> <conditions> [<meta>])}
+(de datatable-where-multi-idx1 (dt conditions &optional meta)
   (when (not meta) (setq meta ()))
   (when (not conditions)
-    (error "columnardb-where-multi-idx1" "no conditions provided" ()) )
+    (error "datatable-where-multi-idx1" "no conditions provided" ()) )
 
   ;; Process all conditions to sorted idx1 arrays
   (let ((idx-arrays ()))
@@ -600,13 +600,85 @@
       (let ((na (idx-dim a 0))
             (nb (idx-dim b 0)) )
         (let ((dest (int-matrix (+ na nb))))
-          (let ((count (_cdb-i1union-sorted a na b nb dest)))
+          (let ((count (_dt-i1union-sorted a na b nb dest)))
             (if (= count 0) ()
               (narrow dest 0 count 0) ) ) ) ) ) ) )
 
 
-#? (columnardb-where-multi-rows <dt> <conditions> [<meta>])
+#? (datatable-where-multi-rows <dt> <conditions> [<meta>])
 ;; Return a new DataTable with rows matching ALL conditions.
-(de columnardb-where-multi-rows (dt conditions &optional meta)
-  (let ((indices (columnardb-where-multi dt conditions meta)))
+(de datatable-where-multi-rows (dt conditions &optional meta)
+  (let ((indices (datatable-where-multi dt conditions meta)))
+    (==> dt select-rows indices) ) )
+
+
+;; ============================================================
+;; Range queries (binary search on sorted columns)
+;; ============================================================
+
+#? (datatable-range <dt> <col-name> <lo> <hi> <meta>)
+;; Return a list of row indices where <lo> <= col[i] <= <hi>.
+;; If <meta> indicates the column is sorted, uses compiled binary
+;; search (O(log n)).  Otherwise falls back to linear scan.
+;;
+;; This is optimized for the common pattern of querying by timedate range.
+(de datatable-range (dt col-name lo hi meta)
+  (let* ((col-idx (==> dt col-index col-name))
+         (col (==> dt get-column col-idx))
+         (type (==> dt col-type col-idx))
+         (nrows (==> dt num-rows))
+         (sorted-cols (if meta (cadr (assoc 'sorted meta)) ())) )
+
+    (when (= type 'string)
+      (error "datatable-range" "range queries not supported on string columns" col-name) )
+
+    (if (member col-idx sorted-cols)
+      ;; Fast path: compiled C binary search on sorted column
+      (cond
+       ((= type 'float)
+        ;; Float column: use float bsearch
+        (let* ((view (narrow col 0 nrows 0))
+               (left (_dt-f1bsearch-left view nrows (to-float lo)))
+               (right (_dt-f1bsearch-right view nrows (to-float hi))) )
+          (if (> left right)
+            ()
+            (let ((result ()))
+              (for (i left right)
+                (setq result (nconc1 result i)) )
+              result ) ) ) )
+       ((= type 'stamp)
+        ;; Stamp column (long): use long bsearch
+        (let* ((view (narrow col 0 nrows 0))
+               (left (_dt-l1bsearch-left view nrows lo))
+               (right (_dt-l1bsearch-right view nrows hi)) )
+          (if (> left right)
+            ()
+            (let ((result ()))
+              (for (i left right)
+                (setq result (nconc1 result i)) )
+              result ) ) ) )
+       (t
+        ;; Double/int column: use double bsearch
+        (let* ((view (narrow col 0 nrows 0))
+               (left (idx-d1bsearch-left view lo))
+               (right (idx-d1bsearch-right view hi)) )
+          (if (> left right)
+            ()
+            (let ((result ()))
+              (for (i left right)
+                (setq result (nconc1 result i)) )
+              result ) ) ) ) )
+      ;; Slow path: linear scan
+      (let ((result ()))
+        (for (i 0 (1- nrows))
+          (let ((v (col i)))
+            (when (and (>= v lo) (<= v hi))
+              (setq result (nconc1 result i)) ) ) )
+        result ) ) ) )
+
+
+#? (datatable-range-rows <dt> <col-name> <lo> <hi> <meta>)
+;; Like datatable-range but returns a new DataTable with the matching rows.
+(de datatable-range-rows (dt col-name lo hi meta)
+  (let ((indices (datatable-range dt col-name lo hi meta)))
     (==> dt select-rows indices) ) )

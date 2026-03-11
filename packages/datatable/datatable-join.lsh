@@ -13,10 +13,9 @@
 ;;;   (datatable-right-join left right "id")
 ;;;   (datatable-asof-join left right "timestamp")
 
-;; datatable.lsh loads stringcol, timedate, datatable-null, datatable-compiled, libidx/idx-sort
-;; columnardb-compiled provides _cdb-*sortedp, _cdb-*bsearch-*, _cdb-*gather
-(libload "datatable/datatable")
-(libload "columnardb/columnardb-compiled")
+;; Loaded as sub-module from datatable.lsh, which provides:
+;;   stringcol, intcol, datatable-timedate, datatable-null, datatable-compiled, libidx/idx-sort
+;; datatable-compiled provides _dt-*sortedp, _dt-*bsearch-*, _dt-*gather
 
 #? *** DataTable Joins and Sorted Check
 ;; Join operations for DataTable: left join, right join, and as-of join.
@@ -59,12 +58,12 @@
         (let ((view (narrow col 0 nr 0)))
           (cond
            ((= type 'real)
-            (if (functionp _cdb-d1sortedp-safe)
-              (= 1 (_cdb-d1sortedp-safe view nr))
+            (if (functionp _dt-d1sortedp-safe)
+              (= 1 (_dt-d1sortedp-safe view nr))
               (= 1 (idx-d1sortedp view)) ) )
            ((= type 'float)
-            (if (functionp _cdb-f1sortedp)
-              (= 1 (_cdb-f1sortedp view nr))
+            (if (functionp _dt-f1sortedp)
+              (= 1 (_dt-f1sortedp view nr))
               ;; Interpreted fallback
               (let ((ok t))
                 (for (i 1 (1- nr))
@@ -72,8 +71,8 @@
                     (setq ok ()) ) )
                 ok ) ) )
            ((= type 'stamp)
-            (if (functionp _cdb-l1sortedp)
-              (= 1 (_cdb-l1sortedp view nr))
+            (if (functionp _dt-l1sortedp)
+              (= 1 (_dt-l1sortedp view nr))
               ;; Interpreted fallback
               (let ((ok t))
                 (for (i 1 (1- nr))

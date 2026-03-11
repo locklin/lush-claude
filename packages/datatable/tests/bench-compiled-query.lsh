@@ -11,7 +11,7 @@
   (let ((pkg-dir (dirname (dirname tests-dir))))
     (addpath pkg-dir) ) )
 
-(libload "columnardb/columnardb")
+(libload "datatable/columnardb")
 
 
 ;; ============================================================
@@ -24,7 +24,7 @@
     (- (time) t0) ) )
 
 (de _bq-old (dt conditions meta)
-  (let ((rows (columnardb-where-multi dt conditions meta)))
+  (let ((rows (datatable-where-multi dt conditions meta)))
     (if rows (_list-to-sorted-idx1 rows) ()) ) )
 
 (de _bq-new (dt conditions meta)
@@ -137,7 +137,7 @@
     ;; 10. WHERE + materialize
     (let ((t1 (_bq-run
                 (lambda ()
-                  (let ((rows (columnardb-where-multi dt '((> "price" 200.0)) ())))
+                  (let ((rows (datatable-where-multi dt '((> "price" 200.0)) ())))
                     (when rows
                       (==> dt select-rows-idx (_list-to-sorted-idx1 rows)) ) ) )
                 *O* ))
@@ -149,7 +149,7 @@
     ;; 11. AND where + materialize
     (let ((t1 (_bq-run
                 (lambda ()
-                  (let ((rows (columnardb-where-multi dt
+                  (let ((rows (datatable-where-multi dt
                                 '((= "symbol" "AAPL") (> "price" 200.0)) ())))
                     (when rows
                       (==> dt select-rows-idx (_list-to-sorted-idx1 rows)) ) ) )
@@ -164,7 +164,7 @@
     ;; 12. db-count
     (let ((t1 (_bq-run
                 (lambda ()
-                  (let ((rows (columnardb-where-multi dt '((> "price" 200.0)) ())))
+                  (let ((rows (datatable-where-multi dt '((> "price" 200.0)) ())))
                     (if rows (length rows) 0) ) )
                 *O* ))
           (t2 (_bq-run
@@ -222,7 +222,7 @@
             ;; 17. db-count on sorted via Database
             (let ((t1 (_bq-run
                          (lambda ()
-                           (let ((rows (columnardb-where-multi sdt2
+                           (let ((rows (datatable-where-multi sdt2
                                          '((> "time" 90000.0)) ())))
                              (if rows (length rows) 0) ) )
                          *O* ))

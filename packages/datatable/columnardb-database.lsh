@@ -17,7 +17,7 @@
 ;;;         ...
 ;;;
 ;;; Usage:
-;;;   (libload "columnardb/columnardb")
+;;;   (libload "datatable/columnardb")
 ;;;   (setq db (new Database "/tmp/mydb"))
 ;;;   (==> db attach "trades" some-datatable)
 ;;;   (==> db table "trades")

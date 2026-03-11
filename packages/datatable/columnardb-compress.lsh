@@ -55,7 +55,7 @@
 ;; ============================================================
 
 ;; Delta encode: dest[0]=src[0], dest[i]=src[i]-src[i-1]
-(de _cdb-d1delta-encode (src dest n)
+(de _dt-d1delta-encode (src dest n)
   ((-idx1- (-double-)) src dest)
   ((-int-) n)
   #{
@@ -75,7 +75,7 @@
 
 
 ;; Delta decode: dest[0]=src[0], dest[i]=dest[i-1]+src[i]
-(de _cdb-d1delta-decode (src dest n)
+(de _dt-d1delta-decode (src dest n)
   ((-idx1- (-double-)) src dest)
   ((-int-) n)
   #{
@@ -99,7 +99,7 @@
 ;; ============================================================
 
 ;; Float delta encode: dest[0]=src[0], dest[i]=src[i]-src[i-1]
-(de _cdb-f1delta-encode (src dest n)
+(de _dt-f1delta-encode (src dest n)
   ((-idx1- (-float-)) src dest)
   ((-int-) n)
   #{
@@ -119,7 +119,7 @@
 
 
 ;; Float delta decode: dest[0]=src[0], dest[i]=dest[i-1]+src[i]
-(de _cdb-f1delta-decode (src dest n)
+(de _dt-f1delta-decode (src dest n)
   ((-idx1- (-float-)) src dest)
   ((-int-) n)
   #{
@@ -139,7 +139,7 @@
 
 
 ;; Write LCDB header with typecode=6, then delta-encoded float data
-(de _cdb-write-delta-floats (filename data nrows)
+(de _dt-write-delta-floats (filename data nrows)
   ((-str-) filename)
   ((-idx1- (-float-)) data)
   ((-int-) nrows)
@@ -174,7 +174,7 @@
 ;; ============================================================
 
 ;; Long delta encode: dest[0]=src[0], dest[i]=src[i]-src[i-1]
-(de _cdb-l1delta-encode (src dest n)
+(de _dt-l1delta-encode (src dest n)
   ((-idx1- (-long-)) src dest)
   ((-int-) n)
   #{
@@ -194,7 +194,7 @@
 
 
 ;; Long delta decode: dest[0]=src[0], dest[i]=dest[i-1]+src[i]
-(de _cdb-l1delta-decode (src dest n)
+(de _dt-l1delta-decode (src dest n)
   ((-idx1- (-long-)) src dest)
   ((-int-) n)
   #{
@@ -214,7 +214,7 @@
 
 
 ;; Write LCDB header with typecode=8, then delta-encoded long data
-(de _cdb-write-delta-longs (filename data nrows)
+(de _dt-write-delta-longs (filename data nrows)
   ((-str-) filename)
   ((-idx1- (-long-)) data)
   ((-int-) nrows)
@@ -249,7 +249,7 @@
 ;; ============================================================
 
 ;; Count number of runs in an int array
-(de _cdb-i1rle-count-runs (data n)
+(de _dt-i1rle-count-runs (data n)
   ((-idx1- (-int-)) data)
   ((-int-) n)
   (let ((result 0))
@@ -272,7 +272,7 @@
 
 
 ;; RLE encode: fill values[] and lengths[] arrays, return nruns
-(de _cdb-i1rle-encode (data n values lengths)
+(de _dt-i1rle-encode (data n values lengths)
   ((-idx1- (-int-)) data values lengths)
   ((-int-) n)
   (let ((result 0))
@@ -305,7 +305,7 @@
 
 
 ;; RLE decode: expand value/length pairs to full array
-(de _cdb-i1rle-decode (values lengths nruns dest)
+(de _dt-i1rle-decode (values lengths nruns dest)
   ((-idx1- (-int-)) values lengths dest)
   ((-int-) nruns)
   #{
@@ -331,7 +331,7 @@
 ;; ============================================================
 
 ;; Write LCDB header with typecode=3, then delta-encoded double data
-(de _cdb-write-delta-doubles (filename data nrows)
+(de _dt-write-delta-doubles (filename data nrows)
   ((-str-) filename)
   ((-idx1- (-double-)) data)
   ((-int-) nrows)
@@ -367,7 +367,7 @@
 
 ;; Write LCDB header with typecode=4, then nruns (int32), then
 ;; interleaved value/length pairs.
-(de _cdb-write-rle-ints (filename values lengths nruns nrows)
+(de _dt-write-rle-ints (filename values lengths nruns nrows)
   ((-str-) filename)
   ((-idx1- (-int-)) values lengths)
   ((-int-) nruns nrows)
@@ -412,7 +412,7 @@
 
 ;; Read RLE file: header (typecode=4), nruns, value/length pairs.
 ;; Decodes into dest array of nrows ints.
-(de _cdb-read-rle-ints (filename dest nrows)
+(de _dt-read-rle-ints (filename dest nrows)
   ((-str-) filename)
   ((-idx1- (-int-)) dest)
   ((-int-) nrows)
@@ -454,7 +454,7 @@
 
 ;; Read nbytes of raw ubyte data from filename starting at byte offset.
 ;; Returns 0 on success, -1 on failure.
-(de _cdb-read-raw-bytes (filename dest offset nbytes)
+(de _dt-read-raw-bytes (filename dest offset nbytes)
   ((-str-) filename)
   ((-idx1- (-ubyte-)) dest)
   ((-int-) offset nbytes)
@@ -481,12 +481,12 @@
   #include <stdio.h>
   #include <stdint.h>
   #}
-  _cdb-d1delta-encode _cdb-d1delta-decode
-  _cdb-f1delta-encode _cdb-f1delta-decode _cdb-write-delta-floats
-  _cdb-l1delta-encode _cdb-l1delta-decode _cdb-write-delta-longs
-  _cdb-i1rle-count-runs _cdb-i1rle-encode _cdb-i1rle-decode
-  _cdb-write-delta-doubles _cdb-write-rle-ints _cdb-read-rle-ints
-  _cdb-read-raw-bytes )
+  _dt-d1delta-encode _dt-d1delta-decode
+  _dt-f1delta-encode _dt-f1delta-decode _dt-write-delta-floats
+  _dt-l1delta-encode _dt-l1delta-decode _dt-write-delta-longs
+  _dt-i1rle-count-runs _dt-i1rle-encode _dt-i1rle-decode
+  _dt-write-delta-doubles _dt-write-rle-ints _dt-read-rle-ints
+  _dt-read-raw-bytes )
 
 
 ;; ============================================================
@@ -501,7 +501,7 @@
 ;; If compress-cols is a list of column indices, only those are compressed.
 ;; Returns the path.
 (de columnardb-save-compressed (dt path &optional compress-cols)
-  (_cdb-mkdir path)
+  (_dt-mkdir path)
   (let ((names (==> dt col-names))
         (types (==> dt col-types))
         (nrows (==> dt num-rows))
@@ -518,17 +518,17 @@
              ((= type 'real)
               (let ((data (double-matrix nrows)))
                 (for (i 0 (1- nrows)) (data i (col i)))
-                (when (= 1 (_cdb-d1sortedp-safe data nrows))
+                (when (= 1 (_dt-d1sortedp-safe data nrows))
                   (setq sorted-cols (nconc1 sorted-cols ci)) ) ) )
              ((= type 'stamp)
               (let ((data (long-matrix nrows)))
                 (for (i 0 (1- nrows)) (data i (col i)))
-                (when (= 1 (_cdb-l1sortedp data nrows))
+                (when (= 1 (_dt-l1sortedp data nrows))
                   (setq sorted-cols (nconc1 sorted-cols ci)) ) ) )
              ((= type 'float)
               (let ((data (float-matrix nrows)))
                 (for (i 0 (1- nrows)) (data i (col i)))
-                (when (= 1 (_cdb-f1sortedp data nrows))
+                (when (= 1 (_dt-f1sortedp data nrows))
                   (setq sorted-cols (nconc1 sorted-cols ci)) ) ) )
              ((= type 'int)
               (let ((data (int-matrix nrows)))
@@ -558,16 +558,16 @@
                   (if (member ci to-compress)
                     ;; Delta compress
                     (let ((delta (double-matrix nrows)))
-                      (_cdb-d1delta-encode data delta nrows)
-                      (let ((rc (_cdb-write-delta-doubles fname delta nrows)))
+                      (_dt-d1delta-encode data delta nrows)
+                      (let ((rc (_dt-write-delta-doubles fname delta nrows)))
                         (when (< rc 0)
                           (error "columnardb-save-compressed" "failed to write delta column" name) ) )
                       (setq compressed-cols (nconc1 compressed-cols ci)) )
                     ;; Raw
-                    (let ((rc (_cdb-write-doubles fname data nrows)))
+                    (let ((rc (_dt-write-doubles fname data nrows)))
                       (when (< rc 0)
                         (error "columnardb-save-compressed" "failed to write column" name) ) ) )
-                  (when (= 1 (_cdb-d1sortedp-safe data nrows))
+                  (when (= 1 (_dt-d1sortedp-safe data nrows))
                     (when (not (member ci sorted-cols))
                       (setq sorted-cols (nconc1 sorted-cols ci)) ) ) ) )
 
@@ -579,16 +579,16 @@
                   (if (member ci to-compress)
                     ;; Delta compress
                     (let ((delta (long-matrix nrows)))
-                      (_cdb-l1delta-encode data delta nrows)
-                      (let ((rc (_cdb-write-delta-longs fname delta nrows)))
+                      (_dt-l1delta-encode data delta nrows)
+                      (let ((rc (_dt-write-delta-longs fname delta nrows)))
                         (when (< rc 0)
                           (error "columnardb-save-compressed" "failed to write delta stamp column" name) ) )
                       (setq compressed-cols (nconc1 compressed-cols ci)) )
                     ;; Raw
-                    (let ((rc (_cdb-write-longs fname data nrows)))
+                    (let ((rc (_dt-write-longs fname data nrows)))
                       (when (< rc 0)
                         (error "columnardb-save-compressed" "failed to write column" name) ) ) )
-                  (when (= 1 (_cdb-l1sortedp data nrows))
+                  (when (= 1 (_dt-l1sortedp data nrows))
                     (when (not (member ci sorted-cols))
                       (setq sorted-cols (nconc1 sorted-cols ci)) ) ) ) )
 
@@ -600,16 +600,16 @@
                   (if (member ci to-compress)
                     ;; Delta compress
                     (let ((delta (float-matrix nrows)))
-                      (_cdb-f1delta-encode data delta nrows)
-                      (let ((rc (_cdb-write-delta-floats fname delta nrows)))
+                      (_dt-f1delta-encode data delta nrows)
+                      (let ((rc (_dt-write-delta-floats fname delta nrows)))
                         (when (< rc 0)
                           (error "columnardb-save-compressed" "failed to write delta float column" name) ) )
                       (setq compressed-cols (nconc1 compressed-cols ci)) )
                     ;; Raw
-                    (let ((rc (_cdb-write-floats fname data nrows)))
+                    (let ((rc (_dt-write-floats fname data nrows)))
                       (when (< rc 0)
                         (error "columnardb-save-compressed" "failed to write column" name) ) ) )
-                  (when (= 1 (_cdb-f1sortedp data nrows))
+                  (when (= 1 (_dt-f1sortedp data nrows))
                     (when (not (member ci sorted-cols))
                       (setq sorted-cols (nconc1 sorted-cols ci)) ) ) ) )
 
@@ -620,16 +620,16 @@
                   (for (i 0 (1- nrows)) (data i (col i)))
                   (if (member ci to-compress)
                     ;; RLE compress
-                    (let ((nruns (_cdb-i1rle-count-runs data nrows)))
+                    (let ((nruns (_dt-i1rle-count-runs data nrows)))
                       (let ((values (int-matrix nruns))
                             (lengths (int-matrix nruns)) )
-                        (let ((actual-runs (_cdb-i1rle-encode data nrows values lengths)))
-                          (let ((rc (_cdb-write-rle-ints fname values lengths actual-runs nrows)))
+                        (let ((actual-runs (_dt-i1rle-encode data nrows values lengths)))
+                          (let ((rc (_dt-write-rle-ints fname values lengths actual-runs nrows)))
                             (when (< rc 0)
                               (error "columnardb-save-compressed" "failed to write RLE column" name) ) ) )
                         (setq compressed-cols (nconc1 compressed-cols ci)) ) )
                     ;; Raw
-                    (let ((rc (_cdb-write-ints fname data nrows)))
+                    (let ((rc (_dt-write-ints fname data nrows)))
                       (when (< rc 0)
                         (error "columnardb-save-compressed" "failed to write column" name) ) ) )
                   (when (= 1 (idx-i1sortedp data))
@@ -649,20 +649,20 @@
                     (for (i 0 (1- nrows)) (data i (codes i)))
                     (if (member ci to-compress)
                       ;; RLE compress codes
-                      (let ((nruns (_cdb-i1rle-count-runs data nrows)))
+                      (let ((nruns (_dt-i1rle-count-runs data nrows)))
                         (let ((values (int-matrix nruns))
                               (lengths (int-matrix nruns)) )
-                          (let ((actual-runs (_cdb-i1rle-encode data nrows values lengths)))
-                            (let ((rc (_cdb-write-rle-ints codes-fname values lengths actual-runs nrows)))
+                          (let ((actual-runs (_dt-i1rle-encode data nrows values lengths)))
+                            (let ((rc (_dt-write-rle-ints codes-fname values lengths actual-runs nrows)))
                               (when (< rc 0)
                                 (error "columnardb-save-compressed" "failed to write RLE codes" name) ) ) )
                           (setq compressed-cols (nconc1 compressed-cols ci)) ) )
                       ;; Raw codes
-                      (let ((rc (_cdb-write-ints codes-fname data nrows)))
+                      (let ((rc (_dt-write-ints codes-fname data nrows)))
                         (when (< rc 0)
                           (error "columnardb-save-compressed" "failed to write string codes" name) ) ) ) )
                   ;; Write pool (same as regular save)
-                  (_cdb-write-sexp pool-fname pool)
+                  (_dt-write-sexp pool-fname pool)
                   (let ((nu (length pool)))
                     (when (> nu 0)
                       (let ((offsets (int-matrix nu))
@@ -681,10 +681,10 @@
                                 (setq pos (1+ pos)) ) )
                             (str-data pos 0)
                             (setq pos (1+ pos)) )
-                          (let ((rc (_cdb-write-ints pool-idx-fname offsets nu)))
+                          (let ((rc (_dt-write-ints pool-idx-fname offsets nu)))
                             (when (< rc 0)
                               (error "columnardb-save-compressed" "failed to write pool offsets" name) ) )
-                          (let ((rc (_cdb-write-bytes pool-str-fname str-data total-bytes)))
+                          (let ((rc (_dt-write-bytes pool-str-fname str-data total-bytes)))
                             (when (< rc 0)
                               (error "columnardb-save-compressed" "failed to write pool strings" name) ) ) ) ) ) )
                   ;; Build and write CSR index
@@ -696,10 +696,10 @@
                             (idx-row-fname (concat path "/col-" (str ci) "-idx-rows.col"))
                             (ioff (==> col get-idx-offsets))
                             (irow (==> col get-idx-rows)) )
-                        (let ((rc (_cdb-write-ints idx-off-fname ioff (idx-dim ioff 0))))
+                        (let ((rc (_dt-write-ints idx-off-fname ioff (idx-dim ioff 0))))
                           (when (< rc 0)
                             (error "columnardb-save-compressed" "failed to write index offsets" name) ) )
-                        (let ((rc (_cdb-write-ints idx-row-fname irow (idx-dim irow 0))))
+                        (let ((rc (_dt-write-ints idx-row-fname irow (idx-dim irow 0))))
                           (when (< rc 0)
                             (error "columnardb-save-compressed" "failed to write index rows" name) ) ) ) ) ) ) )
 
@@ -715,22 +715,22 @@
                     (for (i 0 (1- nrows)) (data i (codes i)))
                     (if (member ci to-compress)
                       ;; RLE compress codes
-                      (let ((nruns (_cdb-i1rle-count-runs data nrows)))
+                      (let ((nruns (_dt-i1rle-count-runs data nrows)))
                         (let ((values (int-matrix nruns))
                               (lengths (int-matrix nruns)) )
-                          (let ((actual-runs (_cdb-i1rle-encode data nrows values lengths)))
-                            (let ((rc (_cdb-write-rle-ints codes-fname values lengths actual-runs nrows)))
+                          (let ((actual-runs (_dt-i1rle-encode data nrows values lengths)))
+                            (let ((rc (_dt-write-rle-ints codes-fname values lengths actual-runs nrows)))
                               (when (< rc 0)
                                 (error "columnardb-save-compressed" "failed to write RLE intcol codes" name) ) ) )
                           (setq compressed-cols (nconc1 compressed-cols ci)) ) )
                       ;; Raw codes
-                      (let ((rc (_cdb-write-ints codes-fname data nrows)))
+                      (let ((rc (_dt-write-ints codes-fname data nrows)))
                         (when (< rc 0)
                           (error "columnardb-save-compressed" "failed to write intcol codes" name) ) ) ) )
                   ;; Write pool (raw int32 -- pool is tiny)
                   (let ((pool-data (int-matrix nu)))
                     (for (i 0 (1- nu)) (pool-data i (pdata i)))
-                    (let ((rc (_cdb-write-ints pool-fname pool-data nu)))
+                    (let ((rc (_dt-write-ints pool-fname pool-data nu)))
                       (when (< rc 0)
                         (error "columnardb-save-compressed" "failed to write intcol pool" name) ) ) )
                   ;; Build and write CSR index
@@ -742,10 +742,10 @@
                             (idx-row-fname (concat path "/col-" (str ci) "-idx-rows.col"))
                             (ioff (==> col get-idx-offsets))
                             (irow (==> col get-idx-rows)) )
-                        (let ((rc (_cdb-write-ints idx-off-fname ioff (idx-dim ioff 0))))
+                        (let ((rc (_dt-write-ints idx-off-fname ioff (idx-dim ioff 0))))
                           (when (< rc 0)
                             (error "columnardb-save-compressed" "failed to write index offsets" name) ) )
-                        (let ((rc (_cdb-write-ints idx-row-fname irow (idx-dim irow 0))))
+                        (let ((rc (_dt-write-ints idx-row-fname irow (idx-dim irow 0))))
                           (when (< rc 0)
                             (error "columnardb-save-compressed" "failed to write index rows" name) ) ) ) ) ) ) )
 
@@ -761,7 +761,7 @@
                    (list 'types types)
                    (list 'sorted sorted-cols)
                    (list 'compressed compressed-cols) )))
-        (_cdb-write-sexp (concat path "/meta.lsh") meta) ) )
+        (_dt-write-sexp (concat path "/meta.lsh") meta) ) )
 
     (printf "columnardb-save-compressed: %s -> %d rows x %d cols" path nrows ncols)
     (when compressed-cols
@@ -776,7 +776,7 @@
 
 ;; Write an LZ4-compressed column file.
 ;; File format: 24-byte LCDB header + uint32 clen + uint32 nbytes + compressed data
-(de _cdb-lz4-write-column (filename typecode nrows compressed clen nbytes)
+(de _dt-lz4-write-column (filename typecode nrows compressed clen nbytes)
   ;; Build header (24 bytes) + clen (4) + nbytes (4) + compressed data (clen)
   (let ((total (+ 32 clen))
         (buf (ubyte-matrix (+ 32 clen))) )
@@ -795,26 +795,26 @@
     (for (i 0 (1- clen))
       (buf (+ 32 i) (compressed i)) )
     ;; Write file
-    (_cdb-write-bytes filename buf total) ) )
+    (_dt-write-bytes filename buf total) ) )
 
 ;; Read an LZ4-compressed column file.
 ;; Returns list: (compressed-buf clen nbytes)
-(de _cdb-lz4-read-column (filename nrows)
+(de _dt-lz4-read-column (filename nrows)
   ;; Read clen and nbytes from offset 24
   (let ((hdr (ubyte-matrix 8)))
-    (_cdb-read-raw-bytes filename hdr 24 8)
+    (_dt-read-raw-bytes filename hdr 24 8)
     (let ((clen (_lz4-get-uint32-le hdr 0))
           (nbytes (_lz4-get-uint32-le hdr 4)) )
       ;; Read compressed data from offset 32
       (let ((compressed (ubyte-matrix clen)))
-        (_cdb-read-raw-bytes filename compressed 32 clen)
+        (_dt-read-raw-bytes filename compressed 32 clen)
         (list compressed clen nbytes) ) ) ) )
 
 
 ;; ---- LZ4 write helpers ----
 
 ;; Write LZ4+byte-transpose double column (typecode 9)
-(de _cdb-write-lz4-doubles (filename data nrows)
+(de _dt-write-lz4-doubles (filename data nrows)
   (let* ((nbytes (* nrows 8))
          (raw (ubyte-matrix nbytes))
          (transposed (ubyte-matrix nbytes))
@@ -824,11 +824,11 @@
     (_lz4-byte-transpose raw transposed nrows 8)
     (let ((clen (_lz4-compress transposed compressed nbytes bound)))
       (when (<= clen 0)
-        (error "_cdb-write-lz4-doubles" "LZ4 compression failed" clen) )
-      (_cdb-lz4-write-column filename *cdb-type-lz4-double* nrows compressed clen nbytes) ) ) )
+        (error "_dt-write-lz4-doubles" "LZ4 compression failed" clen) )
+      (_dt-lz4-write-column filename *cdb-type-lz4-double* nrows compressed clen nbytes) ) ) )
 
 ;; Write LZ4+byte-transpose int32 column (typecode 10)
-(de _cdb-write-lz4-ints (filename data nrows)
+(de _dt-write-lz4-ints (filename data nrows)
   (let* ((nbytes (* nrows 4))
          (raw (ubyte-matrix nbytes))
          (transposed (ubyte-matrix nbytes))
@@ -838,11 +838,11 @@
     (_lz4-byte-transpose raw transposed nrows 4)
     (let ((clen (_lz4-compress transposed compressed nbytes bound)))
       (when (<= clen 0)
-        (error "_cdb-write-lz4-ints" "LZ4 compression failed" clen) )
-      (_cdb-lz4-write-column filename *cdb-type-lz4-int32* nrows compressed clen nbytes) ) ) )
+        (error "_dt-write-lz4-ints" "LZ4 compression failed" clen) )
+      (_dt-lz4-write-column filename *cdb-type-lz4-int32* nrows compressed clen nbytes) ) ) )
 
 ;; Write LZ4+byte-transpose float column (typecode 11)
-(de _cdb-write-lz4-floats (filename data nrows)
+(de _dt-write-lz4-floats (filename data nrows)
   (let* ((nbytes (* nrows 4))
          (raw (ubyte-matrix nbytes))
          (transposed (ubyte-matrix nbytes))
@@ -852,11 +852,11 @@
     (_lz4-byte-transpose raw transposed nrows 4)
     (let ((clen (_lz4-compress transposed compressed nbytes bound)))
       (when (<= clen 0)
-        (error "_cdb-write-lz4-floats" "LZ4 compression failed" clen) )
-      (_cdb-lz4-write-column filename *cdb-type-lz4-float* nrows compressed clen nbytes) ) ) )
+        (error "_dt-write-lz4-floats" "LZ4 compression failed" clen) )
+      (_dt-lz4-write-column filename *cdb-type-lz4-float* nrows compressed clen nbytes) ) ) )
 
 ;; Write LZ4+byte-transpose long column (typecode 12)
-(de _cdb-write-lz4-longs (filename data nrows)
+(de _dt-write-lz4-longs (filename data nrows)
   (let* ((nbytes (* nrows 8))
          (raw (ubyte-matrix nbytes))
          (transposed (ubyte-matrix nbytes))
@@ -866,15 +866,15 @@
     (_lz4-byte-transpose raw transposed nrows 8)
     (let ((clen (_lz4-compress transposed compressed nbytes bound)))
       (when (<= clen 0)
-        (error "_cdb-write-lz4-longs" "LZ4 compression failed" clen) )
-      (_cdb-lz4-write-column filename *cdb-type-lz4-long* nrows compressed clen nbytes) ) ) )
+        (error "_dt-write-lz4-longs" "LZ4 compression failed" clen) )
+      (_dt-lz4-write-column filename *cdb-type-lz4-long* nrows compressed clen nbytes) ) ) )
 
 
 ;; ---- LZ4 read helpers ----
 
 ;; Read LZ4+byte-transpose double column
-(de _cdb-read-lz4-doubles (filename data nrows)
-  (let ((result (_cdb-lz4-read-column filename nrows)))
+(de _dt-read-lz4-doubles (filename data nrows)
+  (let ((result (_dt-lz4-read-column filename nrows)))
     (let ((compressed (car result))
           (clen (cadr result))
           (nbytes (caddr result)) )
@@ -882,13 +882,13 @@
             (raw (ubyte-matrix nbytes)) )
         (let ((dlen (_lz4-decompress compressed transposed clen nbytes)))
           (when (< dlen 0)
-            (error "_cdb-read-lz4-doubles" "LZ4 decompression failed" dlen) ) )
+            (error "_dt-read-lz4-doubles" "LZ4 decompression failed" dlen) ) )
         (_lz4-byte-untranspose transposed raw nrows 8)
         (_lz4-copy-bytes-to-double raw data nrows) ) ) ) )
 
 ;; Read LZ4+byte-transpose int32 column
-(de _cdb-read-lz4-ints (filename data nrows)
-  (let ((result (_cdb-lz4-read-column filename nrows)))
+(de _dt-read-lz4-ints (filename data nrows)
+  (let ((result (_dt-lz4-read-column filename nrows)))
     (let ((compressed (car result))
           (clen (cadr result))
           (nbytes (caddr result)) )
@@ -896,13 +896,13 @@
             (raw (ubyte-matrix nbytes)) )
         (let ((dlen (_lz4-decompress compressed transposed clen nbytes)))
           (when (< dlen 0)
-            (error "_cdb-read-lz4-ints" "LZ4 decompression failed" dlen) ) )
+            (error "_dt-read-lz4-ints" "LZ4 decompression failed" dlen) ) )
         (_lz4-byte-untranspose transposed raw nrows 4)
         (_lz4-copy-bytes-to-int raw data nrows) ) ) ) )
 
 ;; Read LZ4+byte-transpose float column
-(de _cdb-read-lz4-floats (filename data nrows)
-  (let ((result (_cdb-lz4-read-column filename nrows)))
+(de _dt-read-lz4-floats (filename data nrows)
+  (let ((result (_dt-lz4-read-column filename nrows)))
     (let ((compressed (car result))
           (clen (cadr result))
           (nbytes (caddr result)) )
@@ -910,13 +910,13 @@
             (raw (ubyte-matrix nbytes)) )
         (let ((dlen (_lz4-decompress compressed transposed clen nbytes)))
           (when (< dlen 0)
-            (error "_cdb-read-lz4-floats" "LZ4 decompression failed" dlen) ) )
+            (error "_dt-read-lz4-floats" "LZ4 decompression failed" dlen) ) )
         (_lz4-byte-untranspose transposed raw nrows 4)
         (_lz4-copy-bytes-to-float raw data nrows) ) ) ) )
 
 ;; Read LZ4+byte-transpose long column
-(de _cdb-read-lz4-longs (filename data nrows)
-  (let ((result (_cdb-lz4-read-column filename nrows)))
+(de _dt-read-lz4-longs (filename data nrows)
+  (let ((result (_dt-lz4-read-column filename nrows)))
     (let ((compressed (car result))
           (clen (cadr result))
           (nbytes (caddr result)) )
@@ -924,7 +924,7 @@
             (raw (ubyte-matrix nbytes)) )
         (let ((dlen (_lz4-decompress compressed transposed clen nbytes)))
           (when (< dlen 0)
-            (error "_cdb-read-lz4-longs" "LZ4 decompression failed" dlen) ) )
+            (error "_dt-read-lz4-longs" "LZ4 decompression failed" dlen) ) )
         (_lz4-byte-untranspose transposed raw nrows 8)
         (_lz4-copy-bytes-to-long raw data nrows) ) ) ) )
 
@@ -941,7 +941,7 @@
 ;; String columns: codes get LZ4, pool stays as-is.
 ;; Returns the path.
 (de columnardb-save-lz4 (dt path &optional compress-cols)
-  (_cdb-mkdir path)
+  (_dt-mkdir path)
   (let ((names (==> dt col-names))
         (types (==> dt col-types))
         (nrows (==> dt num-rows))
@@ -976,12 +976,12 @@
                   (for (i 0 (1- nrows)) (data i (col i)))
                   (if (member ci to-compress)
                     (progn
-                      (_cdb-write-lz4-doubles fname data nrows)
+                      (_dt-write-lz4-doubles fname data nrows)
                       (setq compressed-cols (nconc1 compressed-cols ci)) )
-                    (let ((rc (_cdb-write-doubles fname data nrows)))
+                    (let ((rc (_dt-write-doubles fname data nrows)))
                       (when (< rc 0)
                         (error "columnardb-save-lz4" "failed to write column" name) ) ) )
-                  (when (= 1 (_cdb-d1sortedp-safe data nrows))
+                  (when (= 1 (_dt-d1sortedp-safe data nrows))
                     (setq sorted-cols (nconc1 sorted-cols ci)) ) ) )
 
                ;; Stamp column (long/int64)
@@ -991,12 +991,12 @@
                   (for (i 0 (1- nrows)) (data i (col i)))
                   (if (member ci to-compress)
                     (progn
-                      (_cdb-write-lz4-longs fname data nrows)
+                      (_dt-write-lz4-longs fname data nrows)
                       (setq compressed-cols (nconc1 compressed-cols ci)) )
-                    (let ((rc (_cdb-write-longs fname data nrows)))
+                    (let ((rc (_dt-write-longs fname data nrows)))
                       (when (< rc 0)
                         (error "columnardb-save-lz4" "failed to write column" name) ) ) )
-                  (when (= 1 (_cdb-l1sortedp data nrows))
+                  (when (= 1 (_dt-l1sortedp data nrows))
                     (setq sorted-cols (nconc1 sorted-cols ci)) ) ) )
 
                ;; Float column
@@ -1006,12 +1006,12 @@
                   (for (i 0 (1- nrows)) (data i (col i)))
                   (if (member ci to-compress)
                     (progn
-                      (_cdb-write-lz4-floats fname data nrows)
+                      (_dt-write-lz4-floats fname data nrows)
                       (setq compressed-cols (nconc1 compressed-cols ci)) )
-                    (let ((rc (_cdb-write-floats fname data nrows)))
+                    (let ((rc (_dt-write-floats fname data nrows)))
                       (when (< rc 0)
                         (error "columnardb-save-lz4" "failed to write column" name) ) ) )
-                  (when (= 1 (_cdb-f1sortedp data nrows))
+                  (when (= 1 (_dt-f1sortedp data nrows))
                     (setq sorted-cols (nconc1 sorted-cols ci)) ) ) )
 
                ;; Integer column
@@ -1021,9 +1021,9 @@
                   (for (i 0 (1- nrows)) (data i (col i)))
                   (if (member ci to-compress)
                     (progn
-                      (_cdb-write-lz4-ints fname data nrows)
+                      (_dt-write-lz4-ints fname data nrows)
                       (setq compressed-cols (nconc1 compressed-cols ci)) )
-                    (let ((rc (_cdb-write-ints fname data nrows)))
+                    (let ((rc (_dt-write-ints fname data nrows)))
                       (when (< rc 0)
                         (error "columnardb-save-lz4" "failed to write column" name) ) ) )
                   (when (= 1 (idx-i1sortedp data))
@@ -1042,13 +1042,13 @@
                     (for (i 0 (1- nrows)) (data i (codes i)))
                     (if (member ci to-compress)
                       (progn
-                        (_cdb-write-lz4-ints codes-fname data nrows)
+                        (_dt-write-lz4-ints codes-fname data nrows)
                         (setq compressed-cols (nconc1 compressed-cols ci)) )
-                      (let ((rc (_cdb-write-ints codes-fname data nrows)))
+                      (let ((rc (_dt-write-ints codes-fname data nrows)))
                         (when (< rc 0)
                           (error "columnardb-save-lz4" "failed to write string codes" name) ) ) ) )
                   ;; Write pool (same as regular save)
-                  (_cdb-write-sexp pool-fname pool)
+                  (_dt-write-sexp pool-fname pool)
                   (let ((nu (length pool)))
                     (when (> nu 0)
                       (let ((offsets (int-matrix nu))
@@ -1067,10 +1067,10 @@
                                 (setq pos (1+ pos)) ) )
                             (str-data pos 0)
                             (setq pos (1+ pos)) )
-                          (let ((rc (_cdb-write-ints pool-idx-fname offsets nu)))
+                          (let ((rc (_dt-write-ints pool-idx-fname offsets nu)))
                             (when (< rc 0)
                               (error "columnardb-save-lz4" "failed to write pool offsets" name) ) )
-                          (let ((rc (_cdb-write-bytes pool-str-fname str-data total-bytes)))
+                          (let ((rc (_dt-write-bytes pool-str-fname str-data total-bytes)))
                             (when (< rc 0)
                               (error "columnardb-save-lz4" "failed to write pool strings" name) ) ) ) ) ) )
                   ;; Build and write CSR index
@@ -1082,10 +1082,10 @@
                             (idx-row-fname (concat path "/col-" (str ci) "-idx-rows.col"))
                             (ioff (==> col get-idx-offsets))
                             (irow (==> col get-idx-rows)) )
-                        (let ((rc (_cdb-write-ints idx-off-fname ioff (idx-dim ioff 0))))
+                        (let ((rc (_dt-write-ints idx-off-fname ioff (idx-dim ioff 0))))
                           (when (< rc 0)
                             (error "columnardb-save-lz4" "failed to write index offsets" name) ) )
-                        (let ((rc (_cdb-write-ints idx-row-fname irow (idx-dim irow 0))))
+                        (let ((rc (_dt-write-ints idx-row-fname irow (idx-dim irow 0))))
                           (when (< rc 0)
                             (error "columnardb-save-lz4" "failed to write index rows" name) ) ) ) ) ) ) )
 
@@ -1101,15 +1101,15 @@
                     (for (i 0 (1- nrows)) (data i (codes i)))
                     (if (member ci to-compress)
                       (progn
-                        (_cdb-write-lz4-ints codes-fname data nrows)
+                        (_dt-write-lz4-ints codes-fname data nrows)
                         (setq compressed-cols (nconc1 compressed-cols ci)) )
-                      (let ((rc (_cdb-write-ints codes-fname data nrows)))
+                      (let ((rc (_dt-write-ints codes-fname data nrows)))
                         (when (< rc 0)
                           (error "columnardb-save-lz4" "failed to write intcol codes" name) ) ) ) )
                   ;; Write pool (raw int32 -- pool is tiny)
                   (let ((pool-data (int-matrix nu)))
                     (for (i 0 (1- nu)) (pool-data i (pdata i)))
-                    (let ((rc (_cdb-write-ints pool-fname pool-data nu)))
+                    (let ((rc (_dt-write-ints pool-fname pool-data nu)))
                       (when (< rc 0)
                         (error "columnardb-save-lz4" "failed to write intcol pool" name) ) ) )
                   ;; Build and write CSR index
@@ -1121,10 +1121,10 @@
                             (idx-row-fname (concat path "/col-" (str ci) "-idx-rows.col"))
                             (ioff (==> col get-idx-offsets))
                             (irow (==> col get-idx-rows)) )
-                        (let ((rc (_cdb-write-ints idx-off-fname ioff (idx-dim ioff 0))))
+                        (let ((rc (_dt-write-ints idx-off-fname ioff (idx-dim ioff 0))))
                           (when (< rc 0)
                             (error "columnardb-save-lz4" "failed to write index offsets" name) ) )
-                        (let ((rc (_cdb-write-ints idx-row-fname irow (idx-dim irow 0))))
+                        (let ((rc (_dt-write-ints idx-row-fname irow (idx-dim irow 0))))
                           (when (< rc 0)
                             (error "columnardb-save-lz4" "failed to write index rows" name) ) ) ) ) ) ) )
 
@@ -1140,7 +1140,7 @@
                    (list 'types types)
                    (list 'sorted sorted-cols)
                    (list 'compressed compressed-cols) )))
-        (_cdb-write-sexp (concat path "/meta.lsh") meta) ) )
+        (_dt-write-sexp (concat path "/meta.lsh") meta) ) )
 
     (printf "columnardb-save-lz4: %s -> %d rows x %d cols" path nrows ncols)
     (when compressed-cols

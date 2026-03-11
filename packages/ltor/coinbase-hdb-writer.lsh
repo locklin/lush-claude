@@ -10,7 +10,7 @@
 
 (libload "wire/wire-serialize")
 (libload "datatable/datatable")
-(libload "columnardb/columnardb")
+(libload "datatable/columnardb")
 
 #? *** Coinbase HDB Writer: Disk Persistence Helpers
 ;; Transport-agnostic helpers for the Coinbase HDB Writer process.

@@ -199,12 +199,12 @@
 
 #? (ht-test-all)
 ;; Test all Claude-created packages for helptool documentation errors.
-;; Scans: sqlite, datatable, columnardb, json, httpd,
+;; Scans: sqlite, datatable, json, httpd,
 ;; wire, libuv, mapper, curl, lz4.
 (de ht-test-all ()
   (let ((base *ht-packages-base*)
         (total 0)
-        (packages '("sqlite" "datatable" "columnardb"
+        (packages '("sqlite" "datatable"
                      "json" "httpd" "wire" "libuv" "mapper"
                      "curl" "lz4")) )
     (printf "=== Helptool Documentation Test ===\n\n")

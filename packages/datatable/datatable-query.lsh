@@ -1,7 +1,7 @@
-;;; columnardb-query.lsh -- SQL-like query language for ColumnarDB
+;;; datatable-query.lsh -- SQL-like query language for DataTable
 ;;;
 ;;; Provides db-select and db-count macros that expand to existing
-;;; DataTable and ColumnarDB method calls.  Includes an index-aware
+;;; DataTable method calls.  Includes an index-aware
 ;;; query planner (Phase 4) that reorders conditions by cost and
 ;;; compiled C filter functions (Phase 3) for the WHERE pipeline.
 ;;;
@@ -18,10 +18,10 @@
 ;;;
 ;;;   (db-count (from dt) (where (> "price" 100)))
 
-#? *** ColumnarDB Query Language
+#? *** DataTable Query Language
 ;; SQL-like query macros for DataTable and Database.
 ;; {<b> db-select} and {<b> db-count} expand to existing method calls
-;; on DataTable and ColumnarDB, providing declarative query syntax.
+;; on DataTable, providing declarative query syntax.
 ;;
 ;; Pipeline architecture:
 ;; {<code>
@@ -64,9 +64,9 @@
 ;; </code>}
 ;; {<see> (db-select <columns> <clauses...>)}
 ;; {<see> (db-count <clauses...>)}
-;; {<see> (columnardb-where-multi <dt> <conditions> [<meta>])}
-;; {<see> (columnardb-where-multi-idx1 <dt> <conditions> [<meta>])}
-;; {<see> (columnardb-group-by <dt> <group-col> <agg-col> <op>)}
+;; {<see> (datatable-where-multi <dt> <conditions> [<meta>])}
+;; {<see> (datatable-where-multi-idx1 <dt> <conditions> [<meta>])}
+;; {<see> (datatable-group-by <dt> <group-col> <agg-col> <op>)}
 
 
 ;; ============================================================
@@ -205,16 +205,16 @@
     ;; OR: union branches
     (_query-where-or dt meta (cadr where-pred))
     ;; AND: condition list
-    (columnardb-where-multi dt where-pred meta) ))
+    (datatable-where-multi dt where-pred meta) ))
 
 
-;; Run each OR branch via columnardb-where-multi, union with dedup.
+;; Run each OR branch via datatable-where-multi, union with dedup.
 ;; Returns list of row indices or ().
 (de _query-where-or (dt meta branches)
   (let ((ht (htable))
         (result ()) )
     (each ((branch branches))
-      (let ((rows (columnardb-where-multi dt branch meta)))
+      (let ((rows (datatable-where-multi dt branch meta)))
         (when rows
           (each ((r rows))
             (let ((key (sprintf "%d" r)))
@@ -288,7 +288,7 @@
     (_query-where-or-idx1 dt meta (cadr where-pred))
     ;; AND: reorder conditions, then compiled idx1 pipeline
     (let ((ordered (_query-order-conditions dt where-pred meta)))
-      (columnardb-where-multi-idx1 dt ordered meta) ) ) )
+      (datatable-where-multi-idx1 dt ordered meta) ) ) )
 
 
 ;; OR clause: run each branch, union sorted idx1 arrays.
@@ -296,7 +296,7 @@
   (let ((result ()))
     (each ((branch branches))
       (let ((ordered (_query-order-conditions dt branch meta)))
-        (let ((branch-idx (columnardb-where-multi-idx1 dt ordered meta)))
+        (let ((branch-idx (datatable-where-multi-idx1 dt ordered meta)))
           (if (not result)
             (setq result branch-idx)
             (when branch-idx
@@ -529,7 +529,7 @@
                 dt )))
 
         ;; Apply group-by
-        (let ((result (columnardb-group-by filtered-dt group-col agg-col op)))
+        (let ((result (datatable-group-by filtered-dt group-col agg-col op)))
 
           ;; HAVING: filter grouped result by aggregate values
           (when having-pred
@@ -689,8 +689,8 @@
 ;;     (from dt))
 ;; </code>}
 ;; {<see> (db-count <clauses...>)}
-;; {<see> (columnardb-where-multi <dt> <conditions> [<meta>])}
-;; {<see> (columnardb-group-by <dt> <group-col> <agg-col> <op>)}
+;; {<see> (datatable-where-multi <dt> <conditions> [<meta>])}
+;; {<see> (datatable-group-by <dt> <group-col> <agg-col> <op>)}
 (dmd db-select (columns . clauses)
   (let ((col-expr
           (cond
