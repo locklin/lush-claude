@@ -36,6 +36,11 @@ columnardb-database.lsh    Database catalog class
 columnardb-mutate.lsh      Delete/update on persisted tables
 columnardb-partition.lsh   Partitioned table support
 
+-- LZ4 compression primitives (used by columnardb-compress + wire) --
+lz4-compress.lsh           LZ4 compress/decompress, byte-transpose, memcpy helpers
+lz4.c                      LZ4 C library (BSD-2-Clause, Yann Collet)
+lz4.h                      LZ4 C header
+
 C/                         Auto-generated DH stubs (from dhc-make)
 ```
 

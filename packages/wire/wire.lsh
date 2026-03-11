@@ -34,7 +34,7 @@
 (libload "libc/stdio")
 (libload "libc/files")
 (libload "libc/make")
-(libload "lz4/lz4-compress")
+(libload "datatable/lz4-compress")
 
 ;; ============================================================
 ;; Compile and load wire-helpers.c (DX functions for memstream I/O)

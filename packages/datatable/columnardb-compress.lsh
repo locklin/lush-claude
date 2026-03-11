@@ -20,7 +20,7 @@
 ;;;   (columnardb-save-lz4 dt path)               ;; LZ4 all numeric cols
 
 (libload "libc/stdio")
-(libload "lz4/lz4-compress")
+(libload "datatable/lz4-compress")
 
 #? *** ColumnarDB Column Compression
 ;; Column-level compression extending the LCDB file format with

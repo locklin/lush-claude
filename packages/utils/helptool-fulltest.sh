@@ -57,7 +57,7 @@ if [ $# -gt 0 ]; then
     done
 else
     # Test all Claude packages
-    for pkg in sqlite timedate datatable json httpd wire libuv mapper curl lz4 csvread; do
+    for pkg in sqlite timedate datatable json httpd wire libuv mapper curl csvread; do
         pkgdir="$PACKAGES_DIR/$pkg"
         if [ -d "$pkgdir" ]; then
             for f in "$pkgdir"/*.lsh; do
