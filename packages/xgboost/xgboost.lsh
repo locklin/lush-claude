@@ -240,6 +240,294 @@
       bst ) ) )
 
 
+#? ** Parameter Reference
+;; All parameters are passed as string key-value pairs in an alist to
+;; {<b> xgb-train}.  Values must always be strings, even for numeric
+;; parameters.  For example:
+;; {<code>
+;;  '(("nthread" "4") ("max_depth" "6") ("eta" "0.1")
+;;    ("objective" "reg:squarederror"))
+;; </code>}
+;;
+;; XGBoost 3.2.0 accepts the following parameters.  This reference is
+;; derived from the vendored xgboost source (doc/parameter.rst and
+;; include/xgboost/context.h).
+
+#? * Multithreading
+;; {<b> nthread} [default: all available threads]
+;;
+;; Number of parallel threads used to run XGBoost.  When set to
+;; {<c> "0"} (or omitted), XGBoost uses the maximum number of threads
+;; available on the system.  In containerized environments, XGBoost
+;; respects CFS CPU limits automatically.
+;;
+;; Set this to control CPU utilization or to avoid contention with
+;; other workloads.  Keep hyperthreading in mind when choosing a
+;; value -- using only physical cores often gives better throughput.
+;;
+;; Alias: {<c> n_jobs}
+;;
+;; Example -- train with 4 threads:
+;; {<code>
+;;  (xgb-train dm '(("nthread" "4")
+;;                   ("max_depth" "6")
+;;                   ("eta" "0.3")
+;;                   ("objective" "reg:squarederror")) 100)
+;; </code>}
+
+#? * General Parameters
+;; {<ul>
+;; {<li> {<b> booster} [default {<c> "gbtree"}] --
+;;   Which booster to use.
+;;   {<c> "gbtree"} and {<c> "dart"} use tree-based models;
+;;   {<c> "gblinear"} uses linear functions.}
+;; {<li> {<b> verbosity} [default {<c> "1"}] --
+;;   Verbosity of messages: {<c> "0"} silent, {<c> "1"} warning,
+;;   {<c> "2"} info, {<c> "3"} debug.}
+;; {<li> {<b> nthread} [default: all available] --
+;;   Number of parallel threads.  See Multithreading section above.}
+;; {<li> {<b> validate_parameters} [default {<c> "false"}] --
+;;   When {<c> "true"}, XGBoost warns on unknown parameters.}
+;; }
+;; {<see> Multithreading}
+
+#? * Tree Booster Parameters
+;; Parameters for the default {<c> "gbtree"} booster.  These control
+;; tree structure, learning rate, regularization, and sampling.
+;;
+;; {<b> Learning rate and shrinkage:}
+;; {<ul>
+;; {<li> {<b> eta} [default {<c> "0.3"}] (alias: {<c> learning_rate}) --
+;;   Step size shrinkage applied after each boosting step to make the
+;;   process more conservative.  Range: [0, 1].}
+;; {<li> {<b> gamma} [default {<c> "0"}] (alias: {<c> min_split_loss}) --
+;;   Minimum loss reduction required to make a further partition on a
+;;   leaf node.  Larger values make the algorithm more conservative.
+;;   Range: [0, inf].}
+;; }
+;;
+;; {<b> Tree structure:}
+;; {<ul>
+;; {<li> {<b> max_depth} [default {<c> "6"}] --
+;;   Maximum depth of a tree.  {<c> "0"} means no limit.
+;;   Deeper trees consume more memory.  Range: [0, inf].}
+;; {<li> {<b> min_child_weight} [default {<c> "1"}] --
+;;   Minimum sum of instance weight (hessian) needed in a child.
+;;   For regression this is the minimum number of instances per node.
+;;   Larger values make the algorithm more conservative.  Range: [0, inf].}
+;; {<li> {<b> max_delta_step} [default {<c> "0"}] --
+;;   Maximum delta step for each leaf output.  {<c> "0"} means no
+;;   constraint.  Values of 1-10 help with extremely imbalanced
+;;   classes.  Range: [0, inf].}
+;; {<li> {<b> max_leaves} [default {<c> "0"}] --
+;;   Maximum number of leaf nodes.  {<c> "0"} means unlimited.
+;;   Only used with {<c> hist} or {<c> approx} tree methods.}
+;; {<li> {<b> grow_policy} [default {<c> "depthwise"}] --
+;;   How new nodes are added: {<c> "depthwise"} splits near root first,
+;;   {<c> "lossguide"} splits at highest loss change.
+;;   Only for {<c> hist} or {<c> approx} tree methods.}
+;; }
+;;
+;; {<b> Sampling:}
+;; {<ul>
+;; {<li> {<b> subsample} [default {<c> "1"}] --
+;;   Subsample ratio of training instances per boosting iteration.
+;;   {<c> "0.5"} randomly samples half the training data.
+;;   Range: (0, 1].}
+;; {<li> {<b> sampling_method} [default {<c> "uniform"}] --
+;;   {<c> "uniform"}: equal probability.
+;;   {<c> "gradient_based"}: probability proportional to gradient
+;;   magnitude (only with {<c> tree_method="hist"}).}
+;; {<li> {<b> colsample_bytree} [default {<c> "1"}] --
+;;   Fraction of columns sampled per tree.  Range: (0, 1].}
+;; {<li> {<b> colsample_bylevel} [default {<c> "1"}] --
+;;   Fraction of columns sampled per depth level.  Range: (0, 1].}
+;; {<li> {<b> colsample_bynode} [default {<c> "1"}] --
+;;   Fraction of columns sampled per split.  Range: (0, 1].
+;;   Not supported by exact tree method.}
+;; }
+;; Note: colsample parameters are cumulative.  With all three set to
+;; {<c> "0.5"} and 64 features, only 8 features remain at each split.
+;;
+;; {<b> Regularization:}
+;; {<ul>
+;; {<li> {<b> lambda} [default {<c> "1"}] (alias: {<c> reg_lambda}) --
+;;   L2 regularization on weights.  Larger values make the model more
+;;   conservative.  Range: [0, inf].}
+;; {<li> {<b> alpha} [default {<c> "0"}] (alias: {<c> reg_alpha}) --
+;;   L1 regularization on weights.  Larger values make the model more
+;;   conservative.  Range: [0, inf].}
+;; }
+;;
+;; {<b> Tree construction method:}
+;; {<ul>
+;; {<li> {<b> tree_method} [default {<c> "auto"}] --
+;;   {<c> "auto"}: same as {<c> "hist"}.
+;;   {<c> "exact"}: exact greedy (enumerates all splits).
+;;   {<c> "approx"}: approximate greedy with quantile sketch.
+;;   {<c> "hist"}: faster histogram-based approximation.}
+;; {<li> {<b> max_bin} [default {<c> "256"}] --
+;;   Maximum discrete bins for continuous features.  Only for
+;;   {<c> hist}/{<c> approx}.  More bins = better splits but slower.}
+;; {<li> {<b> num_parallel_tree} [default {<c> "1"}] --
+;;   Number of parallel trees per iteration.  Values greater than 1
+;;   enable boosted random forest.}
+;; {<li> {<b> scale_pos_weight} [default {<c> "1"}] --
+;;   Balance of positive and negative weights for unbalanced classes.
+;;   Typical value: sum(negative) / sum(positive).}
+;; }
+
+#? * Learning Task Parameters
+;; {<b> objective} [default {<c> "reg:squarederror"}] --
+;; Specifies the learning task and objective function.
+;;
+;; {<b> Regression:}
+;; {<ul>
+;; {<li> {<c> "reg:squarederror"} -- squared loss}
+;; {<li> {<c> "reg:squaredlogerror"} -- squared log loss (labels must be > -1)}
+;; {<li> {<c> "reg:logistic"} -- logistic regression, output probability}
+;; {<li> {<c> "reg:pseudohubererror"} -- Pseudo-Huber loss (smooth L1)}
+;; {<li> {<c> "reg:absoluteerror"} -- L1 error}
+;; {<li> {<c> "reg:quantileerror"} -- quantile/pinball loss}
+;; {<li> {<c> "reg:gamma"} -- gamma regression with log-link}
+;; {<li> {<c> "reg:tweedie"} -- Tweedie regression with log-link}
+;; }
+;;
+;; {<b> Binary classification:}
+;; {<ul>
+;; {<li> {<c> "binary:logistic"} -- output probability}
+;; {<li> {<c> "binary:logitraw"} -- output score before logistic transform}
+;; {<li> {<c> "binary:hinge"} -- hinge loss, predictions 0 or 1}
+;; }
+;;
+;; {<b> Multi-class classification:}
+;; {<ul>
+;; {<li> {<c> "multi:softmax"} -- requires {<c> num_class} parameter}
+;; {<li> {<c> "multi:softprob"} -- like softmax but outputs full probability vector}
+;; }
+;;
+;; {<b> Ranking:}
+;; {<ul>
+;; {<li> {<c> "rank:ndcg"} -- LambdaMART maximizing NDCG}
+;; {<li> {<c> "rank:map"} -- LambdaMART maximizing MAP}
+;; {<li> {<c> "rank:pairwise"} -- LambdaRank with ranknet objective}
+;; }
+;;
+;; {<b> Other:}
+;; {<ul>
+;; {<li> {<c> "count:poisson"} -- Poisson regression for count data}
+;; {<li> {<c> "survival:cox"} -- Cox regression for censored survival data}
+;; {<li> {<c> "survival:aft"} -- accelerated failure time model}
+;; }
+;;
+;; {<b> Other task parameters:}
+;; {<ul>
+;; {<li> {<b> eval_metric} -- evaluation metric for validation data.
+;;   Defaults by objective (rmse for regression, logloss for classification).
+;;   Options include: {<c> rmse}, {<c> mae}, {<c> logloss}, {<c> error},
+;;   {<c> merror}, {<c> mlogloss}, {<c> auc}, {<c> aucpr}, {<c> ndcg},
+;;   {<c> map}, {<c> mape}, {<c> poisson-nloglik}, {<c> gamma-nloglik},
+;;   {<c> gamma-deviance}, {<c> tweedie-nloglik}, and more.}
+;; {<li> {<b> seed} [default {<c> "0"}] -- random number seed.}
+;; {<li> {<b> base_score} -- initial prediction score (global bias).
+;;   Automatically estimated before training in xgboost 3.2.0.}
+;; {<li> {<b> num_class} -- number of classes (required for {<c> multi:softmax}
+;;   and {<c> multi:softprob}).}
+;; {<li> {<b> disable_default_eval_metric} [default {<c> "false"}] --
+;;   set to {<c> "1"} or {<c> "true"} to disable default metric.}
+;; {<li> {<b> tweedie_variance_power} [default {<c> "1.5"}] --
+;;   for {<c> reg:tweedie}. Range: (1, 2).}
+;; {<li> {<b> huber_slope} [default {<c> "1.0"}] --
+;;   delta term for {<c> reg:pseudohubererror}.}
+;; }
+
+#? * DART Booster Parameters
+;; Additional parameters when {<c> booster} is set to {<c> "dart"}.
+;; DART adds dropout of trees to prevent overfitting.
+;; {<ul>
+;; {<li> {<b> sample_type} [default {<c> "uniform"}] --
+;;   {<c> "uniform"}: dropped trees selected uniformly.
+;;   {<c> "weighted"}: selected in proportion to weight.}
+;; {<li> {<b> normalize_type} [default {<c> "tree"}] --
+;;   {<c> "tree"}: new trees weighted {<c> 1/(k + learning_rate)}.
+;;   {<c> "forest"}: new trees weighted {<c> 1/(1 + learning_rate)}.}
+;; {<li> {<b> rate_drop} [default {<c> "0.0"}] --
+;;   Fraction of previous trees to drop.  Range: [0.0, 1.0].}
+;; {<li> {<b> one_drop} [default {<c> "0"}] --
+;;   When enabled, always drop at least one tree.}
+;; {<li> {<b> skip_drop} [default {<c> "0.0"}] --
+;;   Probability of skipping dropout entirely.
+;;   Has higher priority than {<c> rate_drop} / {<c> one_drop}.
+;;   Range: [0.0, 1.0].}
+;; }
+
+#? * Linear Booster Parameters
+;; Parameters when {<c> booster} is set to {<c> "gblinear"}.
+;; {<ul>
+;; {<li> {<b> lambda} [default {<c> "0"}] (alias: {<c> reg_lambda}) --
+;;   L2 regularization, normalized to number of training examples.}
+;; {<li> {<b> alpha} [default {<c> "0"}] (alias: {<c> reg_alpha}) --
+;;   L1 regularization, normalized to number of training examples.}
+;; {<li> {<b> eta} [default {<c> "0.5"}] (alias: {<c> learning_rate}) --
+;;   Step size shrinkage.  Range: [0, 1].  Note: default differs from
+;;   tree booster.}
+;; {<li> {<b> updater} [default {<c> "shotgun"}] --
+;;   {<c> "shotgun"}: parallel coordinate descent (nondeterministic).
+;;   {<c> "coord_descent"}: ordinary coordinate descent (deterministic).}
+;; {<li> {<b> feature_selector} [default {<c> "cyclic"}] --
+;;   {<c> "cyclic"}, {<c> "shuffle"}, {<c> "random"}, {<c> "greedy"},
+;;   or {<c> "thrifty"}.  Use {<c> top_k} with greedy/thrifty.}
+;; {<li> {<b> top_k} [default {<c> "0"}] --
+;;   Number of top features for greedy/thrifty selectors.
+;;   {<c> "0"} means use all features.}
+;; }
+
+#? * Complete Examples
+;; {<b> Regression with multithreading (4 threads):}
+;; {<code>
+;;  (let* ((dm (xgb-dmatrix features labels))
+;;         (bst (xgb-train dm
+;;                '(("nthread" "4")
+;;                  ("max_depth" "6")
+;;                  ("eta" "0.1")
+;;                  ("subsample" "0.8")
+;;                  ("colsample_bytree" "0.8")
+;;                  ("lambda" "1")
+;;                  ("objective" "reg:squarederror")) 200))
+;;         (preds (xgb-predict bst dm)))
+;;    (xgb-save-model bst "/tmp/model.xgb")
+;;    (xgb-free-booster bst)
+;;    (xgb-free-dmatrix dm))
+;; </code>}
+;;
+;; {<b> Binary classification:}
+;; {<code>
+;;  (xgb-train dm '(("nthread" "8")
+;;                   ("max_depth" "4")
+;;                   ("eta" "0.1")
+;;                   ("objective" "binary:logistic")
+;;                   ("eval_metric" "auc")) 100)
+;; </code>}
+;;
+;; {<b> Multi-class classification:}
+;; {<code>
+;;  (xgb-train dm '(("nthread" "4")
+;;                   ("max_depth" "5")
+;;                   ("eta" "0.2")
+;;                   ("objective" "multi:softmax")
+;;                   ("num_class" "10")) 150)
+;; </code>}
+;;
+;; {<b> Using DART booster:}
+;; {<code>
+;;  (xgb-train dm '(("booster" "dart")
+;;                   ("rate_drop" "0.1")
+;;                   ("max_depth" "6")
+;;                   ("eta" "0.1")
+;;                   ("objective" "reg:squarederror")) 200)
+;; </code>}
+
+
 #? ** Prediction
 
 #? (xgb-predict <booster> <dmat>)
