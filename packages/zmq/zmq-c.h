@@ -66,6 +66,15 @@ int   zmq_poll(zmq_pollitem_t *items, int nitems, long timeout);
 int   zmq_errno(void);
 const char *zmq_strerror(int errnum);
 
+/* ---- Zero-copy message API (zmq_msg_*) ---- */
+typedef struct zmq_msg_t { unsigned char _[64]; } zmq_msg_t;
+typedef void (zmq_free_fn)(void *data, void *hint);
+
+int zmq_msg_init_data(zmq_msg_t *msg, void *data, size_t size,
+                       zmq_free_fn *ffn, void *hint);
+int zmq_msg_send(zmq_msg_t *msg, void *socket, int flags);
+int zmq_msg_close(zmq_msg_t *msg);
+
 /* ---- Lush wrapper API ---- */
 
 /* Context */
@@ -99,6 +108,11 @@ int   lush_zmq_poll_set_fd(int idx, int fd, int events);
 int   lush_zmq_poll_clear(int idx);
 int   lush_zmq_poll_exec(int nitems, int timeout_ms);
 int   lush_zmq_poll_revents(int idx);
+
+/* Zero-copy send */
+int   lush_zmq_send_zc(int id, unsigned char *buf, int len, int flags);
+int   lush_zmq_router_send_zc(int id, unsigned char *buf, int len);
+int   lush_zmq_zc_busy(void);
 
 /* Error */
 int   lush_zmq_errno(void);

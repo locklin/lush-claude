@@ -215,6 +215,30 @@
     #{ $rc = lush_zmq_router_send($id, IDX_PTR($buf, unsigned char), $len); #}
     rc ) )
 
+;; ---- Zero-copy send ----
+
+(de _zmq-send-zc (id buf len flags)
+  ((-int-) id len flags)
+  ((-idx1- (-ubyte-)) buf)
+  (let ((rc 0))
+    ((-int-) rc)
+    #{ $rc = lush_zmq_send_zc($id, IDX_PTR($buf, unsigned char), $len, $flags); #}
+    rc ) )
+
+(de _zmq-zc-busy ()
+  (let ((rc 0))
+    ((-int-) rc)
+    #{ $rc = lush_zmq_zc_busy(); #}
+    rc ) )
+
+(de _zmq-router-send-zc (id buf len)
+  ((-int-) id len)
+  ((-idx1- (-ubyte-)) buf)
+  (let ((rc 0))
+    ((-int-) rc)
+    #{ $rc = lush_zmq_router_send_zc($id, IDX_PTR($buf, unsigned char), $len); #}
+    rc ) )
+
 ;; ---- Poll ----
 
 (de _zmq-poll-set-socket (idx sock-id events)
@@ -271,6 +295,7 @@
     _zmq-subscribe _zmq-unsubscribe _zmq-set-int-opt _zmq-set-identity
     _zmq-send _zmq-recv _zmq-get-rcvmore
     _zmq-router-recv _zmq-router-send
+    _zmq-send-zc _zmq-zc-busy _zmq-router-send-zc
     _zmq-poll-set-socket _zmq-poll-set-fd _zmq-poll-clear
     _zmq-poll-exec _zmq-poll-revents
     _zmq-errno ) )
@@ -561,3 +586,80 @@
 ;; Returns <t> if ready for reading, <()> otherwise.
 (de zmq-poll-ready (idx)
   (if (> (bitand (zmq-poll-revents idx) *zmq-pollin*) 0) t ()) )
+
+
+#? ** Zero-Copy Send
+;; Zero-copy send avoids copying large buffers into ZMQ's internal
+;; message storage.  Instead, ZMQ references the Lush buffer directly
+;; via {<b> zmq_msg_init_data}.  A C callback clears an in-flight flag
+;; when ZMQ is done with the data.
+;;
+;; {<b> Important constraints:}
+;; {<ul>
+;; {<li> The buffer must not be modified until the ZC send completes.}
+;; {<li> Only one ZC send can be in-flight at a time.  If busy, functions
+;;   automatically fall back to regular (copy) send.}
+;; {<li> Only beneficial for messages larger than ~4KB; for small messages
+;;   the callback overhead exceeds the copy cost.}
+;; {<li> Works with all socket types including PUB/SUB.  For PUB with
+;;   multiple subscribers, ZMQ handles internal reference counting.}
+;; }
+;; {<see> (zmq-send-bytes-zc <sock> <buf> <len> [<flags>])}
+;; {<see> (zmq-zc-busy)}
+
+;; Pin buffer to prevent GC during zero-copy send
+(defvar *zmq-zc-pinned* ())
+
+#? (zmq-send-bytes-zc <sock> <buf> <len> [<flags>])
+;; Send raw bytes from a ubyte-matrix using zero-copy when possible.
+;; If a previous zero-copy send is still in-flight, falls back to
+;; regular {<b> zmq-send-bytes} (with copy) automatically.
+;; <buf>: ubyte-matrix containing data to send (must not be modified
+;; until the zero-copy send completes).
+;; <len>: number of bytes to send.
+;; <flags>: optional flags (e.g. {<b> *zmq-sndmore*}).
+;; Returns number of bytes sent.
+;; {<see> (zmq-send-bytes <sock> <buf> <len> [<flags>])}
+;; {<see> (zmq-zc-busy)}
+(de zmq-send-bytes-zc (sock buf len &optional flags)
+  (let ((f (if flags flags 0)))
+    ;; Fall back to copy if a ZC send is already in-flight
+    (if (> (_zmq-zc-busy) 0)
+      (zmq-send-bytes sock buf len f)
+      (progn
+        (setq *zmq-zc-pinned* buf)
+        (let ((rc (_zmq-send-zc sock buf len f)))
+          (when (< rc 0)
+            (setq *zmq-zc-pinned* ())
+            (error "zmq-send-bytes-zc" "send failed" rc) )
+          rc ) ) ) ) )
+
+
+#? (zmq-router-send-zc <sock> <buf> <len>)
+;; Send a reply on a ROUTER socket using zero-copy for the payload.
+;; Identity and delimiter frames use regular (copy) send (they are small).
+;; Falls back to regular {<b> zmq-router-send} if ZC is busy.
+;; <buf>: ubyte-matrix containing reply data.
+;; <len>: number of bytes to send.
+;; {<see> (zmq-router-send <sock> <buf> <len>)}
+;; {<see> (zmq-zc-busy)}
+(de zmq-router-send-zc (sock buf len)
+  ;; Fall back to copy if a ZC send is already in-flight
+  (if (> (_zmq-zc-busy) 0)
+    (zmq-router-send sock buf len)
+    (progn
+      (setq *zmq-zc-pinned* buf)
+      (let ((rc (_zmq-router-send-zc sock buf len)))
+        (when (< rc 0)
+          (setq *zmq-zc-pinned* ())
+          (error "zmq-router-send-zc" "send failed" rc) )
+        rc ) ) ) )
+
+
+#? (zmq-zc-busy)
+;; Check if a zero-copy send is still in-flight.
+;; Returns {<b> t} if ZMQ still holds a reference to the pinned buffer,
+;; {<b> ()} otherwise.
+;; {<see> (zmq-send-bytes-zc <sock> <buf> <len> [<flags>])}
+(de zmq-zc-busy ()
+  (if (> (_zmq-zc-busy) 0) t ()) )

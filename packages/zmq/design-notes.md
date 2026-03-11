@@ -75,6 +75,44 @@ Serialization layer on top of ZMQ frames using Lush bwrite/bread:
 | Topic filtering | None | ZMQ_SUBSCRIBE prefix match |
 | Serialization | bwrite/bread | bwrite/bread (unchanged) |
 
+## Zero-Copy Send
+
+For large messages (serialized DataTables, bulk analytics results), the default
+`zmq_send()` copies data from the Lush buffer into ZMQ's internal message
+buffer. Zero-copy send avoids this by using `zmq_msg_init_data()`, which
+creates a message that references the caller's buffer directly.
+
+### Buffer Lifetime
+
+After `zmq_msg_send()` returns, ZMQ may still hold a raw pointer into the Lush
+ubyte-matrix. If Lush's GC collects the matrix, the pointer becomes dangling.
+
+**Solution**: The buffer is pinned in a Lush global variable `*zmq-zc-pinned*`
+to prevent GC. The C free callback (`zc_free_callback`) clears a static
+`zc_in_flight` flag when ZMQ is done with the data.
+
+### Concurrency
+
+Only one zero-copy send can be in-flight at a time (single-threaded Lush).
+If `zmq-zc-busy` returns true, the high-level API functions automatically fall
+back to regular (copy) send. This is transparent to the caller.
+
+### When to Use
+
+- **Use ZC**: Payload > ~4KB (serialized DataTables, large query results)
+- **Use regular send**: Small messages (topics, control frames, short replies)
+
+The serde layer provides `zmq-pub-send-zc` and `zmq-router-send-reply-zc`
+which handle this automatically: topic/identity frames use regular copy (small),
+payload frames use zero-copy.
+
+### PUB/SUB Compatibility
+
+`zmq_msg_send()` works identically across all socket types. For PUB with
+multiple subscribers, ZMQ handles internal reference-counting transparently.
+The free callback fires when the original buffer is no longer needed by any
+subscriber path.
+
 ## Performance
 
 - **Latency**: ~5-15µs per message on localhost

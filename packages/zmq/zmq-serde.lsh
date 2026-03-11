@@ -84,6 +84,24 @@
                   (list topic (_wire-bread-from-bytes payload-buf pn)) ) ) ) ) ) ) ) ) )
 
 
+#? (zmq-pub-send-zc <sock> <topic> <payload>)
+;; Publish a message using zero-copy for the payload frame.
+;; The topic frame is sent with regular copy (it is small).
+;; Falls back to regular {<b> zmq-pub-send} if ZC is busy.
+;; <sock>: PUB socket ID.
+;; <topic>: topic string (e.g. "ticker", "l2").
+;; <payload>: any Lush object (serialized via bwrite).
+;; {<see> (zmq-pub-send <sock> <topic> <payload>)}
+;; {<see> (zmq-zc-busy)}
+(de zmq-pub-send-zc (sock topic payload)
+  ;; Send topic frame with SNDMORE (always regular copy — topics are small)
+  (zmq-send-string sock topic *zmq-sndmore*)
+  ;; Serialize payload via bwrite, then zero-copy send
+  (let ((bytes (_wire-bwrite-to-bytes payload)))
+    (let ((nbytes (idx-dim bytes 0)))
+      (zmq-send-bytes-zc sock bytes nbytes) ) ) )
+
+
 ;; ============================================================
 ;; DEALER/ROUTER query helpers
 ;; ============================================================
@@ -144,6 +162,19 @@
   (let ((bytes (_wire-bwrite-to-bytes result)))
     (let ((nbytes (idx-dim bytes 0)))
       (zmq-router-send sock bytes nbytes) ) ) )
+
+
+#? (zmq-router-send-reply-zc <sock> <result>)
+;; Send a reply on a ROUTER socket using zero-copy for the payload.
+;; Uses the identity stored from the last {<b> zmq-router-recv-query}.
+;; Falls back to regular {<b> zmq-router-send-reply} if ZC is busy.
+;; <result>: any Lush object (serialized via bwrite).
+;; {<see> (zmq-router-send-reply <sock> <result>)}
+;; {<see> (zmq-zc-busy)}
+(de zmq-router-send-reply-zc (sock result)
+  (let ((bytes (_wire-bwrite-to-bytes result)))
+    (let ((nbytes (idx-dim bytes 0)))
+      (zmq-router-send-zc sock bytes nbytes) ) ) )
 
 
 ;; ============================================================

@@ -252,6 +252,67 @@ int lush_zmq_router_send(int id, const unsigned char *buf, int len)
 
 
 /* ================================================================
+ * Zero-copy send
+ *
+ * Uses zmq_msg_init_data() to send directly from the caller's buffer
+ * without copying.  ZMQ calls zc_free_callback when done with the data.
+ * Only one zero-copy send can be in-flight at a time (single-threaded).
+ * ================================================================ */
+
+static volatile int zc_in_flight = 0;
+
+static void zc_free_callback(void *data, void *hint)
+{
+    (void)data;
+    (void)hint;
+    zc_in_flight = 0;
+}
+
+int lush_zmq_send_zc(int id, unsigned char *buf, int len, int flags)
+{
+    void *sock = handle_lookup(id);
+    if (!sock) return -1;
+
+    zmq_msg_t msg;
+    int rc = zmq_msg_init_data(&msg, buf, len, zc_free_callback, NULL);
+    if (rc != 0) return -1;
+
+    zc_in_flight = 1;
+    rc = zmq_msg_send(&msg, sock, flags);
+    if (rc < 0) {
+        zc_in_flight = 0;
+        zmq_msg_close(&msg);
+        return -1;
+    }
+    return rc;
+}
+
+int lush_zmq_router_send_zc(int id, unsigned char *buf, int len)
+{
+    void *sock = handle_lookup(id);
+    if (!sock) return -1;
+    if (handle_table[id].identity_len <= 0) return -1;
+
+    /* 1. Send identity frame (small, regular copy) */
+    int rc = zmq_send(sock, handle_table[id].identity,
+                      handle_table[id].identity_len, ZMQ_SNDMORE);
+    if (rc < 0) return -1;
+
+    /* 2. Send empty delimiter (small, regular copy) */
+    rc = zmq_send(sock, "", 0, ZMQ_SNDMORE);
+    if (rc < 0) return -1;
+
+    /* 3. Send payload via zero-copy */
+    return lush_zmq_send_zc(id, buf, len, 0);
+}
+
+int lush_zmq_zc_busy(void)
+{
+    return zc_in_flight;
+}
+
+
+/* ================================================================
  * Poll
  * ================================================================ */
 
