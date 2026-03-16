@@ -266,6 +266,10 @@ Performance-critical operations use `dhc-make` compiled C:
 11. Compiled query kernels (columnardb-compiled.lsh)
 12. Database class with catalog (columnardb-database.lsh)
 13. Partitioned tables (columnardb-partition.lsh)
+14. SQL tokenizer + parser (datatable-sql.lsh) — flat string → clause alist
+15. Database.query() method — SQL string → _query-execute pipeline
+16. LTOR backend integration (2026-03-16) — all 4 data-holding backends
+    create Database wrappers and accept SQL queries via their handle-query functions
 
 ### Query Pipeline Architecture
 

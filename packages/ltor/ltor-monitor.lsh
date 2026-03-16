@@ -29,6 +29,8 @@
 ;; {<see> (ltor-coinbase-vwap <product>)}
 ;; {<see> (ltor-coinbase-status)}
 ;; {<see> (ltor-coinbase-last-trade <product>)}
+;; {<see> (ltor-coinbase-sql <sql-string>)}
+;; {<see> (ltor-coinbase-sql-raw <sql-string>)}
 
 ;; ============================================================
 ;; Configuration
@@ -230,3 +232,30 @@
               (printf "%-12s %l\n" name val) ) ) ) )
         (setq rest (cdr rest)) ) ) )
   (printf "\n") )
+
+
+#? (ltor-coinbase-sql <sql-string>)
+;; Execute a SQL query against the running LTOR pipeline.
+;; Routes through the gateway, which auto-detects the target backend
+;; from the FROM clause.
+;;
+;; Returns a DataTable result (unpacked from wire format).
+;;
+;; Example:
+;; {<code>
+;;  (ltor-coinbase-sql "SELECT * FROM ticker WHERE product = 'BTC-USD' LIMIT 10")
+;;  (ltor-coinbase-sql "SELECT COUNT(*) FROM ticker")
+;;  (ltor-coinbase-sql "SELECT * FROM analytics WHERE product = 'ETH-USD'")
+;; </code>}
+(de ltor-coinbase-sql (sql-string)
+  (let ((result (_ltor-monitor-query sql-string)))
+    (if (and (consp result) (= (car result) 'datatable))
+      (wire-unpack-datatable result)
+      result ) ) )
+
+
+#? (ltor-coinbase-sql-raw <sql-string>)
+;; Like {<b> ltor-coinbase-sql} but returns the wire-packed result
+;; (for forwarding to other processes without unpacking).
+(de ltor-coinbase-sql-raw (sql-string)
+  (_ltor-monitor-query sql-string) )

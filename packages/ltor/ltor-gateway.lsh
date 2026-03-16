@@ -16,6 +16,7 @@
 ;; {<li> Explicit routing via {<b> ("rdb" ...)}, {<b> ("hdb" ...)},
 ;; {<b> ("hdbw" ...)}, {<b> ("ana" ...)} prefixes.}
 ;; {<li> Smart routing: auto-detects backend from query pattern.}
+;; {<li> SQL routing: parses FROM clause to route SELECT queries.}
 ;; }
 ;; {<see> (ltor-gw-start <gw-port> <rdb-port> <hdb-port> <ana-port> <hdbw-port>)}
 
@@ -41,32 +42,41 @@
 ;; ============================================================
 
 (de _ltor-gw-smart-route (expr)
-  (let ((cmd (if (stringp expr) expr
-               (if (consp expr) (car expr) ()) )))
-    (cond
-     ;; HDB Reader-specific
-     ((= cmd "dates") "hdb")
-     ((= cmd "refresh") "hdb")
-     ((= cmd "range") "hdb")
-     ((= cmd "range-where") "hdb")
-     ((and (consp expr) (= cmd "meta")) "hdb")
-     ;; HDB Writer-specific
-     ((= cmd "flush") "hdbw")
-     ;; Analytics-specific
-     ((= cmd "mavg") "ana")
-     ((= cmd "mavg-all") "ana")
-     ((= cmd "analytics-all") "ana")
-     ((= cmd "vwap") "ana")
-     ((= cmd "vwap-all") "ana")
-     ;; Default to RDB for common queries
-     ((= cmd "tables") "rdb")
-     ((= cmd "count") "rdb")
-     ((= cmd "snapshot") "rdb")
-     ((= cmd "last") "rdb")
-     ((= cmd "where") "rdb")
-     ((= cmd "rows-from") "rdb")
-     ;; No match
-     (t ()) ) ) )
+  ;; SQL string query: route by FROM table name
+  (if (and (stringp expr) (regex-seek "^SELECT " (upcase expr)))
+    (let ((upper (upcase expr)))
+      (cond
+       ((regex-seek "FROM[ \t]+TICKER" upper) "rdb")
+       ((regex-seek "FROM[ \t]+L2" upper) "rdb")
+       ((regex-seek "FROM[ \t]+ANALYTICS" upper) "ana")
+       (t "rdb") ) )
+    ;; Non-SQL: route by command keyword
+    (let ((cmd (if (stringp expr) expr
+                 (if (consp expr) (car expr) ()) )))
+      (cond
+       ;; HDB Reader-specific
+       ((= cmd "dates") "hdb")
+       ((= cmd "refresh") "hdb")
+       ((= cmd "range") "hdb")
+       ((= cmd "range-where") "hdb")
+       ((and (consp expr) (= cmd "meta")) "hdb")
+       ;; HDB Writer-specific
+       ((= cmd "flush") "hdbw")
+       ;; Analytics-specific
+       ((= cmd "mavg") "ana")
+       ((= cmd "mavg-all") "ana")
+       ((= cmd "analytics-all") "ana")
+       ((= cmd "vwap") "ana")
+       ((= cmd "vwap-all") "ana")
+       ;; Default to RDB for common queries
+       ((= cmd "tables") "rdb")
+       ((= cmd "count") "rdb")
+       ((= cmd "snapshot") "rdb")
+       ((= cmd "last") "rdb")
+       ((= cmd "where") "rdb")
+       ((= cmd "rows-from") "rdb")
+       ;; No match
+       (t ()) ) ) ) )
 
 
 ;; ============================================================

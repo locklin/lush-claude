@@ -2628,5 +2628,12 @@
 (load (concat (dirname file-being-loaded) "/test-query-ext.lsh"))
 
 
+;; ============================================================
+;; Stage 13: SQL string parser
+;; ============================================================
+
+(load (concat (dirname file-being-loaded) "/test-sql.lsh"))
+
+
 ;; Cleanup
 (sys (concat "rm -rf " *test-dir*))

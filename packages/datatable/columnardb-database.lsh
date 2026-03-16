@@ -299,14 +299,72 @@
 
 
 ;; ============================================================
-;; Query stub
+;; SQL Query
 ;; ============================================================
 
-#? (==> <db> query <qstr>)
-;; Query stub.  A future query sublanguage will be built here.
-;; For now, returns a placeholder string.
+;; Resolve clause table references for Database.query.
+;; Replaces (from "name") with (from db "name") and
+;; (join "name" col type) with (join <DataTable> col type).
+(defmethod Database _db-resolve-clauses (clauses)
+  (let ((resolved ()))
+    (each ((clause clauses))
+      (let ((key (car clause)))
+        (cond
+         ;; (from "table-name") -> (from this "table-name")
+         ((= key 'from)
+          (setq resolved (nconc1 resolved
+            (list 'from this (cadr clause)) )) )
+
+         ;; (join "table-name" "col" type) -> (join <DataTable> "col" type)
+         ((= key 'join)
+          (let ((join-table-name (cadr clause))
+                (on-col (caddr clause))
+                (join-type (if (cdddr clause) (nth 3 clause) 'left)) )
+            (let ((join-dt (==> this table join-table-name)))
+              (setq resolved (nconc1 resolved
+                (list 'join join-dt on-col join-type) )) ) ) )
+
+         ;; All other clauses pass through unchanged
+         (t (setq resolved (nconc1 resolved clause))) ) ) )
+    resolved ) )
+
+
+#? (==> <db> query <sql-string>)
+;; Execute an SQL query string against this Database.
+;; Parses the SQL string using {<b> sql-parse}, resolves table
+;; names from the database catalog, and dispatches to the
+;; DataTable query engine.
+;;
+;; Returns a DataTable for SELECT queries, or an integer for
+;; COUNT(*) queries.
+;;
+;; Supported SQL syntax:
+;; {<ul>
+;; {<li> {<b> SELECT col1, col2 FROM table WHERE ...}}
+;; {<li> {<b> SELECT * FROM table ORDER BY col DESC LIMIT N}}
+;; {<li> {<b> SELECT COUNT(*) FROM table WHERE ...}}
+;; {<li> {<b> SELECT sym, SUM(price) FROM t GROUP BY sym}}
+;; {<li> {<b> SELECT * FROM t LEFT JOIN t2 ON col WHERE ...}}
+;; }
+;;
+;; Example:
+;; {<code>
+;;   (==> db query "SELECT price, symbol FROM trades WHERE price > 100")
+;;   (==> db query "SELECT COUNT(*) FROM trades WHERE symbol = 'AAPL'")
+;;   (==> db query "SELECT * FROM trades ORDER BY price DESC LIMIT 5")
+;; </code>}
+;; {<see> (sql-parse <sql-string>)}
+;; {<see> (db-select <columns> <clauses...>)}
 (defmethod Database query (qstr)
-  "undefined query language ... for now" )
+  (let* ((parsed (sql-parse qstr))
+         (columns (car parsed))
+         (clauses (cdr parsed))
+         (resolved (==> this _db-resolve-clauses clauses)) )
+    (if (= columns 'count)
+      ;; COUNT(*) path
+      (_query-count resolved)
+      ;; Standard SELECT path
+      (_query-execute columns resolved) ) ) )
 
 
 ;; ============================================================

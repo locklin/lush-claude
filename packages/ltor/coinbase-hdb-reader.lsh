@@ -34,13 +34,15 @@
 ;;  (hdbr-handle-query "dates")
 ;; </code>}
 ;; {<see> (hdbr-discover)}
+;; {<see> (hdbr-create-database <date>)}
+;; {<see> (hdbr-create-range-database <dates>)}
 ;; {<see> (hdbr-handle-query <expr>)}
 
 ;; ============================================================
 ;; HDB Reader state
 ;; ============================================================
 
-(defvar *hdbr-root* "/tmp/hdb")         ;; HDB root directory path
+(defvar *hdbr-root* "/datafast1/experiment/coinbasedata-zmq")  ;; HDB root directory path
 (defvar *hdbr-running* ())              ;; main loop flag
 (defvar *hdbr-dates* ())               ;; sorted list of date strings ("2024.06.15" ...)
 (defvar *hdbr-tables* ())              ;; list of table names found ("ticker" "l2")
@@ -193,6 +195,54 @@
 
 
 ;; ============================================================
+;; Database wrapper
+;; ============================================================
+
+#? (hdbr-create-database <date>)
+;; Create a Database wrapping loaded tables for a single <date>.
+;; Returns a Database object suitable for SQL queries.
+;; Tables that don't exist for the given date are skipped.
+;;
+;; Example:
+;; {<code>
+;;  (let ((db (hdbr-create-database "2026.03.15")))
+;;    (==> db query "SELECT * FROM ticker WHERE product = 'BTC-USD' LIMIT 5"))
+;; </code>}
+(de hdbr-create-database (date)
+  (let ((db (new Database ())))
+    (let ((rest *hdbr-tables*))
+      (while rest
+        (let ((tbl (car rest)))
+          (let ((dt (hdbr-get-table date tbl)))
+            (when dt
+              (==> db attach tbl dt) ) ) )
+        (setq rest (cdr rest)) ) )
+    db))
+
+
+#? (hdbr-create-range-database <dates>)
+;; Create a Database wrapping concatenated tables across multiple <dates>.
+;; Each table is formed by concatenating data from all dates in the list.
+;; Returns a Database object suitable for SQL queries.
+(de hdbr-create-range-database (dates)
+  (let ((db (new Database ())))
+    (let ((rest-tbl *hdbr-tables*))
+      (while rest-tbl
+        (let ((tbl (car rest-tbl)))
+          (let ((tables ()))
+            (let ((rest-d dates))
+              (while rest-d
+                (let ((dt (hdbr-get-table (car rest-d) tbl)))
+                  (when (and dt (> (==> dt num-rows) 0))
+                    (setq tables (nconc1 tables dt)) ) )
+                (setq rest-d (cdr rest-d)) ) )
+            (when tables
+              (==> db attach tbl (_partition-concat-tables tables)) ) ) )
+        (setq rest-tbl (cdr rest-tbl)) ) )
+    db))
+
+
+;; ============================================================
 ;; Query interface
 ;; ============================================================
 
@@ -215,6 +265,7 @@
 ;; {<li> {<b> ("where" <date> <tbl> <op> <col> <val>)} -- filtered rows.}
 ;; {<li> {<b> ("range" <tbl> <from> <to>)} -- multi-date concatenation.}
 ;; {<li> {<b> ("range-where" <tbl> <from> <to> <op> <col> <val>)} -- filtered range.}
+;; {<li> {<b> "SELECT ..."} -- SQL query on most recent date via Database.}
 ;; }
 (de hdbr-handle-query (expr)
   (setq *hdbr-total-queries* (1+ *hdbr-total-queries*))
@@ -351,6 +402,14 @@
                   (wire-pack-datatable (==> sample select-rows ()))
                   (sprintf "no data for table: %s" tbl) ) )
               "no dates available" ) ) ) ) ) )
+
+   ;; SQL query (string starting with SELECT)
+   ;; Uses most recent date by default
+   ((and (stringp expr) (regex-seek "^SELECT " (upcase expr)))
+    (if (not *hdbr-dates*)
+      "no dates available"
+      (let ((db (hdbr-create-database (nth (1- (length *hdbr-dates*)) *hdbr-dates*))))
+        (wire-pack-datatable (==> db query expr)) ) ) )
 
    ;; Unknown query
    (t (sprintf "unknown query: %l" expr)) ) )

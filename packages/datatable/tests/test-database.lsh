@@ -217,15 +217,40 @@
 
 
 ;; ============================================================
-;; Test 8: query stub
+;; Test 8: query (SQL string)
 ;; ============================================================
 
-(test-suite "Database: query stub"
+(test-suite "Database: query (SQL)"
   (let ((db (new Database (concat db-test-dir "/testdb8"))))
-    (let ((result (==> db query "SELECT * FROM trades")))
-      (test-string-equal "query returns placeholder"
-                         result
-                         "undefined query language ... for now") ) ) )
+    ;; Create and attach a trades table
+    (let ((dt (new DataTable)))
+      (==> dt add-column "symbol" 'string)
+      (==> dt add-column "price" 'real)
+      (==> dt add-column "qty" 'int)
+      (==> dt append-row (list "AAPL" 150.0 100))
+      (==> dt append-row (list "GOOG" 200.0 50))
+      (==> dt append-row (list "AAPL" 155.0 75))
+      (==> dt append-row (list "MSFT" 80.0 200))
+      (==> db attach "trades" dt)
+
+      ;; SELECT * FROM trades
+      (let ((result (==> db query "SELECT * FROM trades")))
+        (test-equal "select * rows" (==> result num-rows) 4)
+        (test-equal "select * cols" (==> result num-cols) 3) )
+
+      ;; SELECT with WHERE
+      (let ((result (==> db query "SELECT symbol, price FROM trades WHERE price > 100")))
+        (test-equal "where rows" (==> result num-rows) 3)
+        (test-equal "where cols" (==> result num-cols) 2) )
+
+      ;; COUNT(*)
+      (let ((result (==> db query "SELECT COUNT(*) FROM trades WHERE symbol = 'AAPL'")))
+        (test-equal "count result" result 2) )
+
+      ;; ORDER BY + LIMIT
+      (let ((result (==> db query "SELECT * FROM trades ORDER BY price DESC LIMIT 2")))
+        (test-equal "order+limit rows" (==> result num-rows) 2)
+        (test-approx "highest price" (==> result get 0 "price") 200.0 0.001) ) ) ) )
 
 
 ;; ============================================================

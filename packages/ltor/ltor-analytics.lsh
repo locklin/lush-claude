@@ -97,15 +97,7 @@
                     (payload (cadr msg)) )
                 (when (and (= topic "ticker") (consp payload))
                   (setq *ltor-ana-ticker-count* (1+ *ltor-ana-ticker-count*))
-                  ;; Extract fields from ticker alist
-                  (let ((product (cdr (assoc "product" payload)))
-                        (price (cdr (assoc "price" payload)))
-                        (bid (or (cdr (assoc "best_bid" payload)) 0))
-                        (ask (or (cdr (assoc "best_ask" payload)) 0))
-                        (volume (or (cdr (assoc "volume" payload)) 0))
-                        (time (or (cdr (assoc "time" payload)) (_wire-time-seconds))) )
-                    (when (and product price)
-                      (ana-update-product product price bid ask volume time) ) ) ) ) ) ) )
+                  (ana-process-ticker payload) ) ) ) ) )
 
         ;; Check ROUTER socket — client queries
         (when (zmq-poll-ready 1)

@@ -10,6 +10,7 @@
 (libload "wire/wire-serialize")
 (libload "datatable/datatable")
 (libload "datatable/datatable-timedate")
+(libload "datatable/columnardb")
 
 #? *** Coinbase RDB: Real-time Database Logic
 ;; Transport-agnostic business logic for the Coinbase real-time database.
@@ -29,6 +30,10 @@
 ;; </code>}
 ;; {<see> (rdb-init-tables)}
 ;; {<see> (rdb-insert-ticker <data>)}
+;; {<see> (rdb-process-ticker <payload>)}
+;; {<see> (rdb-process-l2 <payload>)}
+;; {<see> (rdb-trim-tables <max-rows>)}
+;; {<see> (rdb-create-database)}
 ;; {<see> (rdb-handle-query <expr>)}
 
 ;; ============================================================
@@ -120,6 +125,72 @@
 
 
 ;; ============================================================
+;; Process helpers (called by ltor-rdb.lsh transport layer)
+;; ============================================================
+
+#? (rdb-process-ticker <payload>)
+;; Process a raw ticker alist from the feed handler.
+;; Inserts the ticker row into the RDB if <payload> is a valid alist.
+(de rdb-process-ticker (payload)
+  (when (consp payload)
+    (rdb-insert-ticker payload) ) )
+
+
+#? (rdb-process-l2 <payload>)
+;; Process a raw L2 payload from the feed handler.
+;; <payload> is expected to be a wire-packed DataTable (with
+;; {<c> (car payload)} = {<c> datatable}).
+;; Unpacks and inserts rows into the L2 table.
+(de rdb-process-l2 (payload)
+  (when (and (consp payload) (= (car payload) 'datatable))
+    (rdb-insert-l2 (wire-unpack-datatable payload)) ) )
+
+
+#? (rdb-trim-tables <max-rows>)
+;; Trim ticker and L2 tables if they exceed <max-rows>.
+;; Keeps the newest half of rows when trimming.
+(de rdb-trim-tables (max-rows)
+  (let ((ticker-rows (==> *rdb-ticker-table* num-rows)))
+    (when (> ticker-rows max-rows)
+      (let* ((keep (max 1 (to-int (/ max-rows 2))))
+             (start (- ticker-rows keep))
+             (idx (int-matrix keep)) )
+        (for (i 0 (1- keep)) (idx i (+ start i)))
+        (printf "rdb: trimming ticker table from %d to %d rows\n"
+                ticker-rows keep)
+        (setq *rdb-ticker-table* (==> *rdb-ticker-table* select-rows-idx idx)) ) ) )
+  (let ((l2-rows (==> *rdb-l2-table* num-rows)))
+    (when (> l2-rows max-rows)
+      (let* ((keep (max 1 (to-int (/ max-rows 2))))
+             (start (- l2-rows keep))
+             (idx (int-matrix keep)) )
+        (for (i 0 (1- keep)) (idx i (+ start i)))
+        (printf "rdb: trimming l2 table from %d to %d rows\n"
+                l2-rows keep)
+        (setq *rdb-l2-table* (==> *rdb-l2-table* select-rows-idx idx)) ) ) ) )
+
+
+;; ============================================================
+;; Database wrapper
+;; ============================================================
+
+#? (rdb-create-database)
+;; Create a Database wrapping the current RDB ticker and L2 tables.
+;; Returns a Database object suitable for SQL queries.
+;;
+;; Example:
+;; {<code>
+;;  (let ((db (rdb-create-database)))
+;;    (==> db query "SELECT * FROM ticker WHERE product = 'BTC-USD' LIMIT 5"))
+;; </code>}
+(de rdb-create-database ()
+  (let ((db (new Database ())))
+    (==> db attach "ticker" *rdb-ticker-table*)
+    (==> db attach "l2" *rdb-l2-table*)
+    db))
+
+
+;; ============================================================
 ;; Query interface
 ;; ============================================================
 
@@ -137,6 +208,7 @@
 ;; {<li> {<b> ("where" <tbl> <op> <col> <val>)} -- filtered rows.}
 ;; {<li> {<b> ("snapshot" <tbl>)} -- full table as packed DataTable.}
 ;; {<li> {<b> ("rows-from" <tbl> N)} -- rows from index N onward.}
+;; {<li> {<b> "SELECT ..."} -- SQL query via Database wrapper.}
 ;; }
 (de rdb-handle-query (expr)
   (cond
@@ -235,6 +307,11 @@
                 (for (i n (1- nrows))
                   (setq indices (nconc1 indices i)) )
                 (wire-pack-datatable (==> dt select-rows indices)) ) ) ) ) ) ) )
+
+   ;; SQL query (string starting with SELECT)
+   ((and (stringp expr) (regex-seek "^SELECT " (upcase expr)))
+    (let ((db (rdb-create-database)))
+      (wire-pack-datatable (==> db query expr)) ) )
 
    ;; Unknown query
    (t (sprintf "unknown query: %l" expr)) ) )

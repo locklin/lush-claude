@@ -1,228 +1,41 @@
-;;; ltor-hdb-writer.lsh -- LTOR HDB Writer process
+;;; ltor-hdb-writer.lsh -- LTOR HDB Writer process (pure ZMQ transport)
 ;;;
 ;;; Subscribes directly to the feed handler's PUB socket (both "ticker"
-;;; and "l2") and accumulates data in local DataTables.  Periodically
-;;; flushes to disk in date-partitioned splayed format.
+;;; and "l2") and routes data to the business logic layer in
+;;; coinbase-hdb-writer.lsh.  Serves status/control queries via a
+;;; ROUTER socket.
 ;;;
-;;; Key improvement over libuv version: subscribes directly to FH
-;;; (not through RDB), accumulates locally, and flushes from local tables.
-;;; This eliminates the RDB as an intermediary (TorQ WDB pattern).
+;;; This file is pure ZMQ transport infrastructure.  All business logic
+;;; (table schemas, data insertion, flush logic, query dispatch) is in
+;;; ltor/coinbase-hdb-writer.
 
 (libload "zmq/zmq-serde")
-(libload "wire/wire-serialize")
-(libload "datatable/datatable")
-(libload "datatable/columnardb")
-
-;; Load RDB table schema definitions (coinbase-rdb provides rdb-init-tables)
-(libload "ltor/coinbase-rdb")
+(libload "ltor/coinbase-hdb-writer")
 
 #? *** LTOR HDB Writer: Periodic Disk Persistence
 ;; LTOR HDB Writer that subscribes directly to the feed handler's
-;; PUB socket.  Accumulates ticks in local DataTables and periodically
-;; flushes to disk (TorQ WDB pattern).
+;; PUB socket.  Accumulates ticks via {<b> coinbase-hdb-writer} business
+;; logic and periodically flushes to disk (TorQ WDB pattern).
 ;;
 ;; Data is stored in date-partitioned splayed format:
 ;; {<code>
 ;;  /datafast1/experiment/coinbasedata-zmq/YYYY.MM.DD/ticker/
 ;;  /datafast1/experiment/coinbasedata-zmq/YYYY.MM.DD/l2/
 ;; </code>}
+;;
+;; Business logic (table schemas, insertion, flush, queries) is in
+;; {<b> ltor/coinbase-hdb-writer}.
 ;; {<see> (ltor-hdbw-start <fh-pub-port> <hdbw-port> <hdb-root> <flush-interval>)}
 
 ;; ============================================================
-;; LTOR HDB Writer state
+;; LTOR HDB Writer state (ZMQ transport only)
 ;; ============================================================
 
 (defvar *ltor-hdbw-ctx* ())
 (defvar *ltor-hdbw-sub* ())
 (defvar *ltor-hdbw-router* ())
 (defvar *ltor-hdbw-running* ())
-(defvar *ltor-hdbw-ticker-table* ())
-(defvar *ltor-hdbw-l2-table* ())
-(defvar *ltor-hdbw-total-tickers* 0)
-(defvar *ltor-hdbw-total-l2* 0)
-(defvar *ltor-hdbw-total-flushes* 0)
-(defvar *ltor-hdbw-total-ticker-rows* 0)
-(defvar *ltor-hdbw-total-l2-rows* 0)
-(defvar *ltor-hdbw-flush-interval* 60)
-(defvar *ltor-hdbw-last-flush-time* 0)
-(defvar *ltor-hdbw-hdb-root* "/datafast1/experiment/coinbasedata-zmq")
-(defvar *ltor-hdbw-start-time* 0)
-(defvar *ltor-hdbw-total-queries* 0)
 (defvar *ltor-hdbw-last-heartbeat* 0)
-
-;; ============================================================
-;; Local table initialization
-;; ============================================================
-
-(de ltor-hdbw-init-tables ()
-  ;; Ticker table: same schema as RDB
-  (setq *ltor-hdbw-ticker-table* (new DataTable))
-  (==> *ltor-hdbw-ticker-table* add-column "product" 'string)
-  (==> *ltor-hdbw-ticker-table* add-column "price" 'real)
-  (==> *ltor-hdbw-ticker-table* add-column "bid" 'real)
-  (==> *ltor-hdbw-ticker-table* add-column "ask" 'real)
-  (==> *ltor-hdbw-ticker-table* add-column "side" 'string)
-  (==> *ltor-hdbw-ticker-table* add-column "volume" 'real)
-  (==> *ltor-hdbw-ticker-table* add-column "time" 'stamp)
-  (==> *ltor-hdbw-ticker-table* add-column "local_time" 'stamp)
-  ;; L2 table: same schema as RDB
-  (setq *ltor-hdbw-l2-table* (new DataTable))
-  (==> *ltor-hdbw-l2-table* add-column "product" 'string)
-  (==> *ltor-hdbw-l2-table* add-column "side" 'string)
-  (==> *ltor-hdbw-l2-table* add-column "price" 'real)
-  (==> *ltor-hdbw-l2-table* add-column "quantity" 'real)
-  (==> *ltor-hdbw-l2-table* add-column "time" 'stamp) )
-
-;; ============================================================
-;; Date partitioning helpers
-;; ============================================================
-
-;; Convert epoch seconds (integer) to "YYYY.MM.DD" date string.
-;; Unlike hdb-date-string which uses wall-clock time, this takes
-;; an explicit epoch value from the data itself.
-(de _hdbw-epoch-to-date (epoch-sec)
-  (let ((days (to-int (/ epoch-sec 86400)))
-        (y 1970) (m 1) (d 0) (days-left 0) )
-    (setq days-left days)
-    ;; Advance years
-    (while (let ((yd (if (and (= 0 (mod y 4))
-                              (or (<> 0 (mod y 100))
-                                  (= 0 (mod y 400)) ))
-                       366 365)))
-             (>= days-left yd))
-      (let ((yd (if (and (= 0 (mod y 4))
-                         (or (<> 0 (mod y 100))
-                             (= 0 (mod y 400)) ))
-                  366 365)))
-        (setq days-left (- days-left yd))
-        (setq y (1+ y)) ) )
-    ;; Advance months
-    (let ((leap (if (and (= 0 (mod y 4))
-                         (or (<> 0 (mod y 100))
-                             (= 0 (mod y 400)) ))
-                  1 0)))
-      (let ((month-days (list 31 (+ 28 leap) 31 30 31 30 31 31 30 31 30 31)))
-        (while (and (<= m 12) (>= days-left (nth (1- m) month-days)))
-          (setq days-left (- days-left (nth (1- m) month-days)))
-          (setq m (1+ m)) ) ) )
-    (setq d (1+ days-left))
-    (sprintf "%04d.%02d.%02d" y m d) ) )
-
-
-;; Flush a DataTable to a specific date partition directory.
-(de _hdbw-flush-to-partition (tbl-name dt date-str)
-  (let ((path (concat *ltor-hdbw-hdb-root* "/" date-str "/" tbl-name)))
-    ;; Create date directory if it doesn't exist
-    (let ((date-dir (concat *ltor-hdbw-hdb-root* "/" date-str)))
-      (when (not (dirp date-dir))
-        (sys (concat "mkdir -p '" date-dir "'"))
-        (printf "ltor-hdbw: created new date partition: %s\n" date-dir) ) )
-    ;; Save or append
-    (if (dirp path)
-      (columnardb-append path dt)
-      (columnardb-save dt path) )
-    (printf "ltor-hdbw: flushed %d %s rows to %s\n" (==> dt num-rows) tbl-name path) ) )
-
-
-;; ============================================================
-;; Local flush logic (reads from local tables, not RDB)
-;; ============================================================
-
-;; Flush local-table rows to date-partitioned directories.
-;; Uses the data's own timestamps (not wall-clock) to determine the
-;; correct date partition.  Handles midnight boundary splits: if a
-;; batch contains rows from two dates, it splits and flushes each
-;; group to the correct partition.
-(de ltor-hdbw-flush-table (tbl-name local-table total-rows-sym)
-  (let ((nrows (==> local-table num-rows)))
-    (when (> nrows 0)
-      ;; Use local_time for ticker (always set), time for l2
-      (let ((time-col (if (= tbl-name "ticker") "local_time" "time")))
-        ;; Check first and last row dates to detect midnight boundary
-        (let ((first-date (_hdbw-epoch-to-date (==> local-table get 0 time-col)))
-              (last-date  (_hdbw-epoch-to-date (==> local-table get (1- nrows) time-col))) )
-          (if (= first-date last-date)
-            ;; Fast path: all rows belong to the same date partition
-            (progn
-              (_hdbw-flush-to-partition tbl-name local-table first-date)
-              (set total-rows-sym (+ (eval total-rows-sym) nrows)) )
-            ;; Slow path: rows span a date boundary -- split by date
-            (progn
-              (printf "ltor-hdbw: batch spans midnight (%s -> %s), splitting %d rows\n"
-                      first-date last-date nrows)
-              ;; Find the split point (first row belonging to the new date).
-              ;; Rows are chronologically ordered, so we just scan forward.
-              (let ((split-idx nrows))
-                (for (r 1 (1- nrows))
-                  (when (= split-idx nrows)
-                    (when (<> first-date (_hdbw-epoch-to-date
-                                           (==> local-table get r time-col)))
-                      (setq split-idx r) ) ) )
-                ;; Flush old-date rows (0 .. split-idx-1)
-                (let ((idx1 (int-matrix split-idx)))
-                  (for (i 0 (1- split-idx)) (idx1 i i))
-                  (let ((dt1 (==> local-table select-rows-idx idx1)))
-                    (_hdbw-flush-to-partition tbl-name dt1 first-date)
-                    (set total-rows-sym (+ (eval total-rows-sym) split-idx)) ) )
-                ;; Flush new-date rows (split-idx .. nrows-1)
-                (let ((n2 (- nrows split-idx)))
-                  (let ((idx2 (int-matrix n2)))
-                    (for (i 0 (1- n2)) (idx2 i (+ split-idx i)))
-                    (let ((dt2 (==> local-table select-rows-idx idx2)))
-                      (_hdbw-flush-to-partition tbl-name dt2 last-date)
-                      (set total-rows-sym (+ (eval total-rows-sym) n2)) ) ) ) ) ) ) ) )
-      ;; Reset local table (create fresh with same schema)
-      (let ((new-table (new DataTable))
-            (rest-names (==> local-table col-names))
-            (rest-types (==> local-table col-types)) )
-        (while rest-names
-          (==> new-table add-column (car rest-names) (car rest-types))
-          (setq rest-names (cdr rest-names))
-          (setq rest-types (cdr rest-types)) )
-        new-table ) ) ) )
-
-
-(de ltor-hdbw-flush ()
-  (let ((new-ticker (ltor-hdbw-flush-table "ticker" *ltor-hdbw-ticker-table*
-                                            '*ltor-hdbw-total-ticker-rows*)))
-    (when new-ticker (setq *ltor-hdbw-ticker-table* new-ticker)) )
-  (let ((new-l2 (ltor-hdbw-flush-table "l2" *ltor-hdbw-l2-table*
-                                        '*ltor-hdbw-total-l2-rows*)))
-    (when new-l2 (setq *ltor-hdbw-l2-table* new-l2)) )
-  (setq *ltor-hdbw-total-flushes* (1+ *ltor-hdbw-total-flushes*))
-  (setq *ltor-hdbw-last-flush-time* (_wire-time-seconds)) )
-
-
-(de ltor-hdbw-check-flush ()
-  (let ((now (_wire-time-seconds)))
-    (when (>= (- now *ltor-hdbw-last-flush-time*) *ltor-hdbw-flush-interval*)
-      (ltor-hdbw-flush) ) ) )
-
-
-;; ============================================================
-;; Query interface
-;; ============================================================
-
-(de ltor-hdbw-handle-query (expr)
-  (setq *ltor-hdbw-total-queries* (1+ *ltor-hdbw-total-queries*))
-  (cond
-   ((= expr "ping") "pong")
-   ((= expr "stats")
-    (list (cons "flushes" *ltor-hdbw-total-flushes*)
-          (cons "ticker_rows" *ltor-hdbw-total-ticker-rows*)
-          (cons "l2_rows" *ltor-hdbw-total-l2-rows*)
-          (cons "pending_tickers" (==> *ltor-hdbw-ticker-table* num-rows))
-          (cons "pending_l2" (==> *ltor-hdbw-l2-table* num-rows))
-          (cons "flush_interval" *ltor-hdbw-flush-interval*)
-          (cons "root" *ltor-hdbw-hdb-root*)
-          (cons "uptime" (- (_wire-time-seconds) *ltor-hdbw-start-time*))
-          (cons "queries" *ltor-hdbw-total-queries*) ) )
-   ((= expr "flush")
-    (ltor-hdbw-flush)
-    (sprintf "flushed (ticker=%d l2=%d)" *ltor-hdbw-total-ticker-rows*
-             *ltor-hdbw-total-l2-rows*) )
-   (t (sprintf "unknown query: %l" expr)) ) )
-
 
 ;; ============================================================
 ;; Main entry point
@@ -242,22 +55,10 @@
   (printf "HDB root: %s\n" hdb-root)
   (printf "flush interval: %ds\n\n" flush-interval)
 
-  ;; Reset state
+  ;; Reset business logic state
   (setq *ltor-hdbw-running* t)
-  (setq *ltor-hdbw-hdb-root* hdb-root)
-  (setq *ltor-hdbw-flush-interval* flush-interval)
-  (setq *ltor-hdbw-total-tickers* 0)
-  (setq *ltor-hdbw-total-l2* 0)
-  (setq *ltor-hdbw-total-flushes* 0)
-  (setq *ltor-hdbw-total-ticker-rows* 0)
-  (setq *ltor-hdbw-total-l2-rows* 0)
-  (setq *ltor-hdbw-total-queries* 0)
-  (setq *ltor-hdbw-start-time* (_wire-time-seconds))
-  (setq *ltor-hdbw-last-flush-time* (_wire-time-seconds))
   (setq *ltor-hdbw-last-heartbeat* (_wire-time-seconds))
-
-  ;; Initialize local tables
-  (ltor-hdbw-init-tables)
+  (hdbw-reset-state hdb-root flush-interval)
   (printf "ltor-hdbw: local tables initialized\n")
 
   ;; Create HDB root directory
@@ -298,58 +99,38 @@
               (let ((topic (car msg))
                     (payload (cadr msg)) )
                 (cond
-                 ;; Ticker data -- insert into local table
+                 ;; Ticker data
                  ((and (= topic "ticker") (consp payload))
-                  (setq *ltor-hdbw-total-tickers* (1+ *ltor-hdbw-total-tickers*))
-                  (let ((product (cdr (assoc "product" payload)))
-                        (price (cdr (assoc "price" payload)))
-                        (bid (or (cdr (assoc "best_bid" payload)) 0))
-                        (ask (or (cdr (assoc "best_ask" payload)) 0))
-                        (side (or (cdr (assoc "side" payload)) ""))
-                        (volume (or (cdr (assoc "volume" payload)) 0))
-                        (time (or (cdr (assoc "time" payload)) 0))
-                        (local-time (_wire-time-seconds)) )
-                    (==> *ltor-hdbw-ticker-table* append-row
-                         (list product price bid ask side volume
-                               (if (> time 0) time local-time) local-time)) ) )
-                 ;; L2 data -- insert into local table
+                  (hdbw-insert-ticker payload) )
+                 ;; L2 data
                  ((and (= topic "l2") (consp payload)
                        (= (car payload) 'datatable))
-                  (setq *ltor-hdbw-total-l2* (1+ *ltor-hdbw-total-l2*))
-                  (let ((dt (wire-unpack-datatable payload)))
-                    (let ((nrows (==> dt num-rows)))
-                      (for (r 0 (1- nrows))
-                        (==> *ltor-hdbw-l2-table* append-row
-                             (list (==> dt get r "product")
-                                   (==> dt get r "side")
-                                   (==> dt get r "price")
-                                   (==> dt get r "quantity")
-                                   (==> dt get r "time"))) ) ) ) ) ) ) ) ) )
+                  (hdbw-insert-l2 payload) ) ) ) ) ) )
 
         ;; Check ROUTER socket -- control queries
         (when (zmq-poll-ready 1)
           (let ((query (zmq-router-recv-query *ltor-hdbw-router*)))
             (when query
-              (let ((result (ltor-hdbw-handle-query query)))
+              (let ((result (hdbw-handle-query query)))
                 (zmq-router-send-reply *ltor-hdbw-router* result) ) ) ) ) ) )
 
     ;; Check flush timing
-    (ltor-hdbw-check-flush)
+    (hdbw-check-flush)
 
     ;; Periodic heartbeat (every 30s)
     (let ((now (_wire-time-seconds)))
       (when (>= (- now *ltor-hdbw-last-heartbeat*) 30)
         (printf "ltor-hdbw: heartbeat  pending-tick=%d pending-l2=%d flushes=%d total-tick=%d total-l2=%d queries=%d uptime=%ds\n"
-                (==> *ltor-hdbw-ticker-table* num-rows)
-                (==> *ltor-hdbw-l2-table* num-rows)
-                *ltor-hdbw-total-flushes* *ltor-hdbw-total-ticker-rows*
-                *ltor-hdbw-total-l2-rows* *ltor-hdbw-total-queries*
-                (to-int (- now *ltor-hdbw-start-time*)))
+                (==> *hdbw-ticker-table* num-rows)
+                (==> *hdbw-l2-table* num-rows)
+                *hdbw-total-flushes* *hdbw-total-ticker-rows*
+                *hdbw-total-l2-rows* *hdbw-total-queries*
+                (to-int (- now *hdbw-start-time*)))
         (setq *ltor-hdbw-last-heartbeat* now) ) ) )
 
   ;; Final flush
   (printf "\nltor-hdbw: final flush...\n")
-  (ltor-hdbw-flush)
+  (hdbw-flush)
 
   ;; Shutdown
   (printf "ltor-hdbw: shutting down...\n")
@@ -357,5 +138,5 @@
   (when *ltor-hdbw-router* (zmq-close *ltor-hdbw-router*))
   (when *ltor-hdbw-ctx* (zmq-ctx-term *ltor-hdbw-ctx*))
   (printf "ltor-hdbw: stopped (%d flushes, %d ticker, %d l2 rows)\n"
-          *ltor-hdbw-total-flushes* *ltor-hdbw-total-ticker-rows*
-          *ltor-hdbw-total-l2-rows*) )
+          *hdbw-total-flushes* *hdbw-total-ticker-rows*
+          *hdbw-total-l2-rows*) )

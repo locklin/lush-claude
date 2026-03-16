@@ -28,11 +28,14 @@ datatable-csv-c.c          C implementation: CSV scanner + readers
 datatable-csv.lsh          Lush bridge: csv-read public API
 datatable-csv-write.lsh    Lush bridge: csv-write public API
 
+-- SQL parser --
+datatable-sql.lsh          SQL tokenizer + recursive-descent parser
+
 -- Persistence layer (loaded via datatable/columnardb) --
 columnardb.lsh             Entry point: save, load, mmap, append, range, locking
 columnardb-io.lsh          LCDB binary I/O (read/write/append/mmap)
 columnardb-compress.lsh    Column compression (delta, RLE, LZ4)
-columnardb-database.lsh    Database catalog class
+columnardb-database.lsh    Database catalog class with SQL query() method
 columnardb-mutate.lsh      Delete/update on persisted tables
 columnardb-partition.lsh   Partitioned table support
 
@@ -316,6 +319,26 @@ Two-stage compilation:
   arrays with a changed C interface.
 - **Parallel string column reads:** Each string column re-reads the file
   independently. Could read all string columns in one pass.
+
+### Database Class and SQL Parser
+
+The `columnardb-database.lsh` module provides a `Database` class: an htable
+catalog of named DataTables with a `query` method accepting SQL strings.
+
+The `datatable-sql.lsh` module provides a two-stage SQL parser:
+```
+SQL string → sql-tokenize → token list → sql-parse → clause alist → _query-execute
+```
+
+Supported SQL subset: SELECT, FROM, WHERE (AND/OR/comparison/IN/LIKE/BETWEEN),
+ORDER BY, LIMIT, GROUP BY (COUNT/SUM/AVG/MIN/MAX), JOIN (LEFT/RIGHT/ASOF),
+computed expressions (arithmetic, ABS/SQRT/LOG/FLOOR/CEIL), COUNT(*).
+
+The Database class is used throughout the LTOR pipeline (see `packages/ltor/
+design-notes.md`): each data-holding backend (RDB, Analytics, HDB Writer, HDB
+Reader) creates a Database wrapper around its DataTables, enabling SQL queries
+on live data via the gateway.  REPL users call `ltor-coinbase-sql` to issue
+SQL queries against the running pipeline.
 
 ### Potential New Column Types (Not Implemented)
 

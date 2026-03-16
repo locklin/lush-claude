@@ -1,0 +1,649 @@
+;;; test-sql.lsh -- Tests for the SQL string parser
+;;;
+;;; Loaded by test-columnardb.lsh.  Assumes the test framework,
+;;; datatable, and datatable-sql are already loaded, and *test-dir* is set.
+
+(printf "\n=== SQL Parser Tests ===\n")
+
+
+;; ============================================================
+;; Tokenizer tests
+;; ============================================================
+
+(test-suite "SQL Tokenizer: basic tokens"
+  ;; Keywords
+  (let ((tokens (_sql-tokenize "SELECT FROM WHERE")))
+    (test-equal "keyword count" (length tokens) 3)
+    (test-equal "SELECT type" (car (car tokens)) 'keyword)
+    (test-string-equal "SELECT val" (cadr (car tokens)) "SELECT")
+    (test-equal "FROM type" (car (cadr tokens)) 'keyword)
+    (test-equal "WHERE type" (car (caddr tokens)) 'keyword) )
+
+  ;; Case insensitive keywords
+  (let ((tokens (_sql-tokenize "select from where")))
+    (test-equal "lower keyword count" (length tokens) 3)
+    (test-equal "lower SELECT type" (car (car tokens)) 'keyword)
+    (test-string-equal "lower SELECT val" (cadr (car tokens)) "SELECT") )
+
+  ;; Identifiers
+  (let ((tokens (_sql-tokenize "mytable my_col")))
+    (test-equal "ident count" (length tokens) 2)
+    (test-equal "ident type" (car (car tokens)) 'ident)
+    (test-string-equal "ident val" (cadr (car tokens)) "mytable") )
+
+  ;; Star
+  (let ((tokens (_sql-tokenize "*")))
+    (test-equal "star type" (car (car tokens)) 'star) )
+
+  ;; Numbers
+  (let ((tokens (_sql-tokenize "42 3.14")))
+    (test-equal "num count" (length tokens) 2)
+    (test-equal "int type" (car (car tokens)) 'number)
+    (test-equal "int val" (cadr (car tokens)) 42)
+    (test-approx "float val" (cadr (cadr tokens)) 3.14 0.001) )
+
+  ;; Negative number (after operator)
+  (let ((tokens (_sql-tokenize "> -5")))
+    (test-equal "neg count" (length tokens) 2)
+    (test-equal "neg type" (car (cadr tokens)) 'number)
+    (test-equal "neg val" (cadr (cadr tokens)) -5) )
+
+  ;; Strings (single and double quoted)
+  (let ((tokens (_sql-tokenize "'hello' \"world\"")))
+    (test-equal "str count" (length tokens) 2)
+    (test-equal "str1 type" (car (car tokens)) 'string)
+    (test-string-equal "str1 val" (cadr (car tokens)) "hello")
+    (test-string-equal "str2 val" (cadr (cadr tokens)) "world") )
+
+  ;; Operators
+  (let ((tokens (_sql-tokenize "= < > <= >= <> !=")))
+    (test-equal "op count" (length tokens) 7)
+    (test-string-equal "eq op" (cadr (car tokens)) "=")
+    (test-string-equal "lt op" (cadr (cadr tokens)) "<")
+    (test-string-equal "gt op" (cadr (caddr tokens)) ">")
+    (test-string-equal "le op" (cadr (nth 3 tokens)) "<=")
+    (test-string-equal "ge op" (cadr (nth 4 tokens)) ">=")
+    (test-string-equal "ne op" (cadr (nth 5 tokens)) "<>")
+    (test-string-equal "ne2 op" (cadr (nth 6 tokens)) "<>") )
+
+  ;; Commas and parens
+  (let ((tokens (_sql-tokenize "( , )")))
+    (test-equal "paren count" (length tokens) 3)
+    (test-equal "lparen" (car (car tokens)) 'lparen)
+    (test-equal "comma" (car (cadr tokens)) 'comma)
+    (test-equal "rparen" (car (caddr tokens)) 'rparen) ) )
+
+
+(test-suite "SQL Tokenizer: full statement"
+  (let ((tokens (_sql-tokenize "SELECT price, symbol FROM trades WHERE price > 100")))
+    (test-equal "full token count" (length tokens) 10)
+    (test-string-equal "t0" (cadr (nth 0 tokens)) "SELECT")
+    (test-string-equal "t1" (cadr (nth 1 tokens)) "price")
+    (test-string-equal "t2" (cadr (nth 2 tokens)) ",")
+    (test-string-equal "t3" (cadr (nth 3 tokens)) "symbol")
+    (test-string-equal "t4" (cadr (nth 4 tokens)) "FROM")
+    (test-string-equal "t5" (cadr (nth 5 tokens)) "trades")
+    (test-string-equal "t6" (cadr (nth 6 tokens)) "WHERE")
+    (test-string-equal "t7" (cadr (nth 7 tokens)) "price")
+    (test-string-equal "t8" (cadr (nth 8 tokens)) ">")
+    (test-equal "t9" (cadr (nth 9 tokens)) 100) ) )
+
+
+;; ============================================================
+;; Parser tests
+;; ============================================================
+
+(test-suite "SQL Parser: SELECT *"
+  (let ((result (sql-parse "SELECT * FROM trades")))
+    (test-equal "columns is *" (car result) '*)
+    (let ((clauses (cdr result)))
+      (test-equal "clause count" (length clauses) 1)
+      (test-equal "from key" (car (car clauses)) 'from)
+      (test-string-equal "from table" (cadr (car clauses)) "trades") ) ) )
+
+
+(test-suite "SQL Parser: named columns"
+  (let ((result (sql-parse "SELECT price, symbol FROM trades")))
+    (let ((cols (car result)))
+      (test-equal "col count" (length cols) 2)
+      (test-string-equal "col1" (car cols) "price")
+      (test-string-equal "col2" (cadr cols) "symbol") ) ) )
+
+
+(test-suite "SQL Parser: WHERE with operators"
+  ;; Greater than
+  (let* ((result (sql-parse "SELECT * FROM t WHERE price > 100"))
+         (clauses (cdr result))
+         (where-clause (cadr (assoc 'where clauses)))
+         (cond1 (car where-clause)) )
+    (test-equal "gt op" (car cond1) '>)
+    (test-string-equal "gt col" (cadr cond1) "price")
+    (test-equal "gt val" (caddr cond1) 100) )
+
+  ;; Equals string
+  (let* ((result (sql-parse "SELECT * FROM t WHERE symbol = 'AAPL'"))
+         (clauses (cdr result))
+         (where-clause (cadr (assoc 'where clauses)))
+         (cond1 (car where-clause)) )
+    (test-equal "eq op" (car cond1) '=)
+    (test-string-equal "eq col" (cadr cond1) "symbol")
+    (test-string-equal "eq val" (caddr cond1) "AAPL") )
+
+  ;; Less than or equal
+  (let* ((result (sql-parse "SELECT * FROM t WHERE qty <= 50"))
+         (clauses (cdr result))
+         (where-clause (cadr (assoc 'where clauses)))
+         (cond1 (car where-clause)) )
+    (test-equal "le op" (car cond1) '<=)
+    (test-equal "le val" (caddr cond1) 50) )
+
+  ;; Not equal
+  (let* ((result (sql-parse "SELECT * FROM t WHERE status <> 'closed'"))
+         (clauses (cdr result))
+         (where-clause (cadr (assoc 'where clauses)))
+         (cond1 (car where-clause)) )
+    (test-equal "ne op" (car cond1) '<>)
+    (test-string-equal "ne val" (caddr cond1) "closed") ) )
+
+
+(test-suite "SQL Parser: WHERE AND"
+  (let* ((result (sql-parse "SELECT * FROM t WHERE price > 100 AND symbol = 'AAPL'"))
+         (clauses (cdr result))
+         (where-clause (cadr (assoc 'where clauses))) )
+    (test-equal "and count" (length where-clause) 2)
+    (test-equal "cond1 op" (car (car where-clause)) '>)
+    (test-equal "cond2 op" (car (cadr where-clause)) '=) ) )
+
+
+(test-suite "SQL Parser: WHERE OR"
+  (let* ((result (sql-parse "SELECT * FROM t WHERE price > 200 OR price < 50"))
+         (clauses (cdr result))
+         (where-pred (cadr (assoc 'where clauses))) )
+    ;; where-pred = (or-clause (branch1 branch2 ...))
+    (test-equal "or-clause tag" (car where-pred) 'or-clause)
+    (let ((branches (cadr where-pred)))
+      (test-equal "branch count" (length branches) 2)
+      ;; Branch 1: ((> "price" 200))
+      (test-equal "b1 op" (car (car (car branches))) '>)
+      ;; Branch 2: ((< "price" 50))
+      (test-equal "b2 op" (car (car (cadr branches))) '<) ) ) )
+
+
+(test-suite "SQL Parser: WHERE BETWEEN"
+  (let* ((result (sql-parse "SELECT * FROM t WHERE price BETWEEN 50 AND 200"))
+         (clauses (cdr result))
+         (where-clause (cadr (assoc 'where clauses)))
+         (cond1 (car where-clause)) )
+    (test-equal "between tag" (car cond1) 'range)
+    (test-string-equal "between col" (cadr cond1) "price")
+    (test-equal "between lo" (caddr cond1) 50)
+    (test-equal "between hi" (nth 3 cond1) 200) ) )
+
+
+(test-suite "SQL Parser: WHERE IN"
+  (let* ((result (sql-parse "SELECT * FROM t WHERE symbol IN ('AAPL', 'GOOG', 'MSFT')"))
+         (clauses (cdr result))
+         (where-clause (cadr (assoc 'where clauses)))
+         (cond1 (car where-clause)) )
+    (test-equal "in tag" (car cond1) 'in)
+    (test-string-equal "in col" (cadr cond1) "symbol")
+    (let ((vals (caddr cond1)))
+      (test-equal "in val count" (length vals) 3)
+      (test-string-equal "in val1" (car vals) "AAPL")
+      (test-string-equal "in val2" (cadr vals) "GOOG")
+      (test-string-equal "in val3" (caddr vals) "MSFT") ) ) )
+
+
+(test-suite "SQL Parser: WHERE NOT IN"
+  (let* ((result (sql-parse "SELECT * FROM t WHERE symbol NOT IN ('AAPL', 'GOOG')"))
+         (clauses (cdr result))
+         (where-clause (cadr (assoc 'where clauses)))
+         (cond1 (car where-clause)) )
+    (test-equal "not-in tag" (car cond1) 'not-in)
+    (test-string-equal "not-in col" (cadr cond1) "symbol")
+    (test-equal "not-in val count" (length (caddr cond1)) 2) ) )
+
+
+(test-suite "SQL Parser: WHERE LIKE"
+  (let* ((result (sql-parse "SELECT * FROM t WHERE name LIKE '%foo%'"))
+         (clauses (cdr result))
+         (where-clause (cadr (assoc 'where clauses)))
+         (cond1 (car where-clause)) )
+    (test-equal "like tag" (car cond1) 'like)
+    (test-string-equal "like col" (cadr cond1) "name")
+    (test-string-equal "like pat" (caddr cond1) "%foo%") ) )
+
+
+(test-suite "SQL Parser: ORDER BY"
+  ;; ASC (default)
+  (let* ((result (sql-parse "SELECT * FROM t ORDER BY price"))
+         (clauses (cdr result))
+         (ob (cdr (assoc 'order-by clauses))) )
+    (test-string-equal "ob col" (car ob) "price")
+    (test-equal "ob no desc" (length ob) 1) )
+
+  ;; DESC
+  (let* ((result (sql-parse "SELECT * FROM t ORDER BY price DESC"))
+         (clauses (cdr result))
+         (ob (cdr (assoc 'order-by clauses))) )
+    (test-string-equal "ob desc col" (car ob) "price")
+    (test-equal "ob desc flag" (cadr ob) 'desc) )
+
+  ;; Explicit ASC
+  (let* ((result (sql-parse "SELECT * FROM t ORDER BY price ASC"))
+         (clauses (cdr result))
+         (ob (cdr (assoc 'order-by clauses))) )
+    (test-string-equal "ob asc col" (car ob) "price")
+    (test-equal "ob asc no desc" (length ob) 1) ) )
+
+
+(test-suite "SQL Parser: LIMIT"
+  (let* ((result (sql-parse "SELECT * FROM t LIMIT 10"))
+         (clauses (cdr result))
+         (lim (cadr (assoc 'limit clauses))) )
+    (test-equal "limit val" lim 10) ) )
+
+
+(test-suite "SQL Parser: COUNT(*)"
+  (let* ((result (sql-parse "SELECT COUNT(*) FROM trades"))
+         (columns (car result)) )
+    (test-equal "count flag" columns 'count) )
+
+  ;; COUNT(*) with WHERE
+  (let* ((result (sql-parse "SELECT COUNT(*) FROM t WHERE price > 100"))
+         (columns (car result))
+         (clauses (cdr result)) )
+    (test-equal "count+where flag" columns 'count)
+    (test-check "has where" (assoc 'where clauses)) ) )
+
+
+(test-suite "SQL Parser: GROUP BY with aggregate"
+  (let* ((result (sql-parse "SELECT symbol, SUM(price) FROM t GROUP BY symbol"))
+         (columns (car result))
+         (clauses (cdr result))
+         (gb (cdr (assoc 'group-by clauses))) )
+    (test-equal "columns is *" columns '*)
+    (test-string-equal "group col" (car gb) "symbol")
+    ;; agg-spec is (sum "price")
+    (let ((agg-spec (cadr gb)))
+      (test-equal "agg op" (car agg-spec) 'sum)
+      (test-string-equal "agg col" (cadr agg-spec) "price") ) ) )
+
+
+(test-suite "SQL Parser: JOIN"
+  ;; Basic JOIN (defaults to LEFT)
+  (let* ((result (sql-parse "SELECT * FROM trades JOIN quotes ON symbol"))
+         (clauses (cdr result))
+         (join-clause (cdr (assoc 'join clauses))) )
+    (test-string-equal "join table" (car join-clause) "quotes")
+    (test-string-equal "join col" (cadr join-clause) "symbol")
+    (test-equal "join type" (caddr join-clause) 'left) )
+
+  ;; LEFT JOIN
+  (let* ((result (sql-parse "SELECT * FROM trades LEFT JOIN quotes ON symbol"))
+         (clauses (cdr result))
+         (join-clause (cdr (assoc 'join clauses))) )
+    (test-equal "left join type" (caddr join-clause) 'left) )
+
+  ;; RIGHT JOIN
+  (let* ((result (sql-parse "SELECT * FROM trades RIGHT JOIN quotes ON symbol"))
+         (clauses (cdr result))
+         (join-clause (cdr (assoc 'join clauses))) )
+    (test-equal "right join type" (caddr join-clause) 'right) )
+
+  ;; ASOF JOIN
+  (let* ((result (sql-parse "SELECT * FROM trades ASOF JOIN quotes ON timestamp"))
+         (clauses (cdr result))
+         (join-clause (cdr (assoc 'join clauses))) )
+    (test-equal "asof join type" (caddr join-clause) 'asof) ) )
+
+
+(test-suite "SQL Parser: HAVING"
+  (let* ((result (sql-parse "SELECT symbol, SUM(price) FROM t GROUP BY symbol HAVING price_sum > 500"))
+         (clauses (cdr result))
+         (having-clause (cadr (assoc 'having clauses)))
+         (cond1 (car having-clause)) )
+    (test-equal "having op" (car cond1) '>)
+    (test-string-equal "having col" (cadr cond1) "price_sum")
+    (test-equal "having val" (caddr cond1) 500) ) )
+
+
+(test-suite "SQL Parser: complex query"
+  (let* ((result (sql-parse "SELECT price, symbol FROM trades WHERE price > 50 AND symbol = 'AAPL' ORDER BY price DESC LIMIT 5"))
+         (columns (car result))
+         (clauses (cdr result)) )
+    (test-equal "col count" (length columns) 2)
+    (test-string-equal "col1" (car columns) "price")
+    (test-check "has from" (assoc 'from clauses))
+    (test-check "has where" (assoc 'where clauses))
+    (test-check "has order-by" (assoc 'order-by clauses))
+    (test-check "has limit" (assoc 'limit clauses))
+    (test-equal "limit val" (cadr (assoc 'limit clauses)) 5) ) )
+
+
+;; ============================================================
+;; Database.query integration tests
+;; ============================================================
+
+(printf "\n=== Database.query Integration Tests ===\n")
+
+(let ((sql-test-dir (concat *test-dir* "/sql-test")))
+  (sys (concat "rm -rf " sql-test-dir))
+  (sys (concat "mkdir -p " sql-test-dir))
+
+(test-suite "Database.query: SELECT *"
+  (let ((db (new Database (concat sql-test-dir "/db1"))))
+    (let ((dt (new DataTable)))
+      (==> dt add-column "symbol" 'string)
+      (==> dt add-column "price" 'real)
+      (==> dt add-column "qty" 'int)
+      (==> dt append-row (list "AAPL" 150.0 100))
+      (==> dt append-row (list "GOOG" 200.0 50))
+      (==> dt append-row (list "MSFT" 80.0 200))
+      (==> db attach "trades" dt)
+
+      (let ((result (==> db query "SELECT * FROM trades")))
+        (test-equal "all rows" (==> result num-rows) 3)
+        (test-equal "all cols" (==> result num-cols) 3) ) ) ) )
+
+
+(test-suite "Database.query: named columns"
+  (let ((db (new Database (concat sql-test-dir "/db2"))))
+    (let ((dt (new DataTable)))
+      (==> dt add-column "symbol" 'string)
+      (==> dt add-column "price" 'real)
+      (==> dt add-column "qty" 'int)
+      (==> dt append-row (list "AAPL" 150.0 100))
+      (==> dt append-row (list "GOOG" 200.0 50))
+      (==> db attach "trades" dt)
+
+      (let ((result (==> db query "SELECT symbol, price FROM trades")))
+        (test-equal "proj rows" (==> result num-rows) 2)
+        (test-equal "proj cols" (==> result num-cols) 2)
+        (test-string-equal "proj col1" (car (==> result col-names)) "symbol")
+        (test-string-equal "proj col2" (cadr (==> result col-names)) "price") ) ) ) )
+
+
+(test-suite "Database.query: WHERE filter"
+  (let ((db (new Database (concat sql-test-dir "/db3"))))
+    (let ((dt (new DataTable)))
+      (==> dt add-column "symbol" 'string)
+      (==> dt add-column "price" 'real)
+      (==> dt append-row (list "AAPL" 150.0))
+      (==> dt append-row (list "GOOG" 200.0))
+      (==> dt append-row (list "MSFT" 80.0))
+      (==> dt append-row (list "AAPL" 155.0))
+      (==> db attach "trades" dt)
+
+      ;; Numeric filter
+      (let ((result (==> db query "SELECT * FROM trades WHERE price > 100")))
+        (test-equal "where gt rows" (==> result num-rows) 3) )
+
+      ;; String equality
+      (let ((result (==> db query "SELECT * FROM trades WHERE symbol = 'AAPL'")))
+        (test-equal "where eq rows" (==> result num-rows) 2) )
+
+      ;; AND
+      (let ((result (==> db query "SELECT * FROM trades WHERE price > 100 AND symbol = 'AAPL'")))
+        (test-equal "where and rows" (==> result num-rows) 2) )
+
+      ;; No matches
+      (let ((result (==> db query "SELECT * FROM trades WHERE price > 1000")))
+        (test-equal "where no-match rows" (==> result num-rows) 0) ) ) ) )
+
+
+(test-suite "Database.query: WHERE OR"
+  (let ((db (new Database (concat sql-test-dir "/db4"))))
+    (let ((dt (new DataTable)))
+      (==> dt add-column "symbol" 'string)
+      (==> dt add-column "price" 'real)
+      (==> dt append-row (list "AAPL" 150.0))
+      (==> dt append-row (list "GOOG" 200.0))
+      (==> dt append-row (list "MSFT" 80.0))
+      (==> db attach "trades" dt)
+
+      (let ((result (==> db query "SELECT * FROM trades WHERE symbol = 'AAPL' OR symbol = 'MSFT'")))
+        (test-equal "where or rows" (==> result num-rows) 2) ) ) ) )
+
+
+(test-suite "Database.query: WHERE BETWEEN"
+  (let ((db (new Database (concat sql-test-dir "/db5"))))
+    (let ((dt (new DataTable)))
+      (==> dt add-column "price" 'real)
+      (==> dt append-row (list 50.0))
+      (==> dt append-row (list 100.0))
+      (==> dt append-row (list 150.0))
+      (==> dt append-row (list 200.0))
+      (==> db attach "data" dt)
+
+      (let ((result (==> db query "SELECT * FROM data WHERE price BETWEEN 80 AND 160")))
+        (test-equal "between rows" (==> result num-rows) 2) ) ) ) )
+
+
+(test-suite "Database.query: WHERE IN"
+  (let ((db (new Database (concat sql-test-dir "/db6"))))
+    (let ((dt (new DataTable)))
+      (==> dt add-column "symbol" 'string)
+      (==> dt add-column "price" 'real)
+      (==> dt append-row (list "AAPL" 150.0))
+      (==> dt append-row (list "GOOG" 200.0))
+      (==> dt append-row (list "MSFT" 80.0))
+      (==> dt append-row (list "TSLA" 300.0))
+      (==> db attach "trades" dt)
+
+      (let ((result (==> db query "SELECT * FROM trades WHERE symbol IN ('AAPL', 'MSFT')")))
+        (test-equal "in rows" (==> result num-rows) 2) ) ) ) )
+
+
+(test-suite "Database.query: WHERE NOT IN"
+  (let ((db (new Database (concat sql-test-dir "/db7"))))
+    (let ((dt (new DataTable)))
+      (==> dt add-column "symbol" 'string)
+      (==> dt add-column "price" 'real)
+      (==> dt append-row (list "AAPL" 150.0))
+      (==> dt append-row (list "GOOG" 200.0))
+      (==> dt append-row (list "MSFT" 80.0))
+      (==> dt append-row (list "TSLA" 300.0))
+      (==> db attach "trades" dt)
+
+      (let ((result (==> db query "SELECT * FROM trades WHERE symbol NOT IN ('AAPL', 'GOOG')")))
+        (test-equal "not-in rows" (==> result num-rows) 2) ) ) ) )
+
+
+(test-suite "Database.query: WHERE LIKE"
+  (let ((db (new Database (concat sql-test-dir "/db8"))))
+    (let ((dt (new DataTable)))
+      (==> dt add-column "name" 'string)
+      (==> dt append-row (list "Apple Inc"))
+      (==> dt append-row (list "Google LLC"))
+      (==> dt append-row (list "Apple Store"))
+      (==> dt append-row (list "Microsoft"))
+      (==> db attach "companies" dt)
+
+      (let ((result (==> db query "SELECT * FROM companies WHERE name LIKE 'Apple%'")))
+        (test-equal "like rows" (==> result num-rows) 2) ) ) ) )
+
+
+(test-suite "Database.query: ORDER BY"
+  (let ((db (new Database (concat sql-test-dir "/db9"))))
+    (let ((dt (new DataTable)))
+      (==> dt add-column "price" 'real)
+      (==> dt append-row (list 150.0))
+      (==> dt append-row (list 200.0))
+      (==> dt append-row (list 80.0))
+      (==> dt append-row (list 300.0))
+      (==> db attach "data" dt)
+
+      ;; ASC (default)
+      (let ((result (==> db query "SELECT * FROM data ORDER BY price")))
+        (test-approx "asc first" (==> result get 0 "price") 80.0 0.001)
+        (test-approx "asc last" (==> result get 3 "price") 300.0 0.001) )
+
+      ;; DESC
+      (let ((result (==> db query "SELECT * FROM data ORDER BY price DESC")))
+        (test-approx "desc first" (==> result get 0 "price") 300.0 0.001)
+        (test-approx "desc last" (==> result get 3 "price") 80.0 0.001) ) ) ) )
+
+
+(test-suite "Database.query: LIMIT"
+  (let ((db (new Database (concat sql-test-dir "/db10"))))
+    (let ((dt (new DataTable)))
+      (==> dt add-column "val" 'int)
+      (==> dt append-row (list 1))
+      (==> dt append-row (list 2))
+      (==> dt append-row (list 3))
+      (==> dt append-row (list 4))
+      (==> dt append-row (list 5))
+      (==> db attach "data" dt)
+
+      (let ((result (==> db query "SELECT * FROM data LIMIT 3")))
+        (test-equal "limit rows" (==> result num-rows) 3) ) ) ) )
+
+
+(test-suite "Database.query: ORDER BY + LIMIT"
+  (let ((db (new Database (concat sql-test-dir "/db11"))))
+    (let ((dt (new DataTable)))
+      (==> dt add-column "symbol" 'string)
+      (==> dt add-column "price" 'real)
+      (==> dt append-row (list "AAPL" 150.0))
+      (==> dt append-row (list "GOOG" 200.0))
+      (==> dt append-row (list "MSFT" 80.0))
+      (==> dt append-row (list "TSLA" 300.0))
+      (==> db attach "trades" dt)
+
+      (let ((result (==> db query "SELECT * FROM trades ORDER BY price DESC LIMIT 2")))
+        (test-equal "top2 rows" (==> result num-rows) 2)
+        (test-approx "top2 first" (==> result get 0 "price") 300.0 0.001)
+        (test-approx "top2 second" (==> result get 1 "price") 200.0 0.001) ) ) ) )
+
+
+(test-suite "Database.query: COUNT(*)"
+  (let ((db (new Database (concat sql-test-dir "/db12"))))
+    (let ((dt (new DataTable)))
+      (==> dt add-column "symbol" 'string)
+      (==> dt add-column "price" 'real)
+      (==> dt append-row (list "AAPL" 150.0))
+      (==> dt append-row (list "GOOG" 200.0))
+      (==> dt append-row (list "MSFT" 80.0))
+      (==> dt append-row (list "AAPL" 155.0))
+      (==> db attach "trades" dt)
+
+      ;; Count all
+      (test-equal "count all" (==> db query "SELECT COUNT(*) FROM trades") 4)
+
+      ;; Count with WHERE
+      (test-equal "count where" (==> db query "SELECT COUNT(*) FROM trades WHERE symbol = 'AAPL'") 2)
+
+      ;; Count with no matches
+      (test-equal "count zero" (==> db query "SELECT COUNT(*) FROM trades WHERE price > 1000") 0) ) ) )
+
+
+(test-suite "Database.query: GROUP BY"
+  (let ((db (new Database (concat sql-test-dir "/db13"))))
+    (let ((dt (new DataTable)))
+      (==> dt add-column "symbol" 'string)
+      (==> dt add-column "price" 'real)
+      (==> dt append-row (list "AAPL" 150.0))
+      (==> dt append-row (list "GOOG" 200.0))
+      (==> dt append-row (list "AAPL" 160.0))
+      (==> dt append-row (list "GOOG" 210.0))
+      (==> dt append-row (list "MSFT" 80.0))
+      (==> db attach "trades" dt)
+
+      (let ((result (==> db query "SELECT symbol, SUM(price) FROM trades GROUP BY symbol")))
+        (test-equal "group rows" (==> result num-rows) 3) ) ) ) )
+
+
+(test-suite "Database.query: complex combined query"
+  (let ((db (new Database (concat sql-test-dir "/db14"))))
+    (let ((dt (new DataTable)))
+      (==> dt add-column "symbol" 'string)
+      (==> dt add-column "price" 'real)
+      (==> dt add-column "qty" 'int)
+      (==> dt append-row (list "AAPL" 150.0 100))
+      (==> dt append-row (list "GOOG" 200.0 50))
+      (==> dt append-row (list "MSFT" 80.0 200))
+      (==> dt append-row (list "AAPL" 155.0 75))
+      (==> dt append-row (list "TSLA" 300.0 25))
+      (==> db attach "trades" dt)
+
+      ;; WHERE + ORDER BY + LIMIT + column projection
+      (let ((result (==> db query "SELECT symbol, price FROM trades WHERE price > 100 ORDER BY price DESC LIMIT 3")))
+        (test-equal "complex rows" (==> result num-rows) 3)
+        (test-equal "complex cols" (==> result num-cols) 2)
+        (test-approx "complex first price" (==> result get 0 "price") 300.0 0.001)
+        (test-string-equal "complex first sym" (==> result get 0 "symbol") "TSLA") ) ) ) )
+
+
+(test-suite "Database.query: matches db-select"
+  (let ((db (new Database (concat sql-test-dir "/db15"))))
+    (let ((dt (new DataTable)))
+      (==> dt add-column "symbol" 'string)
+      (==> dt add-column "price" 'real)
+      (==> dt append-row (list "AAPL" 150.0))
+      (==> dt append-row (list "GOOG" 200.0))
+      (==> dt append-row (list "MSFT" 80.0))
+      (==> dt append-row (list "AAPL" 155.0))
+      (==> db attach "trades" dt)
+
+      ;; Compare SQL query vs db-select macro
+      (let ((sql-result (==> db query "SELECT symbol, price FROM trades WHERE price > 100 ORDER BY price DESC"))
+            (macro-result (db-select ("symbol" "price")
+                            (from db "trades")
+                            (where (> "price" 100))
+                            (order-by "price" 'desc))) )
+        (test-equal "match rows" (==> sql-result num-rows) (==> macro-result num-rows))
+        (test-equal "match cols" (==> sql-result num-cols) (==> macro-result num-cols))
+        ;; Compare actual values
+        (for (i 0 (1- (==> sql-result num-rows)))
+          (test-string-equal (sprintf "match sym[%d]" i)
+                          (==> sql-result get i "symbol")
+                          (==> macro-result get i "symbol"))
+          (test-approx (sprintf "match price[%d]" i)
+                       (==> sql-result get i "price")
+                       (==> macro-result get i "price")
+                       0.001) ) ) ) ) )
+
+
+;; ============================================================
+;; Error handling tests
+;; ============================================================
+
+;; Error handling: sql-parse raises errors on bad input.
+;; (sql-parse "SELECT * WHERE x > 1") -> error: missing FROM
+;; (sql-parse "") -> error: expected keyword SELECT
+;; Not tested inline because datatable test framework lacks error-catching.
+
+
+;; ============================================================
+;; Edge case tests
+;; ============================================================
+
+(test-suite "SQL Parser: edge cases"
+  ;; Negative number in WHERE
+  (let* ((result (sql-parse "SELECT * FROM t WHERE val > -10"))
+         (clauses (cdr result))
+         (where-clause (cadr (assoc 'where clauses)))
+         (cond1 (car where-clause)) )
+    (test-equal "neg val" (caddr cond1) -10) )
+
+  ;; Float value in WHERE
+  (let* ((result (sql-parse "SELECT * FROM t WHERE price > 99.5"))
+         (clauses (cdr result))
+         (where-clause (cadr (assoc 'where clauses)))
+         (cond1 (car where-clause)) )
+    (test-approx "float val" (caddr cond1) 99.5 0.001) )
+
+  ;; Multiple spaces and mixed case
+  (let* ((result (sql-parse "  SELECT   *   from   trades   where   price > 100  "))
+         (columns (car result))
+         (clauses (cdr result)) )
+    (test-equal "spaces columns" columns '*)
+    (test-check "spaces has from" (assoc 'from clauses))
+    (test-check "spaces has where" (assoc 'where clauses)) ) )
+
+
+;; Cleanup
+(sys (concat "rm -rf " sql-test-dir))
+
+) ;; end let sql-test-dir

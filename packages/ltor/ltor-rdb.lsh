@@ -100,12 +100,8 @@
                     (payload (cadr msg)) )
                 (setq *rdb-total-broadcasts* (1+ *rdb-total-broadcasts*))
                 (cond
-                 ((= topic "ticker")
-                  (when (consp payload)
-                    (rdb-insert-ticker payload) ) )
-                 ((= topic "l2")
-                  (when (and (consp payload) (= (car payload) 'datatable))
-                    (rdb-insert-l2 (wire-unpack-datatable payload)) ) ) ) ) ) ) )
+                 ((= topic "ticker") (rdb-process-ticker payload))
+                 ((= topic "l2") (rdb-process-l2 payload)) ) ) ) ) ) )
 
         ;; Check ROUTER socket — client queries
         (when (zmq-poll-ready 1)
@@ -118,30 +114,14 @@
     ;; Periodic heartbeat (every 30s)
     (let ((now (_wire-time-seconds)))
       (when (>= (- now *ltor-rdb-last-heartbeat*) 30)
-        (let ((ticker-rows (==> *rdb-ticker-table* num-rows))
-              (l2-rows (==> *rdb-l2-table* num-rows))
-              (uptime (to-int (- now *rdb-start-time*))) )
-          (printf "ltor-rdb: heartbeat  tickers=%d l2=%d ticker-rows=%d l2-rows=%d queries=%d uptime=%ds\n"
-                  *rdb-total-tickers* *rdb-total-l2* ticker-rows l2-rows
-                  *ltor-rdb-total-queries* uptime)
-          ;; Trim ticker table if it exceeds max rows (keep newest half)
-          (when (> ticker-rows *ltor-rdb-max-rows*)
-            (let* ((keep (to-int (/ *ltor-rdb-max-rows* 2)))
-                   (start (- ticker-rows keep))
-                   (idx (int-matrix keep)) )
-              (for (i 0 (1- keep)) (idx i (+ start i)))
-              (printf "ltor-rdb: trimming ticker table from %d to %d rows\n"
-                      ticker-rows keep)
-              (setq *rdb-ticker-table* (==> *rdb-ticker-table* select-rows-idx idx)) ) )
-          ;; Trim L2 table similarly
-          (when (> l2-rows *ltor-rdb-max-rows*)
-            (let* ((keep (to-int (/ *ltor-rdb-max-rows* 2)))
-                   (start (- l2-rows keep))
-                   (idx (int-matrix keep)) )
-              (for (i 0 (1- keep)) (idx i (+ start i)))
-              (printf "ltor-rdb: trimming l2 table from %d to %d rows\n"
-                      l2-rows keep)
-              (setq *rdb-l2-table* (==> *rdb-l2-table* select-rows-idx idx)) ) ) )
+        (printf "ltor-rdb: heartbeat  tickers=%d l2=%d ticker-rows=%d l2-rows=%d queries=%d uptime=%ds\n"
+                *rdb-total-tickers* *rdb-total-l2*
+                (==> *rdb-ticker-table* num-rows)
+                (==> *rdb-l2-table* num-rows)
+                *ltor-rdb-total-queries*
+                (to-int (- now *rdb-start-time*)))
+        ;; Trim tables if they exceed max rows
+        (rdb-trim-tables *ltor-rdb-max-rows*)
         (setq *ltor-rdb-last-heartbeat* now) ) ) ) )
 
   ;; Shutdown

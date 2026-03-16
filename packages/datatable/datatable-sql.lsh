@@ -1,0 +1,800 @@
+;;; datatable-sql.lsh -- SQL string parser for DataTable query engine
+;;;
+;;; Parses flat SQL strings like:
+;;;   "SELECT price, symbol FROM trades WHERE price > 100 ORDER BY price DESC LIMIT 10"
+;;; into the clause alist that _query-execute already consumes.
+;;;
+;;; Architecture: tokenizer -> recursive-descent parser -> clause alist
+;;;
+;;; Used by Database.query() to accept SQL strings from external clients.
+
+#? ** SQL String Parser
+;; Parses SQL strings into the clause alist consumed by the DataTable
+;; query engine ({<b> _query-execute} and {<b> _query-count}).
+;;
+;; Supported SQL syntax:
+;; {<ul>
+;; {<li> {<b> SELECT} columns or {<b> *} or {<b> COUNT(*)}}
+;; {<li> {<b> FROM} table-name}
+;; {<li> {<b> WHERE} predicates with AND, OR, BETWEEN, IN, NOT IN, LIKE}
+;; {<li> {<b> JOIN} / {<b> LEFT JOIN} / {<b> RIGHT JOIN} / {<b> ASOF JOIN} with ON}
+;; {<li> {<b> GROUP BY} column with aggregate functions (COUNT, SUM, MEAN/AVG, MIN, MAX)}
+;; {<li> {<b> HAVING} predicates on aggregated columns}
+;; {<li> {<b> ORDER BY} column ASC/DESC}
+;; {<li> {<b> LIMIT} N}
+;; }
+;;
+;; Example:
+;; {<code>
+;;   (sql-parse "SELECT price, symbol FROM trades WHERE price > 100")
+;;   ;; => (* . ((from "trades") (where ((> "price" 100)))))
+;;
+;;   (sql-parse "SELECT COUNT(*) FROM trades WHERE price > 50")
+;;   ;; => (count . ((from "trades") (where ((> "price" 50)))))
+;; </code>}
+;; {<see> (sql-parse <sql-string>)}
+;; {<see> (db-select <columns> <clauses...>)}
+
+
+;; ============================================================
+;; Section A: Tokenizer
+;; ============================================================
+
+;; SQL keywords recognized by the tokenizer
+(defvar *sql-keywords*
+  '("SELECT" "FROM" "WHERE" "JOIN" "LEFT" "RIGHT" "ASOF"
+    "ON" "GROUP" "BY" "HAVING" "ORDER" "ASC" "DESC"
+    "LIMIT" "AND" "OR" "NOT" "IN" "BETWEEN" "LIKE"
+    "AS" "COUNT" "SUM" "MEAN" "AVG" "MIN" "MAX"))
+
+
+;; Check if a character is whitespace
+(de _sql-whitespace-p (ch)
+  (or (= ch " ") (= ch "\t") (= ch "\n") (= ch "\r")) )
+
+;; Check if a character can start an identifier (letter or underscore)
+(de _sql-alpha-p (ch)
+  (let ((c (asc ch)))
+    (or (and (>= c (asc "a")) (<= c (asc "z")))
+        (and (>= c (asc "A")) (<= c (asc "Z")))
+        (= c (asc "_")) ) ) )
+
+;; Check if a character is a digit
+(de _sql-digit-p (ch)
+  (let ((c (asc ch)))
+    (and (>= c (asc "0")) (<= c (asc "9"))) ) )
+
+;; Check if a character can continue an identifier (alphanumeric, underscore, dash)
+(de _sql-alnum-p (ch)
+  (or (_sql-alpha-p ch) (_sql-digit-p ch) (= ch "-")) )
+
+;; Upcase a single character
+(de _sql-upchar (ch)
+  (let ((c (asc ch)))
+    (if (and (>= c (asc "a")) (<= c (asc "z")))
+      (chr (+ c (- (asc "A") (asc "a"))))
+      ch ) ) )
+
+;; Upcase a string
+(de _sql-upcase (s)
+  (let ((result "")
+        (n (len s)) )
+    (for (i 1 n)
+      (setq result (concat result (_sql-upchar (mid s i 1)))) )
+    result ) )
+
+
+#? (_sql-tokenize <sql-string>)
+;; Tokenize an SQL string into a list of token pairs.
+;; Each token is {<b> (type value)} where type is one of:
+;; {<b> keyword}, {<b> ident}, {<b> number}, {<b> string},
+;; {<b> op}, {<b> comma}, {<b> star}, {<b> lparen}, {<b> rparen}.
+;;
+;; Keywords are case-insensitive.
+;; Strings can use single or double quotes.
+;; Numbers include integers and floats (with optional leading minus).
+;;
+;; Example:
+;; {<code>
+;;   (_sql-tokenize "SELECT * FROM t WHERE x > 10")
+;;   ;; => ((keyword "SELECT") (star "*") (keyword "FROM")
+;;   ;;     (ident "t") (keyword "WHERE") (ident "x")
+;;   ;;     (op ">") (number 10))
+;; </code>}
+(de _sql-tokenize (sql)
+  (let ((tokens ())
+        (pos 1)
+        (slen (len sql)) )
+    (while (<= pos slen)
+      (let ((ch (mid sql pos 1)))
+        (cond
+         ;; Skip whitespace
+         ((_sql-whitespace-p ch)
+          (setq pos (1+ pos)) )
+
+         ;; Single-character tokens
+         ((= ch ",")
+          (setq tokens (nconc1 tokens (list 'comma ",")))
+          (setq pos (1+ pos)) )
+
+         ((= ch "*")
+          (setq tokens (nconc1 tokens (list 'star "*")))
+          (setq pos (1+ pos)) )
+
+         ((= ch "(")
+          (setq tokens (nconc1 tokens (list 'lparen "(")))
+          (setq pos (1+ pos)) )
+
+         ((= ch ")")
+          (setq tokens (nconc1 tokens (list 'rparen ")")))
+          (setq pos (1+ pos)) )
+
+         ;; Operators: <=, >=, <>, !=, <, >, =
+         ((= ch "<")
+          (if (and (<= (1+ pos) slen) (= (mid sql (1+ pos) 1) "="))
+            (progn
+              (setq tokens (nconc1 tokens (list 'op "<=")))
+              (setq pos (+ pos 2)) )
+            (if (and (<= (1+ pos) slen) (= (mid sql (1+ pos) 1) ">"))
+              (progn
+                (setq tokens (nconc1 tokens (list 'op "<>")))
+                (setq pos (+ pos 2)) )
+              (progn
+                (setq tokens (nconc1 tokens (list 'op "<")))
+                (setq pos (1+ pos)) ) ) ) )
+
+         ((= ch ">")
+          (if (and (<= (1+ pos) slen) (= (mid sql (1+ pos) 1) "="))
+            (progn
+              (setq tokens (nconc1 tokens (list 'op ">=")))
+              (setq pos (+ pos 2)) )
+            (progn
+              (setq tokens (nconc1 tokens (list 'op ">")))
+              (setq pos (1+ pos)) ) ) )
+
+         ((= ch "=")
+          (setq tokens (nconc1 tokens (list 'op "=")))
+          (setq pos (1+ pos)) )
+
+         ((= ch "!")
+          (if (and (<= (1+ pos) slen) (= (mid sql (1+ pos) 1) "="))
+            (progn
+              (setq tokens (nconc1 tokens (list 'op "<>")))
+              (setq pos (+ pos 2)) )
+            (error 'sql-tokenize (concat "unexpected character: " ch) ()) ) )
+
+         ;; Quoted strings (single or double)
+         ((or (= ch "'") (= ch "\""))
+          (let ((quote-char ch)
+                (start (1+ pos))
+                (end 0) )
+            (setq pos (1+ pos))
+            (while (and (<= pos slen) (<> (mid sql pos 1) quote-char))
+              (setq pos (1+ pos)) )
+            (when (> pos slen)
+              (error 'sql-tokenize "unterminated string literal" ()) )
+            (setq end pos)
+            (let ((str-val (if (= start end) "" (mid sql start (- end start)))))
+              (setq tokens (nconc1 tokens (list 'string str-val))) )
+            (setq pos (1+ pos)) ) )
+
+         ;; Numbers (including negative: only when preceded by operator/comma/lparen/start)
+         ((or (_sql-digit-p ch)
+              (and (= ch ".")
+                   (<= (1+ pos) slen)
+                   (_sql-digit-p (mid sql (1+ pos) 1)) )
+              (and (= ch "-")
+                   (<= (1+ pos) slen)
+                   (or (_sql-digit-p (mid sql (1+ pos) 1))
+                       (and (= (mid sql (1+ pos) 1) ".")
+                            (<= (+ pos 2) slen)
+                            (_sql-digit-p (mid sql (+ pos 2) 1)) ) )
+                   ;; Only treat as negative number if preceded by op/comma/lparen/keyword or start
+                   (or (not tokens)
+                       (let ((prev-type (car (nth (1- (length tokens)) tokens))))
+                         (member prev-type '(op comma lparen keyword)) ) ) ) )
+          (let ((start pos)
+                (has-dot ()))
+            (when (= ch "-") (setq pos (1+ pos)))
+            (while (and (<= pos slen)
+                        (or (_sql-digit-p (mid sql pos 1))
+                            (and (= (mid sql pos 1) ".") (not has-dot)) ))
+              (when (= (mid sql pos 1) ".") (setq has-dot t))
+              (setq pos (1+ pos)) )
+            (let ((num-str (mid sql start (- pos start))))
+              (setq tokens (nconc1 tokens
+                (list 'number (val num-str)) ))) ) )
+
+         ;; Identifiers and keywords
+         ((_sql-alpha-p ch)
+          (let ((start pos))
+            (while (and (<= pos slen) (_sql-alnum-p (mid sql pos 1)))
+              (setq pos (1+ pos)) )
+            (let* ((word (mid sql start (- pos start)))
+                   (upper (_sql-upcase word)) )
+              (if (member upper *sql-keywords*)
+                (setq tokens (nconc1 tokens (list 'keyword upper)))
+                (setq tokens (nconc1 tokens (list 'ident word))) ) ) ) )
+
+         ;; Unknown character
+         (t
+          (error 'sql-tokenize (concat "unexpected character: " ch) ()) ) ) ) )
+    tokens ) )
+
+
+;; ============================================================
+;; Section B: Parser helpers
+;; ============================================================
+
+;; Get current token from token list (or () if exhausted)
+(de _sql-peek (tokens)
+  (if tokens (car tokens) ()) )
+
+;; Check if current token matches type and optionally value
+(de _sql-match-p (tokens type . rest)
+  (let ((tok (_sql-peek tokens)))
+    (when tok
+      (and (= (car tok) type)
+           (or (not rest)
+               (= (cadr tok) (car rest)) ) ) ) ) )
+
+;; Consume current token if it matches, return (consumed-token . remaining-tokens)
+;; Error if no match.
+(de _sql-expect (tokens type . rest)
+  (let ((tok (_sql-peek tokens)))
+    (when (not tok)
+      (error 'sql-parse
+             (concat "expected " (pname type)
+                     (if rest (concat " '" (car rest) "'") "")
+                     " but got end of input") ()) )
+    (when (not (= (car tok) type))
+      (error 'sql-parse
+             (concat "expected " (pname type)
+                     (if rest (concat " '" (car rest) "'") "")
+                     " but got " (pname (car tok)) " '" (cadr tok) "'") ()) )
+    (when (and rest (<> (cadr tok) (car rest)))
+      (error 'sql-parse
+             (concat "expected '" (car rest) "' but got '" (cadr tok) "'") ()) )
+    (cons tok (cdr tokens)) ) )
+
+
+;; ============================================================
+;; Section C: Predicate parser (WHERE / HAVING)
+;; ============================================================
+
+;; Parse a single atomic predicate: col op value, col BETWEEN, col IN, col LIKE
+;; Returns (predicate . remaining-tokens)
+(de _sql-parse-atom (tokens)
+  ;; Handle parenthesized expressions
+  (if (_sql-match-p tokens 'lparen)
+    (let* ((rest (cdr tokens))  ;; skip lparen
+           (result (_sql-parse-or-expr rest))
+           (pred (car result))
+           (rest2 (cdr result)) )
+      (let ((consumed (_sql-expect rest2 'rparen)))
+        (cons pred (cdr consumed)) ) )
+
+    ;; Handle NOT prefix
+    (if (_sql-match-p tokens 'keyword "NOT")
+      (let* ((rest (cdr tokens))  ;; skip NOT
+             ;; Expect: NOT IN => col NOT IN (...)
+             ;; For now just pass through to parse col NOT IN
+             (result (_sql-parse-atom rest))
+             (pred (car result))
+             (rest2 (cdr result)) )
+        ;; Negate: wrap with not-clause or handle NOT IN specially
+        (cons (list 'not-clause pred) rest2) )
+
+      ;; Normal: col op value / col BETWEEN / col IN / col LIKE
+      (let ((col-tok (_sql-peek tokens)))
+        (when (not col-tok)
+          (error 'sql-parse "expected column name in predicate" ()) )
+        (let ((col-name (cadr col-tok))
+              (rest (cdr tokens)) )
+          (let ((next (_sql-peek rest)))
+            (when (not next)
+              (error 'sql-parse "expected operator after column" ()) )
+            (cond
+             ;; col BETWEEN val AND val
+             ((and (= (car next) 'keyword) (= (cadr next) "BETWEEN"))
+              (let* ((rest2 (cdr rest))  ;; skip BETWEEN
+                     (lo-tok (_sql-peek rest2)) )
+                (when (not lo-tok)
+                  (error 'sql-parse "expected value after BETWEEN" ()) )
+                (let* ((lo-val (cadr lo-tok))
+                       (rest3 (cdr rest2))
+                       (consumed (_sql-expect rest3 'keyword "AND"))
+                       (rest4 (cdr consumed))
+                       (hi-tok (_sql-peek rest4)) )
+                  (when (not hi-tok)
+                    (error 'sql-parse "expected value after BETWEEN...AND" ()) )
+                  (let ((hi-val (cadr hi-tok)))
+                    (cons (list 'range col-name lo-val hi-val) (cdr rest4)) ) ) ) )
+
+             ;; col NOT IN (val, val, ...)
+             ((and (= (car next) 'keyword) (= (cadr next) "NOT"))
+              (let* ((rest2 (cdr rest))  ;; skip NOT
+                     (consumed (_sql-expect rest2 'keyword "IN"))
+                     (rest3 (cdr consumed))
+                     (result (_sql-parse-value-list rest3))
+                     (vals (car result))
+                     (rest4 (cdr result)) )
+                (cons (list 'not-in col-name vals) rest4) ) )
+
+             ;; col IN (val, val, ...)
+             ((and (= (car next) 'keyword) (= (cadr next) "IN"))
+              (let* ((rest2 (cdr rest))  ;; skip IN
+                     (result (_sql-parse-value-list rest2))
+                     (vals (car result))
+                     (rest3 (cdr result)) )
+                (cons (list 'in col-name vals) rest3) ) )
+
+             ;; col LIKE 'pattern'
+             ((and (= (car next) 'keyword) (= (cadr next) "LIKE"))
+              (let* ((rest2 (cdr rest))  ;; skip LIKE
+                     (pat-tok (_sql-peek rest2)) )
+                (when (not pat-tok)
+                  (error 'sql-parse "expected pattern after LIKE" ()) )
+                (cons (list 'like col-name (cadr pat-tok)) (cdr rest2)) ) )
+
+             ;; col op value (=, <, >, <=, >=, <>)
+             ((= (car next) 'op)
+              (let* ((op-str (cadr next))
+                     (rest2 (cdr rest))  ;; skip op
+                     (val-tok (_sql-peek rest2)) )
+                (when (not val-tok)
+                  (error 'sql-parse "expected value after operator" ()) )
+                (let ((op-sym (cond ((= op-str "=") '=)
+                                    ((= op-str "<") '<)
+                                    ((= op-str ">") '>)
+                                    ((= op-str "<=") '<=)
+                                    ((= op-str ">=") '>=)
+                                    ((= op-str "<>") '<>)
+                                    (t (error 'sql-parse "unknown operator" op-str)) ))
+                      (val (cadr val-tok)) )
+                  (cons (list op-sym col-name val) (cdr rest2)) ) ) )
+
+             (t (error 'sql-parse
+                       (concat "unexpected token in predicate: " (cadr next)) ()) ) ) ) ) ) ) ) )
+
+
+;; Parse a parenthesized value list: (val, val, ...)
+;; Returns (value-list . remaining-tokens)
+(de _sql-parse-value-list (tokens)
+  (let* ((consumed (_sql-expect tokens 'lparen))
+         (rest (cdr consumed))
+         (vals ()) )
+    ;; Parse first value
+    (let ((tok (_sql-peek rest)))
+      (when (not tok)
+        (error 'sql-parse "expected value in list" ()) )
+      (setq vals (nconc1 vals (cadr tok)))
+      (setq rest (cdr rest)) )
+    ;; Parse comma-separated remaining values
+    (while (_sql-match-p rest 'comma)
+      (setq rest (cdr rest))  ;; skip comma
+      (let ((tok (_sql-peek rest)))
+        (when (not tok)
+          (error 'sql-parse "expected value after comma in list" ()) )
+        (setq vals (nconc1 vals (cadr tok)))
+        (setq rest (cdr rest)) ) )
+    ;; Expect closing paren
+    (let ((consumed2 (_sql-expect rest 'rparen)))
+      (cons vals (cdr consumed2)) ) ) )
+
+
+;; Parse AND expression: atom AND atom AND ...
+;; Returns (predicate-or-list . remaining-tokens)
+(de _sql-parse-and-expr (tokens)
+  (let* ((result (_sql-parse-atom tokens))
+         (pred (car result))
+         (rest (cdr result))
+         (preds (list pred)) )
+    (while (_sql-match-p rest 'keyword "AND")
+      (setq rest (cdr rest))  ;; skip AND
+      (let ((result2 (_sql-parse-atom rest)))
+        (setq preds (nconc1 preds (car result2)))
+        (setq rest (cdr result2)) ) )
+    (if (= (length preds) 1)
+      (cons (car preds) rest)
+      (cons preds rest) ) ) )
+
+
+;; Parse OR expression: and-expr OR and-expr OR ...
+;; Returns (predicate . remaining-tokens)
+(de _sql-parse-or-expr (tokens)
+  (let* ((result (_sql-parse-and-expr tokens))
+         (pred (car result))
+         (rest (cdr result))
+         (branches ()) )
+    (if (not (_sql-match-p rest 'keyword "OR"))
+      ;; No OR: return as-is
+      (cons pred rest)
+      ;; OR: collect branches
+      (progn
+        ;; First branch: wrap in list if single predicate
+        (setq branches (list (if (and (listp pred) (listp (car pred)))
+                               pred  ;; already a list of predicates
+                               (list pred) )))
+        (while (_sql-match-p rest 'keyword "OR")
+          (setq rest (cdr rest))  ;; skip OR
+          (let ((result2 (_sql-parse-and-expr rest)))
+            (let ((p (car result2)))
+              (setq branches (nconc1 branches
+                (if (and (listp p) (listp (car p)))
+                  p
+                  (list p) )))
+              (setq rest (cdr result2)) ) ) )
+        (cons (list 'or-clause branches) rest) ) ) ) )
+
+
+;; ============================================================
+;; Section D: Clause parsers
+;; ============================================================
+
+;; Parse SELECT columns: *, column list, COUNT(*), or columns with aggregates
+;; Returns (columns . remaining-tokens) where columns is:
+;;   '* for SELECT *
+;;   'count for SELECT COUNT(*)
+;;   list of column-name strings
+;;   '(columns agg-info) when aggregates detected (for GROUP BY)
+(de _sql-parse-select (tokens)
+  (let* ((consumed (_sql-expect tokens 'keyword "SELECT"))
+         (rest (cdr consumed)) )
+    ;; Check for COUNT(*)
+    (let ((r1 (cdr rest))       ;; after COUNT
+          (r2 (cdr (cdr rest))) ;; after (
+          (r3 (cdr (cdr (cdr rest))))   ;; after *
+          (r4 (cdr (cdr (cdr (cdr rest))))) ) ;; after )
+    (if (and (_sql-match-p rest 'keyword "COUNT")
+             r1 (_sql-match-p r1 'lparen)
+             r2 (_sql-match-p r2 'star)
+             r3 (_sql-match-p r3 'rparen) )
+      ;; COUNT(*)
+      (cons 'count r4)
+
+      ;; Check for SELECT *
+      (if (_sql-match-p rest 'star)
+        (cons '* (cdr rest))
+
+        ;; Column list (possibly with aggregates like SUM(col))
+        (let ((columns ())
+              (agg-list ()) )
+          ;; Parse first column-or-aggregate
+          (let ((result (_sql-parse-select-item rest)))
+            (let ((item (car result))
+                  (item-type (cadr result)) )
+              (setq rest (cddr result))
+              (if (= item-type 'agg)
+                (setq agg-list (nconc1 agg-list item))
+                (setq columns (nconc1 columns item)) ) ) )
+          ;; Parse remaining comma-separated items
+          (while (_sql-match-p rest 'comma)
+            (setq rest (cdr rest))  ;; skip comma
+            (let ((result (_sql-parse-select-item rest)))
+              (let ((item (car result))
+                    (item-type (cadr result)) )
+                (setq rest (cddr result))
+                (if (= item-type 'agg)
+                  (setq agg-list (nconc1 agg-list item))
+                  (setq columns (nconc1 columns item)) ) ) ) )
+          ;; Return columns (with aggregate info if present)
+          (if agg-list
+            (cons (list columns agg-list) rest)
+            (cons columns rest) ) ) ) ) ) ) )
+
+
+;; Parse a single SELECT item: identifier, aggregate(col), or expr AS alias
+;; Returns (item item-type . remaining-tokens)
+;;   item-type is 'col or 'agg
+(de _sql-parse-select-item (tokens)
+  (let ((tok (_sql-peek tokens)))
+    (when (not tok)
+      (error 'sql-parse "expected column or expression in SELECT" ()) )
+    ;; Check for aggregate function: SUM(col), COUNT(col), etc.
+    (if (and (= (car tok) 'keyword)
+             (member (cadr tok) '("COUNT" "SUM" "MEAN" "AVG" "MIN" "MAX"))
+             (cdr tokens)
+             (_sql-match-p (cdr tokens) 'lparen) )
+      (let ((agg-name (cadr tok))
+            (rest (cddr tokens)) )  ;; skip agg-name and lparen
+        (let ((col-tok (_sql-peek rest)))
+          (when (not col-tok)
+            (error 'sql-parse "expected column name in aggregate" ()) )
+          (let* ((agg-col (cadr col-tok))
+                 (rest2 (cdr rest))
+                 (consumed (_sql-expect rest2 'rparen))
+                 (rest3 (cdr consumed))
+                 (op-sym (cond ((= agg-name "COUNT") 'count)
+                               ((= agg-name "SUM") 'sum)
+                               ((= agg-name "MEAN") 'mean)
+                               ((= agg-name "AVG") 'mean)
+                               ((= agg-name "MIN") 'min)
+                               ((= agg-name "MAX") 'max)
+                               (t 'sum) )) )
+            ;; Check for AS alias
+            (if (_sql-match-p rest3 'keyword "AS")
+              (let* ((rest4 (cdr rest3))  ;; skip AS
+                     (alias-tok (_sql-peek rest4)) )
+                (when (not alias-tok)
+                  (error 'sql-parse "expected alias after AS" ()) )
+                ;; Return aggregate with alias info
+                (cons (list op-sym agg-col) (cons 'agg (cdr rest4))) )
+              (cons (list op-sym agg-col) (cons 'agg rest3)) ) ) ) )
+
+      ;; Regular column name (identifier or string)
+      (let ((col-name (cadr tok))
+            (rest (cdr tokens)) )
+        ;; Check for AS alias
+        (if (_sql-match-p rest 'keyword "AS")
+          (let* ((rest2 (cdr rest))  ;; skip AS
+                 (alias-tok (_sql-peek rest2)) )
+            (when (not alias-tok)
+              (error 'sql-parse "expected alias after AS" ()) )
+            (cons col-name (cons 'col (cdr rest2))) )
+          (cons col-name (cons 'col rest)) ) ) ) ) )
+
+
+;; Parse FROM clause
+;; Returns (table-name . remaining-tokens)
+(de _sql-parse-from (tokens)
+  (let* ((consumed (_sql-expect tokens 'keyword "FROM"))
+         (rest (cdr consumed))
+         (tok (_sql-peek rest)) )
+    (when (not tok)
+      (error 'sql-parse "expected table name after FROM" ()) )
+    (cons (cadr tok) (cdr rest)) ) )
+
+
+;; Parse WHERE clause
+;; Returns (predicate-list . remaining-tokens)
+(de _sql-parse-where (tokens)
+  (let* ((consumed (_sql-expect tokens 'keyword "WHERE"))
+         (rest (cdr consumed))
+         (result (_sql-parse-or-expr rest))
+         (pred (car result))
+         (rest2 (cdr result)) )
+    ;; Normalize to the format _query-execute expects:
+    ;;   AND: list of conditions ((cond1) (cond2) ...)
+    ;;   OR: (or-clause (branch1 branch2 ...)) -- not wrapped in outer list
+    ;;   Single: ((cond1)) -- wrapped in list
+    (let ((normalized
+            (cond
+             ;; OR clause: pass through as-is
+             ((and (listp pred) (= (car pred) 'or-clause))
+              pred )
+             ;; List of AND predicates (list of lists)
+             ((and (listp pred) (listp (car pred)))
+              pred )
+             ;; Single predicate -> wrap in list
+             (t (list pred)) ) ))
+      (cons normalized rest2) ) ) )
+
+
+;; Parse HAVING clause (same syntax as WHERE)
+;; Returns (predicate-list . remaining-tokens)
+(de _sql-parse-having (tokens)
+  (let* ((consumed (_sql-expect tokens 'keyword "HAVING"))
+         (rest (cdr consumed))
+         (result (_sql-parse-or-expr rest))
+         (pred (car result))
+         (rest2 (cdr result)) )
+    (let ((normalized
+            (cond
+             ((and (listp pred) (= (car pred) 'or-clause))
+              pred )
+             ((and (listp pred) (listp (car pred)))
+              pred )
+             (t (list pred)) ) ))
+      (cons normalized rest2) ) ) )
+
+
+;; Parse ORDER BY clause
+;; Returns ((col-name [desc]) . remaining-tokens)
+(de _sql-parse-orderby (tokens)
+  (let* ((consumed (_sql-expect tokens 'keyword "ORDER"))
+         (rest (cdr consumed))
+         (consumed2 (_sql-expect rest 'keyword "BY"))
+         (rest2 (cdr consumed2))
+         (col-tok (_sql-peek rest2)) )
+    (when (not col-tok)
+      (error 'sql-parse "expected column name after ORDER BY" ()) )
+    (let ((col-name (cadr col-tok))
+          (rest3 (cdr rest2)) )
+      ;; Check for ASC/DESC
+      (if (_sql-match-p rest3 'keyword "DESC")
+        (cons (list col-name 'desc) (cdr rest3))
+        (if (_sql-match-p rest3 'keyword "ASC")
+          (cons (list col-name) (cdr rest3))
+          (cons (list col-name) rest3) ) ) ) ) )
+
+
+;; Parse LIMIT clause
+;; Returns (n . remaining-tokens)
+(de _sql-parse-limit (tokens)
+  (let* ((consumed (_sql-expect tokens 'keyword "LIMIT"))
+         (rest (cdr consumed))
+         (tok (_sql-peek rest)) )
+    (when (not tok)
+      (error 'sql-parse "expected number after LIMIT" ()) )
+    (when (<> (car tok) 'number)
+      (error 'sql-parse "LIMIT requires a number" (cadr tok)) )
+    (cons (to-int (cadr tok)) (cdr rest)) ) )
+
+
+;; Parse GROUP BY clause
+;; Returns (group-col . remaining-tokens)
+(de _sql-parse-groupby (tokens)
+  (let* ((consumed (_sql-expect tokens 'keyword "GROUP"))
+         (rest (cdr consumed))
+         (consumed2 (_sql-expect rest 'keyword "BY"))
+         (rest2 (cdr consumed2))
+         (col-tok (_sql-peek rest2)) )
+    (when (not col-tok)
+      (error 'sql-parse "expected column name after GROUP BY" ()) )
+    (cons (cadr col-tok) (cdr rest2)) ) )
+
+
+;; Parse JOIN clause: [LEFT|RIGHT|ASOF] JOIN table ON col
+;; Returns ((table-name on-col join-type) . remaining-tokens)
+(de _sql-parse-join (tokens)
+  (let ((join-type 'left)
+        (rest tokens) )
+    ;; Check for LEFT/RIGHT/ASOF prefix
+    (cond
+     ((_sql-match-p rest 'keyword "LEFT")
+      (setq join-type 'left)
+      (setq rest (cdr rest)) )
+     ((_sql-match-p rest 'keyword "RIGHT")
+      (setq join-type 'right)
+      (setq rest (cdr rest)) )
+     ((_sql-match-p rest 'keyword "ASOF")
+      (setq join-type 'asof)
+      (setq rest (cdr rest)) ) )
+    ;; Expect JOIN keyword
+    (let* ((consumed (_sql-expect rest 'keyword "JOIN"))
+           (rest2 (cdr consumed))
+           (table-tok (_sql-peek rest2)) )
+      (when (not table-tok)
+        (error 'sql-parse "expected table name after JOIN" ()) )
+      (let* ((table-name (cadr table-tok))
+             (rest3 (cdr rest2))
+             (consumed2 (_sql-expect rest3 'keyword "ON"))
+             (rest4 (cdr consumed2))
+             (col-tok (_sql-peek rest4)) )
+        (when (not col-tok)
+          (error 'sql-parse "expected column name after ON" ()) )
+        (cons (list table-name (cadr col-tok) join-type) (cdr rest4)) ) ) ) )
+
+
+;; ============================================================
+;; Section E: Main parser
+;; ============================================================
+
+#? (sql-parse <sql-string>)
+;; Parse an SQL string into the clause format consumed by
+;; {<b> _query-execute} and {<b> _query-count}.
+;;
+;; Returns {<b> (columns . clauses)} where:
+;; {<ul>
+;; {<li> <columns> is {<b> *} (all), {<b> count} (COUNT(*)),
+;;   or a list of column name strings.}
+;; {<li> <clauses> is a list of clause pairs like
+;;   {<b> (from "table")} {<b> (where ...)} {<b> (order-by ...)} etc.}
+;; }
+;;
+;; Supported SQL:
+;; {<code>
+;;   SELECT col1, col2 FROM table
+;;   SELECT * FROM table WHERE col > 100
+;;   SELECT COUNT(*) FROM table WHERE col = 'val'
+;;   SELECT sym, SUM(price) FROM t GROUP BY sym
+;;   SELECT * FROM t ORDER BY col DESC LIMIT 10
+;;   SELECT * FROM t WHERE x BETWEEN 1 AND 5
+;;   SELECT * FROM t WHERE s IN ('a', 'b', 'c')
+;;   SELECT * FROM t WHERE s NOT IN ('x', 'y')
+;;   SELECT * FROM t WHERE name LIKE '%foo%'
+;;   SELECT * FROM t LEFT JOIN t2 ON col
+;; </code>}
+;;
+;; Example:
+;; {<code>
+;;   (sql-parse "SELECT price FROM trades WHERE price > 100 LIMIT 5")
+;;   ;; => (("price") . ((from "trades") (where ((> "price" 100))) (limit 5)))
+;; </code>}
+;; {<see> (==> <db> query <sql-string>)}
+;; {<see> (db-select <columns> <clauses...>)}
+(de sql-parse (sql)
+  (let ((tokens (_sql-tokenize sql))
+        (clauses ())
+        (columns ())
+        (agg-info ()) )
+
+    ;; Parse SELECT
+    (let ((result (_sql-parse-select tokens)))
+      (let ((sel (car result)))
+        (setq tokens (cdr result))
+        (cond
+         ;; COUNT(*)
+         ((= sel 'count)
+          (setq columns 'count) )
+         ;; * (all)
+         ((= sel '*)
+          (setq columns '*) )
+         ;; columns with aggregates: (column-list agg-list)
+         ((and (listp sel) (= (length sel) 2) (listp (cadr sel))
+               (listp (car (cadr sel))) )
+          (setq columns (car sel))
+          (setq agg-info (cadr sel)) )
+         ;; Plain column list
+         (t (setq columns sel)) ) ) )
+
+    ;; Parse FROM (required)
+    (when (not (_sql-match-p tokens 'keyword "FROM"))
+      (error 'sql-parse "missing FROM clause" ()) )
+    (let ((result (_sql-parse-from tokens)))
+      (setq clauses (nconc1 clauses (list 'from (car result))))
+      (setq tokens (cdr result)) )
+
+    ;; Parse optional clauses in order
+    ;; JOIN
+    (when (or (_sql-match-p tokens 'keyword "JOIN")
+              (_sql-match-p tokens 'keyword "LEFT")
+              (_sql-match-p tokens 'keyword "RIGHT")
+              (_sql-match-p tokens 'keyword "ASOF") )
+      (let ((result (_sql-parse-join tokens)))
+        (let ((join-info (car result)))
+          (setq clauses (nconc1 clauses
+            (list 'join (car join-info) (cadr join-info) (caddr join-info)) ))
+          (setq tokens (cdr result)) ) ) )
+
+    ;; WHERE
+    (when (_sql-match-p tokens 'keyword "WHERE")
+      (let ((result (_sql-parse-where tokens)))
+        (setq clauses (nconc1 clauses (list 'where (car result))))
+        (setq tokens (cdr result)) ) )
+
+    ;; GROUP BY
+    (when (_sql-match-p tokens 'keyword "GROUP")
+      (let ((result (_sql-parse-groupby tokens)))
+        (let ((group-col (car result)))
+          (setq tokens (cdr result))
+          ;; Build group-by clause with aggregate from SELECT
+          (if agg-info
+            ;; Use aggregate from SELECT: (group-by group-col (op agg-col))
+            (setq clauses (nconc1 clauses
+              (list 'group-by group-col (car agg-info)) ))
+            ;; No aggregate in SELECT - use count as default
+            (setq clauses (nconc1 clauses
+              (list 'group-by group-col (list 'count)) )) )
+          ;; When aggregates present, use * for column projection
+          ;; (group-by produces its own output columns)
+          (when agg-info
+            (setq columns '*) ) ) ) )
+
+    ;; HAVING
+    (when (_sql-match-p tokens 'keyword "HAVING")
+      (let ((result (_sql-parse-having tokens)))
+        (setq clauses (nconc1 clauses (list 'having (car result))))
+        (setq tokens (cdr result)) ) )
+
+    ;; ORDER BY
+    (when (_sql-match-p tokens 'keyword "ORDER")
+      (let ((result (_sql-parse-orderby tokens)))
+        (let ((ob-info (car result)))
+          (setq clauses (nconc1 clauses (cons 'order-by ob-info)))
+          (setq tokens (cdr result)) ) ) )
+
+    ;; LIMIT
+    (when (_sql-match-p tokens 'keyword "LIMIT")
+      (let ((result (_sql-parse-limit tokens)))
+        (setq clauses (nconc1 clauses (list 'limit (car result))))
+        (setq tokens (cdr result)) ) )
+
+    ;; Warn about unparsed tokens
+    (when tokens
+      (printf "sql-parse warning: %d unparsed tokens remaining\n"
+              (length tokens)) )
+
+    ;; Return (columns . clauses)
+    (cons columns clauses) ) )

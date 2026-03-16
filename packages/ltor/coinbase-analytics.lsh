@@ -10,6 +10,7 @@
 
 (libload "wire/wire-serialize")
 (libload "datatable/datatable")
+(libload "datatable/columnardb")
 
 #? *** Coinbase Analytics: Moving Average CEP Logic
 ;; Transport-agnostic business logic for the Coinbase analytics process.
@@ -36,6 +37,8 @@
 ;; </code>}
 ;; {<see> (ana-init-table)}
 ;; {<see> (ana-update-product <product> <price> <bid> <ask> <volume> <time>)}
+;; {<see> (ana-process-ticker <payload>)}
+;; {<see> (ana-create-database)}
 ;; {<see> (ana-handle-query <expr>)}
 
 ;; ============================================================
@@ -293,6 +296,44 @@
 
 
 ;; ============================================================
+;; Process helpers (called by ltor-analytics.lsh transport layer)
+;; ============================================================
+
+#? (ana-process-ticker <payload>)
+;; Process a raw ticker alist from the feed handler.
+;; Extracts product, price, bid, ask, volume, and time fields
+;; and calls {<b> ana-update-product} if valid.
+(de ana-process-ticker (payload)
+  (let ((product (cdr (assoc "product" payload)))
+        (price (cdr (assoc "price" payload)))
+        (bid (or (cdr (assoc "best_bid" payload)) 0))
+        (ask (or (cdr (assoc "best_ask" payload)) 0))
+        (volume (or (cdr (assoc "volume" payload)) 0))
+        (time (or (cdr (assoc "time" payload)) (_wire-time-seconds))) )
+    (when (and product price)
+      (ana-update-product product price bid ask volume time) ) ) )
+
+
+;; ============================================================
+;; Database wrapper
+;; ============================================================
+
+#? (ana-create-database)
+;; Create a Database wrapping the current analytics table.
+;; Returns a Database object suitable for SQL queries.
+;;
+;; Example:
+;; {<code>
+;;  (let ((db (ana-create-database)))
+;;    (==> db query "SELECT * FROM analytics WHERE product = 'BTC-USD' LIMIT 5"))
+;; </code>}
+(de ana-create-database ()
+  (let ((db (new Database ())))
+    (==> db attach "analytics" *ana-table*)
+    db))
+
+
+;; ============================================================
 ;; Query interface
 ;; ============================================================
 
@@ -315,6 +356,7 @@
 ;; {<li> {<b> ("analytics-all" <product>)} -- all analytics for a product.}
 ;; {<li> {<b> ("vwap" <product>)} -- current VWAP value.}
 ;; {<li> {<b> ("vwap-all")} -- all products VWAP values.}
+;; {<li> {<b> "SELECT ..."} -- SQL query via Database wrapper.}
 ;; }
 (de ana-handle-query (expr)
   (setq *ana-total-queries* (1+ *ana-total-queries*))
@@ -439,6 +481,11 @@
           (setq result (nconc1 result
             (cons pname (_ana-vwap pname)) )) ) )
       result ) )
+
+   ;; SQL query (string starting with SELECT)
+   ((and (stringp expr) (regex-seek "^SELECT " (upcase expr)))
+    (let ((db (ana-create-database)))
+      (wire-pack-datatable (==> db query expr)) ) )
 
    ;; Unknown query
    (t (sprintf "unknown query: %l" expr)) ) )

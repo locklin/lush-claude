@@ -809,3 +809,4 @@
 (libload "datatable/datatable-groupby")
 (libload "datatable/datatable-multiindex")
 (libload "datatable/datatable-query")
+(libload "datatable/datatable-sql")

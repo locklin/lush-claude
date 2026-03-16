@@ -1,21 +1,20 @@
-;;; coinbase-hdb-writer.lsh -- Coinbase HDB Writer helpers (transport-agnostic)
+;;; coinbase-hdb-writer.lsh -- Coinbase HDB Writer business logic (transport-agnostic)
 ;;;
-;;; Date-string computation, path helpers, status reporting, and query
-;;; handling for the HDB Writer.  Used by ltor-hdb-writer.lsh (and formerly
-;;; zmq-hdb-writer.lsh / libuv/hdb-writer.lsh).
+;;; Complete business logic for the HDB Writer: table schemas, data
+;;; insertion, date-partitioned flush logic, query handling, and
+;;; Database wrapper for SQL queries.
 ;;;
-;;; This module contains only transport-agnostic helpers.  The actual
-;;; flush logic (pulling data from RDB or local tables, writing to disk)
-;;; is transport-specific and lives in the respective process files.
+;;; This module contains all transport-agnostic logic for the HDB Writer.
+;;; No ZMQ, no sockets, no event loops.  Called by ltor-hdb-writer.lsh.
 
 (libload "wire/wire-serialize")
 (libload "datatable/datatable")
 (libload "datatable/columnardb")
 
-#? *** Coinbase HDB Writer: Disk Persistence Helpers
-;; Transport-agnostic helpers for the Coinbase HDB Writer process.
-;; Provides date-string computation, path helpers, query dispatch,
-;; and status reporting.
+#? *** Coinbase HDB Writer: Disk Persistence Logic
+;; Transport-agnostic business logic for the Coinbase HDB Writer process.
+;; Accumulates ticker and L2 data in local DataTables, periodically
+;; flushes to date-partitioned splayed directories on disk.
 ;;
 ;; Disk layout:
 ;; {<code>
@@ -23,38 +22,341 @@
 ;;  <hdb-root>/YYYY.MM.DD/l2/     (meta.lsh, col-*.col)
 ;; </code>}
 ;;
+;; Database wrapper enables SQL queries on in-flight data
+;; (pending rows not yet flushed to disk).
+;;
 ;; Used by the LTOR HDB Writer process ({<b> ltor-hdb-writer.lsh}).
 ;;
 ;; Example:
 ;; {<code>
 ;;  (libload "ltor/coinbase-hdb-writer")
-;;  (setq *hdb-root* "/datafast1/experiment/coinbasedata-zmq")
-;;  (hdb-date-string)     ;; => "2026.03.09"
-;;  (hdb-table-path "ticker")  ;; => "/datafast1/.../2026.03.09/ticker"
+;;  (hdbw-reset-state "/datafast1/experiment/coinbasedata-zmq" 60)
+;;  (hdbw-insert-ticker '(("product" . "BTC-USD") ("price" . 50000)))
+;;  (hdbw-flush)
 ;; </code>}
-;; {<see> (hdb-date-string)}
-;; {<see> (hdb-table-path <tbl>)}
-;; {<see> (hdb-status)}
+;; {<see> (hdbw-reset-state <hdb-root> <flush-interval>)}
+;; {<see> (hdbw-init-tables)}
+;; {<see> (hdbw-insert-ticker <payload>)}
+;; {<see> (hdbw-insert-l2 <packed-payload>)}
+;; {<see> (hdbw-flush)}
+;; {<see> (hdbw-handle-query <expr>)}
 
 ;; ============================================================
 ;; HDB Writer state
 ;; ============================================================
 
-(defvar *hdb-root* "/tmp/hdb")           ;; base directory for HDB storage
-(defvar *hdb-running* ())                ;; main loop flag
-(defvar *hdb-ticker-hwm* 0)             ;; high-water mark: next ticker row to flush
-(defvar *hdb-l2-hwm* 0)                 ;; high-water mark: next L2 row to flush
-(defvar *hdb-total-flushes* 0)          ;; count of flush operations performed
-(defvar *hdb-total-ticker-rows* 0)      ;; total ticker rows written to disk
-(defvar *hdb-total-l2-rows* 0)          ;; total L2 rows written to disk
-(defvar *hdb-start-time* 0)             ;; start timestamp (seconds)
-(defvar *hdb-flush-interval* 60)        ;; seconds between flushes (default 60)
-(defvar *hdb-last-flush-time* 0)        ;; timestamp of last flush
-(defvar *hdb-total-queries* 0)         ;; query counter
+(defvar *hdbw-ticker-table* ())          ;; DataTable accumulating ticker rows
+(defvar *hdbw-l2-table* ())             ;; DataTable accumulating L2 rows
+(defvar *hdbw-total-tickers* 0)         ;; count of ticker inserts
+(defvar *hdbw-total-l2* 0)             ;; count of L2 inserts
+(defvar *hdbw-total-flushes* 0)        ;; count of flush operations
+(defvar *hdbw-total-ticker-rows* 0)    ;; total ticker rows written to disk
+(defvar *hdbw-total-l2-rows* 0)       ;; total L2 rows written to disk
+(defvar *hdbw-flush-interval* 60)      ;; seconds between flushes
+(defvar *hdbw-last-flush-time* 0)      ;; timestamp of last flush
+(defvar *hdbw-hdb-root* "/datafast1/experiment/coinbasedata-zmq")
+(defvar *hdbw-start-time* 0)          ;; start timestamp (seconds)
+(defvar *hdbw-total-queries* 0)       ;; query counter
+(defvar *hdbw-db* ())                 ;; Database object wrapping tables
 
 
 ;; ============================================================
-;; Path helpers
+;; Table initialization
+;; ============================================================
+
+#? (hdbw-init-tables)
+;; Create empty ticker and L2 DataTables with the correct schema,
+;; and create a Database wrapper attaching both tables.
+;;
+;; Ticker schema: product(string), price(real), bid(real), ask(real),
+;; side(string), volume(real), time(stamp), local_time(stamp)
+;;
+;; L2 schema: product(string), side(string), price(real),
+;; quantity(real), time(stamp)
+(de hdbw-init-tables ()
+  ;; Ticker table
+  (setq *hdbw-ticker-table* (new DataTable))
+  (==> *hdbw-ticker-table* add-column "product" 'string)
+  (==> *hdbw-ticker-table* add-column "price" 'real)
+  (==> *hdbw-ticker-table* add-column "bid" 'real)
+  (==> *hdbw-ticker-table* add-column "ask" 'real)
+  (==> *hdbw-ticker-table* add-column "side" 'string)
+  (==> *hdbw-ticker-table* add-column "volume" 'real)
+  (==> *hdbw-ticker-table* add-column "time" 'stamp)
+  (==> *hdbw-ticker-table* add-column "local_time" 'stamp)
+  ;; L2 table
+  (setq *hdbw-l2-table* (new DataTable))
+  (==> *hdbw-l2-table* add-column "product" 'string)
+  (==> *hdbw-l2-table* add-column "side" 'string)
+  (==> *hdbw-l2-table* add-column "price" 'real)
+  (==> *hdbw-l2-table* add-column "quantity" 'real)
+  (==> *hdbw-l2-table* add-column "time" 'stamp)
+  ;; Database wrapper
+  (setq *hdbw-db* (new Database ()))
+  (==> *hdbw-db* attach "ticker" *hdbw-ticker-table*)
+  (==> *hdbw-db* attach "l2" *hdbw-l2-table*) )
+
+
+;; ============================================================
+;; State reset
+;; ============================================================
+
+#? (hdbw-reset-state <hdb-root> <flush-interval>)
+;; Reset all HDB Writer state: counters, timers, and tables.
+;; Called by the transport layer at process startup.
+(de hdbw-reset-state (hdb-root flush-interval)
+  (setq *hdbw-hdb-root* hdb-root)
+  (setq *hdbw-flush-interval* flush-interval)
+  (setq *hdbw-total-tickers* 0)
+  (setq *hdbw-total-l2* 0)
+  (setq *hdbw-total-flushes* 0)
+  (setq *hdbw-total-ticker-rows* 0)
+  (setq *hdbw-total-l2-rows* 0)
+  (setq *hdbw-total-queries* 0)
+  (setq *hdbw-start-time* (_wire-time-seconds))
+  (setq *hdbw-last-flush-time* (_wire-time-seconds))
+  (hdbw-init-tables) )
+
+
+;; ============================================================
+;; Data insertion
+;; ============================================================
+
+#? (hdbw-insert-ticker <payload>)
+;; Extract fields from a raw ticker alist and append to the local
+;; ticker table.  Stamps {<b> local_time} with current wall-clock.
+;;
+;; <payload> is the ticker alist from the feed handler:
+;; {<c> (("product" . "BTC-USD") ("price" . 50000) ...)}
+(de hdbw-insert-ticker (payload)
+  (setq *hdbw-total-tickers* (1+ *hdbw-total-tickers*))
+  (let ((product (cdr (assoc "product" payload)))
+        (price (cdr (assoc "price" payload)))
+        (bid (or (cdr (assoc "best_bid" payload)) 0))
+        (ask (or (cdr (assoc "best_ask" payload)) 0))
+        (side (or (cdr (assoc "side" payload)) ""))
+        (volume (or (cdr (assoc "volume" payload)) 0))
+        (time (or (cdr (assoc "time" payload)) 0))
+        (local-time (_wire-time-seconds)) )
+    (==> *hdbw-ticker-table* append-row
+         (list product price bid ask side volume
+               (if (> time 0) time local-time) local-time)) ) )
+
+
+#? (hdbw-insert-l2 <packed-payload>)
+;; Unpack a wire-serialized L2 DataTable and append all rows
+;; to the local L2 table.
+;;
+;; <packed-payload> is a wire-packed DataTable (list starting with
+;; {<c> datatable} symbol).
+(de hdbw-insert-l2 (packed-payload)
+  (setq *hdbw-total-l2* (1+ *hdbw-total-l2*))
+  (let ((dt (wire-unpack-datatable packed-payload)))
+    (let ((nrows (==> dt num-rows)))
+      (for (r 0 (1- nrows))
+        (==> *hdbw-l2-table* append-row
+             (list (==> dt get r "product")
+                   (==> dt get r "side")
+                   (==> dt get r "price")
+                   (==> dt get r "quantity")
+                   (==> dt get r "time"))) ) ) ) )
+
+
+;; ============================================================
+;; Date partitioning helpers
+;; ============================================================
+
+;; Convert epoch seconds (integer) to "YYYY.MM.DD" date string.
+;; Uses the data's own timestamp (not wall-clock).
+(de _hdbw-epoch-to-date (epoch-sec)
+  (let ((days (to-int (/ epoch-sec 86400)))
+        (y 1970) (m 1) (d 0) (days-left 0) )
+    (setq days-left days)
+    ;; Advance years
+    (while (let ((yd (if (and (= 0 (mod y 4))
+                              (or (<> 0 (mod y 100))
+                                  (= 0 (mod y 400)) ))
+                       366 365)))
+             (>= days-left yd))
+      (let ((yd (if (and (= 0 (mod y 4))
+                         (or (<> 0 (mod y 100))
+                             (= 0 (mod y 400)) ))
+                  366 365)))
+        (setq days-left (- days-left yd))
+        (setq y (1+ y)) ) )
+    ;; Advance months
+    (let ((leap (if (and (= 0 (mod y 4))
+                         (or (<> 0 (mod y 100))
+                             (= 0 (mod y 400)) ))
+                  1 0)))
+      (let ((month-days (list 31 (+ 28 leap) 31 30 31 30 31 31 30 31 30 31)))
+        (while (and (<= m 12) (>= days-left (nth (1- m) month-days)))
+          (setq days-left (- days-left (nth (1- m) month-days)))
+          (setq m (1+ m)) ) ) )
+    (setq d (1+ days-left))
+    (sprintf "%04d.%02d.%02d" y m d) ) )
+
+
+;; Flush a DataTable to a specific date partition directory.
+(de _hdbw-flush-to-partition (tbl-name dt date-str)
+  (let ((path (concat *hdbw-hdb-root* "/" date-str "/" tbl-name)))
+    ;; Create date directory if it doesn't exist
+    (let ((date-dir (concat *hdbw-hdb-root* "/" date-str)))
+      (when (not (dirp date-dir))
+        (sys (concat "mkdir -p '" date-dir "'"))
+        (printf "hdbw: created new date partition: %s\n" date-dir) ) )
+    ;; Save or append
+    (if (dirp path)
+      (columnardb-append path dt)
+      (columnardb-save dt path) )
+    (printf "hdbw: flushed %d %s rows to %s\n" (==> dt num-rows) tbl-name path) ) )
+
+
+;; ============================================================
+;; Flush logic
+;; ============================================================
+
+#? (hdbw-flush-table <tbl-name> <local-table> <total-rows-sym>)
+;; Flush rows from <local-table> to date-partitioned directories.
+;; Uses the data's own timestamps to determine the correct partition.
+;; Handles midnight boundary splits.  Returns a fresh empty table
+;; (same schema) to replace the flushed one.
+;; <total-rows-sym> is a quoted symbol for accumulating row counts.
+(de hdbw-flush-table (tbl-name local-table total-rows-sym)
+  (let ((nrows (==> local-table num-rows)))
+    (when (> nrows 0)
+      ;; Use local_time for ticker (always set), time for l2
+      (let ((time-col (if (= tbl-name "ticker") "local_time" "time")))
+        ;; Check first and last row dates to detect midnight boundary
+        (let ((first-date (_hdbw-epoch-to-date (==> local-table get 0 time-col)))
+              (last-date  (_hdbw-epoch-to-date (==> local-table get (1- nrows) time-col))) )
+          (if (= first-date last-date)
+            ;; Fast path: all rows belong to the same date partition
+            (progn
+              (_hdbw-flush-to-partition tbl-name local-table first-date)
+              (set total-rows-sym (+ (eval total-rows-sym) nrows)) )
+            ;; Slow path: rows span a date boundary -- split by date
+            (progn
+              (printf "hdbw: batch spans midnight (%s -> %s), splitting %d rows\n"
+                      first-date last-date nrows)
+              ;; Find the split point
+              (let ((split-idx nrows))
+                (for (r 1 (1- nrows))
+                  (when (= split-idx nrows)
+                    (when (<> first-date (_hdbw-epoch-to-date
+                                           (==> local-table get r time-col)))
+                      (setq split-idx r) ) ) )
+                ;; Flush old-date rows (0 .. split-idx-1)
+                (let ((idx1 (int-matrix split-idx)))
+                  (for (i 0 (1- split-idx)) (idx1 i i))
+                  (let ((dt1 (==> local-table select-rows-idx idx1)))
+                    (_hdbw-flush-to-partition tbl-name dt1 first-date)
+                    (set total-rows-sym (+ (eval total-rows-sym) split-idx)) ) )
+                ;; Flush new-date rows (split-idx .. nrows-1)
+                (let ((n2 (- nrows split-idx)))
+                  (let ((idx2 (int-matrix n2)))
+                    (for (i 0 (1- n2)) (idx2 i (+ split-idx i)))
+                    (let ((dt2 (==> local-table select-rows-idx idx2)))
+                      (_hdbw-flush-to-partition tbl-name dt2 last-date)
+                      (set total-rows-sym (+ (eval total-rows-sym) n2)) ) ) ) ) ) ) ) )
+      ;; Reset local table (create fresh with same schema)
+      (let ((new-table (new DataTable))
+            (rest-names (==> local-table col-names))
+            (rest-types (==> local-table col-types)) )
+        (while rest-names
+          (==> new-table add-column (car rest-names) (car rest-types))
+          (setq rest-names (cdr rest-names))
+          (setq rest-types (cdr rest-types)) )
+        new-table ) ) ) )
+
+
+#? (hdbw-flush)
+;; Flush both ticker and L2 tables to disk.
+;; Re-attaches fresh tables to the Database wrapper.
+(de hdbw-flush ()
+  (let ((new-ticker (hdbw-flush-table "ticker" *hdbw-ticker-table*
+                                       '*hdbw-total-ticker-rows*)))
+    (when new-ticker (setq *hdbw-ticker-table* new-ticker)) )
+  (let ((new-l2 (hdbw-flush-table "l2" *hdbw-l2-table*
+                                   '*hdbw-total-l2-rows*)))
+    (when new-l2 (setq *hdbw-l2-table* new-l2)) )
+  (setq *hdbw-total-flushes* (1+ *hdbw-total-flushes*))
+  (setq *hdbw-last-flush-time* (_wire-time-seconds))
+  ;; Re-attach fresh tables to Database
+  (when *hdbw-db*
+    (setq *hdbw-db* (new Database ()))
+    (==> *hdbw-db* attach "ticker" *hdbw-ticker-table*)
+    (==> *hdbw-db* attach "l2" *hdbw-l2-table*) ) )
+
+
+#? (hdbw-check-flush)
+;; Check if it's time to flush.  Calls {<b> hdbw-flush} if
+;; the flush interval has elapsed since the last flush.
+(de hdbw-check-flush ()
+  (let ((now (_wire-time-seconds)))
+    (when (>= (- now *hdbw-last-flush-time*) *hdbw-flush-interval*)
+      (hdbw-flush) ) ) )
+
+
+;; ============================================================
+;; Database wrapper
+;; ============================================================
+
+#? (hdbw-create-database)
+;; Return the current Database wrapping in-flight ticker and L2 tables.
+;; Returns the existing {<b> *hdbw-db*} object.
+(de hdbw-create-database ()
+  *hdbw-db*)
+
+
+;; ============================================================
+;; Query interface
+;; ============================================================
+
+#? (hdbw-handle-query <expr>)
+;; Dispatch queries on HDB Writer state and in-flight data.
+;;
+;; Supported queries:
+;; {<ul>
+;; {<li> {<b> "ping"} -- health check.}
+;; {<li> {<b> "stats"} -- writer statistics alist.}
+;; {<li> {<b> "flush"} -- trigger immediate flush.}
+;; {<li> {<b> "tables"} -- list of table names.}
+;; {<li> {<b> "SELECT ..."} -- SQL query on in-flight data via Database.}
+;; }
+(de hdbw-handle-query (expr)
+  (setq *hdbw-total-queries* (1+ *hdbw-total-queries*))
+  (cond
+   ((= expr "ping") "pong")
+
+   ((= expr "tables")
+    (list "ticker" "l2") )
+
+   ((= expr "stats")
+    (list (cons "flushes" *hdbw-total-flushes*)
+          (cons "ticker_rows" *hdbw-total-ticker-rows*)
+          (cons "l2_rows" *hdbw-total-l2-rows*)
+          (cons "pending_tickers" (==> *hdbw-ticker-table* num-rows))
+          (cons "pending_l2" (==> *hdbw-l2-table* num-rows))
+          (cons "flush_interval" *hdbw-flush-interval*)
+          (cons "root" *hdbw-hdb-root*)
+          (cons "uptime" (- (_wire-time-seconds) *hdbw-start-time*))
+          (cons "queries" *hdbw-total-queries*) ) )
+
+   ((= expr "flush")
+    (hdbw-flush)
+    (sprintf "flushed (ticker=%d l2=%d)" *hdbw-total-ticker-rows*
+             *hdbw-total-l2-rows*) )
+
+   ;; SQL query (string starting with SELECT)
+   ((and (stringp expr) (regex-seek "^SELECT " (upcase expr)))
+    (wire-pack-datatable (==> *hdbw-db* query expr)) )
+
+   (t (sprintf "unknown query: %l" expr)) ) )
+
+
+;; ============================================================
+;; Legacy path helpers (retained for compatibility)
 ;; ============================================================
 
 #? (hdb-date-string)
@@ -93,58 +395,16 @@
 
 #? (hdb-table-path <tbl>)
 ;; Return the full path for a table's splayed directory.
-;; Path: <hdb-root>/<date>/<tbl>
+;; Path: <hdbw-hdb-root>/<date>/<tbl>
 (de hdb-table-path (tbl)
-  (concat *hdb-root* "/" (hdb-date-string) "/" tbl) )
+  (concat *hdbw-hdb-root* "/" (hdb-date-string) "/" tbl) )
 
-
-;; ============================================================
-;; Query interface
-;; ============================================================
-
-#? (hdb-handle-query <expr>)
-;; Dispatch queries on HDB Writer state.
-;; Provides operational status — not data queries (those go through HDB Reader).
-;;
-;; Supported queries:
-;; {<ul>
-;; {<li> {<b> "ping"} -- health check.}
-;; {<li> {<b> "stats"} -- writer statistics alist.}
-;; }
-(de hdb-handle-query (expr)
-  (setq *hdb-total-queries* (1+ *hdb-total-queries*))
-  (cond
-
-   ;; "ping" — health check
-   ((= expr "ping")
-    "pong" )
-
-   ;; "stats" — writer statistics
-   ((= expr "stats")
-    (list (cons "flushes" *hdb-total-flushes*)
-          (cons "ticker_rows" *hdb-total-ticker-rows*)
-          (cons "l2_rows" *hdb-total-l2-rows*)
-          (cons "ticker_hwm" *hdb-ticker-hwm*)
-          (cons "l2_hwm" *hdb-l2-hwm*)
-          (cons "flush_interval" *hdb-flush-interval*)
-          (cons "root" *hdb-root*)
-          (cons "uptime" (- (_wire-time-seconds) *hdb-start-time*))
-          (cons "queries" *hdb-total-queries*) ) )
-
-   ;; Unknown query
-   (t (sprintf "unknown query: %l" expr)) ) )
-
-
-;; ============================================================
-;; Status
-;; ============================================================
 
 #? (hdb-status)
 ;; Print current HDB writer statistics.
 (de hdb-status ()
-  (let ((uptime (- (_wire-time-seconds) *hdb-start-time*)))
-    (printf "hdb: flushes=%d ticker_rows=%d l2_rows=%d uptime=%.0fs interval=%ds\n"
-            *hdb-total-flushes* *hdb-total-ticker-rows* *hdb-total-l2-rows*
-            uptime *hdb-flush-interval*)
-    (printf "hdb: ticker_hwm=%d l2_hwm=%d root=%s\n"
-            *hdb-ticker-hwm* *hdb-l2-hwm* *hdb-root*) ) )
+  (let ((uptime (- (_wire-time-seconds) *hdbw-start-time*)))
+    (printf "hdbw: flushes=%d ticker_rows=%d l2_rows=%d pending_tick=%d pending_l2=%d uptime=%.0fs\n"
+            *hdbw-total-flushes* *hdbw-total-ticker-rows* *hdbw-total-l2-rows*
+            (==> *hdbw-ticker-table* num-rows) (==> *hdbw-l2-table* num-rows)
+            uptime) ) )
