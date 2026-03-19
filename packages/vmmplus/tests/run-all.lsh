@@ -1,0 +1,671 @@
+;;; VMMplus test suite
+;;;
+;;; Usage:
+;;;   TMPDIR=/tmp/claude lush packages/vmmplus/tests/run-all.lsh
+
+(libload "tests/framework")
+(libload "vmmplus/vmmplus")
+(libload "vmmplus/vmmplus-discretize")
+
+;; ============================================================
+;; Helper: create abracadabra symbol array
+;; ============================================================
+
+(de _make-abracadabra ()
+  (vmm-string-to-symbols "abracadabra"))
+
+(de _make-alternating (n ab-size)
+  (let ((out (int-matrix n)))
+    (for (i 0 (- n 1))
+      (out i (mod i ab-size)))
+    out))
+
+(de _make-biased (n)
+  ;; Mostly 0s with occasional 1s
+  (let ((out (int-matrix n)))
+    (for (i 0 (- n 1))
+      (out i (if (= 0 (mod i 5)) 1 0)))
+    out))
+
+;; ============================================================
+;; Test Suite: PPM-C
+;; ============================================================
+
+(test-suite "PPM-C"
+
+  (test-suite "Reference values on abracadabra"
+    (let* ((data (_make-abracadabra))
+           (model (vmm-fit data "ppmc" 128 5))
+           (ctx (vmm-string-to-symbols "ab"))
+           (probs (vmm-predict model ctx)))
+      ;; Verified from Java PPMNode.increment() trace
+      (test-near "P(r|ab) = 0.80" (probs (asc "r")) 0.80 0.01)
+      (test-near "P(a|ab) = 0.0088" (probs (asc "a")) 0.00882 0.002)
+      (test-near "P(b|ab) = 0.0044" (probs (asc "b")) 0.00441 0.002)
+      (test-near "P(c|ab) = 0.0029" (probs (asc "c")) 0.00294 0.002)
+      (test-near "P(d|ab) = 0.0029" (probs (asc "d")) 0.00294 0.002)
+      (vmm-destroy model)))
+
+  (test-suite "Context a: P(b|a) > P(c|a)"
+    (let* ((data (_make-abracadabra))
+           (model (vmm-fit data "ppmc" 128 5))
+           (ctx (vmm-string-to-symbols "a"))
+           (probs (vmm-predict model ctx)))
+      (test-check "P(b|a) > P(c|a)"
+                  (> (probs (asc "b")) (probs (asc "c"))))
+      (vmm-destroy model)))
+
+  (test-suite "Distribution sums to 1"
+    (let* ((data (_make-abracadabra))
+           (model (vmm-fit data "ppmc" 128 5))
+           (ctx (vmm-string-to-symbols "ab"))
+           (probs (vmm-predict model ctx))
+           (sum 0.0))
+      (for (i 0 127) (setq sum (+ sum (probs i))))
+      (test-near "sum = 1.0" sum 1.0 0.01)
+      (vmm-destroy model)))
+
+  (test-suite "Alternating binary"
+    (let* ((data (_make-alternating 20 2))
+           (model (vmm-fit data "ppmc" 2 3))
+           (ctx1 (int-matrix 1)))
+      (ctx1 0 1)
+      (let ((probs (vmm-predict model ctx1)))
+        (test-check "P(0|1) > 0.5" (> (probs 0) 0.5)))
+      (vmm-destroy model)))
+
+  (test-suite "Empty context"
+    (let* ((data (_make-alternating 20 4))
+           (model (vmm-fit data "ppmc" 4 3))
+           (ctx (int-matrix 1))
+           (sum 0.0))
+      ;; Use a 0-length context trick: create 1-element ctx, pass it
+      ;; Actually vmm-predict uses idx-dim, so let's use vmm-predict-symbol
+      ;; with a dummy context. Or we can test with a 1-symbol context.
+      (ctx 0 0)
+      (let ((probs (vmm-predict model ctx)))
+        (for (i 0 3) (setq sum (+ sum (probs i))))
+        (test-near "dist sums to 1" sum 1.0 0.01))
+      (vmm-destroy model)))
+
+  (test-suite "Log-eval"
+    (let* ((data (_make-alternating 20 2))
+           (model (vmm-fit data "ppmc" 2 3))
+           (bps (vmm-eval model data)))
+      (test-check "log-eval >= 0" (>= bps 0.0))
+      (test-check "log-eval finite" (not (nanp bps)))
+      (vmm-destroy model)))
+)
+
+;; ============================================================
+;; Test Suite: CTW
+;; ============================================================
+
+(test-suite "CTW"
+
+  (test-suite "Alternating pattern"
+    (let* ((data (_make-alternating 20 2))
+           (model (vmm-fit data "ctw" 2 4))
+           (ctx1 (int-matrix 1)))
+      (ctx1 0 1)
+      (let ((probs (vmm-predict model ctx1)))
+        (test-check "P(0|1) > 0.5" (> (probs 0) 0.5)))
+      (vmm-destroy model)))
+
+  (test-suite "Distribution sums to 1"
+    (let* ((data (_make-abracadabra))
+           (model (vmm-fit data "ctw" 128 5))
+           (ctx (vmm-string-to-symbols "ab"))
+           (probs (vmm-predict model ctx))
+           (sum 0.0))
+      (for (i 0 127) (setq sum (+ sum (probs i))))
+      (test-near "sum = 1.0" sum 1.0 0.02)
+      (vmm-destroy model)))
+
+  (test-suite "Log-eval"
+    (let* ((data (_make-alternating 20 4))
+           (model (vmm-fit data "ctw" 4 4))
+           (bps (vmm-eval model data)))
+      (test-check "log-eval >= 0" (>= bps 0.0))
+      (test-check "log-eval finite" (not (nanp bps)))
+      (vmm-destroy model)))
+)
+
+;; ============================================================
+;; Test Suite: Binary CTW
+;; ============================================================
+
+(test-suite "Binary CTW"
+
+  (test-suite "Biased binary"
+    (let* ((data (_make-biased 30))
+           (model (vmm-fit data "bctw" 2 4))
+           (ctx (int-matrix 1)))
+      (ctx 0 0)
+      (let ((probs (vmm-predict model ctx)))
+        (test-check "P(0) > P(1)" (> (probs 0) (probs 1))))
+      (vmm-destroy model)))
+
+  (test-suite "Distribution sums to 1"
+    (let* ((data (_make-alternating 20 2))
+           (model (vmm-fit data "bctw" 2 4))
+           (ctx (int-matrix 1)))
+      (ctx 0 0)
+      (let ((probs (vmm-predict model ctx))
+            (sum 0.0))
+        (for (i 0 1) (setq sum (+ sum (probs i))))
+        (test-near "sum = 1.0" sum 1.0 0.02))
+      (vmm-destroy model)))
+
+  (test-suite "Log-eval"
+    (let* ((data (_make-alternating 20 2))
+           (model (vmm-fit data "bctw" 2 4))
+           (bps (vmm-eval model data)))
+      (test-check "log-eval >= 0" (>= bps 0.0))
+      (vmm-destroy model)))
+)
+
+;; ============================================================
+;; Test Suite: DCTW
+;; ============================================================
+
+(test-suite "DCTW"
+
+  (test-suite "Quaternary pattern"
+    (let* ((data (_make-alternating 20 4))
+           (model (vmm-fit data "dctw" 4 4))
+           (ctx (int-matrix 2)))
+      (ctx 0 2)
+      (ctx 1 3)
+      (let ((probs (vmm-predict model ctx))
+            (sum 0.0))
+        (for (i 0 3) (setq sum (+ sum (probs i))))
+        (test-near "sum = 1.0" sum 1.0 0.02))
+      (vmm-destroy model)))
+
+  (test-suite "Log-eval"
+    (let* ((data (_make-alternating 20 4))
+           (model (vmm-fit data "dctw" 4 4))
+           (bps (vmm-eval model data)))
+      (test-check "log-eval >= 0" (>= bps 0.0))
+      (test-check "log-eval finite" (not (nanp bps)))
+      (vmm-destroy model)))
+)
+
+;; ============================================================
+;; Test Suite: PST
+;; ============================================================
+
+(test-suite "PST"
+
+  (test-suite "abracadabra"
+    (let* ((data (_make-abracadabra))
+           (params (double-matrix 4)))
+      (params 0 0.001) ;; pmin
+      (params 1 0.0)   ;; alpha
+      (params 2 0.5)   ;; gamma
+      (params 3 1.05)  ;; r
+      (let* ((model (vmm-fit data "pst" 128 5 params))
+             (probs (vmm-predict model (int-matrix 1))))
+        ;; a is most frequent
+        (test-check "P(a) > P(z)" (> (probs (asc "a")) (probs (asc "z"))))
+        ;; Distribution sums
+        (let ((sum 0.0))
+          (for (i 0 127) (setq sum (+ sum (probs i))))
+          (test-near "sum = 1.0" sum 1.0 0.02))
+        (vmm-destroy model))))
+
+  (test-suite "Log-eval"
+    (let* ((data (_make-alternating 20 4))
+           (params (double-matrix 4)))
+      (params 0 0.001) (params 1 0.0) (params 2 0.5) (params 3 1.05)
+      (let* ((model (vmm-fit data "pst" 4 4 params))
+             (bps (vmm-eval model data)))
+        (test-check "log-eval >= 0" (>= bps 0.0))
+        (test-check "log-eval finite" (not (nanp bps)))
+        (vmm-destroy model))))
+)
+
+;; ============================================================
+;; Test Suite: LZms
+;; ============================================================
+
+(test-suite "LZms"
+
+  (test-suite "Basic distribution"
+    (let* ((data (_make-alternating 20 4))
+           (params (double-matrix 2)))
+      (params 0 2) ;; m
+      (params 1 2) ;; s
+      (let* ((model (vmm-fit data "lzms" 4 0 params))
+             (ctx (int-matrix 1))
+             (sum 0.0))
+        (ctx 0 0)
+        (let ((probs (vmm-predict model ctx)))
+          (for (i 0 3) (setq sum (+ sum (probs i))))
+          (test-near "sum = 1.0" sum 1.0 0.02))
+        (vmm-destroy model))))
+
+  (test-suite "Log-eval"
+    (let* ((data (_make-alternating 20 4))
+           (params (double-matrix 2)))
+      (params 0 2) (params 1 2)
+      (let* ((model (vmm-fit data "lzms" 4 0 params))
+             (bps (vmm-eval model data)))
+        (test-check "log-eval >= 0" (>= bps 0.0))
+        (test-check "log-eval finite" (not (nanp bps)))
+        (vmm-destroy model))))
+)
+
+;; ============================================================
+;; Test Suite: LZ78
+;; ============================================================
+
+(test-suite "LZ78"
+
+  (test-suite "Basic distribution"
+    (let* ((data (_make-alternating 20 4))
+           (model (vmm-fit data "lz78" 4 0))
+           (ctx (int-matrix 1))
+           (sum 0.0))
+      (ctx 0 0)
+      (let ((probs (vmm-predict model ctx)))
+        (for (i 0 3) (setq sum (+ sum (probs i))))
+        (test-near "sum = 1.0" sum 1.0 0.02))
+      (vmm-destroy model)))
+
+  (test-suite "Log-eval"
+    (let* ((data (_make-alternating 20 4))
+           (model (vmm-fit data "lz78" 4 0))
+           (bps (vmm-eval model data)))
+      (test-check "log-eval >= 0" (>= bps 0.0))
+      (test-check "log-eval finite" (not (nanp bps)))
+      (vmm-destroy model)))
+)
+
+;; ============================================================
+;; Test Suite: String convenience API
+;; ============================================================
+
+(test-suite "String API"
+
+  (test-suite "vmm-string-to-symbols"
+    (let ((syms (vmm-string-to-symbols "abc")))
+      (test-equal "length 3" (idx-dim syms 0) 3)
+      (test-equal "a = 97" (syms 0) 97)
+      (test-equal "b = 98" (syms 1) 98)
+      (test-equal "c = 99" (syms 2) 99)))
+
+  (test-suite "vmm-symbols-to-string"
+    (let* ((syms (int-matrix 3)))
+      (syms 0 97) (syms 1 98) (syms 2 99)
+      (test-str-equal "abc" (vmm-symbols-to-string syms) "abc")))
+
+  (test-suite "vmm-fit-string / vmm-predict-string"
+    (let* ((model (vmm-fit-string "abracadabra" "ppmc" 5))
+           (probs (vmm-predict-string model "ab")))
+      (test-near "P(r|ab) via string API" (probs (asc "r")) 0.80 0.01)
+      (vmm-destroy model)))
+
+  (test-suite "vmm-eval-string"
+    (let* ((model (vmm-fit-string "abracadabra" "ppmc" 5))
+           (bps (vmm-eval-string model "abracadabra")))
+      (test-check "eval >= 0" (>= bps 0.0))
+      (test-check "eval finite" (not (nanp bps)))
+      (vmm-destroy model)))
+)
+
+;; ============================================================
+;; Test Suite: Cross-algorithm comparison
+;; ============================================================
+
+(test-suite "Cross-algorithm"
+
+  (test-suite "All 7 algorithms on binary alternating"
+    (let ((data (_make-alternating 20 2))
+          (algos (list "ppmc" "ctw" "bctw" "dctw" "pst" "lzms" "lz78")))
+      (while algos
+        (let* ((algo (car algos))
+               (params ())
+               (model ()))
+          (cond
+           ((= algo "pst")
+            (let ((p (double-matrix 4)))
+              (p 0 0.001) (p 1 0.0) (p 2 0.5) (p 3 1.05)
+              (setq params p)
+              (setq model (vmm-fit data algo 2 4 params))))
+           ((= algo "lzms")
+            (let ((p (double-matrix 2)))
+              (p 0 2) (p 1 2)
+              (setq params p)
+              (setq model (vmm-fit data algo 2 0 params))))
+           (t
+            (setq model (vmm-fit data algo 2 4))))
+          ;; Check distribution
+          (let* ((ctx (int-matrix 1))
+                 (sum 0.0))
+            (ctx 0 0)
+            (let ((probs (vmm-predict model ctx)))
+              (for (i 0 1) (setq sum (+ sum (probs i))))
+              (test-near (concat algo " dist sums to 1") sum 1.0 0.02)))
+          ;; Check log-eval
+          (let ((bps (vmm-eval model data)))
+            (test-check (concat algo " log-eval >= 0") (>= bps 0.0))
+            (test-check (concat algo " log-eval finite") (not (nanp bps))))
+          (vmm-destroy model))
+        (setq algos (cdr algos)))))
+)
+
+;; ============================================================
+;; Test Suite: Discretization
+;; ============================================================
+
+(test-suite "Discretization"
+
+  (test-suite "SAX"
+    (let* ((n 100)
+           (data (double-matrix n)))
+      ;; Generate sin wave
+      (for (i 0 (- n 1))
+        (data i (sin (* 6.283 (/ i n)))))
+      (let* ((disc (vmm-discretize-fit data "sax" 8))
+             (syms (vmm-discretize-transform data disc)))
+        (test-equal "output length" (idx-dim syms 0) n)
+        ;; All symbols in [0, 8)
+        (let ((ok t))
+          (for (i 0 (- n 1))
+            (when (or (< (syms i) 0) (>= (syms i) 8))
+              (setq ok ())))
+          (test-check "all symbols in [0,8)" ok))
+        ;; Inverse
+        (let ((inv (vmm-discretize-inverse syms disc)))
+          (test-equal "inverse length" (idx-dim inv 0) n)))))
+
+  (test-suite "Equal-width"
+    (let* ((n 50)
+           (data (double-matrix n)))
+      (for (i 0 (- n 1))
+        (data i (* 10.0 (/ i n))))
+      (let* ((disc (vmm-discretize-fit data "equal-width" 5))
+             (syms (vmm-discretize-transform data disc)))
+        (test-equal "output length" (idx-dim syms 0) n)
+        (let ((ok t))
+          (for (i 0 (- n 1))
+            (when (or (< (syms i) 0) (>= (syms i) 5))
+              (setq ok ())))
+          (test-check "all symbols in [0,5)" ok)))))
+
+  (test-suite "Equal-freq"
+    (let* ((n 100)
+           (data (double-matrix n)))
+      (for (i 0 (- n 1))
+        (data i (* 1.0 i)))
+      (let* ((disc (vmm-discretize-fit data "equal-freq" 4))
+             (syms (vmm-discretize-transform data disc)))
+        (test-equal "output length" (idx-dim syms 0) n)
+        (let ((ok t))
+          (for (i 0 (- n 1))
+            (when (or (< (syms i) 0) (>= (syms i) 4))
+              (setq ok ())))
+          (test-check "all symbols in [0,4)" ok)))))
+
+  (test-suite "End-to-end with VMM"
+    (let* ((n 200)
+           (data (double-matrix n)))
+      (for (i 0 (- n 1))
+        (data i (sin (* 6.283 (/ i 50)))))
+      (let* ((disc (vmm-discretize-fit data "sax" 8))
+             (syms (vmm-discretize-transform data disc))
+             (model (vmm-fit syms "ppmc" 8 5))
+             ;; Predict from last few symbols
+             (ctx (int-matrix 5)))
+        (for (j 0 4) (ctx j (syms (+ (- n 5) j))))
+        (let* ((probs (vmm-predict model ctx))
+               (sum 0.0))
+          (for (i 0 7) (setq sum (+ sum (probs i))))
+          (test-near "dist sums to 1" sum 1.0 0.02))
+        (vmm-destroy model))))
+)
+
+;; ============================================================
+;; Test Suite: PPM-Decay
+;; ============================================================
+
+(test-suite "PPM-Decay"
+
+  (test-suite "Alternating pattern"
+    (let* ((data (_make-alternating 20 2))
+           (model (vmm-fit data "ppmdecay" 2 3))
+           (ctx1 (int-matrix 1)))
+      (ctx1 0 1)
+      (let ((probs (vmm-predict model ctx1)))
+        (test-check "P(0|1) > 0.5" (> (probs 0) 0.5)))
+      (vmm-destroy model)))
+
+  (test-suite "Distribution sums to 1"
+    (let* ((data (_make-alternating 20 4))
+           (model (vmm-fit data "ppmdecay" 4 3))
+           (ctx (int-matrix 1))
+           (sum 0.0))
+      (ctx 0 1)
+      (let ((probs (vmm-predict model ctx)))
+        (for (i 0 3) (setq sum (+ sum (probs i))))
+        (test-near "sum = 1.0" sum 1.0 0.02))
+      (vmm-destroy model)))
+
+  (test-suite "Log-eval"
+    (let* ((data (_make-alternating 20 2))
+           (model (vmm-fit data "ppmdecay" 2 3))
+           (bps (vmm-eval model data)))
+      (test-check "log-eval >= 0" (>= bps 0.0))
+      (test-check "log-eval finite" (not (nanp bps)))
+      (vmm-destroy model)))
+
+  (test-suite "Custom params"
+    (let* ((data (_make-alternating 20 2))
+           (params (double-matrix 3)))
+      (params 0 2.0)   ;; w0
+      (params 1 0.01)  ;; w_inf
+      (params 2 50.0)  ;; half_life
+      (let* ((model (vmm-fit data "ppmdecay" 2 3 params))
+             (ctx (int-matrix 1))
+             (sum 0.0))
+        (ctx 0 0)
+        (let ((probs (vmm-predict model ctx)))
+          (for (i 0 1) (setq sum (+ sum (probs i))))
+          (test-near "sum = 1.0" sum 1.0 0.02))
+        (vmm-destroy model))))
+)
+
+;; ============================================================
+;; Test Suite: CTS
+;; ============================================================
+
+(test-suite "CTS"
+
+  (test-suite "Alternating pattern"
+    (let* ((data (_make-alternating 20 2))
+           (model (vmm-fit data "cts" 2 4))
+           (ctx1 (int-matrix 1)))
+      (ctx1 0 1)
+      (let ((probs (vmm-predict model ctx1)))
+        (test-check "P(0|1) > 0.5" (> (probs 0) 0.5)))
+      (vmm-destroy model)))
+
+  (test-suite "Distribution sums to 1"
+    (let* ((data (_make-alternating 20 4))
+           (model (vmm-fit data "cts" 4 4))
+           (ctx (int-matrix 1))
+           (sum 0.0))
+      (ctx 0 1)
+      (let ((probs (vmm-predict model ctx)))
+        (for (i 0 3) (setq sum (+ sum (probs i))))
+        (test-near "sum = 1.0" sum 1.0 0.02))
+      (vmm-destroy model)))
+
+  (test-suite "Log-eval"
+    (let* ((data (_make-alternating 20 2))
+           (model (vmm-fit data "cts" 2 4))
+           (bps (vmm-eval model data)))
+      (test-check "log-eval >= 0" (>= bps 0.0))
+      (test-check "log-eval finite" (not (nanp bps)))
+      (vmm-destroy model)))
+
+  (test-suite "Custom switch_rate"
+    (let* ((data (_make-alternating 20 2))
+           (params (double-matrix 1)))
+      (params 0 0.1)
+      (let* ((model (vmm-fit data "cts" 2 4 params))
+             (ctx (int-matrix 1))
+             (sum 0.0))
+        (ctx 0 0)
+        (let ((probs (vmm-predict model ctx)))
+          (for (i 0 1) (setq sum (+ sum (probs i))))
+          (test-near "sum = 1.0" sum 1.0 0.02))
+        (vmm-destroy model))))
+)
+
+;; ============================================================
+;; Test Suite: MDI
+;; ============================================================
+
+(test-suite "MDI"
+
+  (test-suite "Alternating pattern"
+    (let* ((data (_make-alternating 20 2))
+           (model (vmm-fit data "mdi" 2 3))
+           (ctx1 (int-matrix 1)))
+      (ctx1 0 1)
+      (let ((probs (vmm-predict model ctx1)))
+        (test-check "P(0|1) > 0.5" (> (probs 0) 0.5)))
+      (vmm-destroy model)))
+
+  (test-suite "Distribution sums to 1"
+    (let* ((data (_make-alternating 20 4))
+           (model (vmm-fit data "mdi" 4 3))
+           (ctx (int-matrix 1))
+           (sum 0.0))
+      (ctx 0 1)
+      (let ((probs (vmm-predict model ctx)))
+        (for (i 0 3) (setq sum (+ sum (probs i))))
+        (test-near "sum = 1.0" sum 1.0 0.02))
+      (vmm-destroy model)))
+
+  (test-suite "Log-eval"
+    (let* ((data (_make-alternating 20 4))
+           (model (vmm-fit data "mdi" 4 3))
+           (bps (vmm-eval model data)))
+      (test-check "log-eval >= 0" (>= bps 0.0))
+      (test-check "log-eval finite" (not (nanp bps)))
+      (vmm-destroy model)))
+
+  (test-suite "Zero threshold (no merging)"
+    (let* ((data (_make-alternating 20 2))
+           (params (double-matrix 1)))
+      (params 0 0.0)
+      (let* ((model (vmm-fit data "mdi" 2 3 params))
+             (ctx (int-matrix 1))
+             (sum 0.0))
+        (ctx 0 0)
+        (let ((probs (vmm-predict model ctx)))
+          (for (i 0 1) (setq sum (+ sum (probs i))))
+          (test-near "sum = 1.0" sum 1.0 0.02))
+        (vmm-destroy model))))
+)
+
+;; ============================================================
+;; Test Suite: Sequence Memoizer
+;; ============================================================
+
+(test-suite "Sequence Memoizer"
+
+  (test-suite "Alternating pattern"
+    (let* ((data (_make-alternating 20 2))
+           (model (vmm-fit data "seqmemo" 2 3))
+           (ctx1 (int-matrix 1)))
+      (ctx1 0 1)
+      (let ((probs (vmm-predict model ctx1)))
+        (test-check "P(0|1) > 0.5" (> (probs 0) 0.5)))
+      (vmm-destroy model)))
+
+  (test-suite "Distribution sums to 1"
+    (let* ((data (_make-alternating 20 4))
+           (model (vmm-fit data "seqmemo" 4 3))
+           (ctx (int-matrix 1))
+           (sum 0.0))
+      (ctx 0 1)
+      (let ((probs (vmm-predict model ctx)))
+        (for (i 0 3) (setq sum (+ sum (probs i))))
+        (test-near "sum = 1.0" sum 1.0 0.02))
+      (vmm-destroy model)))
+
+  (test-suite "Log-eval"
+    (let* ((data (_make-alternating 20 2))
+           (model (vmm-fit data "seqmemo" 2 3))
+           (bps (vmm-eval model data)))
+      (test-check "log-eval >= 0" (>= bps 0.0))
+      (test-check "log-eval finite" (not (nanp bps)))
+      (vmm-destroy model)))
+
+  (test-suite "Custom discount/concentration"
+    (let* ((data (_make-alternating 20 4))
+           (params (double-matrix 2)))
+      (params 0 0.5)  ;; discount
+      (params 1 2.0)  ;; concentration
+      (let* ((model (vmm-fit data "seqmemo" 4 3 params))
+             (ctx (int-matrix 1))
+             (sum 0.0))
+        (ctx 0 0)
+        (let ((probs (vmm-predict model ctx)))
+          (for (i 0 3) (setq sum (+ sum (probs i))))
+          (test-near "sum = 1.0" sum 1.0 0.02))
+        (vmm-destroy model))))
+)
+
+;; ============================================================
+;; Test Suite: Cross-algorithm (all 11)
+;; ============================================================
+
+(test-suite "Cross-algorithm (all 11)"
+
+  (test-suite "All 11 algorithms on binary alternating"
+    (let ((data (_make-alternating 20 2))
+          (algos (list "ppmc" "ctw" "bctw" "dctw" "pst" "lzms" "lz78"
+                       "ppmdecay" "cts" "mdi" "seqmemo")))
+      (while algos
+        (let* ((algo (car algos))
+               (params ())
+               (model ()))
+          (cond
+           ((= algo "pst")
+            (let ((p (double-matrix 4)))
+              (p 0 0.001) (p 1 0.0) (p 2 0.5) (p 3 1.05)
+              (setq params p)
+              (setq model (vmm-fit data algo 2 4 params))))
+           ((= algo "lzms")
+            (let ((p (double-matrix 2)))
+              (p 0 2) (p 1 2)
+              (setq params p)
+              (setq model (vmm-fit data algo 2 0 params))))
+           (t
+            (setq model (vmm-fit data algo 2 4))))
+          ;; Check distribution
+          (let* ((ctx (int-matrix 1))
+                 (sum 0.0))
+            (ctx 0 0)
+            (let ((probs (vmm-predict model ctx)))
+              (for (i 0 1) (setq sum (+ sum (probs i))))
+              (test-near (concat algo " dist sums to 1") sum 1.0 0.02)))
+          ;; Check log-eval
+          (let ((bps (vmm-eval model data)))
+            (test-check (concat algo " log-eval >= 0") (>= bps 0.0))
+            (test-check (concat algo " log-eval finite") (not (nanp bps))))
+          (vmm-destroy model))
+        (setq algos (cdr algos)))))
+)
+
+;; ============================================================
+;; Summary
+;; ============================================================
+
+(test-summary)

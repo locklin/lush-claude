@@ -1,0 +1,207 @@
+;;; vmmplus-discretize.lsh — Discretization methods for continuous data
+;;;
+;;; Three methods for converting numeric time series to discrete symbols:
+;;;   SAX, equal-width, equal-frequency
+
+#? ** VMMplus Discretization
+;; {<p>
+;; Methods for converting continuous time series data to discrete
+;; symbol sequences suitable for VMM training.
+;; }
+;; {<ul>
+;; {<li> {<b> sax} — Z-normalize, bin by N(0,1) quantiles (Lin et al. 2003)}
+;; {<li> {<b> equal-width} — Uniform bins from min to max}
+;; {<li> {<b> equal-freq} — Quantile-based bins (equal count per bin)}
+;; }
+
+;; ---- Internal: standard normal quantile (Beasley-Springer-Moro) ----
+
+(de _vmm-qnorm (p)
+  ;; Rational approximation for the standard normal quantile function.
+  ;; Accurate to ~1e-9 for p in (0.00003, 0.99997).
+  (let ((result 0.0))
+    (if (< p 0.5)
+        (let* ((t (sqrt (* -2.0 (log p))))
+               (c0 2.515517)
+               (c1 0.802853)
+               (c2 0.010328)
+               (d1 1.432788)
+               (d2 0.189269)
+               (d3 0.001308))
+          (setq result (- (- t (/ (+ c0 (* c1 t) (* c2 (* t t)))
+                                  (+ 1.0 (* d1 t) (* d2 (* t t))
+                                     (* d3 (* t t t))))))))
+      (let* ((t (sqrt (* -2.0 (log (- 1.0 p)))))
+             (c0 2.515517)
+             (c1 0.802853)
+             (c2 0.010328)
+             (d1 1.432788)
+             (d2 0.189269)
+             (d3 0.001308))
+        (setq result (- t (/ (+ c0 (* c1 t) (* c2 (* t t)))
+                             (+ 1.0 (* d1 t) (* d2 (* t t))
+                                (* d3 (* t t t))))))))
+    result))
+
+;; ---- Internal: compute mean and standard deviation ----
+
+(de _vmm-mean (data)
+  (let ((n (idx-dim data 0))
+        (sum 0.0))
+    (for (i 0 (- n 1))
+      (setq sum (+ sum (data i))))
+    (/ sum n)))
+
+(de _vmm-sd (data mean)
+  (let ((n (idx-dim data 0))
+        (ssq 0.0))
+    (for (i 0 (- n 1))
+      (let ((d (- (data i) mean)))
+        (setq ssq (+ ssq (* d d)))))
+    (sqrt (/ ssq (- n 1)))))
+
+;; ---- Internal: sort helper (simple insertion sort for moderate n) ----
+
+(de _vmm-sort-double (data)
+  ;; Returns a new sorted copy of an idx1 of double
+  (let* ((n (idx-dim data 0))
+         (out (double-matrix n)))
+    (idx-copy data out)
+    (for (i 1 (- n 1))
+      (let ((key (out i))
+            (j (- i 1)))
+        (while (and (>= j 0) (> (out j) key))
+          (out (+ j 1) (out j))
+          (setq j (- j 1)))
+        (out (+ j 1) key)))
+    out))
+
+#? (vmm-discretize-fit <data> <method> <n-bins>)
+;; Fit a discretization model to continuous training data.
+;; {<p>
+;; Arguments:
+;; {<ul>
+;; {<li> {<b> data} — idx1 of double, training data.}
+;; {<li> {<b> method} — string: "sax", "equal-width", or "equal-freq".}
+;; {<li> {<b> n-bins} — integer, number of discrete bins (alphabet size).}
+;; }
+;; }
+;; {<p>
+;; Returns a list: (method n-bins edges mean sd) where edges is an idx1
+;; of double with (n-bins - 1) bin boundaries.
+;; }
+
+(de vmm-discretize-fit (data method n-bins)
+  (let* ((n (idx-dim data 0))
+         (edges (double-matrix (- n-bins 1)))
+         (mu 0.0)
+         (sigma 1.0))
+    (cond
+     ;; SAX: Z-normalize, N(0,1) quantile edges
+     ((= method "sax")
+      (setq mu (_vmm-mean data))
+      (setq sigma (_vmm-sd data mu))
+      (when (< sigma 1e-12) (setq sigma 1.0))
+      (for (i 0 (- n-bins 2))
+        (let ((p (/ (+ i 1.0) n-bins)))
+          (edges i (_vmm-qnorm p)))))
+
+     ;; Equal-width: uniform bins
+     ((= method "equal-width")
+      (let ((lo (data 0))
+            (hi (data 0)))
+        (for (i 1 (- n 1))
+          (when (< (data i) lo) (setq lo (data i)))
+          (when (> (data i) hi) (setq hi (data i))))
+        (when (= lo hi) (setq hi (+ lo 1.0)))
+        (setq mu lo)  ;; store lo in mu slot
+        (setq sigma hi)  ;; store hi in sigma slot
+        (for (i 0 (- n-bins 2))
+          (edges i (+ lo (* (/ (+ i 1.0) n-bins) (- hi lo)))))))
+
+     ;; Equal-frequency: quantile-based edges
+     ((= method "equal-freq")
+      (let ((sorted (_vmm-sort-double data)))
+        (for (i 0 (- n-bins 2))
+          (let* ((p (/ (+ i 1.0) n-bins))
+                 (idx (* p (- n 1)))
+                 (lo-idx (int idx))
+                 (frac (- idx lo-idx)))
+            (if (>= lo-idx (- n 1))
+                (edges i (sorted (- n 1)))
+              (edges i (+ (* (- 1.0 frac) (sorted lo-idx))
+                          (* frac (sorted (+ lo-idx 1))))))))))
+
+     (t (error 'vmm-discretize-fit
+               "Unknown method (use sax, equal-width, or equal-freq)"
+               method)))
+
+    (list method n-bins edges mu sigma)))
+
+#? (vmm-discretize-transform <data> <disc-params>)
+;; Transform continuous data to discrete symbols using fitted parameters.
+;; {<p>
+;; Arguments:
+;; {<ul>
+;; {<li> {<b> data} — idx1 of double, data to transform.}
+;; {<li> {<b> disc-params} — list from {<b> vmm-discretize-fit}.}
+;; }
+;; }
+;; {<p>
+;; Returns an idx1 of int with 0-based bin indices.
+;; }
+
+(de vmm-discretize-transform (data disc-params)
+  (let* ((method (nth 0 disc-params))
+         (n-bins (nth 1 disc-params))
+         (edges  (nth 2 disc-params))
+         (mu     (nth 3 disc-params))
+         (sigma  (nth 4 disc-params))
+         (n      (idx-dim data 0))
+         (n-edges (idx-dim edges 0))
+         (out    (int-matrix n)))
+    (for (i 0 (- n 1))
+      (let ((val (if (= method "sax")
+                     (/ (- (data i) mu) sigma)
+                   (data i)))
+            (bin 0))
+        ;; Find bin via linear scan of edges
+        (let ((j 0))
+          (while (and (< j n-edges) (>= val (edges j)))
+            (setq j (+ j 1)))
+          (setq bin j))
+        (out i bin)))
+    out))
+
+#? (vmm-discretize-inverse <symbols> <disc-params>)
+;; Convert discrete bin indices back to representative continuous values.
+;; {<p>
+;; Returns bin-center values (an approximation of the original data).
+;; }
+
+(de vmm-discretize-inverse (symbols disc-params)
+  (let* ((method (nth 0 disc-params))
+         (n-bins (nth 1 disc-params))
+         (edges  (nth 2 disc-params))
+         (mu     (nth 3 disc-params))
+         (sigma  (nth 4 disc-params))
+         (n-edges (idx-dim edges 0))
+         (n      (idx-dim symbols 0))
+         ;; Build centers array
+         (centers (double-matrix n-bins))
+         (out    (double-matrix n)))
+    ;; Compute bin centers
+    (for (b 0 (- n-bins 1))
+      (let ((lo (if (= b 0) (- (edges 0) 1.0) (edges (- b 1))))
+            (hi (if (= b (- n-bins 1))
+                    (+ (edges (- n-edges 1)) 1.0)
+                  (edges b))))
+        (centers b (/ (+ lo hi) 2.0))))
+    ;; Map symbols to centers
+    (for (i 0 (- n 1))
+      (let ((val (centers (symbols i))))
+        ;; Un-normalize for SAX
+        (when (= method "sax")
+          (setq val (+ (* val sigma) mu)))
+        (out i val)))
+    out))

@@ -1,0 +1,400 @@
+;;; vmmplus.lsh — Variable Order Markov Models for sequence prediction
+;;;
+;;; C++17 implementation of eleven VMM algorithms:
+;;;   PPM-C, CTW (Volf), Binary CTW, DCTW, PST, LZms, LZ78,
+;;;   PPM-Decay, CTS, MDI, Sequence Memoizer
+;;;
+;;; Based on Begleiter, El-Yaniv & Yona (2004) plus lossy VMM extensions
+;;; from Harrison et al. (2020), Veness et al. (2012),
+;;; Thollard et al. (2000), and Wood et al. (2011).
+
+#? *** VMMplus: Variable Order Markov Models
+;; {<p>
+;; VMMplus implements eleven variable-order Markov model algorithms for
+;; discrete sequence prediction.  Seven are from Begleiter's Java VMM
+;; package; four are lossy VMM extensions.
+;; }
+;; {<p>
+;; Classic algorithms:
+;; {<ul>
+;; {<li> {<b> ppmc} — Prediction by Partial Matching (Method C)}
+;; {<li> {<b> ctw} — Context Tree Weighting (Volf variant)}
+;; {<li> {<b> bctw} — Binary Context Tree Weighting}
+;; {<li> {<b> dctw} — Decomposed Context Tree Weighting}
+;; {<li> {<b> pst} — Probabilistic Suffix Tree}
+;; {<li> {<b> lzms} — LZ with model selection}
+;; {<li> {<b> lz78} — Lempel-Ziv 78}
+;; }
+;; }
+;; {<p>
+;; Lossy VMM algorithms:
+;; {<ul>
+;; {<li> {<b> ppmdecay} — PPM-C with exponential decay (Harrison et al. 2020)}
+;; {<li> {<b> cts} — Context Tree Switching (Veness et al. 2012)}
+;; {<li> {<b> mdi} — Merge-and-Diverge Identification (Thollard et al. 2000)}
+;; {<li> {<b> seqmemo} — Sequence Memoizer / HPYP (Wood et al. 2011)}
+;; }
+;; }
+;; {<p>
+;; Usage:
+;; {<code>
+;; (libload "vmmplus/vmmplus")
+;; (let ((model (vmm-fit data "ppmc" 128 5)))
+;;   (vmm-predict model context)
+;;   (vmm-eval model test-data)
+;;   (vmm-destroy model))
+;; {</code>}
+;; }
+
+(libload "vmmplus/vmmplus-config")
+
+;; ============================================================
+;; Low-level DHC wrappers (private)
+;; ============================================================
+;; vmm_bridge.h is included via dhc-make-with-libs below,
+;; so all function prototypes are already declared.  No inline
+;; extern declarations needed.
+
+(de _vmm-create (algo ab-size max-order params n-params)
+  ((-str-) algo)
+  ((-int-) ab-size max-order n-params)
+  ((-idx1- (-double-)) params)
+  (let ((handle (gptr ())))
+    ((-gptr-) handle)
+    #{
+    const double *pp = ($n_params > 0) ? IDX_PTR($params, double) : NULL;
+    $handle = vmm_create((const char *)($algo->data),
+                         (unsigned short)$ab_size,
+                         $max_order, pp, $n_params);
+    #}
+    handle))
+
+(de _vmm-destroy (handle)
+  ((-gptr-) handle)
+  #{
+  vmm_destroy($handle);
+  #}
+  ())
+
+(de _vmm-learn (handle data n)
+  ((-gptr-) handle)
+  ((-idx1- (-int-)) data)
+  ((-int-) n)
+  #{
+  int _n = $n;
+  unsigned short *buf = (unsigned short*)malloc(_n * sizeof(unsigned short));
+  int *src = IDX_PTR($data, int);
+  for (int i = 0; i < _n; i++) buf[i] = (unsigned short)src[i];
+  vmm_learn($handle, buf, (size_t)_n);
+  free(buf);
+  #}
+  ())
+
+(de _vmm-predict-sym (handle symbol ctx ctx-len)
+  ((-gptr-) handle)
+  ((-int-) symbol ctx-len)
+  ((-idx1- (-int-)) ctx)
+  (let ((result 0.0))
+    ((-double-) result)
+    #{
+    int _clen = $ctx_len;
+    unsigned short *cbuf = NULL;
+    if (_clen > 0) {
+      cbuf = (unsigned short*)malloc(_clen * sizeof(unsigned short));
+      int *csrc = IDX_PTR($ctx, int);
+      for (int i = 0; i < _clen; i++) cbuf[i] = (unsigned short)csrc[i];
+    }
+    $result = vmm_predict($handle, (unsigned short)$symbol,
+                          cbuf, (size_t)_clen);
+    if (cbuf) free(cbuf);
+    #}
+    result))
+
+(de _vmm-predict-dist (handle ctx ctx-len out ab-size)
+  ((-gptr-) handle)
+  ((-int-) ctx-len ab-size)
+  ((-idx1- (-int-)) ctx)
+  ((-idx1- (-double-)) out)
+  #{
+  int _clen = $ctx_len;
+  unsigned short *cbuf = NULL;
+  if (_clen > 0) {
+    cbuf = (unsigned short*)malloc(_clen * sizeof(unsigned short));
+    int *csrc = IDX_PTR($ctx, int);
+    for (int i = 0; i < _clen; i++) cbuf[i] = (unsigned short)csrc[i];
+  }
+  vmm_predict_distribution($handle, cbuf, (size_t)_clen,
+                           IDX_PTR($out, double));
+  if (cbuf) free(cbuf);
+  #}
+  ())
+
+(de _vmm-log-eval (handle data n)
+  ((-gptr-) handle)
+  ((-idx1- (-int-)) data)
+  ((-int-) n)
+  (let ((result 0.0))
+    ((-double-) result)
+    #{
+    int _n = $n;
+    unsigned short *buf = (unsigned short*)malloc(_n * sizeof(unsigned short));
+    int *src = IDX_PTR($data, int);
+    for (int i = 0; i < _n; i++) buf[i] = (unsigned short)src[i];
+    $result = vmm_log_eval($handle, buf, (size_t)_n);
+    free(buf);
+    #}
+    result))
+
+(de _vmm-log-eval-ctx (handle data n ctx ctx-len)
+  ((-gptr-) handle)
+  ((-idx1- (-int-)) data ctx)
+  ((-int-) n ctx-len)
+  (let ((result 0.0))
+    ((-double-) result)
+    #{
+    int _n = $n;
+    int _clen = $ctx_len;
+    unsigned short *dbuf = (unsigned short*)malloc(_n * sizeof(unsigned short));
+    int *dsrc = IDX_PTR($data, int);
+    for (int i = 0; i < _n; i++) dbuf[i] = (unsigned short)dsrc[i];
+    unsigned short *cbuf = NULL;
+    if (_clen > 0) {
+      cbuf = (unsigned short*)malloc(_clen * sizeof(unsigned short));
+      int *csrc = IDX_PTR($ctx, int);
+      for (int i = 0; i < _clen; i++) cbuf[i] = (unsigned short)csrc[i];
+    }
+    $result = vmm_log_eval_ctx($handle, dbuf, (size_t)_n,
+                               cbuf, (size_t)_clen);
+    free(dbuf);
+    if (cbuf) free(cbuf);
+    #}
+    result))
+
+(de _vmm-alphabet-size (handle)
+  ((-gptr-) handle)
+  (let ((result 0))
+    ((-int-) result)
+    #{
+    $result = (int)vmm_alphabet_size($handle);
+    #}
+    result))
+
+;; Compile DHC wrappers
+(let ((dhc-make-lushflags
+       (concat dhc-make-lushflags
+               " -I" (concat-fname (dirname file-being-loaded) "src"))))
+  (dhc-make-with-libs () t
+    #{ #include "vmm_bridge.h" #}
+    _vmm-create
+    _vmm-destroy
+    _vmm-learn
+    _vmm-predict-sym
+    _vmm-predict-dist
+    _vmm-log-eval
+    _vmm-log-eval-ctx
+    _vmm-alphabet-size))
+
+
+;; ============================================================
+;; High-level API
+;; ============================================================
+
+#? (vmm-fit <data> <algorithm> <alphabet-size> <max-order> [<params>])
+;; Train a variable-order Markov model on a discrete symbol sequence.
+;; {<p>
+;; Arguments:
+;; {<ul>
+;; {<li> {<b> data} — idx1 of int, symbols in [0, alphabet-size).}
+;; {<li> {<b> algorithm} — string: "ppmc", "ctw", "bctw", "dctw", "pst",
+;;   "lzms", "lz78", "ppmdecay", "cts", "mdi", or "seqmemo".}
+;; {<li> {<b> alphabet-size} — integer, number of distinct symbols.}
+;; {<li> {<b> max-order} — integer, maximum context depth (ignored by lzms/lz78).}
+;; {<li> {<b> params} (optional) — idx1 of double with algorithm-specific
+;;   parameters.  For PST: (pmin alpha gamma r).  For LZms: (m s).
+;;   For PPM-Decay: (w0 w_inf half_life).  For CTS: (switch_rate).
+;;   For MDI: (merge_threshold).  For SeqMemo: (discount concentration).}
+;; }
+;; }
+;; {<p>
+;; Returns an opaque model handle (gptr).  Must be freed with
+;; {<b> vmm-destroy} when no longer needed.
+;; }
+;; {<p>
+;; Example:
+;; {<code>
+;; (let* ((data (int-matrix 11))
+;;        (model ()))
+;;   ;; Fill data with "abracadabra" ASCII codes
+;;   (data 0 97) (data 1 98) (data 2 114) (data 3 97) (data 4 99)
+;;   (data 5 97) (data 6 100) (data 7 97) (data 8 98) (data 9 114)
+;;   (data 10 97)
+;;   (setq model (vmm-fit data "ppmc" 128 5))
+;;   ;; ... use model ...
+;;   (vmm-destroy model))
+;; {</code>}
+;; }
+;; {<see> (vmm-predict <model> <context>)}
+;; {<see> (vmm-eval <model> <data>)}
+;; {<see> (vmm-destroy <model>)}
+
+(de vmm-fit (data algorithm alphabet-size max-order . params-list)
+  (let ((params (if params-list (car params-list) (double-matrix 1)))
+        (n-params (if params-list (idx-dim (car params-list) 0) 0)))
+    (let ((handle (_vmm-create algorithm alphabet-size max-order params n-params)))
+      (when (not handle)
+        (error 'vmm-fit "Failed to create VMM predictor" algorithm))
+      (_vmm-learn handle data (idx-dim data 0))
+      handle)))
+
+#? (vmm-predict <model> <context>)
+;; Predict the next-symbol probability distribution given a context.
+;; {<p>
+;; Arguments:
+;; {<ul>
+;; {<li> {<b> model} — opaque handle from {<b> vmm-fit}.}
+;; {<li> {<b> context} — idx1 of int, the context sequence (may be empty).}
+;; }
+;; }
+;; {<p>
+;; Returns an idx1 of double (length = alphabet-size) with
+;; P(symbol | context) for each symbol.
+;; }
+;; {<p>
+;; Example:
+;; {<code>
+;; (let ((probs (vmm-predict model context)))
+;;   (printf "P(0|ctx) = %g\n" (probs 0))
+;;   (printf "P(1|ctx) = %g\n" (probs 1)))
+;; {</code>}
+;; }
+
+(de vmm-predict (model context)
+  (let* ((ab-size (_vmm-alphabet-size model))
+         (out (double-matrix ab-size))
+         (ctx-len (idx-dim context 0)))
+    (_vmm-predict-dist model context ctx-len out ab-size)
+    out))
+
+#? (vmm-predict-symbol <model> <symbol> <context>)
+;; Predict the probability of a single symbol given a context.
+;; {<p>
+;; Arguments:
+;; {<ul>
+;; {<li> {<b> model} — opaque handle from {<b> vmm-fit}.}
+;; {<li> {<b> symbol} — integer, the symbol to predict.}
+;; {<li> {<b> context} — idx1 of int, the context sequence.}
+;; }
+;; }
+;; {<p>
+;; Returns a double: P(symbol | context).
+;; }
+
+(de vmm-predict-symbol (model symbol context)
+  (_vmm-predict-sym model symbol context (idx-dim context 0)))
+
+#? (vmm-eval <model> <data> [<context>])
+;; Evaluate the average log-loss (bits per symbol) of a model on test data.
+;; {<p>
+;; Arguments:
+;; {<ul>
+;; {<li> {<b> model} — opaque handle from {<b> vmm-fit}.}
+;; {<li> {<b> data} — idx1 of int, the test sequence.}
+;; {<li> {<b> context} (optional) — idx1 of int, initial context.}
+;; }
+;; }
+;; {<p>
+;; Returns average log-loss in bits/symbol (lower is better).
+;; }
+
+(de vmm-eval (model data . ctx-list)
+  (let ((n (idx-dim data 0))
+        (total-bits 0.0))
+    (if ctx-list
+        (let* ((ctx (car ctx-list))
+               (ctx-len (idx-dim ctx 0)))
+          (setq total-bits (_vmm-log-eval-ctx model data n ctx ctx-len)))
+      (setq total-bits (_vmm-log-eval model data n)))
+    (/ total-bits n)))
+
+#? (vmm-destroy <model>)
+;; Free a VMM model handle and its associated C++ memory.
+;; {<p>
+;; Must be called when the model is no longer needed to prevent
+;; memory leaks.
+;; }
+
+(de vmm-destroy (model)
+  (_vmm-destroy model)
+  ())
+
+#? (vmm-alphabet-size <model>)
+;; Return the alphabet size of a trained model.
+
+(de vmm-alphabet-size (model)
+  (_vmm-alphabet-size model))
+
+;; ============================================================
+;; String helper utilities
+;; ============================================================
+
+#? (vmm-string-to-symbols <str>)
+;; Convert a string to an idx1 of int (ASCII codes).
+;; {<p>
+;; Example:
+;; {<code>
+;; (vmm-string-to-symbols "abc")
+;; ;; => idx1 of int: [97 98 99]
+;; {</code>}
+;; }
+
+(de vmm-string-to-symbols (str)
+  (let* ((n (len str))
+         (out (int-matrix n)))
+    (for (i 0 (- n 1))
+      (out i (asc (mid str (+ i 1) 1))))
+    out))
+
+#? (vmm-symbols-to-string <syms>)
+;; Convert an idx1 of int (ASCII codes) back to a string.
+
+(de vmm-symbols-to-string (syms)
+  (let ((out "")
+        (n (idx-dim syms 0)))
+    (for (i 0 (- n 1))
+      (setq out (concat out (chr (syms i)))))
+    out))
+
+#? ** Convenience: String-based API
+
+#? (vmm-fit-string <str> <algorithm> <max-order> [<params>])
+;; Train a VMM on a character string (using ASCII codes, alphabet=128).
+;; {<p>
+;; Example:
+;; {<code>
+;; (let ((model (vmm-fit-string "abracadabra" "ppmc" 5)))
+;;   (let ((probs (vmm-predict-string model "ab")))
+;;     (printf "P(r|ab) = %g\n" (probs (asc "r"))))
+;;   (vmm-destroy model))
+;; {</code>}
+;; }
+
+(de vmm-fit-string (str algorithm max-order . params-list)
+  (let ((data (vmm-string-to-symbols str)))
+    (if params-list
+        (vmm-fit data algorithm 128 max-order (car params-list))
+      (vmm-fit data algorithm 128 max-order))))
+
+#? (vmm-predict-string <model> <context-str>)
+;; Predict next-symbol distribution given a context string.
+;; Returns idx1 of double (length 128, indexed by ASCII code).
+
+(de vmm-predict-string (model context-str)
+  (let ((ctx (vmm-string-to-symbols context-str)))
+    (vmm-predict model ctx)))
+
+#? (vmm-eval-string <model> <test-str>)
+;; Evaluate log-loss on a test string.  Returns bits/symbol.
+
+(de vmm-eval-string (model test-str)
+  (let ((data (vmm-string-to-symbols test-str)))
+    (vmm-eval model data)))

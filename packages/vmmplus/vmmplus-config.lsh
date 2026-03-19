@@ -1,0 +1,56 @@
+;;; vmmplus-config.lsh — Compile and load the VMMplus C++ core
+;;;
+;;; Compiles all C++17 sources in src/ into a single libvmmplus.so
+;;; and loads it via mod-load.  Follows the hnsw-config.lsh pattern.
+
+(let* ((dir    (dirname file-being-loaded))
+       (srcdir (concat-fname dir "src"))
+       (so     (concat-fname srcdir "libvmmplus.so"))
+       (srcs   (list "ppmc_predictor.cpp" "ctw_predictor.cpp"
+                     "bctw_predictor.cpp" "dctw_predictor.cpp"
+                     "pst_predictor.cpp" "lzms_predictor.cpp"
+                     "ppmdecay_predictor.cpp" "cts_predictor.cpp"
+                     "mdi_predictor.cpp" "seqmemo_predictor.cpp"
+                     "vmm_factory.cpp" "vmm_bridge.cpp"))
+       (need-rebuild ()))
+
+  ;; Check if any source file is newer than the .so
+  (when (not (filep so))
+    (setq need-rebuild t))
+  (when (not need-rebuild)
+    (each ((s srcs))
+      (let ((src-path (concat-fname srcdir s)))
+        (when (= 0 (sys (sprintf "test \"%s\" -nt \"%s\" 2>/dev/null"
+                                 src-path so)))
+          (setq need-rebuild t)))))
+  ;; Also check headers
+  (when (not need-rebuild)
+    (let ((hdrs (list "vmm_bridge.h" "vmm_predictor.h" "context_buffer.h"
+                      "ppmc_predictor.h" "ctw_predictor.h" "bctw_predictor.h"
+                      "dctw_predictor.h" "pst_predictor.h" "lzms_predictor.h"
+                      "ppmdecay_predictor.h" "cts_predictor.h"
+                      "mdi_predictor.h" "seqmemo_predictor.h")))
+      (each ((h hdrs))
+        (let ((hdr-path (concat-fname srcdir h)))
+          (when (and (filep hdr-path)
+                     (= 0 (sys (sprintf "test \"%s\" -nt \"%s\" 2>/dev/null"
+                                        hdr-path so))))
+            (setq need-rebuild t))))))
+
+  ;; Compile if needed
+  (when need-rebuild
+    (printf "*** VMMplus: Compiling C++ core (g++ -O2 -std=c++17)...\n")
+    (let* ((src-args (let ((acc ""))
+                       (each ((s srcs))
+                         (setq acc (concat acc " \"" (concat-fname srcdir s) "\"")))
+                       acc))
+           (cmd (sprintf "g++ -std=c++17 -O2 -fPIC -shared -I\"%s\" -o \"%s\" %s 2>&1"
+                         srcdir so src-args))
+           (ret (sys cmd)))
+      (when (<> ret 0)
+        (printf "*** VMMplus: Compilation command:\n%s\n" cmd)
+        (error "vmmplus-config" "g++ compilation failed" ret))))
+
+  ;; Load the shared library
+  (mod-load so)
+  (printf "*** VMMplus: libvmmplus.so loaded\n") )
